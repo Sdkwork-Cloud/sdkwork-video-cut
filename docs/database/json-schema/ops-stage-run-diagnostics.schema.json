@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "video-cut.database.ops-stage-run-diagnostics.schema.v1",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "inputHash": { "type": "string" },
+    "outputArtifactId": { "type": "string" },
+    "providerId": { "type": "string" },
+    "logPath": { "type": "string" },
+    "traceId": { "type": "string" }
+  }
+}

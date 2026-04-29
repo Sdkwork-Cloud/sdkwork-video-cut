@@ -1,0 +1,342 @@
+registryVersion: video-cut.feature-readiness.v1
+updatedAt: "2026-04-27T00:00:00.000Z"
+product: sdkwork-video-cut
+policy:
+  mvpMustBeImplemented: true
+  plannedItemsAreReportedAsGaps: true
+  reportPath: artifacts/governance/feature-readiness-report.json
+features:
+  - id: canonical-host-api
+    title: Canonical Host API
+    priority: mvp
+    status: implemented
+    evidenceFiles:
+      - docs/openapi/video-cut-v1.yaml
+      - host/src/lib.rs
+      - host/src/state.rs
+      - host/tests/host_contract_test.rs
+      - src/services/httpHostClient.ts
+    checks:
+      - pnpm check:contracts
+      - pnpm host:test
+    nextAction: Keep OpenAPI, host contract tests, frontend client, JSON request rejection envelopes, multipart upload rejection envelopes, path parameter rejection envelopes, query parameter extraction envelopes, route fallback envelopes, method fallback envelopes, HTTP Host client error normalization, and success envelope validation in lockstep.
+
+  - id: settings-center-provider-config
+    title: Settings Center For LLM, STT, Subtitle, Media, Storage, Runtime, Security
+    priority: mvp
+    status: implemented
+    evidenceFiles:
+      - src/components/settings/SettingsCenter.tsx
+      - src/components/settings/SettingsPanels.tsx
+      - src/__tests__/settingsCenter.test.tsx
+      - host/src/settings.rs
+    checks:
+      - pnpm check:provider-conformance
+      - pnpm test -- --run src/__tests__/settingsCenter.test.tsx
+    nextAction: Keep provider and runtime validation shared between UI schema and Host validation; keep the Settings Center write-only secret save path and managed UI Settings Center smoke green.
+
+  - id: speech-provider-bridge-profiles
+    title: OpenAI, Volcengine BigASR Flash, And Alibaba Qwen-ASR Speech Provider Bridge
+    priority: mvp
+    status: implemented
+    evidenceFiles:
+      - host/src/speech_transcription.rs
+      - host/src/providers.rs
+      - host/src/settings.rs
+      - host/src/runtime_config.rs
+      - host/src/media_transcript.rs
+      - host/tests/provider_contract_test.rs
+      - src/components/settings/SettingsPanels.tsx
+      - src/services/settingsValidation.ts
+      - src/services/mockHostClient.ts
+      - src/__tests__/settingsCenter.test.tsx
+      - src/__tests__/settingsValidation.test.ts
+      - src/__tests__/mockHostClient.test.ts
+      - docs/openapi/video-cut-v1.yaml
+    checks:
+      - cargo test --manifest-path host/Cargo.toml media_transcript -- --nocapture
+      - cargo test --manifest-path host/Cargo.toml --test provider_contract_test -- --nocapture
+      - pnpm test -- --run src/__tests__/settingsCenter.test.tsx src/__tests__/settingsValidation.test.ts src/__tests__/mockHostClient.test.ts src/__tests__/openApiContract.test.ts
+    nextAction: Keep vendor-specific request headers and payload DTOs inside Host bridge adapters and expose only canonical verbose transcript JSON plus redacted conformance evidence.
+
+  - id: local-source-upload
+    title: Local And Server Source Upload
+    priority: mvp
+    status: implemented
+    evidenceFiles:
+      - src/components/pages/WorkbenchPage.tsx
+      - src/services/httpHostClient.ts
+      - host/tests/host_contract_test.rs
+      - host/src/lib.rs
+      - scripts/run-video-cut-http-workflow-smoke.mjs
+      - scripts/run-video-cut-managed-server-smoke.mjs
+      - scripts/run-video-cut-managed-ui-smoke.mjs
+      - src/__tests__/httpWorkflowSmokeCli.test.ts
+      - src/__tests__/managedServerSmokeCli.test.ts
+      - src/__tests__/managedUiSmokeCli.test.ts
+    checks:
+      - pnpm test -- --run src/__tests__/appShell.test.tsx
+      - pnpm host:test
+      - pnpm workflow:smoke -- --json
+      - pnpm workflow:smoke:server:managed -- --json
+      - pnpm workflow:smoke:ui:managed -- --json
+    nextAction: Keep the TCP HTTP workflow smoke and managed UI Results-page delivery smoke green for local and server-private modes; add chunked upload only when max upload size or unreliable network becomes a blocker.
+
+  - id: media-analysis-pipeline
+    title: Media Probe, Audio Extraction, Silence, VAD, Transcript, Semantic Analysis, Split Plan
+    priority: mvp
+    status: implemented
+    evidenceFiles:
+      - host/src/media_probe.rs
+      - host/src/media_audio.rs
+      - host/src/media_vad.rs
+      - host/src/media_transcript.rs
+      - host/src/media_semantic.rs
+      - src/domain/mediaContracts.ts
+    checks:
+      - pnpm host:test
+      - pnpm test -- --run src/__tests__/mediaContracts.test.ts
+    nextAction: Keep VAD, silence, transcript, semantic analysis, and split-plan artifact contracts aligned.
+
+  - id: manual-transcript-fallback
+    title: Manual Transcript Fallback For Subtitle-Backed Render
+    priority: mvp
+    status: implemented
+    evidenceFiles:
+      - src/components/pages/WorkbenchPage.tsx
+      - host/src/media_transcript.rs
+      - host/tests/host_contract_test.rs
+    checks:
+      - pnpm test -- --run src/__tests__/appShell.test.tsx
+      - pnpm host:test
+    nextAction: Keep manual text, SRT, and VTT paths writing the same transcript artifact contract.
+
+  - id: real-ffmpeg-render
+    title: Real FFmpeg Render With ASS Subtitle Burn-In, Voice Enhancement, BGM/SFX Mixing, Cover, Manifest, And Log
+    priority: mvp
+    status: implemented
+    evidenceFiles:
+      - host/src/media_render.rs
+      - host/src/media_assets.rs
+      - host/src/media_subtitle.rs
+      - host/src/media_cover.rs
+      - host/src/media_render_manifest.rs
+      - docs/openapi/video-cut-v1.yaml
+      - src/domain/mediaContracts.ts
+      - src/components/pages/WorkbenchPage.tsx
+      - src/components/pages/ResultsPage.tsx
+      - src/__tests__/mediaContracts.test.ts
+      - src/__tests__/appShell.test.tsx
+      - src/__tests__/resultsPage.test.tsx
+    checks:
+      - pnpm host:test
+      - pnpm test -- --run src/__tests__/mediaContracts.test.ts src/__tests__/appShell.test.tsx src/__tests__/resultsPage.test.tsx src/__tests__/openApiContract.test.ts
+    nextAction: Keep user-level asset picking, asset catalog, renderPreferences, and render graph status contracts aligned; add timeline-positioned SFX only through typed render graph extensions.
+
+  - id: operation-errors-and-recovery
+    title: Standard Operation Errors, Startup Reload, Queue Retry
+    priority: mvp
+    status: implemented
+    evidenceFiles:
+      - src/domain/operationErrors.ts
+      - src/domain/hostApiErrors.ts
+      - src/domain/taskRecovery.ts
+      - src/components/OperationErrorPanel.tsx
+      - src/components/pages/ResultsPage.tsx
+      - src/components/pages/QueuePage.tsx
+      - src/components/pages/WorkbenchPage.tsx
+      - src/services/mockHostClient.ts
+      - host/src/state.rs
+      - host/tests/host_contract_test.rs
+      - src/__tests__/appShell.test.tsx
+      - src/__tests__/resultsPage.test.tsx
+      - src/__tests__/mockHostClient.test.ts
+      - scripts/check-video-cut-governance-suite.mjs
+    checks:
+      - pnpm test -- --run src/__tests__/appShell.test.tsx
+      - pnpm test -- --run src/__tests__/resultsPage.test.tsx
+      - pnpm test -- --run src/__tests__/mockHostClient.test.ts
+      - pnpm check:governance -- --json
+      - cargo test --manifest-path host/Cargo.toml --test host_contract_test render_task_failure_redacts_absolute_workspace_paths -- --nocapture
+    nextAction: Keep OperationError envelopes, shared Host API error metadata, and task event recovery hints aligned across HTTP Host, local mock Host, Workbench, Results, Queue, OpenAPI, and governance.
+
+  - id: diagnostics-and-redaction
+    title: Doctor, Diagnostics Bundle, Provider Conformance, Secret Redaction
+    priority: mvp
+    status: implemented
+    evidenceFiles:
+      - src/domain/diagnosticBundleExport.ts
+      - src/components/DiagnosticBundleDownloadCard.tsx
+      - src/components/DiagnosticSupportBundleCard.tsx
+      - host/src/doctor.rs
+      - host/src/lib.rs
+      - host/tests/provider_contract_test.rs
+      - host/tests/host_contract_test.rs
+      - src/__tests__/diagnosticBundleExport.test.ts
+      - src/__tests__/appShell.test.tsx
+    checks:
+      - pnpm check:provider-conformance
+      - pnpm test -- --run src/__tests__/diagnosticBundleExport.test.ts
+      - cargo test --manifest-path host/Cargo.toml diagnostics_support_bundle -- --nocapture
+    nextAction: Keep doctor, diagnostics, and explicit-consent support bundle attachment descriptors strict for API keys, bearer tokens, Authorization headers, transcript text, media bytes, and server-local absolute paths.
+
+  - id: deployment-artifacts-and-governance
+    title: Local, Server, Docker, Kubernetes Deployment Artifacts And Governance
+    priority: mvp
+    status: implemented
+    evidenceFiles:
+      - deploy/docker/Dockerfile
+      - deploy/docker/docker-compose.yml
+      - deploy/kubernetes/Chart.yaml
+      - deploy/runtime-profiles.yaml
+      - .env.example
+      - scripts/check-video-cut-governance-suite.mjs
+      - scripts/check-video-cut-deployment-matrix.mjs
+      - scripts/run-video-cut-http-workflow-smoke.mjs
+      - scripts/run-video-cut-managed-server-smoke.mjs
+      - scripts/run-video-cut-managed-ui-smoke.mjs
+      - scripts/release/local-release-command.mjs
+      - src/__tests__/deploymentArtifacts.test.ts
+      - src/__tests__/deploymentMatrixCli.test.ts
+      - src/__tests__/governanceStandardCli.test.ts
+      - src/__tests__/httpWorkflowSmokeCli.test.ts
+      - src/__tests__/managedServerSmokeCli.test.ts
+      - src/__tests__/managedUiSmokeCli.test.ts
+      - src/__tests__/localReleaseCommand.test.ts
+    checks:
+      - pnpm check:deployment-artifacts
+      - pnpm check:deployment-matrix -- --json
+      - pnpm check:governance -- --json
+      - pnpm test -- --run src/__tests__/httpWorkflowSmokeCli.test.ts
+      - pnpm test -- --run src/__tests__/managedServerSmokeCli.test.ts
+      - pnpm test -- --run src/__tests__/managedUiSmokeCli.test.ts
+      - pnpm test -- --run src/__tests__/localReleaseCommand.test.ts
+    nextAction: Keep desktop-local, server-private, web, container, and Kubernetes release package/smoke targets aligned; reverse-proxy deployments must not expose the Host private port directly; release package/smoke, governance, and HTTP workflow smoke commands must keep emitting manifest, checksums, notes, quality report, CycloneDX SBOM, contract versions, runtime profile metadata, validated --smoke-report evidence, and safe smoke report artifacts.
+
+  - id: runtime-config-and-private-auth
+    title: Runtime Environment Standard And Private Mode Authentication
+    priority: mvp
+    status: implemented
+    evidenceFiles:
+      - host/src/runtime_config.rs
+      - host/tests/runtime_config_test.rs
+      - host/tests/auth_test.rs
+      - src/services/httpHostClient.ts
+      - src/__tests__/httpHostClient.test.ts
+      - scripts/run-video-cut-deployment-doctor.mjs
+      - src/__tests__/deploymentDoctorCli.test.ts
+      - deploy/docker/docker-compose.yml
+      - deploy/kubernetes/values.yaml
+    checks:
+      - cargo test --manifest-path host/Cargo.toml --test runtime_config_test -- --nocapture
+      - cargo test --manifest-path host/Cargo.toml --test auth_test -- --nocapture
+      - pnpm test -- --run src/__tests__/httpHostClient.test.ts src/__tests__/deploymentDoctorCli.test.ts src/__tests__/deploymentArtifacts.test.ts
+    nextAction: Keep SDKWORK_VIDEO_CUT_* environment variables, server token auth, reverse-proxy auth mode, deployment doctor, and HTTP client headers aligned.
+
+  - id: multi-segment-batch-render
+    title: Batch Render Multiple Split Plan Segments
+    priority: next
+    status: implemented
+    evidenceFiles:
+      - src/components/pages/WorkbenchPage.tsx
+      - src/App.tsx
+      - src/ports/videoCutHostClient.ts
+      - src/services/httpHostClient.ts
+      - src/services/mockHostClient.ts
+      - docs/openapi/video-cut-v1.yaml
+      - host/src/media_render.rs
+      - host/src/lib.rs
+      - host/tests/host_contract_test.rs
+      - src/__tests__/appShell.test.tsx
+      - src/__tests__/mockHostClient.test.ts
+      - src/__tests__/httpHostClient.test.ts
+      - src/__tests__/openApiContract.test.ts
+    checks:
+      - pnpm test -- --run src/__tests__/appShell.test.tsx
+      - pnpm test -- --run src/__tests__/mockHostClient.test.ts src/__tests__/httpHostClient.test.ts src/__tests__/openApiContract.test.ts
+      - pnpm host:test
+    nextAction: Keep single-render and batch-render contracts aligned across Host, OpenAPI, HTTP client, and Mock client.
+
+  - id: srt-vtt-subtitle-import-export
+    title: SRT/VTT Subtitle Import And Export
+    priority: next
+    status: implemented
+    evidenceFiles:
+      - host/src/media_subtitle_format.rs
+      - host/src/lib.rs
+      - host/src/models.rs
+      - host/tests/host_contract_test.rs
+      - src/App.tsx
+      - src/utils/readTextFile.ts
+      - src/components/pages/WorkbenchPage.tsx
+      - src/ports/videoCutHostClient.ts
+      - src/services/httpHostClient.ts
+      - src/services/mockHostClient.ts
+      - docs/openapi/video-cut-v1.yaml
+      - src/__tests__/appShell.test.tsx
+      - src/__tests__/mockHostClient.test.ts
+      - src/__tests__/httpHostClient.test.ts
+      - src/__tests__/openApiContract.test.ts
+    checks:
+      - pnpm test -- --run src/__tests__/appShell.test.tsx
+      - pnpm test -- --run src/__tests__/mockHostClient.test.ts src/__tests__/httpHostClient.test.ts src/__tests__/openApiContract.test.ts
+      - cargo test --manifest-path host/Cargo.toml subtitle_import -- --nocapture
+    nextAction: Keep subtitle adapters, transcript artifacts, render subtitle burn-in, and OpenAPI contracts aligned.
+
+  - id: real-vad-onnx-execution
+    title: Silero VAD ONNX Execution
+    priority: next
+    status: implemented
+    evidenceFiles:
+      - docs/architecture/04-media-pipeline-and-rendering-standards.md
+      - docs/architecture/05-data-storage-task-engine-standards.md
+      - models/silero-vad.onnx.manifest.json
+      - host/Cargo.toml
+      - host/src/media_vad.rs
+      - host/Cargo.lock
+    checks:
+      - cargo test --manifest-path host/Cargo.toml media_vad -- --nocapture
+      - pnpm host:test
+    nextAction: Keep the deployment model path and runtime capability checks aligned with the packaged model manifest.
+
+  - id: full-nle-timeline
+    title: Full Multi-Track NLE Timeline
+    priority: later
+    status: implemented
+    evidenceFiles:
+      - src/domain/nleTimeline.ts
+      - src/components/NleTimelinePanel.tsx
+      - src/components/pages/WorkbenchPage.tsx
+      - src/styles.css
+      - src/__tests__/nleTimeline.test.ts
+      - src/__tests__/appShell.test.tsx
+    checks:
+      - pnpm test -- --run src/__tests__/nleTimeline.test.ts src/__tests__/appShell.test.tsx
+      - pnpm typecheck
+    nextAction: Keep the timeline as a deterministic view over split-plan, artifact, and provenance contracts until collaborative editing requires persistence.
+
+  - id: database-backed-multi-instance-queue
+    title: Database-Backed Multi-Instance Queue
+    priority: later
+    status: implemented
+    evidenceFiles:
+      - docs/architecture/14-database-implementation-standard.md
+      - docs/architecture/15-database-queue-baseline-implementation.md
+      - docs/architecture/05-data-storage-task-engine-standards.md
+      - docs/database/prefix-registry.yaml
+      - docs/database/schema-registry/ops_task.yaml
+      - docs/database/schema-registry/ops_stage_run.yaml
+      - docs/database/schema-registry/ops_task_event.yaml
+      - docs/database/schema-registry/ops_worker_lease.yaml
+      - docs/database/schema-registry/media_artifact.yaml
+      - host/database/schema/sqlite/001_baseline.sql
+      - host/database/schema/postgres/001_baseline.sql
+      - host/src/database_queue.rs
+      - host/tests/database_queue_test.rs
+      - scripts/check-video-cut-database-contracts.mjs
+      - src/__tests__/databaseContractsCli.test.ts
+    checks:
+      - pnpm check:database-contracts
+      - cargo test --manifest-path host/Cargo.toml --test database_queue_test -- --nocapture
+      - pnpm check:feature-readiness -- --json
+    nextAction: Keep local filesystem as the default runtime source of truth while server/k8s queue enablement goes through the database queue port and explicit baseline initialization.

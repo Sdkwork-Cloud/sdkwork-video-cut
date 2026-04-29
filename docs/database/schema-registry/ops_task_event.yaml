@@ -1,0 +1,67 @@
+contractVersion: 1.0.0
+databaseContractVersion: 1
+tableName: ops_task_event
+prefix: ops
+profile: event_log
+complianceLevel: L2
+owner: task-engine
+sourceOfTruth: task-engine
+description: Ordered task progress events for polling, SSE replay, and diagnostics bundles.
+columns:
+  - name: id
+    logicalType: int64
+    required: true
+    primaryKey: true
+  - name: uuid
+    logicalType: string
+    required: true
+    unique: true
+  - name: tenant_id
+    logicalType: string
+    required: true
+  - name: task_uuid
+    logicalType: string
+    required: true
+  - name: stage
+    logicalType: string
+    required: true
+  - name: progress
+    logicalType: int32
+    required: true
+  - name: message
+    logicalType: string
+    required: true
+  - name: diagnostics_json
+    logicalType: json
+    required: true
+    jsonSchema: docs/database/json-schema/ops-task-event-diagnostics.schema.json
+  - name: trace_id
+    logicalType: string
+    required: true
+  - name: created_at
+    logicalType: instant
+    required: true
+  - name: updated_at
+    logicalType: instant
+    required: true
+  - name: version
+    logicalType: int64
+    required: true
+indexes:
+  - name: uq_ops_task_event_uuid
+    type: unique
+    columns: [uuid]
+  - name: idx_ops_task_event_task_created
+    type: normal
+    columns: [tenant_id, task_uuid, created_at, id]
+queryContracts:
+  - id: replay-task-events
+    description: Polling and SSE replay read events by task using a monotonically increasing id cursor.
+    predicates: [tenant_id, task_uuid]
+    orderBy: [created_at, id]
+retention:
+  policy: retain-with-task
+  deleteMode: cascade-with-task-soft-delete
+sensitivity:
+  level: internal
+  secretStorage: forbidden

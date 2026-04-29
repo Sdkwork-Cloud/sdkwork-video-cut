@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "video-cut.database.ops-task-metadata.schema.v1",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "sourceArtifactId": { "type": "string" },
+    "planRevision": { "type": "string" },
+    "deploymentMode": { "type": "string" }
+  }
+}

@@ -1,0 +1,2431 @@
+openapi: 3.1.0
+info:
+  title: SDKWork Video Cut Standalone API
+  version: 0.1.0
+  summary: Canonical standalone video cutting host API.
+  description: >
+    Local-first video cutting API used by desktop-local, server-private,
+    container-private, and kubernetes-private deployments. All business calls
+    use the /api/video-cut/v1 route family and canonical JSON envelopes.
+servers:
+  - url: /api/video-cut/v1
+tags:
+  - name: runtime
+  - name: providers
+  - name: settings
+  - name: assets
+  - name: tasks
+paths:
+  /health:
+    get:
+      tags: [runtime]
+      operationId: getHealth
+      responses:
+        '200':
+          description: Host process health.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [status]
+                        properties:
+                          status:
+                            const: ok
+  /capabilities:
+    get:
+      tags: [runtime]
+      operationId: getCapabilities
+      responses:
+        '200':
+          description: Runtime capability report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilityReportEnvelope'
+  /doctor:
+    get:
+      tags: [runtime]
+      operationId: getDeploymentDoctorReport
+      responses:
+        '200':
+          description: Deployment doctor report with capability evidence and redacted effective config.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentDoctorReportEnvelope'
+  /diagnostics/bundle:
+    get:
+      tags: [runtime]
+      operationId: exportDiagnosticsBundle
+      responses:
+        '200':
+          description: Redacted diagnostics bundle for support and deployment troubleshooting.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticBundleEnvelope'
+  /diagnostics/support-bundle:
+    post:
+      tags: [runtime]
+      operationId: exportDiagnosticsSupportBundle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiagnosticSupportBundleRequest'
+      responses:
+        '200':
+          description: Redacted diagnostics support bundle with explicitly consented attachment descriptors.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticBundleEnvelope'
+        '400':
+          description: DIAGNOSTICS_CONSENT_REQUIRED when source media or transcript attachments are requested without explicit consent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+  /providers/openai-compatible/conformance:
+    post:
+      tags: [providers]
+      operationId: runOpenAiCompatibleProviderConformance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderConformanceRequest'
+      responses:
+        '200':
+          description: Redacted dry-run conformance report for OpenAI-compatible provider settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderConformanceReportEnvelope'
+  /settings:
+    get:
+      tags: [settings]
+      operationId: getSettings
+      responses:
+        '200':
+          description: Current persisted settings with secrets redacted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoCutSettingsEnvelope'
+    put:
+      tags: [settings]
+      operationId: updateSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoCutSettings'
+      responses:
+        '200':
+          description: Settings validation result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationResultEnvelope'
+  /assets/catalog:
+    get:
+      tags: [assets]
+      operationId: getAssetCatalog
+      responses:
+        '200':
+          description: Runtime asset catalog for configured font, BGM, SFX, and cover template directories. Server-local absolute paths are redacted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetCatalogEnvelope'
+  /tasks:
+    get:
+      tags: [tasks]
+      operationId: listTasks
+      responses:
+        '200':
+          description: Task list.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/VideoCutTask'
+    post:
+      tags: [tasks]
+      operationId: createTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskInput'
+      responses:
+        '200':
+          description: Created task.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoCutTaskEnvelope'
+  /tasks/{taskId}:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [tasks]
+      operationId: getTask
+      responses:
+        '200':
+          description: Task detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoCutTaskEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+    delete:
+      tags: [tasks]
+      operationId: deleteTask
+      responses:
+        '200':
+          description: Task deletion result.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/DeleteTaskResult'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+  /tasks/{taskId}/source:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [tasks]
+      operationId: attachTaskSource
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttachTaskSourceInput'
+      responses:
+        '200':
+          description: Attached source artifact metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoCutArtifactEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+  /tasks/{taskId}/source/file:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [tasks]
+      operationId: uploadTaskSourceFile
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+            encoding:
+              file:
+                contentType: video/mp4, video/quicktime, video/x-matroska, video/webm, video/x-msvideo, video/mpeg, application/octet-stream
+      responses:
+        '200':
+          description: Uploaded source file artifact metadata after writing to the workspace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoCutArtifactEnvelope'
+        '400':
+          description: Invalid multipart request (`MULTIPART_INVALID`), missing file field, or unsupported source media type (`SOURCE_FILE_TYPE_UNSUPPORTED`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '413':
+          description: Source file exceeds configured upload limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+  /tasks/{taskId}/analyze:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [tasks]
+      operationId: analyzeTask
+      responses:
+        '200':
+          description: Task after analysis.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoCutTaskEnvelope'
+        '400':
+          description: Source media has not been uploaded or attached (`SOURCE_FILE_REQUIRED`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+  /tasks/{taskId}/plan:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [tasks]
+      operationId: getTaskPlan
+      responses:
+        '200':
+          description: Current split plan.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoSplitPlanEnvelope'
+        '404':
+          description: Task or split plan was not found. `TASK_NOT_FOUND` means the task id is invalid; `TASK_PLAN_NOT_FOUND` means the task exists but analysis has not generated a split plan yet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+    put:
+      tags: [tasks]
+      operationId: updateTaskPlan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoSplitPlan'
+      responses:
+        '200':
+          description: Updated split plan.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoSplitPlanEnvelope'
+        '400':
+          description: Invalid split-plan contract (`PLAN_INVALID`) or task ownership mismatch (`PLAN_TASK_ID_MISMATCH`). The existing plan and artifact manifest are not replaced.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+  /tasks/{taskId}/transcript:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    put:
+      tags: [tasks]
+      operationId: updateTaskTranscript
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManualTranscriptInput'
+      responses:
+        '200':
+          description: Standard transcript document after manual import.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptDocumentEnvelope'
+        '400':
+          description: Invalid manual transcript segments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+  /tasks/{taskId}/subtitles/import:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    put:
+      tags: [tasks]
+      operationId: importTaskSubtitles
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubtitleImportInput'
+      responses:
+        '200':
+          description: Standard transcript document generated from SRT or VTT subtitle content.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptDocumentEnvelope'
+        '400':
+          description: Invalid subtitle format, empty cues, invalid time ranges, or overlapping cues.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+  /tasks/{taskId}/subtitles/export:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [tasks]
+      operationId: exportTaskSubtitles
+      parameters:
+        - name: format
+          in: query
+          required: true
+          schema:
+            enum: [srt, vtt]
+      responses:
+        '200':
+          description: SRT or VTT subtitle content generated from the standard transcript artifact.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubtitleExportOutputEnvelope'
+        '400':
+          description: Missing transcript or unsupported subtitle export format.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+  /tasks/{taskId}/render:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [tasks]
+      operationId: renderTask
+      responses:
+        '200':
+          description: Task after rendering a real FFmpeg output artifact.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoCutTaskEnvelope'
+        '400':
+          description: Missing uploaded source artifact or invalid render precondition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '422':
+          description: FFmpeg could not process the source media or render inputs. Error details are returned through the standard redacted error envelope and a render log artifact when available.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+  /tasks/{taskId}/render/batch:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [tasks]
+      operationId: renderTaskBatch
+      responses:
+        '200':
+          description: Task after rendering every split-plan segment as separate render attempts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoCutTaskEnvelope'
+        '400':
+          description: Missing uploaded source artifact, empty split plan, or invalid render precondition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '422':
+          description: One of the FFmpeg render attempts could not process its source media or render inputs. Completed attempts remain visible as artifacts and the failed attempt publishes a redacted render log when available.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+  /tasks/{taskId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [tasks]
+      operationId: cancelTask
+      responses:
+        '200':
+          description: Cancelled task.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoCutTaskEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+  /tasks/{taskId}/events:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [tasks]
+      operationId: getTaskEvents
+      responses:
+        '200':
+          description: Task progress events.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/VideoCutProgressEvent'
+  /tasks/{taskId}/artifacts:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [tasks]
+      operationId: getTaskArtifacts
+      responses:
+        '200':
+          description: Task artifacts.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/VideoCutArtifact'
+  /tasks/{taskId}/artifacts/{artifactId}/download:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+      - $ref: '#/components/parameters/ArtifactId'
+    get:
+      tags: [tasks]
+      operationId: getArtifactDownload
+      responses:
+        '200':
+          description: Download descriptor. Binary serving is kept behind this descriptor for local-first security.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ArtifactDownloadDescriptor'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+  /tasks/{taskId}/artifacts/{artifactId}/content:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+      - $ref: '#/components/parameters/ArtifactId'
+    get:
+      tags: [tasks]
+      operationId: getArtifactContent
+      parameters:
+        - name: Range
+          in: header
+          required: false
+          description: Optional single byte range for browser video playback, for example `bytes=0-1023`.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Binary artifact content served through the host artifact repository for browser playback and server-safe downloads.
+          headers:
+            Accept-Ranges:
+              description: Indicates that byte ranges are supported for artifact content.
+              schema:
+                const: bytes
+            Cache-Control:
+              description: Private artifact content must not be stored by shared or browser caches.
+              schema:
+                const: private, no-store
+            Pragma:
+              description: Legacy no-cache signal for private artifact content.
+              schema:
+                const: no-cache
+            X-Content-Type-Options:
+              description: Prevent MIME sniffing for artifact content responses.
+              schema:
+                const: nosniff
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            text/x-ssa:
+              schema:
+                type: string
+                format: binary
+            application/json:
+              schema:
+                type: string
+                format: binary
+            text/plain:
+              schema:
+                type: string
+                format: binary
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '206':
+          description: Partial artifact content returned for a satisfiable single byte range request.
+          headers:
+            Accept-Ranges:
+              description: Indicates that byte ranges are supported for artifact content.
+              schema:
+                const: bytes
+            Content-Range:
+              description: Served byte range and total artifact size.
+              schema:
+                type: string
+                example: bytes 0-1023/4096
+            Cache-Control:
+              description: Private artifact content must not be stored by shared or browser caches.
+              schema:
+                const: private, no-store
+            Pragma:
+              description: Legacy no-cache signal for private artifact content.
+              schema:
+                const: no-cache
+            X-Content-Type-Options:
+              description: Prevent MIME sniffing for artifact content responses.
+              schema:
+                const: nosniff
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            text/x-ssa:
+              schema:
+                type: string
+                format: binary
+            application/json:
+              schema:
+                type: string
+                format: binary
+            text/plain:
+              schema:
+                type: string
+                format: binary
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '416':
+          description: Requested artifact byte range cannot be satisfied.
+          headers:
+            Accept-Ranges:
+              description: Indicates that byte ranges are supported for artifact content.
+              schema:
+                const: bytes
+            Content-Range:
+              description: Total artifact size for an unsatisfied range request.
+              schema:
+                type: string
+                example: bytes */4096
+            Cache-Control:
+              description: Private artifact content must not be stored by shared or browser caches.
+              schema:
+                const: private, no-store
+            Pragma:
+              description: Legacy no-cache signal for private artifact content.
+              schema:
+                const: no-cache
+            X-Content-Type-Options:
+              description: Prevent MIME sniffing for artifact content responses.
+              schema:
+                const: nosniff
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+components:
+  parameters:
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      schema:
+        type: string
+    ArtifactId:
+      name: artifactId
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    BadRequestError:
+      description: Invalid request envelope. Malformed or schema-incompatible JSON request bodies return `REQUEST_JSON_INVALID`; multipart extractor failures return `MULTIPART_INVALID`; invalid path parameters return `PATH_PARAMETER_INVALID`; invalid query parameters return `QUERY_PARAMETER_INVALID`; all use the standard error envelope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiErrorEnvelope'
+    NotFoundError:
+      description: Resource was not found. Standard codes include `TASK_NOT_FOUND` for an invalid task id and `TASK_PLAN_NOT_FOUND` when a task exists but its split plan has not been generated.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiErrorEnvelope'
+    ConflictError:
+      description: Request conflicts with the current task state. Render endpoints return `RENDER_ALREADY_RUNNING` when the selected task is already rendering.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiErrorEnvelope'
+  schemas:
+    ApiSuccessEnvelope:
+      type: object
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data: {}
+    ApiErrorEnvelope:
+      type: object
+      required: [ok, error]
+      properties:
+        ok:
+          const: false
+        error:
+          $ref: '#/components/schemas/ApiError'
+    ApiError:
+      type: object
+      required: [code, message, traceId]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable error code, including `REQUEST_JSON_INVALID` for malformed or schema-incompatible JSON request bodies, `MULTIPART_INVALID` for malformed multipart upload bodies, `PATH_PARAMETER_INVALID` for invalid path parameters, `QUERY_PARAMETER_INVALID` for invalid query parameters, `TASK_NOT_FOUND` for an invalid task id, `TASK_PLAN_NOT_FOUND` for a task whose split plan has not been generated, `ROUTE_NOT_FOUND` for unknown API routes, and `METHOD_NOT_ALLOWED` for unsupported methods on known API routes.
+        message:
+          type: string
+        traceId:
+          type: string
+    CapabilityReportEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiSuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/CapabilityReport'
+    DeploymentDoctorReportEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiSuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/DeploymentDoctorReport'
+    DiagnosticBundleEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiSuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/DiagnosticBundle'
+    ProviderConformanceReportEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiSuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ProviderConformanceReport'
+    VideoCutSettingsEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiSuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/VideoCutSettings'
+    AssetCatalogEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiSuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/AssetCatalog'
+    ValidationResultEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiSuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ValidationResult'
+    VideoCutTaskEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiSuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/VideoCutTask'
+    VideoCutArtifactEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiSuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/VideoCutArtifact'
+    VideoSplitPlanEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiSuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/VideoSplitPlan'
+    TranscriptDocumentEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiSuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TranscriptDocument'
+    SubtitleExportOutputEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiSuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SubtitleExportOutput'
+    CapabilityReport:
+      type: object
+      required: [reportVersion, deploymentMode, qualityTier, health, ai, speechToText, media, storage, security, providers]
+      properties:
+        reportVersion:
+          const: video-cut.capability.v1
+        deploymentMode:
+          $ref: '#/components/schemas/DeploymentMode'
+        qualityTier:
+          enum: [basic, standard, interview, pro, batch]
+        health:
+          enum: [ok, degraded, unavailable]
+        ai:
+          $ref: '#/components/schemas/CapabilityStatus'
+        speechToText:
+          $ref: '#/components/schemas/CapabilityStatus'
+        media:
+          $ref: '#/components/schemas/CapabilityStatus'
+        storage:
+          $ref: '#/components/schemas/CapabilityStatus'
+        security:
+          $ref: '#/components/schemas/CapabilityStatus'
+        providers:
+          $ref: '#/components/schemas/ProviderContractPolicy'
+    CapabilityStatus:
+      type: object
+      required: [status, label]
+      properties:
+        status:
+          enum: [ok, warn, fail]
+        label:
+          type: string
+        actionHint:
+          type: string
+        checkedTools:
+          type: object
+          additionalProperties:
+            type: string
+        missingTools:
+          type: array
+          items:
+            type: string
+    DeploymentDoctorReport:
+      type: object
+      required: [reportVersion, deploymentMode, generatedAt, health, capability, checks, redactedConfig]
+      properties:
+        reportVersion:
+          const: video-cut.doctor.v1
+        deploymentMode:
+          $ref: '#/components/schemas/DeploymentMode'
+        generatedAt:
+          type: string
+          format: date-time
+        health:
+          enum: [ok, degraded, unavailable]
+        capability:
+          $ref: '#/components/schemas/CapabilityReport'
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeploymentDoctorCheck'
+        redactedConfig:
+          $ref: '#/components/schemas/RedactedVideoCutSettings'
+    DeploymentDoctorCheck:
+      type: object
+      required: [checkId, status, label]
+      properties:
+        checkId:
+          type: string
+        status:
+          enum: [ok, warn, fail]
+        label:
+          type: string
+        actionHint:
+          type:
+            - string
+            - 'null'
+        details:
+          description: Free-form safe diagnostic metadata. Path-like values must use artifact-relative values or `<redacted-path>` instead of server-local absolute paths.
+          type: object
+          additionalProperties: true
+    DiagnosticBundle:
+      type: object
+      required: [bundleVersion, generatedAt, deploymentMode, includes, capability, doctor, redactedConfig, artifacts]
+      properties:
+        bundleVersion:
+          const: video-cut.diagnostics-bundle.v1
+        generatedAt:
+          type: string
+          format: date-time
+        deploymentMode:
+          $ref: '#/components/schemas/DeploymentMode'
+        includes:
+          type: object
+          required: [sourceMedia, transcript]
+          properties:
+            sourceMedia:
+              type: boolean
+              description: GET /diagnostics/bundle always returns false; POST /diagnostics/support-bundle may return true only after explicit user consent.
+            transcript:
+              type: boolean
+              description: GET /diagnostics/bundle always returns false; POST /diagnostics/support-bundle may return true only after explicit user consent.
+        supportRequest:
+          $ref: '#/components/schemas/DiagnosticSupportBundleRequestEvidence'
+        capability:
+          $ref: '#/components/schemas/CapabilityReport'
+        doctor:
+          $ref: '#/components/schemas/DeploymentDoctorReport'
+        redactedConfig:
+          $ref: '#/components/schemas/RedactedVideoCutSettings'
+        artifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiagnosticBundleArtifact'
+    DiagnosticSupportBundleRequest:
+      type: object
+      required: [includeSourceMedia, includeTranscript, consentAccepted]
+      properties:
+        taskId:
+          type: string
+          description: Required when either sensitive attachment flag is true.
+        includeSourceMedia:
+          type: boolean
+        includeTranscript:
+          type: boolean
+        consentAccepted:
+          type: boolean
+          description: Per-export explicit user consent for diagnostics support attachments.
+    DiagnosticSupportBundleRequestEvidence:
+      allOf:
+        - $ref: '#/components/schemas/DiagnosticSupportBundleRequest'
+        - type: object
+          required: [schemaId]
+          properties:
+            schemaId:
+              const: video-cut.diagnostics-support-bundle-request.v1
+    DiagnosticBundleArtifact:
+      type: object
+      required: [kind, included, redacted]
+      properties:
+        kind:
+          enum: [sourceMedia, transcript]
+        taskId:
+          type: string
+        artifactId:
+          type: string
+        path:
+          type: string
+          description: Workspace-relative artifact path only; server-local absolute paths are forbidden.
+        contentRef:
+          type: string
+          description: Private host-relative artifact content endpoint, never a server-local path.
+        contentType:
+          type: string
+        included:
+          type: boolean
+        redacted:
+          type: boolean
+        reason:
+          type: string
+        sizeBytes:
+          type: integer
+          minimum: 0
+        sha256:
+          type: string
+    ProviderConformanceRequest:
+      type: object
+      required: [target]
+      properties:
+        target:
+          enum: [ai, speechToText, all]
+    ProviderConformanceReport:
+      type: object
+      required: [reportVersion, providerId, status, generatedAt, checks]
+      properties:
+        reportVersion:
+          const: video-cut.provider-conformance.v1
+        providerId:
+          type: string
+        status:
+          enum: [ok, warn, fail]
+        generatedAt:
+          type: string
+          format: date-time
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProviderConformanceCheck'
+    ProviderConformanceCheck:
+      type: object
+      required: [checkId, status, label, details]
+      properties:
+        checkId:
+          type: string
+        status:
+          enum: [ok, warn, fail]
+        label:
+          type: string
+        actionHint:
+          type:
+            - string
+            - 'null'
+        details:
+          description: Redacted provider conformance metadata. Credential evidence must use `credentialStatus`; details must not include secret refs, API keys, bearer tokens, Authorization headers, or raw provider payloads.
+          type: object
+          additionalProperties: true
+    ProviderContractPolicy:
+      type: object
+      required: [providerCapabilityVersion, configurationSchemaId, openAiCompatible, speechToTextProviderProfiles, requiredPorts]
+      properties:
+        providerCapabilityVersion:
+          const: video-cut.provider-capability.schema.v1
+        configurationSchemaId:
+          const: video-cut.openai-compatible-provider-config.schema.v1
+        openAiCompatible:
+          type: object
+          required: [chatCompletionsEndpoint, audioTranscriptionsEndpoint, structuredOutputModes, ollamaAllowed]
+          properties:
+            chatCompletionsEndpoint:
+              const: /v1/chat/completions
+            audioTranscriptionsEndpoint:
+              const: /v1/audio/transcriptions
+            structuredOutputModes:
+              type: array
+              items:
+                enum: [json-schema, json-object-fallback]
+            ollamaAllowed:
+              const: false
+        speechToTextProviderProfiles:
+          type: array
+          items:
+            enum: [openai-audio-transcriptions, volcengine-bigasr-flash, aliyun-qwen-asr]
+        requiredPorts:
+          type: array
+          items:
+            enum: [LlmProviderPort, SpeechToTextPort, SubtitlePort, SecretStorePort]
+    DeploymentMode:
+      enum: [desktop-local, desktop-private, web-private, server-private, container-private, kubernetes-private]
+    AuthMode:
+      enum: [none, single-user-token, reverse-proxy]
+    VideoCutSettings:
+      type: object
+      required: [ai, speechToText, subtitle, mediaTools, assets, storage, runtime, security]
+      properties:
+        ai:
+          $ref: '#/components/schemas/AiProviderSettings'
+        speechToText:
+          $ref: '#/components/schemas/SpeechToTextSettings'
+        subtitle:
+          $ref: '#/components/schemas/SubtitleStyle'
+        mediaTools:
+          $ref: '#/components/schemas/MediaToolSettings'
+        assets:
+          $ref: '#/components/schemas/AssetSettings'
+        storage:
+          $ref: '#/components/schemas/StorageSettings'
+        runtime:
+          $ref: '#/components/schemas/RuntimeSettings'
+        security:
+          $ref: '#/components/schemas/SecuritySettings'
+    RedactedVideoCutSettings:
+      type: object
+      description: Diagnostics-safe runtime settings. Secret fields and server-local absolute paths are removed before export.
+      required: [ai, speechToText, subtitle, mediaTools, assets, storage, runtime, security]
+      properties:
+        ai:
+          $ref: '#/components/schemas/AiProviderSettings'
+        speechToText:
+          $ref: '#/components/schemas/SpeechToTextSettings'
+        subtitle:
+          $ref: '#/components/schemas/SubtitleSettings'
+        mediaTools:
+          $ref: '#/components/schemas/MediaToolSettings'
+        assets:
+          $ref: '#/components/schemas/AssetSettings'
+        storage:
+          $ref: '#/components/schemas/RedactedStorageSettings'
+        runtime:
+          $ref: '#/components/schemas/RuntimeSettings'
+        security:
+          $ref: '#/components/schemas/SecuritySettings'
+    AiProviderSettings:
+      type: object
+      required: [enabled, baseUrl, apiKeyConfigured, chatModel, structuredOutputMode, temperature, timeoutSeconds, retryCount]
+      properties:
+        enabled:
+          type: boolean
+        baseUrl:
+          type: string
+        apiKeyConfigured:
+          type: boolean
+        chatModel:
+          type: string
+        structuredOutputMode:
+          enum: [json-schema, json-object-fallback]
+        temperature:
+          type: number
+        timeoutSeconds:
+          type: integer
+        retryCount:
+          type: integer
+    SpeechToTextSettings:
+      type: object
+      required: [enabled, providerProfile, reuseAiProviderConnection, baseUrl, apiKeyConfigured, transcriptionModel, resourceId, languageHint, timestampGranularity, diarizationEnabled, localWhisperFallbackEnabled]
+      properties:
+        enabled:
+          type: boolean
+        providerProfile:
+          enum: [openai-audio-transcriptions, volcengine-bigasr-flash, aliyun-qwen-asr]
+        reuseAiProviderConnection:
+          type: boolean
+        baseUrl:
+          type: string
+        apiKeyConfigured:
+          type: boolean
+        transcriptionModel:
+          type: string
+        resourceId:
+          type: string
+          description: Volcengine BigASR Flash X-Api-Resource-Id metadata; ignored by OpenAI audio and Alibaba Qwen-ASR profiles.
+        languageHint:
+          type: string
+        timestampGranularity:
+          enum: [segment, word]
+        diarizationEnabled:
+          type: boolean
+        localWhisperFallbackEnabled:
+          type: boolean
+          description: Local engine switch only; product model APIs still use OpenAI-compatible contracts.
+    SubtitleStyle:
+      type: object
+      required: [language, fontFamily, fontFallback, fontSize, maxLines, shadowOpacity, shadowBlur, highlightColor, position]
+      properties:
+        language:
+          const: zh-CN
+        fontFamily:
+          type: string
+        fontFallback:
+          type: string
+        fontSize:
+          type: integer
+        maxLines:
+          type: integer
+        shadowOpacity:
+          type: number
+        shadowBlur:
+          type: number
+        highlightColor:
+          type: string
+        position:
+          enum: [bottom-safe, middle, top]
+    MediaToolSettings:
+      type: object
+      required: [ffmpegPath, ffprobePath, onnxRuntimeEnabled, sileroVadModelPath, workerConcurrency, maxUploadBytes]
+      properties:
+        ffmpegPath:
+          type: string
+        ffprobePath:
+          type: string
+        onnxRuntimeEnabled:
+          type: boolean
+        sileroVadModelPath:
+          type: string
+        workerConcurrency:
+          type: integer
+        maxUploadBytes:
+          type: integer
+          format: int64
+    AssetSettings:
+      type: object
+      required: [fonts, bgm, sfx, coverTemplates]
+      properties:
+        fonts:
+          type: string
+        bgm:
+          type: string
+        sfx:
+          type: string
+        coverTemplates:
+          type: string
+    AssetCatalog:
+      type: object
+      required: [schemaId, assetCatalogVersion, generatedAt, slots]
+      properties:
+        schemaId:
+          const: video-cut.asset-catalog.schema.v1
+        assetCatalogVersion:
+          const: 1
+        generatedAt:
+          type: string
+          format: date-time
+        slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/AssetCatalogSlot'
+    AssetCatalogSlot:
+      type: object
+      required: [kind, status, configuredPath, manifestPath, supportedExtensions, entries, warnings]
+      properties:
+        kind:
+          enum: [fonts, bgm, sfx, coverTemplates]
+        status:
+          enum: [available, not-configured, unavailable]
+        configuredPath:
+          description: Relative configured asset path, or `<server-local-path>` when the Host setting points to a server-local absolute path.
+          type: string
+        manifestPath:
+          description: Logical asset manifest reference; never a server-local filesystem path.
+          type: string
+        supportedExtensions:
+          type: array
+          items:
+            type: string
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/AssetCatalogEntry'
+        warnings:
+          type: array
+          items:
+            type: string
+    AssetCatalogEntry:
+      type: object
+      required: [assetId, path, fileName, sizeBytes, sha256, license, source, version]
+      properties:
+        assetId:
+          type: string
+        path:
+          description: Logical `assets://` reference; never a server-local filesystem path.
+          type: string
+        fileName:
+          type: string
+        sizeBytes:
+          type: integer
+          format: int64
+        sha256:
+          type: string
+        license:
+          type: string
+        source:
+          type: string
+        version:
+          type: string
+    StorageSettings:
+      type: object
+      required: [workspaceRoot, artifactRoot, tempRoot, retentionDays]
+      properties:
+        workspaceRoot:
+          type: string
+        artifactRoot:
+          type: string
+        tempRoot:
+          type: string
+        retentionDays:
+          type: integer
+    RedactedStorageSettings:
+      type: object
+      required: [workspaceRoot, artifactRoot, tempRoot, retentionDays]
+      properties:
+        workspaceRoot:
+          description: Editable path in settings responses; diagnostics and doctor responses must replace server-local absolute paths with `<redacted-path>`.
+          anyOf:
+            - type: string
+            - const: <redacted-path>
+        artifactRoot:
+          description: Editable path in settings responses; diagnostics and doctor responses must replace server-local absolute paths with `<redacted-path>`.
+          anyOf:
+            - type: string
+            - const: <redacted-path>
+        tempRoot:
+          description: Editable path in settings responses; diagnostics and doctor responses must replace server-local absolute paths with `<redacted-path>`.
+          anyOf:
+            - type: string
+            - const: <redacted-path>
+        retentionDays:
+          type: integer
+    RuntimeSettings:
+      type: object
+      required: [deploymentMode, bindHost, port, publicBaseUrl, authMode]
+      properties:
+        deploymentMode:
+          $ref: '#/components/schemas/DeploymentMode'
+        bindHost:
+          type: string
+        port:
+          type: integer
+        publicBaseUrl:
+          type: string
+        authMode:
+          $ref: '#/components/schemas/AuthMode'
+    SecuritySettings:
+      type: object
+      required: [secretProvider, corsAllowedOrigins, diagnosticsIncludeSourceMedia, diagnosticsIncludeTranscript, redactionEnabled]
+      properties:
+        secretProvider:
+          enum: [local-secure-store, env, kubernetes-secret]
+        corsAllowedOrigins:
+          type: array
+          description: CORS origin allowlist for browser clients. Wildcard origins are forbidden; each value must be an explicit HTTP(S) origin.
+          items:
+            type: string
+        diagnosticsIncludeSourceMedia:
+          type: boolean
+        diagnosticsIncludeTranscript:
+          type: boolean
+        redactionEnabled:
+          type: boolean
+    CreateTaskInput:
+      type: object
+      required: [title, type]
+      properties:
+        title:
+          type: string
+        type:
+          $ref: '#/components/schemas/VideoCutType'
+    AttachTaskSourceInput:
+      type: object
+      required: [sourceName]
+      properties:
+        sourceName:
+          type: string
+        sizeBytes:
+          type: integer
+          format: int64
+        contentType:
+          type: string
+    VideoCutType:
+      enum: [single-speaker, interview-qa, long-interview]
+    TaskStatus:
+      enum: [draft, sourceReady, analyzing, planReady, rendering, succeeded, failed, cancelled, interrupted]
+    VideoCutTask:
+      type: object
+      required: [taskId, title, type, status, progress, durationSeconds, updatedAt]
+      properties:
+        taskId:
+          type: string
+        title:
+          type: string
+        type:
+          $ref: '#/components/schemas/VideoCutType'
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+        durationSeconds:
+          type: integer
+        sourceName:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+        currentStage:
+          type: string
+    VideoCutArtifact:
+      type: object
+      required: [artifactId, taskId, kind, path, sizeBytes, sha256, createdAt]
+      properties:
+        artifactId:
+          type: string
+        taskId:
+          type: string
+        renderId:
+          type: string
+        kind:
+          enum: [source, audio, analysis, plan, render, subtitle, cover, render-manifest, log]
+        path:
+          type: string
+        sizeBytes:
+          type: integer
+          format: int64
+        sha256:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    ArtifactDownloadDescriptor:
+      type: object
+      required: [artifactId, taskId, path, sizeBytes, sha256, contentType, downloadMode, url]
+      properties:
+        artifactId:
+          type: string
+        taskId:
+          type: string
+        path:
+          type: string
+        sizeBytes:
+          type: integer
+          format: int64
+        sha256:
+          type: string
+        contentType:
+          type: string
+        downloadMode:
+          enum: [host-content-endpoint, signed-url]
+        url:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+    DeleteTaskResult:
+      type: object
+      required: [taskId, deleted, artifactsDeleted, eventsDeleted]
+      properties:
+        taskId:
+          type: string
+        deleted:
+          type: boolean
+        artifactsDeleted:
+          type: integer
+        eventsDeleted:
+          type: integer
+    VideoCutProgressEvent:
+      type: object
+      required: [eventId, taskId, stage, progress, message]
+      properties:
+        eventId:
+          type: string
+        taskId:
+          type: string
+        stage:
+          type: string
+        progress:
+          type: integer
+        message:
+          type: string
+        level:
+          enum: [info, warn, error]
+        traceId:
+          type: string
+        metadata:
+          $ref: "#/components/schemas/VideoCutProgressEventMetadata"
+    VideoCutProgressEventMetadata:
+      type: object
+      description: Redacted task event metadata. This object is safe for browser delivery and diagnostics bundles.
+      properties:
+        recoveryHint:
+          $ref: "#/components/schemas/TaskRecoveryHint"
+    TaskRecoveryHint:
+      type: object
+      required: [code, action, label, message, retryable]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable recovery hint code.
+        action:
+          enum: [upload-source, retry-analysis, retry-render, open-settings, open-diagnostics, review-render-log, none]
+        label:
+          type: string
+          description: Short user-facing recovery command label.
+        message:
+          type: string
+          description: User-safe recovery guidance; must not contain secrets or server-local paths.
+        retryable:
+          type: boolean
+        targetStage:
+          type: string
+    MediaProbeStatus:
+      enum: [ok, failed, source-unavailable]
+    MediaInfoDocument:
+      type: object
+      required:
+        - schemaId
+        - mediaInfoVersion
+        - taskId
+        - sourceArtifactId
+        - sourcePath
+        - providerId
+        - adapterVersion
+        - probeStatus
+        - format
+        - videoStreams
+        - audioStreams
+        - warnings
+        - createdAt
+      properties:
+        schemaId:
+          const: video-cut.media-info.schema.v1
+        mediaInfoVersion:
+          const: 1
+        taskId:
+          type: string
+        sourceArtifactId:
+          type: string
+        sourcePath:
+          type: string
+        providerId:
+          type: string
+        adapterVersion:
+          type: string
+        probeStatus:
+          $ref: '#/components/schemas/MediaProbeStatus'
+        format:
+          $ref: '#/components/schemas/MediaFormatInfo'
+        videoStreams:
+          type: array
+          items:
+            $ref: '#/components/schemas/MediaVideoStream'
+        audioStreams:
+          type: array
+          items:
+            $ref: '#/components/schemas/MediaAudioStream'
+        warnings:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+    MediaFormatInfo:
+      type: object
+      required: [formatName, durationSeconds, bitRate]
+      properties:
+        formatName:
+          type: string
+        durationSeconds:
+          type: number
+          minimum: 0
+        bitRate:
+          type: integer
+          format: int64
+          minimum: 0
+    MediaVideoStream:
+      type: object
+      required: [index, codec, width, height, frameRate]
+      properties:
+        index:
+          type: integer
+        codec:
+          type: string
+        width:
+          type: integer
+          minimum: 1
+        height:
+          type: integer
+          minimum: 1
+        frameRate:
+          type: number
+          exclusiveMinimum: 0
+    MediaAudioStream:
+      type: object
+      required: [index, codec, sampleRate, channels]
+      properties:
+        index:
+          type: integer
+        codec:
+          type: string
+        sampleRate:
+          type: integer
+          minimum: 1
+        channels:
+          type: integer
+          minimum: 1
+    AudioExtractStatus:
+      enum: [ok, failed, source-unavailable]
+    AudioExtractDocument:
+      type: object
+      required:
+        - schemaId
+        - audioExtractVersion
+        - taskId
+        - sourceArtifactId
+        - sourcePath
+        - audioArtifactId
+        - audioPath
+        - providerId
+        - adapterVersion
+        - extractStatus
+        - audio
+        - warnings
+        - createdAt
+      properties:
+        schemaId:
+          const: video-cut.audio-extract.schema.v1
+        audioExtractVersion:
+          const: 1
+        taskId:
+          type: string
+        sourceArtifactId:
+          type: string
+        sourcePath:
+          type: string
+        audioArtifactId:
+          type: string
+        audioPath:
+          type: string
+        providerId:
+          type: string
+        adapterVersion:
+          type: string
+        extractStatus:
+          $ref: '#/components/schemas/AudioExtractStatus'
+        audio:
+          $ref: '#/components/schemas/ExtractedAudioInfo'
+        warnings:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+    ExtractedAudioInfo:
+      type: object
+      required: [format, codec, sampleRate, channels, sizeBytes]
+      properties:
+        format:
+          const: wav
+        codec:
+          const: pcm_s16le
+        sampleRate:
+          const: 16000
+        channels:
+          const: 1
+        sizeBytes:
+          type: integer
+          format: int64
+          minimum: 0
+    SilenceDetectionStatus:
+      enum: [ok, failed, audio-unavailable]
+    SilenceRangesDocument:
+      type: object
+      required:
+        - schemaId
+        - silenceRangesVersion
+        - taskId
+        - audioArtifactId
+        - audioPath
+        - providerId
+        - adapterVersion
+        - detectionStatus
+        - parameters
+        - ranges
+        - warnings
+        - createdAt
+      properties:
+        schemaId:
+          const: video-cut.silence-ranges.schema.v1
+        silenceRangesVersion:
+          const: 1
+        taskId:
+          type: string
+        audioArtifactId:
+          type: string
+        audioPath:
+          type: string
+        providerId:
+          type: string
+        adapterVersion:
+          type: string
+        detectionStatus:
+          $ref: '#/components/schemas/SilenceDetectionStatus'
+        parameters:
+          $ref: '#/components/schemas/SilenceDetectionParameters'
+        ranges:
+          type: array
+          items:
+            $ref: '#/components/schemas/SilenceRange'
+        warnings:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+    SilenceDetectionParameters:
+      type: object
+      required: [noiseDb, minDurationSeconds]
+      properties:
+        noiseDb:
+          type: number
+        minDurationSeconds:
+          type: number
+          exclusiveMinimum: 0
+    SilenceRange:
+      type: object
+      required: [startMs, endMs, durationMs]
+      properties:
+        startMs:
+          type: integer
+          minimum: 0
+        endMs:
+          type: integer
+          minimum: 1
+        durationMs:
+          type: integer
+          minimum: 1
+    VadStatus:
+      enum: [ok, failed, unavailable, audio-unavailable]
+    VadRangesDocument:
+      type: object
+      required:
+        - schemaId
+        - vadRangesVersion
+        - taskId
+        - audioArtifactId
+        - audioPath
+        - providerId
+        - adapterVersion
+        - vadStatus
+        - parameters
+        - ranges
+        - warnings
+        - createdAt
+      properties:
+        schemaId:
+          const: video-cut.vad-ranges.schema.v1
+        vadRangesVersion:
+          const: 1
+        taskId:
+          type: string
+        audioArtifactId:
+          type: string
+        audioPath:
+          type: string
+        providerId:
+          type: string
+        adapterVersion:
+          type: string
+        vadStatus:
+          $ref: '#/components/schemas/VadStatus'
+        parameters:
+          $ref: '#/components/schemas/VadParameters'
+        ranges:
+          type: array
+          items:
+            $ref: '#/components/schemas/VadRange'
+        warnings:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+    VadParameters:
+      type: object
+      required: [sampleRate, threshold, minSpeechDurationMs, minSilenceDurationMs]
+      properties:
+        sampleRate:
+          const: 16000
+        threshold:
+          type: number
+          exclusiveMinimum: 0
+          exclusiveMaximum: 1
+        minSpeechDurationMs:
+          type: integer
+          minimum: 1
+        minSilenceDurationMs:
+          type: integer
+          minimum: 1
+    VadRange:
+      type: object
+      required: [startMs, endMs, confidence]
+      properties:
+        startMs:
+          type: integer
+          minimum: 0
+        endMs:
+          type: integer
+          minimum: 1
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+    TranscriptStatus:
+      enum: [ok, failed, provider-unavailable, audio-unavailable]
+    TimestampGranularity:
+      enum: [segment, word]
+    ManualTranscriptInput:
+      type: object
+      required: [segments]
+      properties:
+        language:
+          type: string
+        text:
+          type: string
+        segments:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/ManualTranscriptSegmentInput'
+    ManualTranscriptSegmentInput:
+      type: object
+      required: [startMs, endMs, text]
+      properties:
+        startMs:
+          type: integer
+          minimum: 0
+        endMs:
+          type: integer
+          minimum: 1
+        text:
+          type: string
+          minLength: 1
+        speakerId:
+          type: string
+    SubtitleImportInput:
+      type: object
+      required: [format, content]
+      properties:
+        format:
+          enum: [srt, vtt]
+        content:
+          type: string
+          minLength: 1
+        language:
+          type: string
+    SubtitleExportOutput:
+      type: object
+      required: [format, content, artifactId, path]
+      properties:
+        format:
+          enum: [srt, vtt]
+        content:
+          type: string
+        artifactId:
+          type: string
+        path:
+          type: string
+    TranscriptDocument:
+      type: object
+      required:
+        - schemaId
+        - transcriptVersion
+        - taskId
+        - audioArtifactId
+        - audioPath
+        - providerId
+        - adapterVersion
+        - transcriptStatus
+        - language
+        - timestampGranularity
+        - durationSeconds
+        - text
+        - segments
+        - warnings
+        - createdAt
+      properties:
+        schemaId:
+          const: video-cut.transcript.schema.v1
+        transcriptVersion:
+          const: 1
+        taskId:
+          type: string
+        audioArtifactId:
+          type: string
+        audioPath:
+          type: string
+        providerId:
+          type: string
+        adapterVersion:
+          type: string
+        transcriptStatus:
+          $ref: '#/components/schemas/TranscriptStatus'
+        language:
+          type: string
+        timestampGranularity:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/TimestampGranularity'
+        durationSeconds:
+          type: number
+          minimum: 0
+        text:
+          type: string
+        segments:
+          type: array
+          items:
+            $ref: '#/components/schemas/TranscriptSegment'
+        warnings:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+    TranscriptSegment:
+      type: object
+      required: [segmentId, startMs, endMs, text]
+      properties:
+        segmentId:
+          type: string
+        startMs:
+          type: integer
+          minimum: 0
+        endMs:
+          type: integer
+          minimum: 1
+        text:
+          type: string
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        speakerId:
+          type: string
+    SemanticAnalysisStatus:
+      enum: [ok, failed, provider-unavailable, transcript-unavailable]
+    SemanticAnalysisDocument:
+      type: object
+      required:
+        - schemaId
+        - semanticAnalysisVersion
+        - taskId
+        - transcriptArtifactId
+        - providerId
+        - adapterVersion
+        - semanticStatus
+        - model
+        - summary
+        - topics
+        - qaCandidates
+        - warnings
+        - createdAt
+      properties:
+        schemaId:
+          const: video-cut.semantic-analysis.schema.v1
+        semanticAnalysisVersion:
+          const: 1
+        taskId:
+          type: string
+        transcriptArtifactId:
+          type: string
+        providerId:
+          type: string
+        adapterVersion:
+          type: string
+        semanticStatus:
+          $ref: '#/components/schemas/SemanticAnalysisStatus'
+        model:
+          type: string
+        summary:
+          type: string
+        topics:
+          type: array
+          items:
+            $ref: '#/components/schemas/SemanticTopic'
+        qaCandidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/QaCandidate'
+        warnings:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+    SemanticTopic:
+      type: object
+      required: [topicId, label, score]
+      properties:
+        topicId:
+          type: string
+        label:
+          type: string
+        score:
+          type: number
+          minimum: 0
+          maximum: 1
+    QaCandidate:
+      type: object
+      required: [qaId, question, answer, sourceRange, score]
+      properties:
+        qaId:
+          type: string
+        question:
+          type: string
+        answer:
+          type: string
+        sourceRange:
+          $ref: '#/components/schemas/TimeRangeMs'
+        score:
+          type: number
+          minimum: 0
+          maximum: 1
+    VideoSplitPlan:
+      type: object
+      required: [schemaId, planVersion, planId, planRevision, taskId, sourceName, type, outputSpec, renderPreferences, tracks, segments, createdAt]
+      properties:
+        schemaId:
+          const: video-cut.split-plan.schema.v1
+        planVersion:
+          const: 1
+        planId:
+          type: string
+        planRevision:
+          type: integer
+        taskId:
+          type: string
+        sourceName:
+          type: string
+        type:
+          $ref: '#/components/schemas/VideoCutType'
+        outputSpec:
+          $ref: '#/components/schemas/OutputVideoSpec'
+        renderPreferences:
+          $ref: '#/components/schemas/RenderPreferences'
+        tracks:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrackProvenance'
+        segments:
+          type: array
+          items:
+            $ref: '#/components/schemas/VideoSplitSegment'
+        createdAt:
+          type: string
+          format: date-time
+    OutputVideoSpec:
+      type: object
+      required: [aspectRatio, width, height, frameRate, format]
+      properties:
+        aspectRatio:
+          const: 9:16
+        width:
+          type: integer
+          minimum: 1
+          description: Positive output width. Width and height must form a 9:16 ratio; 1080x1920 is the default production preset and smaller 9:16 values such as 360x640 are valid preview presets.
+        height:
+          type: integer
+          minimum: 1
+          description: Positive output height. Width and height must form a 9:16 ratio.
+        frameRate:
+          const: 30
+        format:
+          const: mp4
+    RenderPreferences:
+      type: object
+      required: [audio]
+      properties:
+        audio:
+          type: object
+          required: [bgm, bgmVolumePercent, sfx, voiceEnhancement]
+          properties:
+            bgm:
+              $ref: '#/components/schemas/RenderAudioAssetPreference'
+            bgmVolumePercent:
+              const: 20
+            sfx:
+              $ref: '#/components/schemas/RenderAudioAssetPreference'
+            voiceEnhancement:
+              const: basic
+    RenderAudioAssetPreference:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          enum:
+            - auto
+            - asset
+            - disabled
+        assetId:
+          type: string
+          pattern: '^(bgm|sfx)-[a-f0-9]{16}$'
+          description: Required when mode=asset. Must come from GET /assets/catalog.
+        path:
+          type: string
+          pattern: '^assets://(bgm|sfx)/[^\\/]+$'
+          description: Required when mode=asset. Must be the logical assets:// reference from GET /assets/catalog.
+    TrackProvenance:
+      type: object
+      required: [kind, sourceArtifactId, providerId, adapterVersion, inputHash, outputHash, parameters, warnings]
+      properties:
+        kind:
+          enum: [mediaInfoTrack, silenceTrack, speechActivityTrack, transcriptTrack, sceneTrack, subjectTrack, semanticTrack, cutDecisionTrack]
+        sourceArtifactId:
+          type: string
+        providerId:
+          type: string
+        adapterVersion:
+          type: string
+        inputHash:
+          type: string
+        outputHash:
+          type: string
+        parameters:
+          type: object
+          additionalProperties:
+            oneOf:
+              - type: string
+              - type: number
+              - type: boolean
+        warnings:
+          type: array
+          items:
+            type: string
+    VideoSplitSegment:
+      type: object
+      required: [segmentId, title, type, sourceRange, outputRange, score, decisionReasons, hardConstraints, warnings]
+      properties:
+        segmentId:
+          type: string
+        title:
+          type: string
+        type:
+          $ref: '#/components/schemas/VideoCutType'
+        sourceRange:
+          description: Source timeline range in milliseconds. Host-generated default plans clamp this range to probed media duration when media-info is available.
+          $ref: '#/components/schemas/TimeRangeMs'
+        outputRange:
+          description: Output timeline range in milliseconds. For a single segment, endMs equals sourceRange duration.
+          $ref: '#/components/schemas/TimeRangeMs'
+        score:
+          type: number
+        decisionReasons:
+          type: array
+          items:
+            enum: [sentence-boundary, silence-boundary, vad-confidence, semantic-boundary, duration-fit, manual-override]
+        hardConstraints:
+          type: array
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+    TimeRangeMs:
+      type: object
+      required: [startMs, endMs]
+      properties:
+        startMs:
+          type: integer
+        endMs:
+          type: integer
+    SubtitleDocument:
+      type: object
+      required: [schemaId, subtitleVersion, subtitleId, taskId, planId, format, style, cues, warnings, createdAt]
+      properties:
+        schemaId:
+          const: video-cut.subtitle-document.schema.v1
+        subtitleVersion:
+          const: 1
+        subtitleId:
+          type: string
+        taskId:
+          type: string
+        planId:
+          type: string
+        format:
+          const: internal
+        style:
+          $ref: '#/components/schemas/SubtitleStyle'
+        cues:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubtitleCue'
+        warnings:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+    SubtitleCue:
+      type: object
+      required: [cueId, sourceRange, outputRange, text, highlightWords]
+      properties:
+        cueId:
+          type: string
+        sourceRange:
+          $ref: '#/components/schemas/TimeRangeMs'
+        outputRange:
+          $ref: '#/components/schemas/TimeRangeMs'
+        text:
+          type: string
+        highlightWords:
+          type: array
+          items:
+            type: string
+    RenderRequest:
+      type: object
+      required: [schemaId, requestVersion, renderId, taskId, planId, planRevision, subtitleId, outputSpec, audio, codec, createdAt]
+      properties:
+        schemaId:
+          const: video-cut.render-request.schema.v1
+        requestVersion:
+          const: 1
+        renderId:
+          type: string
+        taskId:
+          type: string
+        planId:
+          type: string
+        planRevision:
+          type: integer
+        subtitleId:
+          type: string
+        outputSpec:
+          $ref: '#/components/schemas/OutputVideoSpec'
+        audio:
+          type: object
+          required: [bgmVolumePercent, sfxEnabled, voiceEnhancement]
+          properties:
+            bgmVolumePercent:
+              const: 20
+            sfxEnabled:
+              type: boolean
+            voiceEnhancement:
+              const: basic
+        codec:
+          type: object
+          required: [video, audio]
+          properties:
+            video:
+              const: libx264
+            audio:
+              const: aac
+        createdAt:
+          type: string
+          format: date-time
+    RenderAttemptManifest:
+      type: object
+      required:
+        - schemaId
+        - renderAttemptVersion
+        - taskId
+        - renderId
+        - planId
+        - planRevision
+        - sourceArtifactId
+        - outputArtifactId
+        - subtitleArtifactId
+        - coverArtifactId
+        - logArtifactId
+        - subtitleBurnIn
+        - subtitleCueCount
+        - sourceRange
+        - outputSpec
+        - renderGraph
+        - warnings
+        - createdAt
+      properties:
+        schemaId:
+          const: video-cut.render-attempt.schema.v1
+        renderAttemptVersion:
+          const: 1
+        taskId:
+          type: string
+        renderId:
+          type: string
+        planId:
+          type: string
+        planRevision:
+          type: integer
+        sourceArtifactId:
+          type: string
+        transcriptArtifactId:
+          type:
+            - string
+            - 'null'
+        outputArtifactId:
+          type: string
+        subtitleArtifactId:
+          type: string
+        coverArtifactId:
+          type: string
+        logArtifactId:
+          type: string
+        subtitleBurnIn:
+          type: boolean
+        subtitleCueCount:
+          type: integer
+          minimum: 0
+        sourceRange:
+          $ref: '#/components/schemas/TimeRangeMs'
+        outputSpec:
+          $ref: '#/components/schemas/OutputVideoSpec'
+        renderGraph:
+          type: object
+          required: [engine, adapterVersion, videoFilterPreset, audioFilterPreset, voiceEnhancement, bgm, sfx, codec]
+          properties:
+            engine:
+              const: ffmpeg
+            adapterVersion:
+              const: ffmpeg-media-render.adapter.v1
+            videoFilterPreset:
+              enum:
+                - standard-vertical-scale-crop-fps.v1
+                - standard-vertical-scale-crop-fps-ass-burn-in.v1
+            audioFilterPreset:
+              const: voice-basic-loudnorm-afftdn.v1
+            voiceEnhancement:
+              type: object
+              required: [status, filters]
+              properties:
+                status:
+                  enum:
+                    - applied
+                    - skipped
+                    - failed
+                filters:
+                  type: array
+                  items:
+                    enum:
+                      - loudnorm
+                      - afftdn
+            bgm:
+              type: object
+              required: [status, mixed, volumePercent]
+              properties:
+                status:
+                  enum:
+                    - mixed
+                    - not-configured
+                    - unavailable
+                    - disabled
+                mixed:
+                  type: boolean
+                volumePercent:
+                  const: 20
+                asset:
+                  $ref: '#/components/schemas/RenderAudioAssetProvenance'
+            sfx:
+              type: object
+              required: [status, mixed]
+              properties:
+                status:
+                  enum:
+                    - mixed
+                    - not-configured
+                    - unavailable
+                    - disabled
+                mixed:
+                  type: boolean
+                asset:
+                  $ref: '#/components/schemas/RenderAudioAssetProvenance'
+            codec:
+              type: object
+              required: [video, audio]
+              properties:
+                video:
+                  const: libx264
+                audio:
+                  const: aac
+        warnings:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+    RenderAudioAssetProvenance:
+      type: object
+      required: [assetId, path, sha256, license, source, version]
+      properties:
+        assetId:
+          type: string
+          pattern: '^(bgm|sfx)-[a-f0-9]{16}$'
+        path:
+          type: string
+          pattern: '^assets://(bgm|sfx)/[^\\\\]+$'
+        sha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        license:
+          type: string
+          minLength: 1
+          description: SPDX-like license id or standard local provenance marker.
+        source:
+          type: string
+          minLength: 1
+          description: Sanitized public source reference; server-local absolute paths are forbidden.
+        version:
+          type: string
+          minLength: 1
+          description: Asset pack version or deterministic sha256-derived fallback version.
+    ValidationResult:
+      type: object
+      required: [valid, errors]
+      properties:
+        valid:
+          type: boolean
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationError'
+    ValidationError:
+      type: object
+      required: [field, code, message]
+      properties:
+        field:
+          type: string
+        code:
+          type: string
+        message:
+          type: string

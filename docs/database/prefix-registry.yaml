@@ -1,0 +1,41 @@
+registryVersion: video-cut.database-prefix-registry.v1
+updatedAt: "2026-04-27T00:00:00.000Z"
+policy:
+  tableNamePattern: "^[a-z][a-z0-9]*(_[a-z0-9]+)*$"
+  indexNamePattern: "^(idx|uq|pk|fk|ck)_[a-z0-9_]+$"
+  newProjectMigrationDirectoryAllowed: false
+  baselineSchema:
+    sqlite: host/database/schema/sqlite/001_baseline.sql
+    postgres: host/database/schema/postgres/001_baseline.sql
+forbiddenPrefixes:
+  - sdkwork
+  - video_cut
+  - plus
+  - app
+  - sys
+  - common
+allowedPrefixes:
+  - prefix: studio
+    domain: workspace
+    owner: product-platform
+    description: Workspace, project, and design-time resource metadata.
+  - prefix: media
+    domain: media-assets
+    owner: media-platform
+    description: Source assets, analysis tracks, renders, and artifact metadata.
+  - prefix: ops
+    domain: task-engine
+    owner: runtime-platform
+    description: Tasks, queue state, stage runs, worker leases, outbox, inbox, and runtime events.
+  - prefix: ai
+    domain: provider-governance
+    owner: ai-platform
+    description: Prompt, model profile, and reproducible analysis metadata without plaintext secrets.
+  - prefix: integration
+    domain: provider-integration
+    owner: integration-platform
+    description: External provider/account metadata and non-secret endpoint references.
+  - prefix: iam
+    domain: access-control
+    owner: security-platform
+    description: User, tenant, and server-side access-control tables for private deployments.

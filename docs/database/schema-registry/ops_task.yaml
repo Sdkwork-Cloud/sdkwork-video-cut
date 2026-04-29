@@ -1,0 +1,122 @@
+contractVersion: 1.0.0
+databaseContractVersion: 1
+tableName: ops_task
+prefix: ops
+profile: core_entity
+complianceLevel: L2
+owner: task-engine
+sourceOfTruth: task-engine
+description: Task and queue state table used by SQLite/PostgreSQL multi-worker execution.
+columns:
+  - name: id
+    logicalType: int64
+    required: true
+    primaryKey: true
+  - name: uuid
+    logicalType: string
+    required: true
+    unique: true
+  - name: tenant_id
+    logicalType: string
+    required: true
+  - name: project_uuid
+    logicalType: string
+    required: true
+  - name: owner_type
+    logicalType: string
+    required: true
+  - name: owner_id
+    logicalType: string
+    required: true
+  - name: idempotency_key
+    logicalType: string
+    required: true
+    unique: true
+  - name: title
+    logicalType: string
+    required: true
+  - name: status
+    logicalType: int32_enum
+    required: true
+    enumValues: [unknown, source_ready, analyzing, plan_ready, rendering, succeeded, failed, cancelled, interrupted]
+  - name: current_stage
+    logicalType: string
+    required: true
+  - name: progress
+    logicalType: int32
+    required: true
+  - name: priority
+    logicalType: int32
+    required: true
+  - name: queue_status
+    logicalType: string_enum
+    required: true
+    enumValues: [queued, claimed, completed, failed, cancelled]
+  - name: attempt_count
+    logicalType: int32
+    required: true
+  - name: max_attempts
+    logicalType: int32
+    required: true
+  - name: run_after_at
+    logicalType: instant
+    required: true
+  - name: claimed_by
+    logicalType: string
+    required: false
+  - name: claimed_at
+    logicalType: instant
+    required: false
+  - name: lease_expires_at
+    logicalType: instant
+    required: false
+  - name: last_error_code
+    logicalType: string
+    required: false
+  - name: last_error_message
+    logicalType: string
+    required: false
+  - name: metadata_json
+    logicalType: json
+    required: true
+    jsonSchema: docs/database/json-schema/ops-task-metadata.schema.json
+  - name: created_at
+    logicalType: instant
+    required: true
+  - name: updated_at
+    logicalType: instant
+    required: true
+  - name: version
+    logicalType: int64
+    required: true
+  - name: deleted_at
+    logicalType: instant
+    required: false
+indexes:
+  - name: uq_ops_task_uuid
+    type: unique
+    columns: [uuid]
+  - name: uq_ops_task_idempotency
+    type: unique
+    columns: [tenant_id, idempotency_key]
+  - name: idx_ops_task_owner_status_updated
+    type: normal
+    columns: [tenant_id, owner_type, owner_id, status, updated_at, id]
+  - name: idx_ops_task_queue_claim
+    type: normal
+    columns: [queue_status, run_after_at, lease_expires_at, priority, created_at, id]
+queryContracts:
+  - id: claim-next-queued-task
+    description: Workers atomically claim one queued task ordered by priority, created_at, and id.
+    predicates: [queue_status, run_after_at, lease_expires_at]
+    orderBy: [priority, created_at, id]
+  - id: list-owner-tasks
+    description: UI lists tasks by owner and status using seek pagination.
+    predicates: [tenant_id, owner_type, owner_id, status]
+    orderBy: [updated_at, id]
+retention:
+  policy: soft-delete-then-retain-artifact-window
+  deleteMode: soft-delete
+sensitivity:
+  level: internal
+  secretStorage: forbidden

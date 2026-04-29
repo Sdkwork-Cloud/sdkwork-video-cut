@@ -1,0 +1,30 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-sdkwork-video-cut
+  labels:
+    app.kubernetes.io/name: sdkwork-video-cut
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+{{ toYaml .Values.ingress.annotations | indent 4 }}
+spec:
+{{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className | quote }}
+{{- end }}
+{{- if .Values.ingress.tls }}
+  tls:
+{{ toYaml .Values.ingress.tls | indent 4 }}
+{{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-sdkwork-video-cut
+                port:
+                  name: http
+{{- end }}

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "video-cut.database.media-artifact-metadata.schema.v1",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "schemaId": { "type": "string" },
+    "contentType": { "type": "string" },
+    "downloadMode": { "type": "string" },
+    "sourceArtifactId": { "type": "string" }
+  }
+}

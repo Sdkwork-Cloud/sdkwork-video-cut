@@ -1,0 +1,12 @@
+node_modules/
+dist/
+host/target/
+src-tauri/target/
+workspace/
+artifacts/
+*.tsbuildinfo
+*.log
+
+.env
+.env.local
+.env.*.local

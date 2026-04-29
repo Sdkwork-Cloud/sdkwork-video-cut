@@ -1,0 +1,106 @@
+registryVersion: video-cut.runtime-profile-registry.v1
+product: sdkwork-video-cut
+apiContract: /api/video-cut/v1
+profiles:
+  - profileId: video-cut.desktop-local.v1
+    deploymentMode: desktop-local
+    readinessLevel: prod-ready
+    releaseTarget: desktop
+    apiContract: /api/video-cut/v1
+    authMode: none
+    corsAllowedOrigins:
+      - http://127.0.0.1:5173
+      - http://localhost:5173
+    storageProvider: filesystem
+    secretProvider: local-secure-store
+    artifactProvider: filesystem
+    requiredChecks:
+      - health
+      - capability
+      - workspaceWritable
+      - ffmpeg
+      - ffprobe
+      - redaction
+
+  - profileId: video-cut.server-private.v1
+    deploymentMode: server-private
+    readinessLevel: prod-ready
+    releaseTarget: server
+    apiContract: /api/video-cut/v1
+    authMode: single-user-token
+    corsAllowedOrigins:
+      - http://127.0.0.1:5173
+      - http://localhost:5173
+    storageProvider: filesystem
+    secretProvider: env
+    artifactProvider: filesystem
+    requiredChecks:
+      - health
+      - capability
+      - workspaceWritable
+      - ffmpeg
+      - ffprobe
+      - providerPolicy
+      - settingsValidation
+      - redaction
+
+  - profileId: video-cut.web-private.v1
+    deploymentMode: web-private
+    readinessLevel: prod-ready
+    releaseTarget: web
+    apiContract: /api/video-cut/v1
+    authMode: reverse-proxy
+    corsAllowedOrigins:
+      - https://video-cut.example.com
+    storageProvider: host-managed
+    secretProvider: host-managed
+    artifactProvider: host-managed
+    requiredChecks:
+      - health
+      - capability
+      - providerPolicy
+      - redaction
+
+  - profileId: video-cut.container-private.v1
+    deploymentMode: container-private
+    readinessLevel: prod-ready
+    releaseTarget: container
+    apiContract: /api/video-cut/v1
+    authMode: reverse-proxy
+    corsAllowedOrigins:
+      - http://127.0.0.1:8787
+      - http://localhost:8787
+    storageProvider: filesystem
+    secretProvider: env
+    artifactProvider: docker-volume
+    requiredChecks:
+      - health
+      - capability
+      - workspaceWritable
+      - ffmpeg
+      - ffprobe
+      - providerPolicy
+      - settingsValidation
+      - redaction
+
+  - profileId: video-cut.kubernetes-private.v1
+    deploymentMode: kubernetes-private
+    readinessLevel: smoke-ready
+    releaseTarget: kubernetes
+    apiContract: /api/video-cut/v1
+    authMode: reverse-proxy
+    corsAllowedOrigins:
+      - https://video-cut.example.com
+    storageProvider: filesystem
+    secretProvider: kubernetes-secret
+    artifactProvider: pvc
+    replicaPolicy: single-replica-until-shared-db-and-object-storage
+    requiredChecks:
+      - health
+      - capability
+      - workspaceWritable
+      - ffmpeg
+      - ffprobe
+      - providerPolicy
+      - settingsValidation
+      - redaction
