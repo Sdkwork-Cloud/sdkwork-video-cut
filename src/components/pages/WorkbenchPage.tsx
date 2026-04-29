@@ -64,9 +64,9 @@ export function WorkbenchPage({
   onSelectTask: (taskId: string) => void;
   onAnalyze: (taskId: string) => void;
   onRender: (taskId: string) => void;
-  onSavePlanRange: (taskId: string, startMs: number, endMs: number) => void;
+  onSavePlanRange: (taskId: string, segmentId: string, startMs: number, endMs: number) => void;
   onSaveRenderPreferences: (taskId: string, renderPreferences: RenderPreferences) => void;
-  onSaveManualTranscript: (taskId: string, startMs: number, endMs: number, text: string) => void;
+  onSaveManualTranscript: (taskId: string, segmentId: string, startMs: number, endMs: number, text: string) => void;
   onImportSubtitleFile: (taskId: string, file: File) => void;
   onExportSubtitles: (taskId: string, format: SubtitleFormat) => void;
 }) {
@@ -83,10 +83,14 @@ export function WorkbenchPage({
   const sfxEntries = useMemo(() => assetEntries(assetCatalog, 'sfx'), [assetCatalog]);
   const draftStartMs = Number(rangeDraft.startMs);
   const draftEndMs = Number(rangeDraft.endMs);
+  const canEditTask = Boolean(selectedTask && isTaskEditable(selectedTask));
   const canSavePlan =
-    Boolean(selectedTask && plan && Number.isFinite(draftStartMs) && Number.isFinite(draftEndMs) && draftEndMs > draftStartMs);
-  const canSaveRenderAssets = Boolean(selectedTask && plan);
+    canEditTask &&
+    Boolean(selectedTask && selectedSegment && plan && Number.isFinite(draftStartMs) && Number.isFinite(draftEndMs) && draftEndMs > draftStartMs);
+  const canSaveRenderAssets = canEditTask && Boolean(selectedTask && plan);
   const canSaveManualTranscript = canSavePlan && manualTranscriptText.trim().length > 0;
+  const canImportSubtitles = canEditTask && Boolean(selectedTask);
+  const canExportSubtitles = canEditTask && Boolean(selectedTask);
   const canAnalyze =
     Boolean(selectedTask?.sourceName) &&
     selectedTask?.status !== 'draft' &&
@@ -154,11 +158,11 @@ export function WorkbenchPage({
     event.target.value = '';
   };
   const handleSavePlan = () => {
-    if (!selectedTask || !canSavePlan) {
+    if (!selectedTask || !selectedSegment || !canSavePlan) {
       return;
     }
 
-    onSavePlanRange(selectedTask.taskId, draftStartMs, draftEndMs);
+    onSavePlanRange(selectedTask.taskId, selectedSegment.segmentId, draftStartMs, draftEndMs);
   };
   const handleSaveRenderPreferences = () => {
     if (!selectedTask || !canSaveRenderAssets) {
@@ -175,11 +179,11 @@ export function WorkbenchPage({
     });
   };
   const handleSaveManualTranscript = () => {
-    if (!selectedTask || !canSaveManualTranscript) {
+    if (!selectedTask || !selectedSegment || !canSaveManualTranscript) {
       return;
     }
 
-    onSaveManualTranscript(selectedTask.taskId, draftStartMs, draftEndMs, manualTranscriptText.trim());
+    onSaveManualTranscript(selectedTask.taskId, selectedSegment.segmentId, draftStartMs, draftEndMs, manualTranscriptText.trim());
   };
 
   return (
@@ -315,6 +319,7 @@ export function WorkbenchPage({
                   <span>Segment start ms</span>
                   <input
                     aria-label="Segment start ms"
+                    disabled={!canEditTask}
                     min={0}
                     step={100}
                     type="number"
@@ -326,6 +331,7 @@ export function WorkbenchPage({
                   <span>Segment end ms</span>
                   <input
                     aria-label="Segment end ms"
+                    disabled={!canEditTask}
                     min={0}
                     step={100}
                     type="number"
@@ -352,6 +358,7 @@ export function WorkbenchPage({
                     <span>BGM asset</span>
                     <select
                       aria-label="BGM asset"
+                      disabled={!canEditTask}
                       value={renderAssetDraft.bgm}
                       onChange={(event) => setRenderAssetDraft((draft) => ({ ...draft, bgm: event.target.value }))}
                     >
@@ -362,6 +369,7 @@ export function WorkbenchPage({
                     <span>SFX asset</span>
                     <select
                       aria-label="SFX asset"
+                      disabled={!canEditTask}
                       value={renderAssetDraft.sfx}
                       onChange={(event) => setRenderAssetDraft((draft) => ({ ...draft, sfx: event.target.value }))}
                     >
@@ -377,6 +385,7 @@ export function WorkbenchPage({
                 <span>Manual transcript text</span>
                 <textarea
                   aria-label="Manual transcript text"
+                  disabled={!canEditTask}
                   rows={3}
                   value={manualTranscriptText}
                   onChange={(event) => setManualTranscriptText(event.target.value)}
@@ -391,15 +400,28 @@ export function WorkbenchPage({
                 <input
                   aria-label="Import subtitle file"
                   type="file"
+                  disabled={!canImportSubtitles}
                   accept=".srt,.vtt,text/vtt,application/x-subrip"
                   onChange={handleSubtitleFileChange}
                 />
               </label>
               <div className="subtitle-export-actions" aria-label="Subtitle export actions">
-                <button type="button" className="secondary-button" aria-label="Export SRT subtitles" onClick={() => selectedTask && onExportSubtitles(selectedTask.taskId, 'srt')}>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  aria-label="Export SRT subtitles"
+                  disabled={!canExportSubtitles}
+                  onClick={() => selectedTask && onExportSubtitles(selectedTask.taskId, 'srt')}
+                >
                   Export SRT
                 </button>
-                <button type="button" className="secondary-button" aria-label="Export VTT subtitles" onClick={() => selectedTask && onExportSubtitles(selectedTask.taskId, 'vtt')}>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  aria-label="Export VTT subtitles"
+                  disabled={!canExportSubtitles}
+                  onClick={() => selectedTask && onExportSubtitles(selectedTask.taskId, 'vtt')}
+                >
                   Export VTT
                 </button>
               </div>
@@ -441,6 +463,10 @@ function dedupeArtifactsById(artifacts: VideoCutArtifact[]): VideoCutArtifact[] 
   }
 
   return [...uniqueArtifacts.values()];
+}
+
+function isTaskEditable(task: VideoCutTask): boolean {
+  return task.status !== 'analyzing' && task.status !== 'rendering' && task.status !== 'cancelled';
 }
 
 function valueFromAssetPreference(preference: RenderAudioAssetPreference | undefined): string {

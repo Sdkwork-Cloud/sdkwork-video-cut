@@ -131,7 +131,8 @@ mod tests {
         let executable = dir.join("ffmpeg.exe");
         fs::write(&executable, b"fake").expect("fake executable");
 
-        let resolved = resolve_executable("ffmpeg", &[dir.clone()], &[".exe".to_string()]);
+        let resolved =
+            resolve_executable("ffmpeg", std::slice::from_ref(&dir), &[".exe".to_string()]);
 
         assert_eq!(resolved, Some(executable));
         let _ = fs::remove_dir_all(dir);

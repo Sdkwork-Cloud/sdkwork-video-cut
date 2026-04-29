@@ -301,6 +301,59 @@ describe('App shell', () => {
     expect(screen.getByText('manual-override')).toBeInTheDocument();
   });
 
+  it('saves the selected non-first split segment range without mutating the first segment', async () => {
+    const user = userEvent.setup();
+    const baseClient = createMockHostClient();
+    const client = {
+      ...baseClient,
+      async analyzeTask(taskId: string) {
+        const task = await baseClient.analyzeTask(taskId);
+        const plan = await baseClient.getTaskPlan(taskId);
+        const firstSegment = {
+          ...plan.segments[0],
+          segmentId: `${taskId}-segment-1`,
+          title: 'Opening segment',
+          sourceRange: { startMs: 1_000, endMs: 2_500 },
+          outputRange: { startMs: 0, endMs: 1_500 },
+        };
+        const secondSegment = {
+          ...plan.segments[0],
+          segmentId: `${taskId}-segment-2`,
+          title: 'Selected answer',
+          sourceRange: { startMs: 3_000, endMs: 4_200 },
+          outputRange: { startMs: 0, endMs: 1_200 },
+        };
+        await baseClient.updateTaskPlan(taskId, {
+          ...plan,
+          segments: [firstSegment, secondSegment],
+        });
+        return task;
+      },
+    };
+    render(<App client={client} />);
+
+    await user.click(screen.getByRole('button', { name: 'Import sample video' }));
+    await user.click(screen.getByRole('button', { name: 'Analyze selected task' }));
+    await user.click(await screen.findByRole('button', { name: /Select timeline segment Selected answer/ }));
+    expect(screen.getByLabelText('Segment start ms')).toHaveValue(3000);
+    expect(screen.getByLabelText('Segment end ms')).toHaveValue(4200);
+
+    await user.clear(screen.getByLabelText('Segment start ms'));
+    await user.type(screen.getByLabelText('Segment start ms'), '5200');
+    await user.clear(screen.getByLabelText('Segment end ms'));
+    await user.type(screen.getByLabelText('Segment end ms'), '6900');
+    await user.click(screen.getByRole('button', { name: 'Save split plan' }));
+
+    await waitFor(async () => {
+      const savedPlan = await baseClient.getTaskPlan('task-0001');
+      expect(savedPlan.segments[0].sourceRange).toEqual({ startMs: 1_000, endMs: 2_500 });
+      expect(savedPlan.segments[0].outputRange).toEqual({ startMs: 0, endMs: 1_500 });
+      expect(savedPlan.segments[1].sourceRange).toEqual({ startMs: 5_200, endMs: 6_900 });
+      expect(savedPlan.segments[1].outputRange).toEqual({ startMs: 0, endMs: 1_700 });
+      expect(savedPlan.segments[1].decisionReasons).toContain('manual-override');
+    });
+  });
+
   it('lets the user save render asset preferences from the workbench catalog', async () => {
     const user = userEvent.setup();
     const baseClient = createMockHostClient();

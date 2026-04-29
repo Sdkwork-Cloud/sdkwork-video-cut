@@ -63,6 +63,41 @@ type SectionRendererProps = {
   updateSubtitle: (patch: Partial<VideoCutSettings['subtitle']>) => void;
 };
 
+function appendPathSegment(root: string, segment: string): string {
+  const trimmed = root.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  const normalized = trimmed.replace(/[\\/]+$/, '');
+  if (normalized) {
+    return `${normalized}/${segment}`;
+  }
+
+  return `${trimmed.startsWith('\\') ? '\\' : '/'}${segment}`;
+}
+
+function derivedStorageRoots(workspaceRoot: string): Pick<VideoCutSettings['storage'], 'artifactRoot' | 'tempRoot'> {
+  return {
+    artifactRoot: appendPathSegment(workspaceRoot, 'artifacts'),
+    tempRoot: appendPathSegment(workspaceRoot, 'tmp'),
+  };
+}
+
+function withDerivedStorageRoots(settings?: VideoCutSettings): VideoCutSettings | undefined {
+  if (!settings) {
+    return settings;
+  }
+
+  return {
+    ...settings,
+    storage: {
+      ...settings.storage,
+      ...derivedStorageRoots(settings.storage.workspaceRoot),
+    },
+  };
+}
+
 function renderSettingsSection(activeSection: SettingsSectionId, props: SectionRendererProps) {
   switch (activeSection) {
     case 'overview':
@@ -152,7 +187,7 @@ export function SettingsCenter({
   onSave: (settings: VideoCutSettingsSavePayload) => Promise<ValidationResult | undefined>;
 }) {
   const [activeSection, setActiveSection] = useState<SettingsSectionId>('ai');
-  const [draft, setDraft] = useState<VideoCutSettings | undefined>(settings);
+  const [draft, setDraft] = useState<VideoCutSettings | undefined>(() => withDerivedStorageRoots(settings));
   const [errors, setErrors] = useState<ValidationError[]>([]);
   const [saveMessage, setSaveMessage] = useState('');
   const [aiApiKey, setAiApiKey] = useState('');
@@ -160,7 +195,7 @@ export function SettingsCenter({
   const activeSectionDefinition = settingsSections.find((section) => section.id === activeSection) ?? settingsSections[0];
 
   useEffect(() => {
-    setDraft(settings);
+    setDraft(withDerivedStorageRoots(settings));
   }, [settings]);
 
   const updateDraft = (updater: (current: VideoCutSettings) => VideoCutSettings) => {
@@ -224,6 +259,9 @@ export function SettingsCenter({
       storage: {
         ...current.storage,
         ...patch,
+        ...(Object.prototype.hasOwnProperty.call(patch, 'workspaceRoot')
+          ? derivedStorageRoots(patch.workspaceRoot ?? '')
+          : {}),
       },
     }));
   };

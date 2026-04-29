@@ -383,8 +383,8 @@ export function StorageSettingsPanel({
   return (
     <div className="field-grid">
       <TextField id={fieldId('storage', 'Workspace root')} label="Workspace root" value={draft.storage.workspaceRoot} onChange={(workspaceRoot) => updateStorage({ workspaceRoot })} />
-      <TextField id={fieldId('storage', 'Artifact root')} label="Artifact root" value={draft.storage.artifactRoot} onChange={(artifactRoot) => updateStorage({ artifactRoot })} />
-      <TextField id={fieldId('storage', 'Temp root')} label="Temp root" value={draft.storage.tempRoot} onChange={(tempRoot) => updateStorage({ tempRoot })} />
+      <ReadOnlyField id={fieldId('storage', 'Artifact root')} label="Artifact root" value={draft.storage.artifactRoot} />
+      <ReadOnlyField id={fieldId('storage', 'Temp root')} label="Temp root" value={draft.storage.tempRoot} />
       <NumberField id={fieldId('storage', 'Retention days')} label="Retention days" value={draft.storage.retentionDays} onChange={(retentionDays) => updateStorage({ retentionDays })} />
     </div>
   );

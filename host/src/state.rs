@@ -29,6 +29,13 @@ pub(crate) struct StoredSourceFile {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PreparedSourceFile {
+    pub(crate) safe_name: String,
+    pub(crate) file_path: PathBuf,
+    pub(crate) artifact_path: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct StoredAnalysisFile {
     pub(crate) artifact_path: String,
     pub(crate) size_bytes: u64,
@@ -142,13 +149,12 @@ impl AppState {
             .unwrap_or_else(|| PathBuf::from("./workspace"))
     }
 
-    pub(crate) fn write_task_source_file(
+    pub(crate) fn prepare_task_source_file(
         &self,
         settings: &Value,
         task_id: &str,
         source_name: &str,
-        bytes: &[u8],
-    ) -> Result<StoredSourceFile, HostError> {
+    ) -> Result<PreparedSourceFile, HostError> {
         let safe_name = sanitize_source_file_name(source_name);
         let workspace_root = self.workspace_root(settings);
         let source_dir = workspace_root
@@ -158,14 +164,13 @@ impl AppState {
             .join(task_id)
             .join("source");
         fs::create_dir_all(&source_dir).map_err(|error| storage_error(error.to_string()))?;
-        let source_path = source_dir.join(&safe_name);
-        fs::write(&source_path, bytes).map_err(|error| storage_error(error.to_string()))?;
+        let artifact_path =
+            format!("workspace/projects/default/tasks/{task_id}/source/{safe_name}");
 
-        Ok(StoredSourceFile {
-            safe_name: safe_name.clone(),
-            artifact_path: format!("workspace/projects/default/tasks/{task_id}/source/{safe_name}"),
-            size_bytes: bytes.len() as u64,
-            sha256: format!("{:x}", Sha256::digest(bytes)),
+        Ok(PreparedSourceFile {
+            file_path: source_dir.join(&safe_name),
+            safe_name,
+            artifact_path,
         })
     }
 

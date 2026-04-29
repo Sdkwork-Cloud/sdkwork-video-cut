@@ -291,9 +291,7 @@ fn select_candidate_for_preference(
         return candidates.into_iter().next();
     }
 
-    let Some(selected_file_name) = preference.file_name.as_ref() else {
-        return None;
-    };
+    let selected_file_name = preference.file_name.as_ref()?;
 
     candidates
         .into_iter()

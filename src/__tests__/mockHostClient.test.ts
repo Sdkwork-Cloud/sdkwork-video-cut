@@ -282,6 +282,20 @@ describe('createMockHostClient', () => {
     );
   });
 
+  it('orders local mock tasks by updated time with the same task-id tiebreaker as Host', async () => {
+    const client = createMockHostClient();
+    await client.createTask({
+      title: 'first',
+      type: 'single-speaker',
+    });
+    await client.createTask({
+      title: 'second',
+      type: 'single-speaker',
+    });
+
+    expect((await client.listTasks()).map((task) => task.taskId)).toEqual(['task-0002', 'task-0001']);
+  });
+
   it('creates, analyzes, and renders a task with event history', async () => {
     const client = createMockHostClient();
     const task = await client.createTask({
@@ -438,6 +452,26 @@ describe('createMockHostClient', () => {
       endpoint: 'mock://video-cut/tasks/missing-task',
     });
     await expect(client.getTask('missing-task')).rejects.toBeInstanceOf(VideoCutHostApiError);
+    await expect(client.getTaskEvents('missing-task')).rejects.toMatchObject({
+      status: 404,
+      code: 'TASK_NOT_FOUND',
+      endpoint: 'mock://video-cut/tasks/missing-task/events',
+    });
+    await expect(client.getTaskArtifacts('missing-task')).rejects.toMatchObject({
+      status: 404,
+      code: 'TASK_NOT_FOUND',
+      endpoint: 'mock://video-cut/tasks/missing-task/artifacts',
+    });
+    await expect(client.getArtifactDownload('missing-task', 'missing-artifact')).rejects.toMatchObject({
+      status: 404,
+      code: 'TASK_NOT_FOUND',
+      endpoint: 'mock://video-cut/tasks/missing-task/artifacts',
+    });
+    await expect(client.getArtifactContent('missing-task', 'missing-artifact')).rejects.toMatchObject({
+      status: 404,
+      code: 'TASK_NOT_FOUND',
+      endpoint: 'mock://video-cut/tasks/missing-task/artifacts',
+    });
   });
 
   it('throws standard host api errors for invalid source uploads in local mock mode', async () => {
@@ -538,6 +572,141 @@ describe('createMockHostClient', () => {
     const artifacts = await client.getTaskArtifacts(task.taskId);
     expect(artifacts.filter((artifact) => artifact.artifactId === `${task.taskId}-transcript`)).toHaveLength(1);
     expect((await client.getTaskEvents(task.taskId)).map((event) => event.stage)).toContain('transcript');
+  });
+
+  it('rejects source, plan, transcript, and subtitle mutations while a task is rendering', async () => {
+    const store = createMemoryHostStore();
+    const setupClient = createMockHostClient(undefined, store);
+    const task = await setupClient.createTask({
+      title: 'rendering mutation guard',
+      type: 'single-speaker',
+    });
+    await attachVideoSource(setupClient, task.taskId);
+    await setupClient.analyzeTask(task.taskId);
+    const snapshot = store.load();
+    expect(snapshot).toBeDefined();
+    snapshot!.tasks = snapshot!.tasks.map((item) =>
+      item.taskId === task.taskId ? { ...item, status: 'rendering', currentStage: 'render', progress: 80 } : item,
+    );
+    store.save(snapshot!);
+
+    const client = createMockHostClient(undefined, store);
+    const plan = await client.getTaskPlan(task.taskId);
+
+    await expect(client.updateTaskPlan(task.taskId, plan)).rejects.toMatchObject({
+      code: 'TASK_BUSY',
+      status: 409,
+    });
+    await expect(
+      client.updateTaskTranscript(task.taskId, {
+        language: 'en',
+        segments: [{ startMs: 500, endMs: 1800, text: 'Should not replace while rendering' }],
+      }),
+    ).rejects.toMatchObject({
+      code: 'TASK_BUSY',
+      status: 409,
+    });
+    await expect(
+      client.importTaskSubtitles(task.taskId, {
+        format: 'srt',
+        language: 'en',
+        content: '1\n00:00:00,500 --> 00:00:01,800\nShould not import\n',
+      }),
+    ).rejects.toMatchObject({
+      code: 'TASK_BUSY',
+      status: 409,
+    });
+    await expect(client.exportTaskSubtitles(task.taskId, 'vtt')).rejects.toMatchObject({
+      code: 'TASK_BUSY',
+      status: 409,
+    });
+    await expect(client.uploadTaskSourceFile(task.taskId, new File(['video'], 'replacement.mp4', { type: 'video/mp4' }))).rejects.toMatchObject({
+      code: 'TASK_BUSY',
+      status: 409,
+    });
+    await expect(
+      client.attachTaskSource(task.taskId, {
+        sourceName: 'replacement.mp4',
+        sizeBytes: 2048,
+        contentType: 'video/mp4',
+      }),
+    ).rejects.toMatchObject({
+      code: 'TASK_BUSY',
+      status: 409,
+    });
+    await expect(client.deleteTask(task.taskId)).rejects.toMatchObject({
+      code: 'TASK_BUSY',
+      status: 409,
+    });
+
+    await expect(client.getTask(task.taskId)).resolves.toMatchObject({
+      currentStage: 'render',
+      status: 'rendering',
+    });
+  });
+
+  it('rejects duplicate local mock analyze and render operations with standard busy errors', async () => {
+    const store = createMemoryHostStore();
+    const setupClient = createMockHostClient(undefined, store);
+    const task = await setupClient.createTask({
+      title: 'busy operation guard',
+      type: 'single-speaker',
+    });
+    await attachVideoSource(setupClient, task.taskId);
+    await setupClient.analyzeTask(task.taskId);
+    let snapshot = store.load();
+    expect(snapshot).toBeDefined();
+    snapshot!.tasks = snapshot!.tasks.map((item) =>
+      item.taskId === task.taskId ? { ...item, status: 'rendering', currentStage: 'render', progress: 80 } : item,
+    );
+    store.save(snapshot!);
+
+    let client = createMockHostClient(undefined, store);
+    await expect(client.renderTask(task.taskId)).rejects.toMatchObject({
+      code: 'RENDER_ALREADY_RUNNING',
+      status: 409,
+    });
+    await expect(client.analyzeTask(task.taskId)).rejects.toMatchObject({
+      code: 'TASK_BUSY',
+      status: 409,
+    });
+
+    snapshot = store.load();
+    expect(snapshot).toBeDefined();
+    snapshot!.tasks = snapshot!.tasks.map((item) =>
+      item.taskId === task.taskId ? { ...item, status: 'analyzing', currentStage: 'analyze', progress: 10 } : item,
+    );
+    store.save(snapshot!);
+
+    client = createMockHostClient(undefined, store);
+    await expect(client.analyzeTask(task.taskId)).rejects.toMatchObject({
+      code: 'ANALYZE_ALREADY_RUNNING',
+      status: 409,
+    });
+    await expect(client.renderTask(task.taskId)).rejects.toMatchObject({
+      code: 'TASK_BUSY',
+      status: 409,
+    });
+  });
+
+  it('rejects cancel for terminal local mock tasks without overwriting status', async () => {
+    const client = createMockHostClient();
+    const task = await client.createTask({
+      title: 'terminal cancel guard',
+      type: 'single-speaker',
+    });
+    await attachVideoSource(client, task.taskId);
+    await client.analyzeTask(task.taskId);
+    await client.renderTask(task.taskId);
+
+    await expect(client.cancelTask(task.taskId)).rejects.toMatchObject({
+      code: 'TASK_TERMINAL',
+      status: 409,
+    });
+    await expect(client.getTask(task.taskId)).resolves.toMatchObject({
+      currentStage: 'artifact',
+      status: 'succeeded',
+    });
   });
 
   it('uploads a local source file and replaces source artifact metadata', async () => {

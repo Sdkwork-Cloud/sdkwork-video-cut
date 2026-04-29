@@ -131,6 +131,26 @@ function mockBadRequestError({
   });
 }
 
+function mockConflictError({
+  code,
+  endpoint,
+  message,
+  taskId,
+}: {
+  code: string;
+  endpoint: string;
+  message: string;
+  taskId: string;
+}): VideoCutHostApiError {
+  return mockHostError({
+    code,
+    endpoint,
+    message,
+    status: 409,
+    traceId: `trace-${taskId}`,
+  });
+}
+
 export interface VideoCutHostSnapshot {
   settings: VideoCutSettings;
   taskSequence: number;
@@ -1374,6 +1394,85 @@ export function createMockHostClient(
     return clone(next);
   }
 
+  function requireTaskForStage(taskId: string, endpoint: string, requestedStage: 'analyze' | 'edit' | 'render'): VideoCutTask {
+    const task = tasks.get(taskId);
+    if (!task) {
+      throw mockTaskNotFoundError(taskId, endpoint);
+    }
+
+    if (task.status === 'cancelled') {
+      throw mockConflictError({
+        code: 'TASK_CANCELLED',
+        endpoint,
+        message: `Task has been cancelled: ${taskId}.`,
+        taskId,
+      });
+    }
+
+    if (task.status === 'analyzing') {
+      const code = requestedStage === 'analyze' ? 'ANALYZE_ALREADY_RUNNING' : 'TASK_BUSY';
+      const label = requestedStage === 'analyze' ? 'Analysis' : 'Task';
+      throw mockConflictError({
+        code,
+        endpoint,
+        message: `${label} is already running for task: ${taskId}.`,
+        taskId,
+      });
+    }
+
+    if (task.status === 'rendering') {
+      const code = requestedStage === 'render' ? 'RENDER_ALREADY_RUNNING' : 'TASK_BUSY';
+      const label = requestedStage === 'render' ? 'Render' : 'Task';
+      throw mockConflictError({
+        code,
+        endpoint,
+        message: `${label} is already running for task: ${taskId}.`,
+        taskId,
+      });
+    }
+
+    return task;
+  }
+
+  function rejectIfTaskRunning(task: VideoCutTask, endpoint: string): void {
+    if (task.status !== 'analyzing' && task.status !== 'rendering') {
+      return;
+    }
+
+    throw mockConflictError({
+      code: 'TASK_BUSY',
+      endpoint,
+      message: `Task is already running for task: ${task.taskId}.`,
+      taskId: task.taskId,
+    });
+  }
+
+  function rejectIfTaskTerminal(task: VideoCutTask, endpoint: string): void {
+    if (task.status !== 'succeeded' && task.status !== 'failed' && task.status !== 'interrupted') {
+      return;
+    }
+
+    throw mockConflictError({
+      code: 'TASK_TERMINAL',
+      endpoint,
+      message: `Task is already terminal with status ${task.status}: ${task.taskId}.`,
+      taskId: task.taskId,
+    });
+  }
+
+  function requireExistingTask(taskId: string, endpoint: string): VideoCutTask {
+    const task = tasks.get(taskId);
+    if (!task) {
+      throw mockTaskNotFoundError(taskId, endpoint);
+    }
+
+    return task;
+  }
+
+  function requireEditableTask(taskId: string, endpoint: string): VideoCutTask {
+    return requireTaskForStage(taskId, endpoint, 'edit');
+  }
+
   return {
     async getHealth() {
       return { status: 'ok' };
@@ -1419,7 +1518,7 @@ export function createMockHostClient(
 
     async listTasks() {
       return Array.from(tasks.values())
-        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.taskId.localeCompare(left.taskId))
         .map((task) => clone(task));
     },
 
@@ -1451,9 +1550,11 @@ export function createMockHostClient(
     },
 
     async deleteTask(taskId: string): Promise<DeleteTaskResult> {
-      if (!tasks.has(taskId)) {
+      const task = tasks.get(taskId);
+      if (!task) {
         throw mockTaskNotFoundError(taskId);
       }
+      rejectIfTaskRunning(task, mockTaskPath(taskId));
 
       const artifactsDeleted = artifacts.get(taskId)?.length ?? 0;
       const eventsDeleted = events.get(taskId)?.length ?? 0;
@@ -1472,10 +1573,7 @@ export function createMockHostClient(
     },
 
     async attachTaskSource(taskId: string, input: AttachTaskSourceInput) {
-      const task = tasks.get(taskId);
-      if (!task) {
-        throw mockTaskNotFoundError(taskId, mockTaskPath(taskId, '/source'));
-      }
+      const task = requireEditableTask(taskId, mockTaskPath(taskId, '/source'));
 
       const sourceName = sanitizeSourceFileName(input.sourceName);
       validateSourceMediaType(sourceName, input.contentType, {
@@ -1505,10 +1603,7 @@ export function createMockHostClient(
     },
 
     async uploadTaskSourceFile(taskId: string, file: File) {
-      const task = tasks.get(taskId);
-      if (!task) {
-        throw mockTaskNotFoundError(taskId, mockTaskPath(taskId, '/source/file'));
-      }
+      const task = requireEditableTask(taskId, mockTaskPath(taskId, '/source/file'));
 
       const sourceName = sanitizeSourceFileName(file.name);
       validateSourceMediaType(sourceName, file.type, {
@@ -1538,10 +1633,7 @@ export function createMockHostClient(
     },
 
     async analyzeTask(taskId: string) {
-      const existingTask = tasks.get(taskId);
-      if (!existingTask) {
-        throw mockTaskNotFoundError(taskId, mockTaskPath(taskId, '/analyze'));
-      }
+      const existingTask = requireTaskForStage(taskId, mockTaskPath(taskId, '/analyze'), 'analyze');
       if (!(artifacts.get(taskId) ?? []).some((item) => item.kind === 'source')) {
         throw mockBadRequestError({
           code: 'SOURCE_FILE_REQUIRED',
@@ -1671,6 +1763,7 @@ export function createMockHostClient(
     },
 
     async updateTaskPlan(taskId: string, plan: VideoSplitPlan) {
+      requireEditableTask(taskId, mockTaskPath(taskId, '/plan'));
       if (plan.taskId !== taskId) {
         throw mockBadRequestError({
           code: 'PLAN_TASK_ID_MISMATCH',
@@ -1707,10 +1800,7 @@ export function createMockHostClient(
     },
 
     async updateTaskTranscript(taskId: string, input: ManualTranscriptInput) {
-      const existingTask = tasks.get(taskId);
-      if (!existingTask) {
-        throw mockTaskNotFoundError(taskId, mockTaskPath(taskId, '/transcript'));
-      }
+      const existingTask = requireEditableTask(taskId, mockTaskPath(taskId, '/transcript'));
       const taskArtifacts = artifacts.get(taskId) ?? [];
       const audioArtifact = taskArtifacts.find((artifact) => artifact.kind === 'audio');
       const transcript = createManualTranscriptDocument({
@@ -1743,10 +1833,7 @@ export function createMockHostClient(
     },
 
     async importTaskSubtitles(taskId: string, input: SubtitleImportInput) {
-      const existingTask = tasks.get(taskId);
-      if (!existingTask) {
-        throw mockTaskNotFoundError(taskId, mockTaskPath(taskId, '/subtitles/import'));
-      }
+      const existingTask = requireEditableTask(taskId, mockTaskPath(taskId, '/subtitles/import'));
       const taskArtifacts = artifacts.get(taskId) ?? [];
       const audioArtifact = taskArtifacts.find((artifact) => artifact.kind === 'audio');
       const transcript = createSubtitleTranscriptDocument({
@@ -1779,9 +1866,7 @@ export function createMockHostClient(
     },
 
     async exportTaskSubtitles(taskId: string, format: SubtitleFormat): Promise<SubtitleExportOutput> {
-      if (!tasks.has(taskId)) {
-        throw mockTaskNotFoundError(taskId, mockTaskPath(taskId, '/subtitles/export'));
-      }
+      requireEditableTask(taskId, mockTaskPath(taskId, '/subtitles/export'));
       const normalizedFormat = normalizeSubtitleFormat(format);
       const transcript = transcriptDocuments.get(taskId);
       if (!transcript) {
@@ -1819,6 +1904,7 @@ export function createMockHostClient(
     },
 
     async renderTask(taskId: string) {
+      requireTaskForStage(taskId, mockTaskPath(taskId, '/render'), 'render');
       const plan = plans.get(taskId);
       if (!plan) {
         throw mockPlanNotFoundError(taskId, mockTaskPath(taskId, '/render'));
@@ -1827,6 +1913,7 @@ export function createMockHostClient(
     },
 
     async renderTaskBatch(taskId: string) {
+      requireTaskForStage(taskId, mockTaskPath(taskId, '/render/batch'), 'render');
       const plan = plans.get(taskId);
       if (!plan) {
         throw mockPlanNotFoundError(taskId, mockTaskPath(taskId, '/render/batch'));
@@ -1841,6 +1928,11 @@ export function createMockHostClient(
     },
 
     async cancelTask(taskId: string) {
+      const existingTask = tasks.get(taskId);
+      if (!existingTask) {
+        throw mockTaskNotFoundError(taskId, mockTaskPath(taskId, '/cancel'));
+      }
+      rejectIfTaskTerminal(existingTask, mockTaskPath(taskId, '/cancel'));
       const task = updateTask(taskId, {
         status: 'cancelled',
         currentStage: 'cancelled',
@@ -1851,14 +1943,17 @@ export function createMockHostClient(
     },
 
     async getTaskEvents(taskId: string) {
+      requireExistingTask(taskId, mockTaskPath(taskId, '/events'));
       return clone(events.get(taskId) ?? []);
     },
 
     async getTaskArtifacts(taskId: string) {
+      requireExistingTask(taskId, mockTaskPath(taskId, '/artifacts'));
       return clone(artifacts.get(taskId) ?? []);
     },
 
     async getArtifactDownload(taskId: string, artifactId: string): Promise<ArtifactDownloadDescriptor> {
+      requireExistingTask(taskId, mockTaskPath(taskId, '/artifacts'));
       const artifact = (artifacts.get(taskId) ?? []).find((item) => item.artifactId === artifactId);
       if (!artifact) {
         throw mockArtifactNotFoundError(taskId, artifactId, '/download');
@@ -1877,6 +1972,7 @@ export function createMockHostClient(
     },
 
     async getArtifactContent(taskId: string, artifactId: string) {
+      requireExistingTask(taskId, mockTaskPath(taskId, '/artifacts'));
       const artifact = (artifacts.get(taskId) ?? []).find((item) => item.artifactId === artifactId);
       if (!artifact) {
         throw mockArtifactNotFoundError(taskId, artifactId, '/content');
@@ -1888,6 +1984,7 @@ export function createMockHostClient(
     },
 
     async getArtifactText(taskId: string, artifactId: string) {
+      requireExistingTask(taskId, mockTaskPath(taskId, '/artifacts'));
       const artifact = (artifacts.get(taskId) ?? []).find((item) => item.artifactId === artifactId);
       if (!artifact) {
         throw mockArtifactNotFoundError(taskId, artifactId, '/content');

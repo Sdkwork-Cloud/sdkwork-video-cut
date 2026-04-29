@@ -296,13 +296,16 @@ export default function App({ client: providedClient }: AppProps = {}) {
     await analyzeTask(taskId);
   };
 
-  const savePlanRange = async (taskId: string, startMs: number, endMs: number) => {
+  const savePlanRange = async (taskId: string, segmentId: string, startMs: number, endMs: number) => {
     const currentPlan = selectedPlan?.taskId === taskId ? selectedPlan : await client.getTaskPlan(taskId);
+    if (!currentPlan.segments.some((segment) => segment.segmentId === segmentId)) {
+      throw new Error(`Split plan segment not found: ${segmentId}`);
+    }
     const nextPlan: VideoSplitPlan = {
       ...currentPlan,
       planRevision: currentPlan.planRevision + 1,
-      segments: currentPlan.segments.map((segment, index) => {
-        if (index !== 0) {
+      segments: currentPlan.segments.map((segment) => {
+        if (segment.segmentId !== segmentId) {
           return segment;
         }
 
@@ -335,8 +338,8 @@ export default function App({ client: providedClient }: AppProps = {}) {
     return savedPlan;
   };
 
-  const saveManualTranscript = async (taskId: string, startMs: number, endMs: number, text: string) => {
-    await savePlanRange(taskId, startMs, endMs);
+  const saveManualTranscript = async (taskId: string, segmentId: string, startMs: number, endMs: number, text: string) => {
+    await savePlanRange(taskId, segmentId, startMs, endMs);
     await client.updateTaskTranscript(taskId, {
       language: settings?.subtitle.language ?? settings?.speechToText.languageHint ?? 'zh',
       segments: [{ startMs, endMs, text }],
@@ -491,12 +494,14 @@ export default function App({ client: providedClient }: AppProps = {}) {
             onSelectTask={(taskId) => void runOperation('Select task failed', () => selectTask(taskId))}
             onAnalyze={(taskId) => void runOperation('Analyze task failed', () => analyzeTask(taskId))}
             onRender={(taskId) => void runOperation('Render task failed', () => renderTask(taskId))}
-            onSavePlanRange={(taskId, startMs, endMs) => void runOperation('Save split plan failed', () => savePlanRange(taskId, startMs, endMs))}
+            onSavePlanRange={(taskId, segmentId, startMs, endMs) =>
+              void runOperation('Save split plan failed', () => savePlanRange(taskId, segmentId, startMs, endMs))
+            }
             onSaveRenderPreferences={(taskId, renderPreferences) =>
               void runOperation('Save render asset preferences failed', () => saveRenderAssetPreferences(taskId, renderPreferences))
             }
-            onSaveManualTranscript={(taskId, startMs, endMs, text) =>
-              void runOperation('Save manual transcript failed', () => saveManualTranscript(taskId, startMs, endMs, text))
+            onSaveManualTranscript={(taskId, segmentId, startMs, endMs, text) =>
+              void runOperation('Save manual transcript failed', () => saveManualTranscript(taskId, segmentId, startMs, endMs, text))
             }
             onImportSubtitleFile={(taskId, file) => void runOperation('Import subtitle file failed', () => importSubtitleFile(taskId, file))}
             onExportSubtitles={(taskId, format) => void runOperation('Export subtitles failed', () => exportSubtitles(taskId, format))}

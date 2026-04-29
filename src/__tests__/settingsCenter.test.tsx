@@ -84,6 +84,46 @@ describe('Settings center', () => {
     expect(screen.getByText('OpenAI-compatible provider policy active')).toBeInTheDocument();
   });
 
+  it('derives artifact and temp roots from the workspace root instead of exposing inert storage fields', async () => {
+    const user = userEvent.setup();
+    const baseClient = createMockHostClient();
+    const inconsistentSettings = await baseClient.getSettings();
+    inconsistentSettings.storage = {
+      ...inconsistentSettings.storage,
+      workspaceRoot: 'D:/actual-workspace',
+      artifactRoot: 'Z:/stale-artifacts',
+      tempRoot: 'Z:/stale-tmp',
+    };
+    const client = {
+      ...baseClient,
+      async getSettings() {
+        return inconsistentSettings;
+      },
+    };
+    render(<App client={client} />);
+
+    await user.click(screen.getByRole('button', { name: settingsNavButton }));
+    await user.click(screen.getByRole('button', { name: 'Storage' }));
+
+    expect(screen.getByLabelText('Artifact root')).toHaveAttribute('readonly');
+    expect(screen.getByLabelText('Temp root')).toHaveAttribute('readonly');
+    expect(screen.getByLabelText('Artifact root')).toHaveValue('D:/actual-workspace/artifacts');
+    expect(screen.getByLabelText('Temp root')).toHaveValue('D:/actual-workspace/tmp');
+    await user.clear(screen.getByLabelText('Workspace root'));
+    expect(screen.getByLabelText('Artifact root')).toHaveValue('');
+    expect(screen.getByLabelText('Temp root')).toHaveValue('');
+
+    await user.type(screen.getByLabelText('Workspace root'), '/');
+    expect(screen.getByLabelText('Artifact root')).toHaveValue('/artifacts');
+    expect(screen.getByLabelText('Temp root')).toHaveValue('/tmp');
+
+    await user.clear(screen.getByLabelText('Workspace root'));
+    await user.type(screen.getByLabelText('Workspace root'), 'D:/video-cut-workspace');
+
+    expect(screen.getByLabelText('Artifact root')).toHaveValue('D:/video-cut-workspace/artifacts');
+    expect(screen.getByLabelText('Temp root')).toHaveValue('D:/video-cut-workspace/tmp');
+  });
+
   it('runs provider conformance from the AI provider panel', async () => {
     const user = userEvent.setup();
     renderApp();

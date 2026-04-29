@@ -9,11 +9,15 @@ function taskLabel(task: VideoCutTask): string {
 }
 
 function canCancelTask(task: VideoCutTask): boolean {
-  return task.status !== 'cancelled' && task.status !== 'succeeded' && task.status !== 'failed';
+  return task.status !== 'cancelled' && task.status !== 'succeeded' && task.status !== 'failed' && task.status !== 'interrupted';
 }
 
 function canRetryTask(task: VideoCutTask): boolean {
   return task.status === 'failed' || task.status === 'interrupted';
+}
+
+function canDeleteTask(task: VideoCutTask): boolean {
+  return task.status !== 'analyzing' && task.status !== 'rendering';
 }
 
 export function QueuePage({
@@ -104,6 +108,7 @@ export function QueuePage({
                   <button
                     aria-label={`Delete task ${taskLabel(task)}`}
                     className="secondary-button table-action-button table-action-button--danger"
+                    disabled={!canDeleteTask(task)}
                     type="button"
                     onClick={() => onDelete(task.taskId)}
                   >

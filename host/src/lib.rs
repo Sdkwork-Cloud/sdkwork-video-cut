@@ -22,8 +22,8 @@ mod tooling;
 mod workspace;
 
 use std::collections::BTreeSet;
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{ErrorKind, SeekFrom};
+use std::path::Path as FsPath;
 
 use axum::body::Body;
 use axum::extract::multipart::MultipartRejection;
@@ -46,6 +46,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio_util::io::ReaderStream;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use uuid::Uuid;
 
@@ -79,11 +81,11 @@ use runtime_config::RuntimeHostConfig;
 use settings::{extract_runtime_secret_updates, sanitize_settings, validate_settings};
 use speech_transcription::speech_to_text_provider_config_from_settings;
 use state::{
-    AppState, HostError, HostState, artifact_content_not_found, artifact_not_found, bad_request,
-    conflict, json_request_invalid, method_not_allowed, not_found, path_parameter_invalid,
-    payload_too_large, push_event, push_event_with_metadata, query_parameter_invalid, render_error,
-    render_failure_recovery_metadata, route_not_found, sanitize_source_file_name, storage_error,
-    task_plan_not_found, unauthorized, update_task,
+    AppState, HostError, HostState, StoredSourceFile, artifact_content_not_found,
+    artifact_not_found, bad_request, conflict, json_request_invalid, method_not_allowed, not_found,
+    path_parameter_invalid, payload_too_large, push_event, push_event_with_metadata,
+    query_parameter_invalid, render_error, render_failure_recovery_metadata, route_not_found,
+    sanitize_source_file_name, storage_error, task_plan_not_found, unauthorized, update_task,
 };
 
 struct ApiJson<T>(T);
@@ -564,7 +566,14 @@ async fn get_asset_catalog(State(state): State<AppState>) -> Json<ApiEnvelope<Va
 
 async fn list_tasks(State(state): State<AppState>) -> Json<ApiEnvelope<Vec<VideoCutTask>>> {
     let guard = state.inner.lock().expect("state lock");
-    ok(guard.tasks.values().cloned().collect())
+    let mut tasks = guard.tasks.values().cloned().collect::<Vec<_>>();
+    tasks.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| right.task_id.cmp(&left.task_id))
+    });
+    ok(tasks)
 }
 
 async fn create_task(
@@ -590,6 +599,88 @@ async fn create_task(
     Ok(ok(task))
 }
 
+fn reject_if_cancelled(task: &VideoCutTask) -> Result<(), HostError> {
+    if task.status == "cancelled" {
+        return Err(conflict(
+            "TASK_CANCELLED",
+            format!("Task has been cancelled: {}.", task.task_id),
+        ));
+    }
+
+    Ok(())
+}
+
+fn reject_if_task_busy(task: &VideoCutTask, requested_stage: &str) -> Result<(), HostError> {
+    reject_if_cancelled(task)?;
+    if task.status == "analyzing" {
+        let (code, label) = if requested_stage == "analyze" {
+            ("ANALYZE_ALREADY_RUNNING", "Analysis")
+        } else {
+            ("TASK_BUSY", "Task")
+        };
+        return Err(conflict(
+            code,
+            format!("{label} is already running for task: {}.", task.task_id),
+        ));
+    }
+    if task.status == "rendering" {
+        let (code, label) = if requested_stage == "render" {
+            ("RENDER_ALREADY_RUNNING", "Render")
+        } else {
+            ("TASK_BUSY", "Task")
+        };
+        return Err(conflict(
+            code,
+            format!("{label} is already running for task: {}.", task.task_id),
+        ));
+    }
+
+    Ok(())
+}
+
+fn reject_if_task_running(task: &VideoCutTask) -> Result<(), HostError> {
+    if task.status == "analyzing" || task.status == "rendering" {
+        return Err(conflict(
+            "TASK_BUSY",
+            format!("Task is already running for task: {}.", task.task_id),
+        ));
+    }
+
+    Ok(())
+}
+
+fn reject_if_task_terminal(task: &VideoCutTask) -> Result<(), HostError> {
+    if task.status == "succeeded" || task.status == "failed" || task.status == "interrupted" {
+        return Err(conflict(
+            "TASK_TERMINAL",
+            format!(
+                "Task is already terminal with status {}: {}.",
+                task.status, task.task_id
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+fn require_editable_task(guard: &HostState, task_id: &str) -> Result<VideoCutTask, HostError> {
+    let task = guard
+        .tasks
+        .get(task_id)
+        .cloned()
+        .ok_or_else(|| not_found(task_id))?;
+    reject_if_task_busy(&task, "edit")?;
+    Ok(task)
+}
+
+fn cancelled_task(guard: &HostState, task_id: &str) -> Option<VideoCutTask> {
+    guard
+        .tasks
+        .get(task_id)
+        .filter(|task| task.status == "cancelled")
+        .cloned()
+}
+
 async fn get_task(
     State(state): State<AppState>,
     ApiPath(task_id): ApiPath<String>,
@@ -609,9 +700,12 @@ async fn delete_task(
     ApiPath(task_id): ApiPath<String>,
 ) -> Result<Json<ApiEnvelope<DeleteTaskOutput>>, HostError> {
     let mut guard = state.inner.lock().expect("state lock");
-    if !guard.tasks.contains_key(&task_id) {
-        return Err(not_found(&task_id));
-    }
+    let task = guard
+        .tasks
+        .get(&task_id)
+        .cloned()
+        .ok_or_else(|| not_found(&task_id))?;
+    reject_if_task_running(&task)?;
 
     let artifacts_deleted = guard
         .artifacts
@@ -636,12 +730,13 @@ async fn attach_task_source(
     ApiJson(input): ApiJson<AttachTaskSourceInput>,
 ) -> Result<Json<ApiEnvelope<VideoCutArtifact>>, HostError> {
     let mut guard = state.inner.lock().expect("state lock");
+    require_editable_task(&guard, &task_id)?;
+    let source_name = sanitize_source_file_name(&input.source_name);
+    validate_source_media_type(&source_name, input.content_type.as_deref())?;
     let task = guard
         .tasks
         .get_mut(&task_id)
         .ok_or_else(|| not_found(&task_id))?;
-    let source_name = sanitize_source_file_name(&input.source_name);
-    validate_source_media_type(&source_name, input.content_type.as_deref())?;
     task.source_name = Some(source_name.clone());
     task.status = "sourceReady".to_string();
     task.progress = task.progress.max(5);
@@ -667,15 +762,89 @@ async fn attach_task_source(
     Ok(ok(artifact))
 }
 
+async fn remove_upload_temp_file(path: &FsPath) {
+    let _ = tokio::fs::remove_file(path).await;
+}
+
+async fn replace_uploaded_source_file(
+    temp_file_path: &FsPath,
+    target_file_path: &FsPath,
+    safe_name: &str,
+) -> Result<(), HostError> {
+    let target_exists = match tokio::fs::try_exists(target_file_path).await {
+        Ok(exists) => exists,
+        Err(error) => {
+            remove_upload_temp_file(temp_file_path).await;
+            return Err(storage_error(error.to_string()));
+        }
+    };
+    let mut backup_file_path = None;
+    if target_exists {
+        let metadata = match tokio::fs::metadata(target_file_path).await {
+            Ok(metadata) => Some(metadata),
+            Err(error) if error.kind() == ErrorKind::NotFound => None,
+            Err(error) => {
+                remove_upload_temp_file(temp_file_path).await;
+                return Err(storage_error(error.to_string()));
+            }
+        };
+        if let Some(metadata) = metadata {
+            if !metadata.is_file() {
+                remove_upload_temp_file(temp_file_path).await;
+                return Err(storage_error(format!(
+                    "Source upload target is not a regular file: {}.",
+                    target_file_path.display()
+                )));
+            }
+
+            let next_backup_file_path = target_file_path.with_file_name(format!(
+                "{}.{}.replacing",
+                safe_name,
+                Uuid::new_v4().simple()
+            ));
+            match tokio::fs::rename(target_file_path, &next_backup_file_path).await {
+                Ok(()) => backup_file_path = Some(next_backup_file_path),
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => {
+                    remove_upload_temp_file(temp_file_path).await;
+                    return Err(storage_error(error.to_string()));
+                }
+            }
+        }
+    }
+
+    if let Err(error) = tokio::fs::rename(temp_file_path, target_file_path).await {
+        if let Some(backup_file_path) = backup_file_path.as_ref() {
+            let _ = tokio::fs::rename(backup_file_path, target_file_path).await;
+        }
+        remove_upload_temp_file(temp_file_path).await;
+        return Err(storage_error(error.to_string()));
+    }
+
+    if let Some(backup_file_path) = backup_file_path {
+        let _ = tokio::fs::remove_file(backup_file_path).await;
+    }
+
+    Ok(())
+}
+
 async fn upload_task_source_file(
     State(state): State<AppState>,
     ApiPath(task_id): ApiPath<String>,
     ApiMultipart(mut multipart): ApiMultipart,
 ) -> Result<Json<ApiEnvelope<VideoCutArtifact>>, HostError> {
-    let mut source_name = None;
-    let mut source_bytes = None;
-    let mut source_content_type = None;
-    while let Some(field) = multipart
+    let settings = {
+        let guard = state.inner.lock().expect("state lock");
+        require_editable_task(&guard, &task_id)?;
+        guard.settings.clone()
+    };
+    let max_upload_bytes = u64_at(
+        &settings,
+        "/mediaTools/maxUploadBytes",
+        8 * 1024 * 1024 * 1024,
+    );
+    let mut stored_source = None;
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|error| bad_request("MULTIPART_INVALID", error.to_string()))?
@@ -689,51 +858,87 @@ async fn upload_task_source_file(
             .map(str::to_string)
             .unwrap_or_else(|| "source.bin".to_string());
         let content_type = field.content_type().map(str::to_string);
-        let bytes = field
-            .bytes()
+        let source_name = sanitize_source_file_name(&file_name);
+        validate_source_media_type(&source_name, content_type.as_deref())?;
+        let prepared = state.prepare_task_source_file(&settings, &task_id, &source_name)?;
+        let temp_file_path = prepared.file_path.with_file_name(format!(
+            "{}.{}.uploading",
+            prepared.safe_name,
+            Uuid::new_v4().simple()
+        ));
+        let mut file = tokio::fs::File::create(&temp_file_path)
             .await
-            .map_err(|error| bad_request("MULTIPART_INVALID", error.to_string()))?;
-        source_name = Some(file_name);
-        source_content_type = content_type;
-        source_bytes = Some(bytes.to_vec());
+            .map_err(|error| storage_error(error.to_string()))?;
+        let mut hasher = Sha256::new();
+        let mut size_bytes = 0_u64;
+
+        loop {
+            let chunk = match field.chunk().await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(error) => {
+                    drop(file);
+                    remove_upload_temp_file(&temp_file_path).await;
+                    return Err(bad_request("MULTIPART_INVALID", error.to_string()));
+                }
+            };
+            let Some(next_size_bytes) = size_bytes.checked_add(chunk.len() as u64) else {
+                drop(file);
+                remove_upload_temp_file(&temp_file_path).await;
+                return Err(payload_too_large(
+                    "Source file size overflowed.".to_string(),
+                ));
+            };
+            size_bytes = next_size_bytes;
+            if size_bytes > max_upload_bytes {
+                drop(file);
+                remove_upload_temp_file(&temp_file_path).await;
+                return Err(payload_too_large(format!(
+                    "Source file size {size_bytes} exceeds configured limit {max_upload_bytes}."
+                )));
+            }
+
+            hasher.update(&chunk);
+            if let Err(error) = file.write_all(&chunk).await {
+                drop(file);
+                remove_upload_temp_file(&temp_file_path).await;
+                return Err(storage_error(error.to_string()));
+            }
+        }
+        if let Err(error) = file.flush().await {
+            drop(file);
+            remove_upload_temp_file(&temp_file_path).await;
+            return Err(storage_error(error.to_string()));
+        }
+        drop(file);
+        let editability_check = {
+            let guard = state.inner.lock().expect("state lock");
+            require_editable_task(&guard, &task_id).map(|_| ())
+        };
+        if let Err(error) = editability_check {
+            remove_upload_temp_file(&temp_file_path).await;
+            return Err(error);
+        }
+        replace_uploaded_source_file(&temp_file_path, &prepared.file_path, &prepared.safe_name)
+            .await?;
+        stored_source = Some(StoredSourceFile {
+            safe_name: prepared.safe_name,
+            artifact_path: prepared.artifact_path,
+            size_bytes,
+            sha256: format!("{:x}", hasher.finalize()),
+        });
         break;
     }
 
-    let source_name = source_name
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(|| "source.bin".to_string());
-    let source_bytes = source_bytes.ok_or_else(|| {
+    let stored_source = stored_source.ok_or_else(|| {
         bad_request(
             "SOURCE_FILE_REQUIRED",
             "File field is required.".to_string(),
         )
     })?;
-    let source_name = sanitize_source_file_name(&source_name);
-    validate_source_media_type(&source_name, source_content_type.as_deref())?;
 
-    let settings = {
-        let guard = state.inner.lock().expect("state lock");
-        if !guard.tasks.contains_key(&task_id) {
-            return Err(not_found(&task_id));
-        }
-        guard.settings.clone()
-    };
-    let max_upload_bytes = u64_at(
-        &settings,
-        "/mediaTools/maxUploadBytes",
-        8 * 1024 * 1024 * 1024,
-    );
-    if source_bytes.len() as u64 > max_upload_bytes {
-        return Err(payload_too_large(format!(
-            "Source file size {} exceeds configured limit {}.",
-            source_bytes.len(),
-            max_upload_bytes
-        )));
-    }
-
-    let stored_source =
-        state.write_task_source_file(&settings, &task_id, &source_name, &source_bytes)?;
     let mut guard = state.inner.lock().expect("state lock");
+    require_editable_task(&guard, &task_id)?;
     let task = guard
         .tasks
         .get_mut(&task_id)
@@ -877,15 +1082,15 @@ fn require_u64(
         .get(field)
         .and_then(Value::as_u64)
         .ok_or_else(|| plan_invalid(format!("{field} is required and must be an integer.")))?;
-    if let Some(expected) = exact {
-        if value != expected {
-            return Err(plan_invalid(format!("{field} must be {expected}.")));
-        }
+    if let Some(expected) = exact
+        && value != expected
+    {
+        return Err(plan_invalid(format!("{field} must be {expected}.")));
     }
-    if let Some(minimum) = min {
-        if value < minimum {
-            return Err(plan_invalid(format!("{field} must be at least {minimum}.")));
-        }
+    if let Some(minimum) = min
+        && value < minimum
+    {
+        return Err(plan_invalid(format!("{field} must be at least {minimum}.")));
     }
     Ok(value)
 }
@@ -1190,12 +1395,13 @@ async fn analyze_task(
     ApiPath(task_id): ApiPath<String>,
 ) -> Result<Json<ApiEnvelope<VideoCutTask>>, HostError> {
     let (task, settings, secrets, source_artifact) = {
-        let guard = state.inner.lock().expect("state lock");
-        let task = guard
+        let mut guard = state.inner.lock().expect("state lock");
+        let current_task = guard
             .tasks
             .get(&task_id)
             .cloned()
             .ok_or_else(|| not_found(&task_id))?;
+        reject_if_task_busy(&current_task, "analyze")?;
         let settings = guard.settings.clone();
         let secrets = guard.secrets.clone();
         let source_artifact = guard
@@ -1203,15 +1409,25 @@ async fn analyze_task(
             .get(&task_id)
             .and_then(|items| items.iter().find(|item| item.kind == "source"))
             .cloned();
+        if source_artifact.is_none() {
+            return Err(bad_request(
+                "SOURCE_FILE_REQUIRED",
+                "A source file must be uploaded before analysis.".to_string(),
+            ));
+        }
+        push_event(
+            &mut guard,
+            &task_id,
+            "analyze",
+            10,
+            "Media analysis started.",
+        );
+        let task = update_task(&mut guard, &task_id, "analyzing", 10, "analyze")?;
+        state.persist_task(&guard, &task_id)?;
         (task, settings, secrets, source_artifact)
     };
 
-    let source_artifact = source_artifact.ok_or_else(|| {
-        bad_request(
-            "SOURCE_FILE_REQUIRED",
-            "A source file must be uploaded before analysis.".to_string(),
-        )
-    })?;
+    let source_artifact = source_artifact.expect("source artifact checked before analysis starts");
     let (source_file_path, source_artifact_id, source_artifact_path) = (
         state.resolve_artifact_path(&settings, &source_artifact.path),
         source_artifact.artifact_id.clone(),
@@ -1325,6 +1541,9 @@ async fn analyze_task(
     };
 
     let mut guard = state.inner.lock().expect("state lock");
+    if let Some(task) = cancelled_task(&guard, &task_id) {
+        return Ok(ok(task));
+    }
     let plan_artifact_id = format!("{task_id}-plan");
     let plan_document = create_plan(
         &task,
@@ -1504,9 +1723,7 @@ async fn update_task_plan(
     ApiJson(plan): ApiJson<Value>,
 ) -> Result<Json<ApiEnvelope<Value>>, HostError> {
     let mut guard = state.inner.lock().expect("state lock");
-    if !guard.tasks.contains_key(&task_id) {
-        return Err(not_found(&task_id));
-    }
+    require_editable_task(&guard, &task_id)?;
     validate_split_plan_update(&task_id, &plan)?;
     let (plan_size_bytes, plan_sha256) = json_artifact_metadata(&plan)?;
     guard.plans.insert(task_id.clone(), plan.clone());
@@ -1534,9 +1751,7 @@ async fn put_task_transcript(
 ) -> Result<Json<ApiEnvelope<Value>>, HostError> {
     let (settings, audio_artifact_id, audio_artifact_path) = {
         let guard = state.inner.lock().expect("state lock");
-        if !guard.tasks.contains_key(&task_id) {
-            return Err(not_found(&task_id));
-        }
+        require_editable_task(&guard, &task_id)?;
 
         let audio_artifact = guard
             .artifacts
@@ -1563,6 +1778,8 @@ async fn put_task_transcript(
     )
     .map_err(|message| bad_request("TRANSCRIPT_INVALID", message))?;
     let transcript_artifact_id = format!("{task_id}-transcript");
+    let mut guard = state.inner.lock().expect("state lock");
+    require_editable_task(&guard, &task_id)?;
     let stored_transcript = state.write_task_analysis_json(
         &settings,
         &task_id,
@@ -1573,8 +1790,6 @@ async fn put_task_transcript(
         state.resolve_artifact_path(&settings, &stored_transcript.artifact_path);
     let transcript_sha256 = sha256_file(&transcript_file_path)
         .unwrap_or_else(|_| pseudo_hash(&format!("{task_id}-transcript-manual")));
-
-    let mut guard = state.inner.lock().expect("state lock");
     let task = guard
         .tasks
         .get_mut(&task_id)
@@ -1617,9 +1832,7 @@ async fn put_task_subtitle_import(
         .map_err(|message| bad_request("SUBTITLE_FORMAT_INVALID", message))?;
     let (settings, audio_artifact_id, audio_artifact_path) = {
         let guard = state.inner.lock().expect("state lock");
-        if !guard.tasks.contains_key(&task_id) {
-            return Err(not_found(&task_id));
-        }
+        require_editable_task(&guard, &task_id)?;
         let audio_artifact = guard
             .artifacts
             .get(&task_id)
@@ -1649,6 +1862,8 @@ async fn put_task_subtitle_import(
     )
     .map_err(|message| bad_request("SUBTITLE_INVALID", message))?;
     let transcript_artifact_id = format!("{task_id}-transcript");
+    let mut guard = state.inner.lock().expect("state lock");
+    require_editable_task(&guard, &task_id)?;
     let stored_transcript = state.write_task_analysis_json(
         &settings,
         &task_id,
@@ -1659,8 +1874,6 @@ async fn put_task_subtitle_import(
         state.resolve_artifact_path(&settings, &stored_transcript.artifact_path);
     let transcript_sha256 = sha256_file(&transcript_file_path)
         .unwrap_or_else(|_| pseudo_hash(&format!("{task_id}-subtitle-import-{format}")));
-
-    let mut guard = state.inner.lock().expect("state lock");
     let task = guard
         .tasks
         .get_mut(&task_id)
@@ -1703,9 +1916,7 @@ async fn get_task_subtitle_export(
         .map_err(|message| bad_request("SUBTITLE_FORMAT_INVALID", message))?;
     let (settings, transcript_artifact) = {
         let guard = state.inner.lock().expect("state lock");
-        if !guard.tasks.contains_key(&task_id) {
-            return Err(not_found(&task_id));
-        }
+        require_editable_task(&guard, &task_id)?;
         let transcript_artifact = guard
             .artifacts
             .get(&task_id)
@@ -1738,26 +1949,26 @@ async fn get_task_subtitle_export(
     let content = export_transcript_document(&transcript_document, &format)
         .map_err(|message| bad_request("SUBTITLE_EXPORT_INVALID", message))?;
     let file_name = format!("subtitles-export.{format}");
-    let stored_export =
-        state.write_task_analysis_text(&settings, &task_id, &file_name, &content)?;
-    let export_file_path = state.resolve_artifact_path(&settings, &stored_export.artifact_path);
     let artifact_id = format!("{task_id}-subtitle-export-{format}");
-    let export_sha256 = sha256_file(&export_file_path)
-        .unwrap_or_else(|_| pseudo_hash(&format!("{task_id}-subtitle-export-{format}")));
 
     let mut guard = state.inner.lock().expect("state lock");
-    let task_artifacts = guard.artifacts.entry(task_id.clone()).or_default();
-    task_artifacts.retain(|artifact| artifact.artifact_id != artifact_id);
-    task_artifacts.push(VideoCutArtifact {
-        artifact_id: artifact_id.clone(),
-        task_id: task_id.clone(),
-        render_id: None,
-        kind: "subtitle".to_string(),
-        path: stored_export.artifact_path.clone(),
-        size_bytes: stored_export.size_bytes,
-        sha256: export_sha256,
-        created_at: fixed_time(),
-    });
+    require_editable_task(&guard, &task_id)?;
+    let stored_export =
+        state.write_task_analysis_text(&settings, &task_id, &file_name, &content)?;
+    upsert_task_artifact(
+        &mut guard,
+        &task_id,
+        VideoCutArtifact {
+            artifact_id: artifact_id.clone(),
+            task_id: task_id.clone(),
+            render_id: None,
+            kind: "subtitle".to_string(),
+            path: stored_export.artifact_path.clone(),
+            size_bytes: stored_export.size_bytes,
+            sha256: stored_export.sha256,
+            created_at: fixed_time(),
+        },
+    );
     push_event(
         &mut guard,
         &task_id,
@@ -1805,13 +2016,9 @@ async fn render_task_with_selection(
         let current_task = guard
             .tasks
             .get(&task_id)
+            .cloned()
             .ok_or_else(|| not_found(&task_id))?;
-        if current_task.status == "rendering" {
-            return Err(conflict(
-                "RENDER_ALREADY_RUNNING",
-                format!("Render is already running for task: {task_id}."),
-            ));
-        }
+        reject_if_task_busy(&current_task, "render")?;
         let plan = guard
             .plans
             .get(&task_id)
@@ -1887,6 +2094,12 @@ async fn render_task_with_selection(
         .unwrap_or_else(|| select_render_audio_assets_for_plan(&settings, None));
 
     for (index, (plan, render_id)) in selected_plans.iter().zip(render_ids.iter()).enumerate() {
+        if let Some(task) = {
+            let guard = state.inner.lock().expect("state lock");
+            cancelled_task(&guard, &task_id)
+        } {
+            return Ok(ok(task));
+        }
         let render_files = state.prepare_task_render_files(&settings, &task_id, render_id)?;
         let render_result = render_subtitle_ass(RenderSubtitleRequest {
             settings: &settings,
@@ -1942,6 +2155,9 @@ async fn render_task_with_selection(
         match render_result {
             Ok((render_result, subtitle_result, cover_result, manifest_result)) => {
                 let mut guard = state.inner.lock().expect("state lock");
+                if let Some(task) = cancelled_task(&guard, &task_id) {
+                    return Ok(ok(task));
+                }
                 upsert_task_artifact(
                     &mut guard,
                     &task_id,
@@ -2016,6 +2232,9 @@ async fn render_task_with_selection(
             }
             Err(error) => {
                 let mut guard = state.inner.lock().expect("state lock");
+                if let Some(task) = cancelled_task(&guard, &task_id) {
+                    return Ok(ok(task));
+                }
                 if render_files.log_file_path.is_file()
                     && let Ok(metadata) = std::fs::metadata(&render_files.log_file_path)
                 {
@@ -2061,6 +2280,9 @@ async fn render_task_with_selection(
     }
 
     let mut guard = state.inner.lock().expect("state lock");
+    if let Some(task) = cancelled_task(&guard, &task_id) {
+        return Ok(ok(task));
+    }
     let final_message = if selection == RenderSelection::AllSegments {
         format!(
             "Batch rendered {} segments into MP4, subtitles, covers, manifests, and logs.",
@@ -2138,7 +2360,14 @@ async fn cancel_task(
     ApiPath(task_id): ApiPath<String>,
 ) -> Result<Json<ApiEnvelope<VideoCutTask>>, HostError> {
     let mut guard = state.inner.lock().expect("state lock");
-    let task = update_task(&mut guard, &task_id, "cancelled", 5, "cancelled")?;
+    let task = guard
+        .tasks
+        .get(&task_id)
+        .cloned()
+        .ok_or_else(|| not_found(&task_id))?;
+    reject_if_task_terminal(&task)?;
+    let progress = task.progress;
+    let task = update_task(&mut guard, &task_id, "cancelled", progress, "cancelled")?;
     push_event(
         &mut guard,
         &task_id,
@@ -2154,19 +2383,27 @@ async fn cancel_task(
 async fn get_task_events(
     State(state): State<AppState>,
     ApiPath(task_id): ApiPath<String>,
-) -> Json<ApiEnvelope<Vec<VideoCutProgressEvent>>> {
+) -> Result<Json<ApiEnvelope<Vec<VideoCutProgressEvent>>>, HostError> {
     let guard = state.inner.lock().expect("state lock");
-    ok(guard.events.get(&task_id).cloned().unwrap_or_default())
+    if !guard.tasks.contains_key(&task_id) {
+        return Err(not_found(&task_id));
+    }
+
+    Ok(ok(guard.events.get(&task_id).cloned().unwrap_or_default()))
 }
 
 async fn get_task_artifacts(
     State(state): State<AppState>,
     ApiPath(task_id): ApiPath<String>,
-) -> Json<ApiEnvelope<Vec<VideoCutArtifact>>> {
+) -> Result<Json<ApiEnvelope<Vec<VideoCutArtifact>>>, HostError> {
     let guard = state.inner.lock().expect("state lock");
-    ok(dedupe_artifacts_by_id(
+    if !guard.tasks.contains_key(&task_id) {
+        return Err(not_found(&task_id));
+    }
+
+    Ok(ok(dedupe_artifacts_by_id(
         guard.artifacts.get(&task_id).cloned().unwrap_or_default(),
-    ))
+    )))
 }
 
 async fn get_artifact_download(
@@ -2242,19 +2479,24 @@ async fn get_artifact_content(
                 return range_not_satisfiable_response(total_size);
             }
         };
-        let bytes = read_file_range(&file_path, byte_range)
+        let mut file = tokio::fs::File::open(&file_path)
+            .await
             .map_err(|_| artifact_content_not_found(&task_id, &artifact_id))?;
+        file.seek(SeekFrom::Start(byte_range.start))
+            .await
+            .map_err(|_| artifact_content_not_found(&task_id, &artifact_id))?;
+        let stream = ReaderStream::new(file.take(byte_range.length()));
         return Response::builder()
             .status(StatusCode::PARTIAL_CONTENT)
             .header(CONTENT_TYPE, content_type)
             .header(ACCEPT_RANGES, "bytes")
             .header(CONTENT_RANGE, byte_range.content_range(total_size))
-            .header(CONTENT_LENGTH, bytes.len().to_string())
+            .header(CONTENT_LENGTH, byte_range.length().to_string())
             .header(CONTENT_DISPOSITION, content_disposition)
             .header(CACHE_CONTROL, "private, no-store")
             .header(PRAGMA, "no-cache")
             .header("x-content-type-options", "nosniff")
-            .body(Body::from(bytes))
+            .body(Body::from_stream(stream))
             .map_err(|error| {
                 bad_request(
                     "ARTIFACT_RESPONSE_INVALID",
@@ -2263,18 +2505,20 @@ async fn get_artifact_content(
             });
     }
 
-    let bytes = std::fs::read(&file_path)
+    let file = tokio::fs::File::open(&file_path)
+        .await
         .map_err(|_| artifact_content_not_found(&task_id, &artifact_id))?;
+    let stream = ReaderStream::new(file);
     Response::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, content_type)
         .header(ACCEPT_RANGES, "bytes")
-        .header(CONTENT_LENGTH, bytes.len().to_string())
+        .header(CONTENT_LENGTH, total_size.to_string())
         .header(CONTENT_DISPOSITION, content_disposition)
         .header(CACHE_CONTROL, "private, no-store")
         .header(PRAGMA, "no-cache")
         .header("x-content-type-options", "nosniff")
-        .body(Body::from(bytes))
+        .body(Body::from_stream(stream))
         .map_err(|error| {
             bad_request(
                 "ARTIFACT_RESPONSE_INVALID",
@@ -2334,14 +2578,6 @@ fn parse_byte_range(header_value: &str, total_size: u64) -> Result<ByteRange, ()
     }
 
     Ok(ByteRange { start, end })
-}
-
-fn read_file_range(path: &std::path::Path, range: ByteRange) -> std::io::Result<Vec<u8>> {
-    let mut file = File::open(path)?;
-    file.seek(SeekFrom::Start(range.start))?;
-    let mut bytes = vec![0; range.length() as usize];
-    file.read_exact(&mut bytes)?;
-    Ok(bytes)
 }
 
 fn range_not_satisfiable_response(total_size: u64) -> Result<Response, HostError> {

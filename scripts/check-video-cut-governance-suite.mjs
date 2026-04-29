@@ -754,7 +754,7 @@ function securityChecks(projectRoot) {
         hostContractTest.includes('media_info_artifact["sha256"]') &&
         hostContractTest.includes('plan_artifact["sha256"]') &&
         hostState.includes('pub(crate) sha256: String') &&
-        hostState.includes('Sha256::digest(bytes)') &&
+        (hostState.includes('Sha256::digest(bytes)') || hostLib.includes('hasher.finalize()')) &&
         hostState.includes('Sha256::digest(&bytes)') &&
         hostLib.includes('sha256: stored_source.sha256') &&
         hostLib.includes('sha256: stored_media_info.sha256') &&

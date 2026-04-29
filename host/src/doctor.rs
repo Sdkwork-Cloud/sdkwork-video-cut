@@ -201,10 +201,10 @@ fn diagnostic_redacted_settings(settings: &Value) -> Value {
     let mut redacted = sanitize_settings(settings);
     if let Some(storage) = redacted.get_mut("storage").and_then(Value::as_object_mut) {
         for key in ["workspaceRoot", "artifactRoot", "tempRoot"] {
-            if let Some(value) = storage.get(key).and_then(Value::as_str) {
-                if is_server_local_path(value) {
-                    storage.insert(key.to_string(), json!(REDACTED_PATH));
-                }
+            if let Some(value) = storage.get(key).and_then(Value::as_str)
+                && is_server_local_path(value)
+            {
+                storage.insert(key.to_string(), json!(REDACTED_PATH));
             }
         }
     }
