@@ -641,10 +641,12 @@ describe('video cut OpenAPI contract', () => {
 });
 
 describe('runtime environment template', () => {
-  it('documents HTTP host runtime settings as the runnable default', () => {
+  it('keeps browser host configuration out of Vite build-time environment variables', () => {
     const envExample = readFileSync(envExamplePath, 'utf8');
 
-    expect(envExample).toContain('VITE_VIDEO_CUT_HOST_MODE=http');
-    expect(envExample).toContain('VITE_VIDEO_CUT_HOST_BASE_URL=http://127.0.0.1:6177/api/video-cut/v1');
+    expect(envExample).toContain('SDKWORK_VIDEO_CUT_RUNTIME_MODE=desktop-local');
+    expect(envExample).toContain('SDKWORK_VIDEO_CUT_WORKSPACE_ROOT=./workspace');
+    expect(envExample).not.toContain('VITE_VIDEO_CUT_HOST_MODE');
+    expect(envExample).not.toContain('VITE_VIDEO_CUT_HOST_BASE_URL');
   });
 });

@@ -6,6 +6,7 @@ import { dirname, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { createReportPath } from './lib/report-paths.mjs';
+import { normalizeCliArgs } from './lib/cli-args.mjs';
 
 const REPORT_VERSION = 'video-cut.governance-suite.v1';
 const COMMAND = 'check:governance';
@@ -41,7 +42,7 @@ const ARCHITECTURE_DOCS = [
 ];
 
 export function parseGovernanceArgs(argv) {
-  const args = [...argv];
+  const args = normalizeCliArgs(argv);
   let category = 'all';
   let json = false;
   let reportDir = DEFAULT_REPORT_DIR;
@@ -204,6 +205,8 @@ function runtimeBoundaryChecks(projectRoot) {
       envAccessViolations.push(file);
     }
   }
+  const runtimeConfig = readText(projectRoot, 'host/src/runtime_config.rs');
+  const runtimeConfigTest = readText(projectRoot, 'host/tests/runtime_config_test.rs');
 
   return [
     checkResult({
@@ -219,6 +222,18 @@ function runtimeBoundaryChecks(projectRoot) {
       passed: envAccessViolations.length === 0,
       evidence: 'Host env access is confined to runtime_config.rs and tooling.rs adapters.',
       failMessage: `Host env access outside runtime adapters: ${envAccessViolations.join(', ')}`,
+    }),
+    checkResult({
+      id: 'host-runtime-rejects-legacy-video-cut-env',
+      category: 'runtime-boundaries',
+      passed:
+        runtimeConfig.includes('FORBIDDEN_LEGACY_ENV_PREFIX') &&
+        runtimeConfig.includes('reject_legacy_environment_aliases') &&
+        runtimeConfig.includes('Legacy VIDEO_CUT_* environment variables are not supported') &&
+        !runtimeConfig.includes('apply_legacy_aliases') &&
+        runtimeConfigTest.includes('runtime_config_rejects_legacy_video_cut_environment_aliases'),
+      evidence: 'Host runtime fails fast on legacy VIDEO_CUT_* environment aliases and accepts only SDKWORK_VIDEO_CUT_* runtime configuration.',
+      failMessage: 'Host runtime must reject legacy VIDEO_CUT_* aliases instead of silently accepting compatibility configuration.',
     }),
     checkResult({
       id: 'canonical-host-route-only',
@@ -254,6 +269,7 @@ function securityChecks(projectRoot) {
   const hostApiErrors = readText(projectRoot, 'src/domain/hostApiErrors.ts');
   const diagnosticSupportBundleCard = readText(projectRoot, 'src/components/DiagnosticSupportBundleCard.tsx');
   const videoCutHostClientPort = readText(projectRoot, 'src/ports/videoCutHostClient.ts');
+  const videoCutHostClientFactory = readText(projectRoot, 'src/services/createVideoCutHostClient.ts');
   const httpHostClient = readText(projectRoot, 'src/services/httpHostClient.ts');
   const mockHostClient = readText(projectRoot, 'src/services/mockHostClient.ts');
   const httpHostClientTest = readText(projectRoot, 'src/__tests__/httpHostClient.test.ts');
@@ -284,6 +300,44 @@ function securityChecks(projectRoot) {
   const mockUpdateTaskPlanBlock = sectionBetween(mockHostClient, 'async updateTaskPlan(taskId: string, plan: VideoSplitPlan)', 'async updateTaskTranscript');
   const createTaskInputType = sectionBetween(videoCutTypes, 'export interface CreateTaskInput', 'export interface ValidationError');
   const createTaskOpenApiSchema = sectionBetween(openApi, '    CreateTaskInput:', '    AttachTaskSourceInput:');
+  const viteServerTokenBoundaryFiles = [
+    '.env.example',
+    'README.md',
+    'src/services/createVideoCutHostClient.ts',
+  ];
+  const viteServerTokenBoundaryViolations = viteServerTokenBoundaryFiles.filter((path) =>
+    readText(projectRoot, path).includes('VITE_VIDEO_CUT_SERVER_TOKEN'),
+  );
+  const viteHostRuntimeBoundaryFiles = [
+    '.env.example',
+    'README.md',
+    'deploy/docker/Dockerfile',
+    'scripts/run-video-cut-managed-ui-smoke.mjs',
+    'scripts/run-video-cut-tauri-dev.mjs',
+    'scripts/run-video-cut-tauri-dev-stack.mjs',
+    'src/services/createVideoCutHostClient.ts',
+  ];
+  const viteHostRuntimeBoundaryViolations = viteHostRuntimeBoundaryFiles.filter((path) =>
+    /VITE_VIDEO_CUT_HOST_(?:MODE|BASE_URL)/.test(readText(projectRoot, path)),
+  );
+  const legacyBrowserAuthTokenGlobalFiles = [
+    'src/services/createVideoCutHostClient.ts',
+    'scripts/run-video-cut-managed-ui-smoke.mjs',
+    'README.md',
+    'docs/architecture/08-runtime-configuration-and-capability-standard.md',
+  ];
+  const legacyBrowserAuthTokenGlobalViolations = legacyBrowserAuthTokenGlobalFiles.filter((path) =>
+    readText(projectRoot, path).includes('__SDKWORK_VIDEO_CUT_AUTH_TOKEN__'),
+  );
+  const browserChildEnvUtility = readText(projectRoot, 'scripts/lib/safe-env.mjs');
+  const browserChildEnvConsumers = [
+    'scripts/run-video-cut-managed-ui-smoke.mjs',
+    'scripts/run-video-cut-tauri-dev.mjs',
+    'scripts/run-video-cut-tauri-dev-stack.mjs',
+  ];
+  const browserChildEnvConsumerViolations = browserChildEnvConsumers.filter(
+    (path) => !readText(projectRoot, path).includes('createBrowserChildProcessEnv'),
+  );
 
   return [
     checkResult({
@@ -812,6 +866,55 @@ function securityChecks(projectRoot) {
       evidence: 'Browser mock persistence strips write-only AI and STT secret fields.',
       failMessage: 'Browser persistence must strip write-only AI and STT secret fields before localStorage writes.',
     }),
+    checkResult({
+      id: 'frontend-no-vite-server-token-secret',
+      category: 'security',
+      passed:
+        viteServerTokenBoundaryViolations.length === 0 &&
+        videoCutHostClientFactory.includes('__SDKWORK_VIDEO_CUT_RUNTIME_CONFIG__') &&
+        !videoCutHostClientFactory.includes("readEnv('VITE_VIDEO_CUT_SERVER_TOKEN')"),
+      evidence:
+        'Browser Host client does not read server bearer tokens from Vite build-time environment variables.',
+      failMessage: `Server bearer tokens must not use VITE_* build-time variables in browser-delivered code: ${viteServerTokenBoundaryViolations.join(', ')}`,
+    }),
+    checkResult({
+      id: 'frontend-no-legacy-runtime-auth-token-global',
+      category: 'security',
+      passed:
+        legacyBrowserAuthTokenGlobalViolations.length === 0 &&
+        videoCutHostClientFactory.includes('__SDKWORK_VIDEO_CUT_RUNTIME_CONFIG__'),
+      evidence:
+        'Browser runtime Host URL and auth token injection use the single __SDKWORK_VIDEO_CUT_RUNTIME_CONFIG__ object.',
+      failMessage: `Browser runtime auth must use __SDKWORK_VIDEO_CUT_RUNTIME_CONFIG__ only, not legacy token-only globals: ${legacyBrowserAuthTokenGlobalViolations.join(', ')}`,
+    }),
+    checkResult({
+      id: 'frontend-no-vite-host-runtime-config',
+      category: 'security',
+      passed:
+        viteHostRuntimeBoundaryViolations.length === 0 &&
+        videoCutHostClientFactory.includes('__SDKWORK_VIDEO_CUT_RUNTIME_CONFIG__') &&
+        !videoCutHostClientFactory.includes("readEnv('VITE_VIDEO_CUT_HOST_MODE')") &&
+        !videoCutHostClientFactory.includes("readEnv('VITE_VIDEO_CUT_HOST_BASE_URL')"),
+      evidence:
+        'Browser Host client uses same-origin defaults or runtime-injected Host settings instead of Vite build-time Host configuration.',
+      failMessage: `Host runtime configuration must not use VITE_* build-time variables in browser-delivered code: ${viteHostRuntimeBoundaryViolations.join(', ')}`,
+    }),
+    checkResult({
+      id: 'browser-child-process-env-sanitized',
+      category: 'security',
+      passed:
+        browserChildEnvUtility.includes('createBrowserChildProcessEnv') &&
+        browserChildEnvUtility.includes('PRODUCT_ENV_PREFIX') &&
+        browserChildEnvUtility.includes('BROWSER_EXPOSED_ENV_PREFIX') &&
+        browserChildEnvUtility.includes('normalizedKey') &&
+        browserChildEnvUtility.includes('SDKWORK_VIDEO_CUT_') &&
+        browserChildEnvUtility.includes('VIDEO_CUT_') &&
+        browserChildEnvUtility.includes('startsWith(PRODUCT_ENV_PREFIX)') &&
+        browserChildEnvConsumerViolations.length === 0,
+      evidence:
+        'Browser-facing dev and smoke child processes strip VITE_*, SDKWORK_VIDEO_CUT_*, and legacy VIDEO_CUT_* environment variables before launching frontend runtimes.',
+      failMessage: `Frontend child processes must use scripts/lib/safe-env.mjs createBrowserChildProcessEnv to avoid inheriting VITE_*, SDKWORK_VIDEO_CUT_*, or legacy VIDEO_CUT_* values: ${browserChildEnvConsumerViolations.join(', ')}`,
+    }),
   ];
 }
 
@@ -852,23 +955,80 @@ function licenseChecks(projectRoot, reportRoot) {
 
 function releaseFlowChecks(projectRoot) {
   const releaseScript = readText(projectRoot, 'scripts/release/local-release-command.mjs');
+  const releaseReadyScript = readText(projectRoot, 'scripts/release/run-release-ready.mjs');
+  const releaseWithGovernanceScript = readText(projectRoot, 'scripts/release/run-release-with-governance.mjs');
+  const releaseMatrixScript = readText(projectRoot, 'scripts/release/run-release-matrix.mjs');
+  const releaseSmokeMatrixScript = readText(projectRoot, 'scripts/release/run-release-smoke-matrix.mjs');
+  const releaseSmokePreflightScript = readText(projectRoot, 'scripts/release/check-release-smoke-preflight.mjs');
+  const releaseSmokeReadyScript = readText(projectRoot, 'scripts/release/run-release-smoke-ready.mjs');
+  const releaseSmokeReadinessScript = readText(projectRoot, 'scripts/check-video-cut-release-smoke-readiness.mjs');
+  const releaseContractsScript = readText(projectRoot, 'scripts/check-video-cut-release-contracts.mjs');
+  const releaseSignatureVerifierScript = readText(projectRoot, 'scripts/verify-video-cut-release-signature.mjs');
+  const deploymentArtifactsScript = readText(projectRoot, 'scripts/check-video-cut-deployment-artifacts.mjs');
+  const openApiContractsScript = readText(projectRoot, 'scripts/check-video-cut-openapi-contracts.mjs');
+  const smokeEvidenceContractsScript = readText(projectRoot, 'scripts/check-video-cut-smoke-evidence-contracts.mjs');
+  const httpWorkflowSmokeScript = readText(projectRoot, 'scripts/run-video-cut-http-workflow-smoke.mjs');
+  const managedServerSmokeScript = readText(projectRoot, 'scripts/run-video-cut-managed-server-smoke.mjs');
+  const managedUiSmokeScript = readText(projectRoot, 'scripts/run-video-cut-managed-ui-smoke.mjs');
+  const deploymentDoctorScript = readText(projectRoot, 'scripts/run-video-cut-deployment-doctor.mjs');
   const runtimeProfileRegistry = readText(projectRoot, 'deploy/runtime-profiles.yaml');
   const packageJson = readJson(projectRoot, 'package.json');
   const releaseScriptNames = [
+    'release:ready',
     'release:package:desktop',
     'release:package:server',
     'release:package:web',
     'release:package:container',
     'release:package:kubernetes',
+    'release:package:matrix',
     'release:smoke:desktop',
     'release:smoke:server',
     'release:smoke:web',
     'release:smoke:container',
     'release:smoke:kubernetes',
+    'release:smoke:preflight',
+    'release:smoke:matrix',
+    'release:smoke:ready',
   ];
+  const releaseSmokeReadinessScriptDrift =
+    packageJson.scripts?.['check:release-smoke-readiness'] ===
+      'node scripts/check-video-cut-release-smoke-readiness.mjs' &&
+    existsSync(resolve(projectRoot, 'scripts/check-video-cut-release-smoke-readiness.mjs'))
+      ? []
+      : ['check:release-smoke-readiness'];
   const missingScripts = releaseScriptNames.filter((name) => !packageJson.scripts?.[name]);
   const smokeScriptNames = releaseScriptNames.filter((name) => name.startsWith('release:smoke:'));
+  const packageScriptDrift = releaseScriptNames
+    .filter((name) => name.startsWith('release:package:'))
+    .filter((name) => name !== 'release:package:matrix')
+    .filter((name) => !String(packageJson.scripts?.[name] ?? '').includes('scripts/release/run-release-with-governance.mjs package'));
+  const matrixPackageScriptDrift =
+    packageJson.scripts?.['release:package:matrix'] === 'node scripts/release/run-release-matrix.mjs' ? [] : ['release:package:matrix'];
+  const releaseReadyScriptDrift =
+    packageJson.scripts?.['release:ready'] === 'node scripts/release/run-release-ready.mjs' &&
+    existsSync(resolve(projectRoot, 'scripts/release/run-release-ready.mjs'))
+      ? []
+      : ['release:ready'];
+  const smokePreflightScriptDrift =
+    packageJson.scripts?.['release:smoke:preflight'] === 'node scripts/release/check-release-smoke-preflight.mjs'
+      ? []
+      : ['release:smoke:preflight'];
+  const smokeReadyScriptDrift =
+    packageJson.scripts?.['release:smoke:ready'] === 'node scripts/release/run-release-smoke-ready.mjs' &&
+    existsSync(resolve(projectRoot, 'scripts/release/run-release-smoke-ready.mjs'))
+      ? []
+      : ['release:smoke:ready'];
+  const smokeGovernanceScriptDrift = smokeScriptNames.filter(
+    (name) =>
+      name !== 'release:smoke:matrix' &&
+      name !== 'release:smoke:preflight' &&
+      name !== 'release:smoke:ready' &&
+      !String(packageJson.scripts?.[name] ?? '').includes('scripts/release/run-release-with-governance.mjs smoke'),
+  );
   const smokeEvidenceViolations = smokeScriptNames.filter((name) => {
+    if (name === 'release:smoke:matrix' || name === 'release:smoke:preflight' || name === 'release:smoke:ready') {
+      return false;
+    }
     const script = packageJson.scripts?.[name] ?? '';
     const target = name.split(':').pop();
     return (
@@ -884,12 +1044,398 @@ function releaseFlowChecks(projectRoot) {
     'manifestPath = normalizeProjectPath',
     'checksumsPath = normalizeProjectPath',
     'releaseNotesPath = normalizeProjectPath',
+    "createArtifactRecordFromBytes('release-notes.md'",
     'qualityGateReportPath = normalizeProjectPath',
     '.map(({ exists, absolutePath, ...artifact }) => artifact)',
     'findLocalAbsolutePath(report)',
     'reportContainsSensitiveData(report)',
   ];
   const missingReleaseReportPathTokens = releaseReportPathTokens.filter((token) => !releaseScript.includes(token));
+  const releaseGovernanceEvidenceTokens = [
+    'run-release-with-governance.mjs',
+    'createReleaseWithGovernanceReport',
+    "from '../lib/report-safety.mjs'",
+    'createDeploymentArtifactsReport',
+    'createOpenApiContractsReport',
+    'createSmokeEvidenceContractsReport',
+    'createFeatureReadinessPolicyReport',
+    'createReleaseContractsReport',
+    'releaseContracts: toReleaseContractsEvidence',
+    'RELEASE_CONTRACTS_FAILED',
+    'createReleaseSignatureVerificationReport',
+    'signatureVerification: toSignatureVerificationEvidence',
+    'RELEASE_SIGNATURE_VERIFICATION_FAILED',
+    'video-cut.release-signature-verification.v1',
+    'verify:release-signature',
+    'GOVERNANCE_EVIDENCE_BUNDLE_VERSION',
+    'video-cut.governance-evidence-bundle.v1',
+    'governance-evidence-bundle.json',
+    'createGovernanceEvidenceBundle',
+    'createGovernanceEvidenceBundleReport',
+    'SMOKE_EVIDENCE_BUNDLE_VERSION',
+    'video-cut.smoke-evidence-bundle.v1',
+    'smoke-evidence-bundle.json',
+    'createSmokeEvidenceBundle',
+    'createSmokeEvidenceSummary',
+    'PROVENANCE_VERSION',
+    'video-cut.release-provenance.v1',
+    'provenance.json',
+    'createReleaseProvenance',
+    'artifactManifestSha256',
+    "'release-notes.md'",
+    'RELEASE_SIGNATURE_VERSION',
+    'video-cut.release-signature.v1',
+    'release-signature.json',
+    'createReleaseSignature',
+    "'release-notes'",
+    'local-deterministic-digest',
+    'createGovernanceReportDefinitions',
+    'REQUIRED_GOVERNANCE_REPORTS',
+    "fileName: 'cli-contracts-report.json'",
+    "fileName: 'database-contracts-report.json'",
+    "fileName: 'deployment-artifacts-report.json'",
+    'governance-evidence-deployment-artifacts',
+    "fileName: 'deployment-matrix-report.json'",
+    "fileName: 'openapi-contracts-report.json'",
+    'governance-evidence-openapi-contracts',
+    "fileName: 'smoke-evidence-contracts-report.json'",
+    'governance-evidence-smoke-evidence-contracts',
+    "fileName: 'feature-readiness-report.json'",
+    "fileName: 'feature-readiness-policy-report.json'",
+    'video-cut.feature-readiness-policy-report.v1',
+    'check:feature-readiness-policy',
+    "fileName: 'governance-suite-report.json'",
+    'validateGovernanceReport',
+    'governance-evidence-${definition.id}',
+    'summary?.blockingFailures',
+    'summary?.gaps',
+    'reportContainsSensitiveData(report)',
+    'findLocalAbsolutePath(report)',
+    'release-packages-require-governance-evidence',
+  ];
+  const releaseMatrixTokens = [
+    "REPORT_VERSION = 'video-cut.release-matrix-report.v1'",
+    "COMMAND = 'release:package:matrix'",
+    "DEFAULT_RELEASE_ASSETS_DIR = 'artifacts/release-matrix'",
+    "MATRIX_TARGETS = ['desktop', 'server', 'web', 'container', 'kubernetes']",
+    "from '../lib/report-safety.mjs'",
+    'parseReleaseMatrixArgs',
+    'createReleaseMatrixReport',
+    'createReleaseWithGovernanceReport',
+    'release-matrix-report.json',
+    'release-matrix-target-coverage',
+    'release-matrix-isolated-assets',
+    'release-matrix/${target}',
+    'release-matrix-redaction-and-path-safety',
+    'release-signature.json',
+    'signatureVerification',
+    'verify:release-signature',
+    'video-cut.release-signature-verification.v1',
+    'provenance.json',
+    'release-notes.md',
+    'releaseNotes',
+    'sdkwork-video-cut-sbom.cdx.json',
+    'RELEASE_MATRIX_TARGET_FAILED',
+    'release:package:matrix',
+  ];
+  const releaseReadyTokens = [
+    "REPORT_VERSION = 'video-cut.release-ready-report.v1'",
+    "COMMAND = 'release:ready'",
+    "DEFAULT_RELEASE_ASSETS_DIR = 'artifacts/release-matrix'",
+    "DEFAULT_SMOKE_RELEASE_ASSETS_DIR = 'artifacts/release-smoke-matrix'",
+    "DEFAULT_REPORT_DIR = 'artifacts/governance'",
+    "from '../lib/report-safety.mjs'",
+    'parseReleaseReadyArgs',
+    'createReleaseReadyReport',
+    'classifySmokeStatus',
+    'createGovernanceReport',
+    'createReleaseMatrixReport',
+    'createReleaseSmokeReadyReport',
+    'release-ready-report.json',
+    'packageStatus',
+    'smokeStatus',
+    'promotionEligible',
+    'environmentStatus',
+    'environmentBlockers',
+    'remediationSummary',
+    'createRemediationSummary',
+    'ffmpegPath',
+    'cargoPath',
+    'chromeExecutablePath',
+    'bindHost',
+    'timeoutMs',
+    'release-ready-governance',
+    'release-ready-package-matrix',
+    'release-ready-smoke-ready',
+    'release-ready-promotion-eligible',
+    'release-ready-redaction-and-path-safety',
+    'RELEASE_READY_FAILED',
+    'release:ready',
+  ];
+  const releaseSmokeMatrixTokens = [
+    "REPORT_VERSION = 'video-cut.release-smoke-matrix-report.v1'",
+    "COMMAND = 'release:smoke:matrix'",
+    "DEFAULT_RELEASE_ASSETS_DIR = 'artifacts/release-smoke-matrix'",
+    "MATRIX_TARGETS = ['desktop', 'server', 'web', 'container', 'kubernetes']",
+    "from '../lib/report-safety.mjs'",
+    'parseReleaseSmokeMatrixArgs',
+    'createReleaseSmokeMatrixReport',
+    'createHttpWorkflowSmokeReport',
+    'createManagedServerWorkflowSmokeReport',
+    'createManagedUiWorkflowSmokeReport',
+    'createSmokeEvidenceContractsReport',
+    'createReleaseWithGovernanceReport',
+    'release-smoke-matrix-report.json',
+    'release-smoke-matrix-target-coverage',
+    'release-smoke-matrix-isolated-smoke-reports',
+    'release-smoke-matrix-redaction-and-path-safety',
+    'RELEASE_SMOKE_MATRIX_TARGET_FAILED',
+    'environmentBlockers',
+    'ffmpegPath',
+    'cargoPath',
+    'chromeExecutablePath',
+    'bindHost',
+    'timeoutMs',
+    'toEnvironmentBlockerEvidence',
+    'release:smoke:matrix',
+    'smokeEvidenceContracts',
+    'signatureVerification',
+  ];
+  const releaseSmokePreflightTokens = [
+    "REPORT_VERSION = 'video-cut.release-smoke-preflight-report.v1'",
+    "COMMAND = 'release:smoke:preflight'",
+    "DEFAULT_RELEASE_ASSETS_DIR = 'artifacts/release-smoke-matrix'",
+    "DEFAULT_REPORT_DIR = 'artifacts/governance'",
+    "from '../lib/report-safety.mjs'",
+    "from '../lib/release-remediation-summary.mjs'",
+    'parseReleaseSmokePreflightArgs',
+    'createReleaseSmokePreflightReport',
+    'release-smoke-preflight-report.json',
+    'runnerConfig',
+    'remediationActions',
+    'release-smoke-preflight-ffmpeg-spawn',
+    'release-smoke-preflight-cargo-spawn',
+    'release-smoke-preflight-host-cargo-manifest',
+    'release-smoke-preflight-vite-bin',
+    'release-smoke-preflight-browser-executable',
+    'release-smoke-preflight-local-ports',
+    'release-smoke-preflight-writable-directories',
+    'release-smoke-preflight-redaction-and-path-safety',
+    'environmentStatus',
+    'environmentBlockers',
+    'RELEASE_SMOKE_ENV_TOOL_SPAWN_BLOCKED',
+    'RELEASE_SMOKE_ENV_BROWSER_UNAVAILABLE',
+    'RELEASE_SMOKE_ENV_PORTS_UNAVAILABLE',
+    'RELEASE_SMOKE_ENV_WORKSPACE_UNWRITABLE',
+    'RELEASE_SMOKE_ENV_REQUIRED_FILE_MISSING',
+    'RELEASE_SMOKE_ENV_PREFLIGHT_BLOCKED',
+    'RELEASE_SMOKE_PREFLIGHT_FAILED',
+  ];
+  const releaseSmokeReadinessTokens = [
+    "REPORT_VERSION = 'video-cut.release-smoke-readiness-report.v1'",
+    "COMMAND = 'check:release-smoke-readiness'",
+    "DEFAULT_PREFLIGHT_REPORT_PATH = 'artifacts/governance/release-smoke-preflight-report.json'",
+    "DEFAULT_MATRIX_REPORT_PATH = 'artifacts/governance/release-smoke-matrix-report.json'",
+    "from './lib/report-safety.mjs'",
+    "from './lib/release-remediation-summary.mjs'",
+    'parseReleaseSmokeReadinessArgs',
+    'createReleaseSmokeReadinessReport',
+    'release-smoke-readiness-report.json',
+    '--require-ready',
+    'requireReady',
+    'readinessStatus',
+    'promotionEligible',
+    'environmentStatus',
+    'environmentBlockers',
+    'remediationSummary',
+    'createRemediationSummary',
+    'release-smoke-readiness-preflight-report-contract',
+    'release-smoke-readiness-matrix-report-contract',
+    'release-smoke-readiness-classification-contract',
+    'release-smoke-readiness-ready-required',
+    'release-smoke-readiness-promotion-eligible',
+    'release-smoke-readiness-environment-blockers',
+    'release-smoke-readiness-target-coverage',
+    'release-smoke-readiness-redaction-and-path-safety',
+    'RELEASE_SMOKE_MATRIX_PREFLIGHT_BLOCKED',
+    'RELEASE_SMOKE_ENV_TOOL_SPAWN_BLOCKED',
+    'RELEASE_SMOKE_ENV_BROWSER_UNAVAILABLE',
+    'RELEASE_SMOKE_ENV_PORTS_UNAVAILABLE',
+    'RELEASE_SMOKE_ENV_WORKSPACE_UNWRITABLE',
+    'RELEASE_SMOKE_ENV_REQUIRED_FILE_MISSING',
+    'RELEASE_SMOKE_ENV_PREFLIGHT_BLOCKED',
+  ];
+  const releaseSmokeReadyTokens = [
+    "REPORT_VERSION = 'video-cut.release-smoke-ready-report.v1'",
+    "COMMAND = 'release:smoke:ready'",
+    "DEFAULT_RELEASE_ASSETS_DIR = 'artifacts/release-smoke-matrix'",
+    "DEFAULT_REPORT_DIR = 'artifacts/governance'",
+    "from '../lib/report-safety.mjs'",
+    'parseReleaseSmokeReadyArgs',
+    'createReleaseSmokeReadyReport',
+    'createReleaseSmokePreflightReport',
+    'createReleaseSmokeMatrixReport',
+    'createReleaseSmokeReadinessReport',
+    'release-smoke-ready-report.json',
+    'release-smoke-preflight-report.json',
+    'release-smoke-matrix-report.json',
+    'requireReady',
+    'readinessStatus',
+    'promotionEligible',
+    'environmentStatus',
+    'environmentBlockers',
+    'remediationSummary',
+    'createRemediationSummary',
+    'ffmpegPath',
+    'cargoPath',
+    'chromeExecutablePath',
+    'bindHost',
+    'timeoutMs',
+    'release-smoke-ready-preflight',
+    'release-smoke-ready-matrix',
+    'release-smoke-ready-readiness-required',
+    'release-smoke-ready-promotion-eligible',
+    'release-smoke-ready-redaction-and-path-safety',
+    'RELEASE_SMOKE_READY_FAILED',
+    'RELEASE_SMOKE_MATRIX_PREFLIGHT_BLOCKED',
+    'release:smoke:ready',
+  ];
+  const combinedReleaseGovernanceText = `${releaseScript}\n${releaseReadyScript}\n${releaseWithGovernanceScript}\n${releaseSignatureVerifierScript}\n${readText(
+    projectRoot,
+    'docs/architecture/10-engineering-governance-automation-standard.md',
+  )}\n${readText(
+    projectRoot,
+    'docs/architecture/06-quality-security-observability-release-standards.md',
+  )}\n${releaseMatrixScript}\n${releaseSmokeMatrixScript}\n${releaseSmokePreflightScript}\n${releaseSmokeReadyScript}\n${releaseSmokeReadinessScript}`;
+  const missingReleaseGovernanceEvidenceTokens = releaseGovernanceEvidenceTokens.filter(
+    (token) => !combinedReleaseGovernanceText.includes(token),
+  );
+  const missingReleaseMatrixTokens = releaseMatrixTokens.filter((token) => !combinedReleaseGovernanceText.includes(token));
+  const missingReleaseReadyTokens = releaseReadyTokens.filter((token) => !combinedReleaseGovernanceText.includes(token));
+  const missingReleaseSmokeMatrixTokens = releaseSmokeMatrixTokens.filter(
+    (token) => !combinedReleaseGovernanceText.includes(token),
+  );
+  const missingReleaseSmokePreflightTokens = releaseSmokePreflightTokens.filter(
+    (token) => !combinedReleaseGovernanceText.includes(token),
+  );
+  const missingReleaseSmokeReadinessTokens = releaseSmokeReadinessTokens.filter(
+    (token) => !combinedReleaseGovernanceText.includes(token),
+  );
+  const missingReleaseSmokeReadyTokens = releaseSmokeReadyTokens.filter(
+    (token) => !combinedReleaseGovernanceText.includes(token),
+  );
+  const matrixReportSafetyDrift = [
+    ...(releaseMatrixScript.includes('function reportContainsSensitiveData') ? ['release matrix local reportContainsSensitiveData'] : []),
+    ...(releaseMatrixScript.includes('function findLocalAbsolutePath') ? ['release matrix local findLocalAbsolutePath'] : []),
+    ...(releaseMatrixScript.includes('function sanitizeErrorMessage') ? ['release matrix local sanitizeErrorMessage'] : []),
+    ...(releaseReadyScript.includes('function reportContainsSensitiveData')
+      ? ['release ready local reportContainsSensitiveData']
+      : []),
+    ...(releaseReadyScript.includes('function findLocalAbsolutePath')
+      ? ['release ready local findLocalAbsolutePath']
+      : []),
+    ...(releaseReadyScript.includes('function sanitizeErrorMessage')
+      ? ['release ready local sanitizeErrorMessage']
+      : []),
+    ...(releaseSmokeMatrixScript.includes('function reportContainsSensitiveData') ? ['release smoke matrix local reportContainsSensitiveData'] : []),
+    ...(releaseSmokeMatrixScript.includes('function findLocalAbsolutePath') ? ['release smoke matrix local findLocalAbsolutePath'] : []),
+    ...(releaseSmokeMatrixScript.includes('function sanitizeErrorMessage') ? ['release smoke matrix local sanitizeErrorMessage'] : []),
+    ...(releaseSmokePreflightScript.includes('function reportContainsSensitiveData')
+      ? ['release smoke preflight local reportContainsSensitiveData']
+      : []),
+    ...(releaseSmokePreflightScript.includes('function findLocalAbsolutePath')
+      ? ['release smoke preflight local findLocalAbsolutePath']
+      : []),
+    ...(releaseSmokePreflightScript.includes('function sanitizeErrorMessage')
+      ? ['release smoke preflight local sanitizeErrorMessage']
+      : []),
+    ...(releaseSmokeReadinessScript.includes('function reportContainsSensitiveData')
+      ? ['release smoke readiness local reportContainsSensitiveData']
+      : []),
+    ...(releaseSmokeReadinessScript.includes('function findLocalAbsolutePath')
+      ? ['release smoke readiness local findLocalAbsolutePath']
+      : []),
+    ...(releaseSmokeReadinessScript.includes('function sanitizeErrorMessage')
+      ? ['release smoke readiness local sanitizeErrorMessage']
+      : []),
+    ...(releaseSmokeReadyScript.includes('function reportContainsSensitiveData')
+      ? ['release smoke ready local reportContainsSensitiveData']
+      : []),
+    ...(releaseSmokeReadyScript.includes('function findLocalAbsolutePath')
+      ? ['release smoke ready local findLocalAbsolutePath']
+      : []),
+    ...(releaseSmokeReadyScript.includes('function sanitizeErrorMessage')
+      ? ['release smoke ready local sanitizeErrorMessage']
+      : []),
+  ];
+  const releaseSmokePreflightIntegrationDrift = [
+    ...(releaseSmokeMatrixScript.includes('createReleaseSmokePreflightReport') ? [] : ['release smoke matrix missing preflight report factory']),
+    ...(releaseSmokeMatrixScript.includes('preflightImpl') ? [] : ['release smoke matrix missing injectable preflight gate']),
+    ...(releaseSmokeMatrixScript.includes('RELEASE_SMOKE_MATRIX_PREFLIGHT_BLOCKED')
+      ? []
+      : ['release smoke matrix missing preflight blocked status code']),
+    ...(releaseSmokeMatrixScript.includes('release-smoke-matrix-preflight')
+      ? []
+      : ['release smoke matrix missing preflight check evidence']),
+    ...(releaseSmokeReadyScript.includes('createReleaseSmokePreflightReport')
+      ? []
+      : ['release smoke ready missing preflight report factory']),
+    ...(releaseSmokeReadyScript.includes('createReleaseSmokeMatrixReport')
+      ? []
+      : ['release smoke ready missing matrix report factory']),
+    ...(releaseSmokeReadyScript.includes('createReleaseSmokeReadinessReport')
+      ? []
+      : ['release smoke ready missing readiness report factory']),
+    ...(releaseSmokeReadyScript.includes('requireReady: true')
+      ? []
+      : ['release smoke ready missing requireReady hard gate']),
+    ...(releaseSmokeReadyScript.includes('RELEASE_SMOKE_READY_FAILED')
+      ? []
+      : ['release smoke ready missing failure code']),
+    ...(releaseSmokePreflightScript.includes("from '../lib/release-remediation-summary.mjs'")
+      ? []
+      : ['release smoke preflight missing shared remediation summary import']),
+    ...(releaseSmokePreflightScript.includes('function createRemediationActions')
+      ? ['release smoke preflight defines local remediation action rules']
+      : []),
+    ...(releaseSmokePreflightScript.includes('function remediationEnvVar')
+      ? ['release smoke preflight defines local remediation env var rules']
+      : []),
+    ...(releaseSmokePreflightScript.includes('function remediationCommandHint')
+      ? ['release smoke preflight defines local remediation command hint rules']
+      : []),
+    ...(releaseSmokePreflightScript.includes('function remediationAction')
+      ? ['release smoke preflight defines local remediation action text rules']
+      : []),
+    ...(releaseReadyScript.includes('createGovernanceReport')
+      ? []
+      : ['release ready missing governance report factory']),
+    ...(releaseReadyScript.includes('createReleaseMatrixReport')
+      ? []
+      : ['release ready missing package matrix factory']),
+    ...(releaseReadyScript.includes('createReleaseSmokeReadyReport')
+      ? []
+      : ['release ready missing smoke ready factory']),
+    ...(releaseReadyScript.includes('release-ready-smoke-ready')
+      ? []
+      : ['release ready missing smoke hard gate evidence']),
+  ];
+  const runtimeEvidenceScripts = [
+    ['http workflow smoke', httpWorkflowSmokeScript, 'authToken'],
+    ['managed server smoke', managedServerSmokeScript, 'serverToken'],
+    ['managed UI smoke', managedUiSmokeScript, 'serverToken'],
+    ['deployment doctor', deploymentDoctorScript, 'authToken'],
+  ];
+  const runtimeEvidenceSafetyDrift = runtimeEvidenceScripts.flatMap(([name, script, knownSecretVariable]) => [
+    ...(script.includes("from './lib/report-safety.mjs'") ? [] : [`${name} missing report-safety import`]),
+    ...(script.includes('function reportContainsSensitiveData') ? [`${name} local reportContainsSensitiveData`] : []),
+    ...(script.includes('function redactReport') ? [`${name} local redactReport`] : []),
+    ...(script.includes('function shouldRedactLocalPath') ? [`${name} local shouldRedactLocalPath`] : []),
+    ...(script.includes('function isAbsoluteLocalPath') ? [`${name} local isAbsoluteLocalPath`] : []),
+    ...(redactReportReceivesKnownSecret(script, knownSecretVariable)
+      ? []
+      : [`${name} report redaction missing known runtime secret values`]),
+  ]);
   const privateArtifactDeliveryTokens = [
     'artifactContent',
     'artifactRangeContent',
@@ -913,6 +1459,134 @@ function releaseFlowChecks(projectRoot) {
     'ui.localPathLeakVisible',
   ];
   const missingPrivateArtifactDeliveryTokens = privateArtifactDeliveryTokens.filter((token) => !releaseScript.includes(token));
+  const releaseContractTokens = [
+    "REPORT_VERSION = 'video-cut.release-contracts-report.v1'",
+    "from './lib/report-safety.mjs'",
+    "GOVERNANCE_EVIDENCE_BUNDLE_VERSION = 'video-cut.governance-evidence-bundle.v1'",
+    "COMMAND = 'check:release-contracts'",
+    'parseReleaseContractsArgs',
+    'createReleaseContractsReport',
+    'release-manifest.json',
+    'quality-gate-execution-report.json',
+    'SHA256SUMS.txt',
+    'governance-evidence-bundle.json',
+    'SMOKE_EVIDENCE_BUNDLE_VERSION',
+    'video-cut.smoke-evidence-bundle.v1',
+    'smoke-evidence-bundle.json',
+    'PROVENANCE_VERSION',
+    'video-cut.release-provenance.v1',
+    'provenance.json',
+    'RELEASE_SIGNATURE_VERSION',
+    'video-cut.release-signature.v1',
+    'release-signature.json',
+    'release-notes.md',
+    'sdkwork-video-cut-sbom.cdx.json',
+    'checksums-match-manifest',
+    'manifest-artifact-integrity',
+    'release-root-generated-files-sealed',
+    'checkReleaseRootGeneratedFilesSealed',
+    'release-package-file-set-sealed',
+    'checkReleasePackageFileSetSealed',
+    'listReleasePackageFiles',
+    'release-governance-evidence-contract',
+    'release-smoke-evidence-bundle-contract',
+    'release-provenance-contract',
+    'release-signature-contract',
+    'release-notes',
+    'validateGovernanceReport',
+    'validateGovernanceBundleReport',
+    'createGovernanceReportDefinitions',
+    "fileName: 'cli-contracts-report.json'",
+    "fileName: 'deployment-artifacts-report.json'",
+    "fileName: 'openapi-contracts-report.json'",
+    "fileName: 'smoke-evidence-contracts-report.json'",
+    'validateSmokeEvidenceBundle',
+    'validateSmokeEvidenceSummary',
+    'reportContainsSensitiveData',
+    'findLocalAbsolutePath',
+  ];
+  const missingReleaseContractTokens = releaseContractTokens.filter((token) => !releaseContractsScript.includes(token));
+  const releaseSignatureVerificationTokens = [
+    "REPORT_VERSION = 'video-cut.release-signature-verification.v1'",
+    "from './lib/report-safety.mjs'",
+    "COMMAND = 'verify:release-signature'",
+    'parseReleaseSignatureVerificationArgs',
+    'createReleaseSignatureVerificationReport',
+    'release-signature-standard-files-present',
+    'release-signature-digest-valid',
+    'release-signature-verification-redaction-and-path-safety',
+    'release-signature.json',
+    'release-notes.md',
+    'quality-gate-execution-report.json',
+    'SHA256SUMS.txt',
+    'provenance.json',
+    'action-report',
+  ];
+  const missingReleaseSignatureVerificationTokens = releaseSignatureVerificationTokens.filter(
+    (token) => !releaseSignatureVerifierScript.includes(token),
+  );
+  const releaseReportSafetyDrift = [
+    ...(releaseScript.includes('function reportContainsSensitiveData') ? ['local release local reportContainsSensitiveData'] : []),
+    ...(releaseScript.includes('function findLocalAbsolutePath') ? ['local release local findLocalAbsolutePath'] : []),
+    ...(releaseScript.includes('function isLocalAbsolutePath') ? ['local release local isLocalAbsolutePath'] : []),
+    ...(releaseContractsScript.includes('function reportContainsSensitiveData')
+      ? ['release contracts local reportContainsSensitiveData']
+      : []),
+    ...(releaseContractsScript.includes('function findLocalAbsolutePath') ? ['release contracts local findLocalAbsolutePath'] : []),
+    ...(releaseContractsScript.includes('function isLocalAbsolutePath') ? ['release contracts local isLocalAbsolutePath'] : []),
+    ...(releaseSignatureVerifierScript.includes('function reportContainsSensitiveData')
+      ? ['release signature verifier local reportContainsSensitiveData']
+      : []),
+    ...(releaseSignatureVerifierScript.includes('function findLocalAbsolutePath')
+      ? ['release signature verifier local findLocalAbsolutePath']
+      : []),
+    ...(releaseSignatureVerifierScript.includes('function isLocalAbsolutePath')
+      ? ['release signature verifier local isLocalAbsolutePath']
+      : []),
+  ];
+  const deploymentArtifactsTokens = [
+    "REPORT_VERSION = 'video-cut.deployment-artifacts-report.v1'",
+    "COMMAND = 'check:deployment-artifacts'",
+    'parseDeploymentArtifactsArgs',
+    'createDeploymentArtifactsReport',
+    'tauri-desktop-shell-contract',
+    'dockerfile-multi-target-contract',
+    'docker-compose-private-runtime-contract',
+    'kubernetes-chart-private-runtime-contract',
+    'runtime-profiles-contract',
+    'deployment-artifacts-report.json',
+  ];
+  const missingDeploymentArtifactsTokens = deploymentArtifactsTokens.filter(
+    (token) => !deploymentArtifactsScript.includes(token),
+  );
+  const openApiContractsTokens = [
+    "REPORT_VERSION = 'video-cut.openapi-contracts-report.v1'",
+    "COMMAND = 'check:contracts'",
+    'parseOpenApiContractsArgs',
+    'createOpenApiContractsReport',
+    'canonical-openapi-v1-surface',
+    'standard-success-error-envelopes',
+    'multipart-source-file-upload',
+    'binary-artifact-content-serving',
+    'runtime-env-template-no-vite-host-config',
+    'openapi-contracts-report.json',
+  ];
+  const missingOpenApiContractsTokens = openApiContractsTokens.filter((token) => !openApiContractsScript.includes(token));
+  const smokeEvidenceContractsTokens = [
+    "REPORT_VERSION = 'video-cut.smoke-evidence-contracts-report.v1'",
+    "COMMAND = 'check:smoke-evidence'",
+    'parseSmokeEvidenceContractsArgs',
+    'createSmokeEvidenceContractsReport',
+    'http-workflow-smoke-contract',
+    'managed-server-smoke-contract',
+    'managed-ui-smoke-contract',
+    'release-smoke-scripts-contract',
+    'release-smoke-validation-contract',
+    'smoke-evidence-contracts-report.json',
+  ];
+  const missingSmokeEvidenceContractsTokens = smokeEvidenceContractsTokens.filter(
+    (token) => !smokeEvidenceContractsScript.includes(token),
+  );
 
   return [
     checkResult({
@@ -923,10 +1597,78 @@ function releaseFlowChecks(projectRoot) {
         releaseScript.includes('SHA256SUMS.txt') &&
         releaseScript.includes('release-notes.md') &&
         releaseScript.includes('quality-gate-execution-report.json') &&
+        releaseScript.includes('provenance.json') &&
+        releaseScript.includes('release-signature.json') &&
         releaseScript.includes('sdkwork-video-cut-sbom.cdx.json') &&
         releaseScript.includes('CONTRACT_VERSIONS'),
-      evidence: 'Release command writes manifest, checksums, notes, quality gate report, SBOM, and contract versions.',
-      failMessage: 'Release command must write manifest, checksums, release notes, quality gate report, SBOM, and contract versions.',
+      evidence: 'Release command writes manifest, checksums, notes, quality gate report, provenance, signature, SBOM, and contract versions.',
+      failMessage: 'Release command must write manifest, checksums, release notes, quality gate report, provenance, signature, SBOM, and contract versions.',
+    }),
+    checkResult({
+      id: 'cli-contracts-command-present',
+      category: 'release-flow',
+      passed:
+        packageJson.scripts?.['check:cli-contracts'] === 'node scripts/check-video-cut-cli-contracts.mjs' &&
+        existsSync(resolve(projectRoot, 'scripts/check-video-cut-cli-contracts.mjs')),
+      evidence: 'check:cli-contracts validates pure Node delivery CLI contracts without Vite/Vitest runtime dependencies.',
+      failMessage: 'check:cli-contracts must exist and point to scripts/check-video-cut-cli-contracts.mjs.',
+    }),
+    checkResult({
+      id: 'deployment-artifacts-command-present',
+      category: 'release-flow',
+      passed:
+        packageJson.scripts?.['check:deployment-artifacts'] ===
+          'node scripts/check-video-cut-deployment-artifacts.mjs' &&
+        existsSync(resolve(projectRoot, 'scripts/check-video-cut-deployment-artifacts.mjs')) &&
+        missingDeploymentArtifactsTokens.length === 0,
+      evidence:
+        'check:deployment-artifacts validates deployment artifacts through a pure Node JSON report without Vite/Vitest runtime dependencies.',
+      failMessage: `check:deployment-artifacts must exist and validate deployment artifact contracts without Vitest. Missing: ${missingDeploymentArtifactsTokens.join(', ')}`,
+    }),
+    checkResult({
+      id: 'openapi-contracts-command-present',
+      category: 'release-flow',
+      passed:
+        packageJson.scripts?.['check:contracts'] === 'node scripts/check-video-cut-openapi-contracts.mjs' &&
+        existsSync(resolve(projectRoot, 'scripts/check-video-cut-openapi-contracts.mjs')) &&
+        missingOpenApiContractsTokens.length === 0,
+      evidence:
+        'check:contracts validates OpenAPI and runtime env contracts through a pure Node JSON report without Vite/Vitest runtime dependencies.',
+      failMessage: `check:contracts must exist and validate OpenAPI contracts without Vitest. Missing: ${missingOpenApiContractsTokens.join(', ')}`,
+    }),
+    checkResult({
+      id: 'smoke-evidence-contracts-command-present',
+      category: 'release-flow',
+      passed:
+        packageJson.scripts?.['check:smoke-evidence'] ===
+          'node scripts/check-video-cut-smoke-evidence-contracts.mjs' &&
+        existsSync(resolve(projectRoot, 'scripts/check-video-cut-smoke-evidence-contracts.mjs')) &&
+        missingSmokeEvidenceContractsTokens.length === 0,
+      evidence:
+        'check:smoke-evidence validates smoke evidence contracts through a pure Node JSON report without Vite/Vitest runtime dependencies.',
+      failMessage: `check:smoke-evidence must exist and validate smoke evidence contracts without Vitest. Missing: ${missingSmokeEvidenceContractsTokens.join(', ')}`,
+    }),
+    checkResult({
+      id: 'release-contracts-command-present',
+      category: 'release-flow',
+      passed:
+        packageJson.scripts?.['check:release-contracts'] === 'node scripts/check-video-cut-release-contracts.mjs' &&
+        existsSync(resolve(projectRoot, 'scripts/check-video-cut-release-contracts.mjs')) &&
+        missingReleaseContractTokens.length === 0,
+      evidence:
+        'check:release-contracts validates release manifests, release notes, quality reports, action reports, sealed root files, recursively sealed package file sets, SHA256SUMS, provenance, signature, SBOM, artifact integrity, governance evidence, and redaction.',
+      failMessage: `check:release-contracts must exist and validate release artifact contracts including sealed root files, recursively sealed package file sets, release notes, provenance, and signature. Missing: ${missingReleaseContractTokens.join(', ')}`,
+    }),
+    checkResult({
+      id: 'release-signature-verifier-command-present',
+      category: 'release-flow',
+      passed:
+        packageJson.scripts?.['verify:release-signature'] === 'node scripts/verify-video-cut-release-signature.mjs' &&
+        existsSync(resolve(projectRoot, 'scripts/verify-video-cut-release-signature.mjs')) &&
+        missingReleaseSignatureVerificationTokens.length === 0,
+      evidence:
+        'verify:release-signature validates the deterministic release-signature.json digest from packaged release files only.',
+      failMessage: `verify:release-signature must exist and validate packaged release signature subjects. Missing: ${missingReleaseSignatureVerificationTokens.join(', ')}`,
     }),
     checkResult({
       id: 'release-runtime-profile-registry-source-of-truth',
@@ -960,6 +1702,51 @@ function releaseFlowChecks(projectRoot) {
       passed: missingReleaseReportPathTokens.length === 0,
       evidence: 'Release reports serialize project-relative paths and reject secrets plus server-local absolute path leaks.',
       failMessage: `Release report path/redaction safeguards are missing: ${missingReleaseReportPathTokens.join(', ')}`,
+    }),
+    checkResult({
+      id: 'release-packages-require-governance-evidence',
+      category: 'release-flow',
+      passed:
+        missingReleaseGovernanceEvidenceTokens.length === 0 &&
+        packageScriptDrift.length === 0 &&
+        releaseReadyScriptDrift.length === 0 &&
+        smokeGovernanceScriptDrift.length === 0 &&
+        matrixPackageScriptDrift.length === 0 &&
+        missingReleaseMatrixTokens.length === 0 &&
+        missingReleaseReadyTokens.length === 0 &&
+        missingReleaseSmokeMatrixTokens.length === 0 &&
+        missingReleaseSmokePreflightTokens.length === 0 &&
+        missingReleaseSmokeReadinessTokens.length === 0 &&
+        missingReleaseSmokeReadyTokens.length === 0 &&
+        matrixReportSafetyDrift.length === 0 &&
+        releaseReportSafetyDrift.length === 0 &&
+        runtimeEvidenceSafetyDrift.length === 0 &&
+        releaseSmokePreflightIntegrationDrift.length === 0 &&
+        smokePreflightScriptDrift.length === 0 &&
+        smokeReadyScriptDrift.length === 0 &&
+        releaseSmokeReadinessScriptDrift.length === 0,
+      evidence:
+        'Release packaging requires passed governance reports plus full release-ready, package matrix, smoke matrix, and single smoke ready gates for desktop, server, web, container, and Kubernetes, with shared report-safety enforcement across runtime evidence scripts.',
+      failMessage: `Release governance evidence safeguards are missing: ${[
+        ...missingReleaseGovernanceEvidenceTokens,
+        ...missingReleaseMatrixTokens,
+        ...missingReleaseReadyTokens,
+        ...missingReleaseSmokeMatrixTokens,
+        ...missingReleaseSmokePreflightTokens,
+        ...missingReleaseSmokeReadinessTokens,
+        ...missingReleaseSmokeReadyTokens,
+        ...matrixReportSafetyDrift,
+        ...releaseReportSafetyDrift,
+        ...runtimeEvidenceSafetyDrift,
+        ...releaseSmokePreflightIntegrationDrift,
+        ...releaseReadyScriptDrift,
+        ...packageScriptDrift,
+        ...matrixPackageScriptDrift,
+        ...smokePreflightScriptDrift,
+        ...smokeReadyScriptDrift,
+        ...releaseSmokeReadinessScriptDrift,
+        ...smokeGovernanceScriptDrift,
+      ].join(', ')}`,
     }),
     checkResult({
       id: 'release-smoke-requires-private-artifact-delivery-proof',
@@ -1186,6 +1973,12 @@ function sectionBetween(text, startToken, endToken) {
   }
   const end = text.indexOf(endToken, start + startToken.length);
   return end < 0 ? text.slice(start) : text.slice(start, end);
+}
+
+function redactReportReceivesKnownSecret(script, knownSecretVariable) {
+  return new RegExp(`redactReport\\s*\\([\\s\\S]*?,\\s*\\[\\s*${knownSecretVariable}\\s*]\\s*,?\\s*\\)`).test(
+    script,
+  );
 }
 
 function writeReport(reportPath, report) {

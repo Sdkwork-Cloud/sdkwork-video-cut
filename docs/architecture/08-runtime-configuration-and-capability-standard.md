@@ -242,12 +242,14 @@ Settings Center can submit provider API keys, but keys are write-only runtime in
 The Host runtime treats private deployment auth as startup-critical configuration.
 
 - `SDKWORK_VIDEO_CUT_RUNTIME_MODE`, `SDKWORK_VIDEO_CUT_BIND_HOST`, `SDKWORK_VIDEO_CUT_PORT`, `SDKWORK_VIDEO_CUT_WORKSPACE_ROOT`, `SDKWORK_VIDEO_CUT_AUTH_MODE`, and `SDKWORK_VIDEO_CUT_SERVER_TOKEN` are the canonical runtime environment variables.
-- Legacy `VIDEO_CUT_HOST_BIND` and `VIDEO_CUT_WORKSPACE_ROOT` are read only as lower-priority aliases for older local launch scripts.
+- Legacy `VIDEO_CUT_*` environment variables are forbidden. Host startup must fail fast and operators must use `SDKWORK_VIDEO_CUT_*` only.
 - Any non-`desktop-local` runtime binding `0.0.0.0` must set `SDKWORK_VIDEO_CUT_AUTH_MODE=single-user-token` or `SDKWORK_VIDEO_CUT_AUTH_MODE=reverse-proxy`.
 - `single-user-token` mode must provide `SDKWORK_VIDEO_CUT_SERVER_TOKEN`; private API calls require `Authorization: Bearer <token>`.
 - `/api/video-cut/v1/health` remains unauthenticated for process managers, Docker healthcheck, and Kubernetes probes.
 - `reverse-proxy` mode means auth is enforced before traffic reaches the Host. Docker and Kubernetes manifests use this mode by default because the web runtime proxies the canonical `/api/video-cut/v1` route.
-- The browser HTTP client and `scripts/run-video-cut-deployment-doctor.mjs` both support server-token auth. The token is never appended to URLs and is not included in doctor or diagnostics reports.
+- Node automation clients such as `scripts/run-video-cut-deployment-doctor.mjs` read server-token auth only from `SDKWORK_VIDEO_CUT_SERVER_TOKEN` or explicit CLI arguments. The token is never appended to URLs and is not included in doctor or diagnostics reports.
+- Browser-delivered code must not read Host base URLs, deployment modes, or bearer tokens from `VITE_*` build-time environment variables. The static web bundle defaults to same-origin `/api/video-cut/v1`; cross-origin automation may inject `window.__SDKWORK_VIDEO_CUT_RUNTIME_CONFIG__ = { hostMode, hostBaseUrl, authToken }` before page code runs. Production web deployments should prefer reverse-proxy auth or short-lived runtime credentials outside the static Vite bundle.
+- Browser-facing Node child processes must launch with a sanitized environment that strips every `VITE_*`, `SDKWORK_VIDEO_CUT_*`, and legacy `VIDEO_CUT_*` key. Runtime Host configuration belongs to the Host process, same-origin proxy, or explicit `__SDKWORK_VIDEO_CUT_RUNTIME_CONFIG__` injection, never inherited ambient process env.
 
 ## 配置 Schema 治理
 

@@ -177,7 +177,7 @@ container-private   http://localhost:8787/api/video-cut/v1
 kubernetes-private  https://video-cut.example.com/api/video-cut/v1
 ```
 
-`/api/local/v1` 只能作为桌面早期兼容 alias 出现在 host route 层，不能出现在 `packages/sdkwork-video-cut-feature`、`packages/sdkwork-video-cut-core` 或公开文档的主契约中。这样可以保留“本地优先”的产品形态，同时避免 server/docker/k8s 部署时出现语义错误。
+`/api/video-cut/v1` is the only public business API route in every runtime profile. `/api/local/v1` is forbidden in Host routing, frontend clients, deployment assets, OpenAPI, and architecture contracts.
 
 禁止：
 
@@ -2326,7 +2326,7 @@ pnpm run release:smoke:kubernetes
 - 不依赖 ai-api 或 app-api。
 - 不复用 MagicCut。
 - 参考 Magic Studio 架构标准，但使用 `sdkwork-video-cut` 自己的 package 和 API 命名。
-- `/api/video-cut/v1` 是所有部署模式的唯一业务入口；`/api/local/v1` 只允许作为桌面兼容 alias。
+- `/api/video-cut/v1` is the only business API entry in every deployment mode; `/api/local/v1` is forbidden.
 - Rust host 是唯一业务能力内核。
 - 第一版用文件系统持久化，不引入数据库。
 - 参考 BirdCoder 部署模式，支持 desktop、web、server、container、kubernetes release family。

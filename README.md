@@ -51,14 +51,13 @@ pnpm check:feature-readiness -- --json
 
 `runtime/settings.json` 只保存非 secret 设置和 `apiKeyConfigured` 状态；`ai.apiKey`、`speechToText.apiKey` 等明文字段会在 host 入库前剥离。
 
-前端切换到 Rust host 时使用 Vite 环境变量：
+The browser bundle uses the same-origin `/api/video-cut/v1` Host route by default. Development, Tauri, container, and Kubernetes deployments should route that path through the local Vite proxy, desktop shell, reverse proxy, or ingress instead of baking Host configuration into `VITE_*` build-time variables.
 
 ```bash
-VITE_VIDEO_CUT_HOST_MODE=http
-VITE_VIDEO_CUT_HOST_BASE_URL=http://127.0.0.1:6177/api/video-cut/v1
+pnpm dev
 ```
 
-Server/private direct API mode can pass a single-user server token through the standard Host client and deployment doctor. The token is sent as an `Authorization` header, never as a URL query string:
+Server/private direct API mode requires a single-user server token on the Host and automation clients. The token is sent as an `Authorization` header, never as a URL query string, and must not be placed in `VITE_*` browser build variables because Vite embeds those values into static JavaScript:
 
 ```bash
 SDKWORK_VIDEO_CUT_RUNTIME_MODE=server-private
@@ -74,9 +73,6 @@ SDKWORK_VIDEO_CUT_STT_API_KEY=replace-with-stt-secret
 SDKWORK_VIDEO_CUT_STT_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
 SDKWORK_VIDEO_CUT_STT_PROVIDER_PROFILE=openai-audio-transcriptions
 SDKWORK_VIDEO_CUT_STT_RESOURCE_ID=volc.bigasr.auc
-VITE_VIDEO_CUT_HOST_MODE=http
-VITE_VIDEO_CUT_HOST_BASE_URL=http://127.0.0.1:6177/api/video-cut/v1
-VITE_VIDEO_CUT_SERVER_TOKEN=replace-with-local-secret
 pnpm dev:host
 pnpm dev -- --host 127.0.0.1
 pnpm deployment:doctor:server:private -- --json
@@ -84,6 +80,10 @@ pnpm workflow:smoke:server:private -- --json
 pnpm workflow:smoke:server:managed -- --json
 pnpm workflow:smoke:ui:managed -- --json
 ```
+
+The managed UI smoke injects the temporary Host URL and token into the browser at runtime before page code executes, so it can verify private artifact delivery without baking deployment configuration or credentials into a bundle. Production web deployments should terminate auth at the reverse proxy or inject short-lived runtime credentials outside the static Vite environment.
+
+Browser-facing dev and smoke child processes sanitize inherited environment variables before launching Vite or Tauri. They strip every `VITE_*`, `SDKWORK_VIDEO_CUT_*`, and legacy `VIDEO_CUT_*` key so static browser runtimes cannot accidentally inherit local server tokens, provider keys, or Host configuration from the shell.
 
 Container and Kubernetes manifests use `SDKWORK_VIDEO_CUT_AUTH_MODE=reverse-proxy` by default. In that mode the upstream proxy, gateway, or ingress is responsible for user authentication before requests reach the Host.
 
@@ -100,12 +100,17 @@ helm template sdkwork-video-cut ./deploy/kubernetes -f deploy/kubernetes/values.
 - `deploy/docker/docker-compose.yml` runs the Rust Host and an Nginx web proxy against the same `/api/video-cut/v1` contract.
 - `deploy/kubernetes` provides a Helm-compatible chart skeleton with ConfigMap, Secret, PVC, Deployment, Service, Ingress, and HPA templates.
 - `deploy/runtime-profiles.yaml` is the machine-readable runtime profile registry for desktop-local, server-private, web-private, container-private, and kubernetes-private modes.
+- `pnpm check:contracts -- --json` writes `artifacts/governance/openapi-contracts-report.json` and verifies the public OpenAPI/runtime environment contract through a pure Node gate that does not start Vite/Vitest.
+- `pnpm check:deployment-artifacts -- --json` writes `artifacts/governance/deployment-artifacts-report.json` and verifies deployment artifacts through a pure Node gate that does not start Vite/Vitest.
 - `pnpm check:deployment-matrix -- --json` writes `artifacts/governance/deployment-matrix-report.json` and verifies the deployment command matrix.
+- `pnpm check:smoke-evidence -- --json` writes `artifacts/governance/smoke-evidence-contracts-report.json` and verifies smoke runner/report/release evidence contracts through a pure Node gate. Missing local live smoke samples are warnings by default; explicit `--smoke-report target=path` inputs are strict.
 - `pnpm check:governance -- --json` writes `artifacts/governance/governance-suite-report.json` and generates `artifacts/governance/sdkwork-video-cut-sbom.cdx.json` for architecture, runtime-boundary, security, license/SBOM, release-flow, ADR, and SLO gates.
 - `release:package:*` writes `release-manifest.json`, `SHA256SUMS.txt`, `release-notes.md`, `quality-gate-execution-report.json`, and `sdkwork-video-cut-sbom.cdx.json`; the release manifest records API/schema/provider/runtime profile versions for desktop, server, web, container, and Kubernetes targets.
 - `release-manifest.json.runtimeProfile` is copied from `deploy/runtime-profiles.yaml` by `releaseTarget`; the release command does not maintain an inline profile map.
 - `--release-assets-dir` must be project-relative. Release action reports, manifests, checksum files, release notes, and quality gate reports must record project-relative paths only; server-local absolute paths are used only internally while writing files and must not be serialized into release JSON.
 - `release:smoke:*` first writes a target smoke report under `artifacts/release/smoke/{target}-smoke-report.json`, then packages that report as validated release evidence through `--smoke-report`.
+- `release:smoke:preflight -- --json` writes `artifacts/governance/release-smoke-preflight-report.json` and verifies the real smoke environment before runtime mutation: FFmpeg spawn, Cargo spawn, Host Cargo manifest, Vite binary, Chromium-compatible browser, local port allocation, writable release/smoke/runtime directories, and report redaction/path safety.
+- `release:smoke:matrix` first runs the preflight gate, then runs the five target smoke commands only when `environmentStatus=ready`. If the environment is blocked, it writes `artifacts/governance/release-smoke-matrix-report.json` with `RELEASE_SMOKE_MATRIX_PREFLIGHT_BLOCKED` target evidence and no Host/Vite/browser/FFmpeg smoke workflow is started.
 - `release:smoke:desktop`, `release:smoke:container`, and `release:smoke:kubernetes` reject HTTP workflow reports that do not prove health, task create, multipart upload, analysis, plan roundtrip, render, artifact list, download descriptors, full artifact content download, byte range artifact content delivery, private no-store/nosniff artifact headers, events, redaction, `taskId`, source size, MP4 signature, and `host-content-endpoint` delivery.
 - `release:smoke:server` rejects managed server reports that do not prove Host build/start/health, workflow smoke, process cleanup, redaction, `single-user-token` runtime, and a nested HTTP workflow report with upload/render/artifact content/range/security-header proof.
 - `release:smoke:web` additionally rejects smoke reports that lack private browser artifact delivery evidence, including authenticated preview fetch, authenticated download fetch, `blob:` preview URL, Settings Center/doctor/diagnostics verification, and `ui.localPathLeakVisible=false`.
@@ -210,7 +215,7 @@ Runtime diagnostics are implemented as the standard `DeploymentDoctorReport` con
 - `pnpm deployment:doctor -- --json` runs the deployment smoke wrapper against the configured host URL and returns `video-cut.deployment-doctor.cli.v1`.
 - `pnpm workflow:smoke -- --json` runs the real HTTP workflow smoke against `/api/video-cut/v1`: generate or read an MP4, create a task, upload, analyze, round-trip the split plan, render, download `output.mp4`, `render.json`, and `render.log`, and emit `video-cut.http-workflow-smoke.v1`.
 - `pnpm workflow:smoke:server:managed -- --json` builds the Rust Host, starts an isolated `server-private` process with a generated single-user token and temporary workspace, runs the same HTTP workflow smoke with bearer auth, then shuts the process down and emits `video-cut.managed-server-workflow-smoke.v1`.
-- `pnpm workflow:smoke:ui:managed -- --json` builds and starts an isolated `server-private` Host, starts an isolated Vite web process with `VITE_VIDEO_CUT_HOST_MODE=http`, opens Chrome through `playwright-core`, uploads a generated MP4 through the Workbench UI, analyzes, renders, opens the Results page, verifies the render manifest delivery package, verifies artifact content endpoint fetches carry Bearer auth, verifies preview media uses a `blob:` URL instead of a raw private API URL, checks that no server-local absolute path is visible, then shuts down both processes and emits `video-cut.managed-ui-workflow-smoke.v1`.
+- `pnpm workflow:smoke:ui:managed -- --json` builds and starts an isolated `server-private` Host, starts an isolated Vite web process, injects runtime Host configuration before page code executes, opens Chrome through `playwright-core`, uploads a generated MP4 through the Workbench UI, analyzes, renders, opens the Results page, verifies the render manifest delivery package, verifies artifact content endpoint fetches carry Bearer auth, verifies preview media uses a `blob:` URL instead of a raw private API URL, checks that no server-local absolute path is visible, then shuts down both processes and emits `video-cut.managed-ui-workflow-smoke.v1`.
 - The managed UI smoke also opens Settings Center, saves write-only LLM/STT secrets through the Host, clears plaintext inputs, runs provider conformance, runs doctor, exports diagnostics, and verifies redaction. The required report fields are `ui.artifactContentEndpointFetched`, `ui.artifactContentAuthorizationVerified`, `ui.artifactDownloadButtonVisible`, `ui.artifactDownloadContentFetched`, `ui.artifactDownloadAuthorizationVerified`, `ui.outputPreviewBlobUrl`, `ui.settingsSaved`, `ui.providerConformanceVerified`, `ui.doctorVerified`, `ui.diagnosticsBundleVerified`, and `ui.settingsRedactionVerified`.
 - Doctor and diagnostics reports use diagnostics-grade redaction: API keys, bearer tokens, `Authorization` headers, and server-local absolute workspace/artifact/temp paths are never emitted. Absolute local paths are replaced with `<redacted-path>` while Settings Center still keeps editable runtime path values through `GET /settings`.
 
@@ -243,7 +248,7 @@ Local video import now has a real host-side upload path.
 - `Import sample video` uses the same upload boundary with an embedded tiny MP4 fixture; it does not create a metadata-only source placeholder.
 - Local and server upload/render delivery can be verified from the TCP HTTP boundary with `pnpm workflow:smoke -- --json` or `pnpm workflow:smoke:server:private -- --json`.
 - A fully isolated server-private boot path can be verified with `pnpm workflow:smoke:server:managed -- --json`; this covers process startup, token auth, upload, analysis, render, artifact download, byte range artifact delivery, private no-store/nosniff artifact headers, redaction, and process cleanup. Its report keeps a sanitized nested HTTP workflow evidence block so `release:smoke:server` can verify upload/render/artifact content/range/security-header proof without leaking tokens or workspace paths.
-- The full browser path can be verified with `pnpm workflow:smoke:ui:managed -- --json`; this covers real UI controls, Vite runtime env, bearer-auth HTTP client configuration, Host upload, analysis, render, Results page delivery package verification, authenticated artifact content fetches, `blob:` preview URL validation, local path leak checks, redaction, and cleanup.
+- The full browser path can be verified with `pnpm workflow:smoke:ui:managed -- --json`; this covers real UI controls, runtime-injected Host configuration, bearer-auth HTTP client configuration, Host upload, analysis, render, Results page delivery package verification, authenticated artifact content fetches, `blob:` preview URL validation, local path leak checks, redaction, and cleanup.
 
 ## 2026-04-27 Implementation Note: MediaInfo Probe Artifact
 

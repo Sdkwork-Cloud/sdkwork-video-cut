@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import YAML from 'yaml';
 
 import { createReportPath } from './lib/report-paths.mjs';
+import { normalizeCliArgs } from './lib/cli-args.mjs';
 
 const COMMAND = 'check:database-contracts';
 const REPORT_VERSION = 'video-cut.database-contracts-report.v1';
@@ -34,7 +35,7 @@ const NAME_PATTERN = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/;
 const SEMVER_PATTERN = /^\d+\.\d+\.\d+$/;
 
 export function parseDatabaseContractsArgs(argv) {
-  const args = [...argv];
+  const args = normalizeCliArgs(argv);
   let json = false;
   let reportDir = DEFAULT_REPORT_DIR;
 

@@ -78,4 +78,33 @@ describe('createVideoCutHostClient', () => {
       method: 'GET',
     });
   });
+
+  it('uses runtime-injected host settings without requiring Vite build-time host configuration', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, data: { status: 'ok' } }), {
+        headers: { 'content-type': 'application/json' },
+        status: 200,
+      }),
+    );
+    window.__SDKWORK_VIDEO_CUT_RUNTIME_CONFIG__ = {
+      authToken: 'runtime-config-token',
+      hostBaseUrl: 'http://127.0.0.1:18077/api/video-cut/v1',
+      hostMode: 'http',
+    };
+
+    try {
+      const client = createVideoCutHostClient({ fetchImpl });
+
+      await expect(client.getHealth()).resolves.toEqual({ status: 'ok' });
+      expect(fetchImpl).toHaveBeenCalledWith('http://127.0.0.1:18077/api/video-cut/v1/health', {
+        headers: {
+          accept: 'application/json',
+          authorization: 'Bearer runtime-config-token',
+        },
+        method: 'GET',
+      });
+    } finally {
+      delete window.__SDKWORK_VIDEO_CUT_RUNTIME_CONFIG__;
+    }
+  });
 });

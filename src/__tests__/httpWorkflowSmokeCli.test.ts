@@ -53,6 +53,7 @@ describe('HTTP workflow smoke CLI', () => {
 
     const options = parseHttpWorkflowSmokeArgs(
       [
+        '--',
         'server-dev',
         '--deployment-mode',
         'server-private',

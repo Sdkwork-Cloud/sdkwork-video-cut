@@ -162,6 +162,7 @@ pnpm stack:desktop:local
 pnpm stack:web:private
 pnpm deployment:doctor
 pnpm deployment:doctor:server:private
+pnpm release:package:matrix
 pnpm release:package:desktop
 pnpm release:package:server
 pnpm release:package:container

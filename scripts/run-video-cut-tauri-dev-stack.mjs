@@ -5,6 +5,8 @@ import { createWriteStream, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { createBrowserChildProcessEnv } from './lib/safe-env.mjs';
+
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptDir, '..');
 const runtimeDir = resolve(projectRoot, 'artifacts/runtime');
@@ -20,7 +22,7 @@ function spawnManagedProcess(name, command, args, env) {
   const err = createWriteStream(resolve(runtimeDir, `tauri-${name}.err.log`), { flags: 'a' });
   const child = spawn(command, args, {
     cwd: projectRoot,
-    env: { ...process.env, ...env },
+    env: name === 'web' ? createBrowserChildProcessEnv(process.env, env) : { ...process.env, ...env },
     shell: process.platform === 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -76,10 +78,7 @@ async function main() {
   await waitFor(hostHealthUrl, 'Rust Host');
 
   if (!(await isReachable(viteUrl))) {
-    spawnManagedProcess('web', 'pnpm', ['exec', 'vite', '--host', '127.0.0.1', '--port', '5173', '--strictPort'], {
-      VITE_VIDEO_CUT_HOST_MODE: 'http',
-      VITE_VIDEO_CUT_HOST_BASE_URL: hostUrl,
-    });
+    spawnManagedProcess('web', 'pnpm', ['exec', 'vite', '--host', '127.0.0.1', '--port', '5173', '--strictPort'], {});
   }
   await waitFor(viteUrl, 'Vite web app');
 

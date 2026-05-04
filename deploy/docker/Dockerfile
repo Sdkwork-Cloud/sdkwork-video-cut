@@ -8,11 +8,6 @@ RUN corepack enable && corepack prepare pnpm@10.30.2 --activate
 COPY package.json pnpm-lock.yaml tsconfig.json tsconfig.app.json tsconfig.node.json vite.config.ts index.html ./
 COPY src ./src
 
-ARG VITE_VIDEO_CUT_HOST_MODE=http
-ARG VITE_VIDEO_CUT_HOST_BASE_URL=/api/video-cut/v1
-ENV VITE_VIDEO_CUT_HOST_MODE=http
-ENV VITE_VIDEO_CUT_HOST_BASE_URL=/api/video-cut/v1
-
 RUN pnpm install --frozen-lockfile && pnpm build
 
 FROM rust:1-bookworm AS host-build

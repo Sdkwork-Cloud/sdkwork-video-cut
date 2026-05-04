@@ -8,15 +8,19 @@ import { pathToFileURL } from 'node:url';
 import YAML from 'yaml';
 
 import { createReportPath } from './lib/report-paths.mjs';
+import { normalizeCliArgs } from './lib/cli-args.mjs';
 
 const REPORT_VERSION = 'video-cut.deployment-matrix.v1';
 const COMMAND = 'check:deployment-matrix';
 const CANONICAL_API_ROUTE = '/api/video-cut/v1';
 
 const REQUIRED_PACKAGE_SCRIPTS = {
+  'check:cli-contracts': 'node scripts/check-video-cut-cli-contracts.mjs',
   'check:contracts': 'vitest --run src/__tests__/openApiContract.test.ts',
-  'check:deployment-artifacts': 'vitest --run src/__tests__/deploymentArtifacts.test.ts',
+  'check:deployment-artifacts': 'node scripts/check-video-cut-deployment-artifacts.mjs',
   'check:deployment-matrix': 'node scripts/check-video-cut-deployment-matrix.mjs',
+  'check:release-contracts': 'node scripts/check-video-cut-release-contracts.mjs',
+  'verify:release-signature': 'node scripts/verify-video-cut-release-signature.mjs',
   'tauri:dev': 'node scripts/run-video-cut-tauri-dev.mjs',
   'tauri:before-dev': 'node scripts/run-video-cut-tauri-dev-stack.mjs',
   'deployment:doctor': 'node scripts/run-video-cut-deployment-doctor.mjs desktop-dev --deployment-mode desktop-local',
@@ -37,21 +41,24 @@ const REQUIRED_PACKAGE_SCRIPTS = {
     'node scripts/run-video-cut-managed-ui-smoke.mjs server-dev --deployment-mode server-private',
   'workflow:smoke:server:ui:managed':
     'node scripts/run-video-cut-managed-ui-smoke.mjs server-dev --deployment-mode server-private',
-  'release:package:desktop': 'node scripts/release/local-release-command.mjs package desktop',
-  'release:package:container': 'node scripts/release/local-release-command.mjs package container',
-  'release:package:kubernetes': 'node scripts/release/local-release-command.mjs package kubernetes',
-  'release:package:server': 'node scripts/release/local-release-command.mjs package server',
-  'release:package:web': 'node scripts/release/local-release-command.mjs package web',
+  'release:package:desktop': 'node scripts/release/run-release-with-governance.mjs package desktop',
+  'release:package:container': 'node scripts/release/run-release-with-governance.mjs package container',
+  'release:package:kubernetes': 'node scripts/release/run-release-with-governance.mjs package kubernetes',
+  'release:package:matrix': 'node scripts/release/run-release-matrix.mjs',
+  'release:smoke:preflight': 'node scripts/release/check-release-smoke-preflight.mjs',
+  'release:smoke:matrix': 'node scripts/release/run-release-smoke-matrix.mjs',
+  'release:package:server': 'node scripts/release/run-release-with-governance.mjs package server',
+  'release:package:web': 'node scripts/release/run-release-with-governance.mjs package web',
   'release:smoke:desktop':
-    'node scripts/run-video-cut-http-workflow-smoke.mjs desktop-dev --deployment-mode desktop-local --report-path artifacts/release/smoke/desktop-smoke-report.json && node scripts/release/local-release-command.mjs smoke desktop --smoke-report artifacts/release/smoke/desktop-smoke-report.json --release-assets-dir artifacts/release',
+    'node scripts/run-video-cut-http-workflow-smoke.mjs desktop-dev --deployment-mode desktop-local --report-path artifacts/release/smoke/desktop-smoke-report.json && node scripts/release/run-release-with-governance.mjs smoke desktop --smoke-report artifacts/release/smoke/desktop-smoke-report.json --release-assets-dir artifacts/release',
   'release:smoke:container':
-    'node scripts/run-video-cut-http-workflow-smoke.mjs container-release --deployment-mode container-private --report-path artifacts/release/smoke/container-smoke-report.json && node scripts/release/local-release-command.mjs smoke container --smoke-report artifacts/release/smoke/container-smoke-report.json --release-assets-dir artifacts/release',
+    'node scripts/run-video-cut-http-workflow-smoke.mjs container-release --deployment-mode container-private --report-path artifacts/release/smoke/container-smoke-report.json && node scripts/release/run-release-with-governance.mjs smoke container --smoke-report artifacts/release/smoke/container-smoke-report.json --release-assets-dir artifacts/release',
   'release:smoke:kubernetes':
-    'node scripts/run-video-cut-http-workflow-smoke.mjs kubernetes-release --deployment-mode kubernetes-private --report-path artifacts/release/smoke/kubernetes-smoke-report.json && node scripts/release/local-release-command.mjs smoke kubernetes --smoke-report artifacts/release/smoke/kubernetes-smoke-report.json --release-assets-dir artifacts/release',
+    'node scripts/run-video-cut-http-workflow-smoke.mjs kubernetes-release --deployment-mode kubernetes-private --report-path artifacts/release/smoke/kubernetes-smoke-report.json && node scripts/release/run-release-with-governance.mjs smoke kubernetes --smoke-report artifacts/release/smoke/kubernetes-smoke-report.json --release-assets-dir artifacts/release',
   'release:smoke:server':
-    'node scripts/run-video-cut-managed-server-smoke.mjs server-dev --deployment-mode server-private --report-path artifacts/release/smoke/server-smoke-report.json && node scripts/release/local-release-command.mjs smoke server --smoke-report artifacts/release/smoke/server-smoke-report.json --release-assets-dir artifacts/release',
+    'node scripts/run-video-cut-managed-server-smoke.mjs server-dev --deployment-mode server-private --report-path artifacts/release/smoke/server-smoke-report.json && node scripts/release/run-release-with-governance.mjs smoke server --smoke-report artifacts/release/smoke/server-smoke-report.json --release-assets-dir artifacts/release',
   'release:smoke:web':
-    'node scripts/run-video-cut-managed-ui-smoke.mjs server-dev --deployment-mode server-private --report-path artifacts/release/smoke/web-smoke-report.json && node scripts/release/local-release-command.mjs smoke web --smoke-report artifacts/release/smoke/web-smoke-report.json --release-assets-dir artifacts/release',
+    'node scripts/run-video-cut-managed-ui-smoke.mjs server-dev --deployment-mode server-private --report-path artifacts/release/smoke/web-smoke-report.json && node scripts/release/run-release-with-governance.mjs smoke web --smoke-report artifacts/release/smoke/web-smoke-report.json --release-assets-dir artifacts/release',
 };
 
 const REQUIRED_FILES = {
@@ -76,11 +83,19 @@ const REQUIRED_FILES = {
     'deploy/kubernetes/templates/secret.yaml',
     'deploy/kubernetes/templates/service.yaml',
   ],
-  release: ['scripts/release/local-release-command.mjs'],
+  release: [
+    'scripts/release/local-release-command.mjs',
+    'scripts/release/run-release-with-governance.mjs',
+    'scripts/release/run-release-matrix.mjs',
+    'scripts/release/check-release-smoke-preflight.mjs',
+    'scripts/release/run-release-smoke-matrix.mjs',
+    'scripts/check-video-cut-release-contracts.mjs',
+    'scripts/verify-video-cut-release-signature.mjs',
+  ],
 };
 
 export function parseMatrixArgs(argv) {
-  const args = [...argv];
+  const args = normalizeCliArgs(argv);
   let json = false;
   let reportDir = 'artifacts/governance';
 
@@ -116,6 +131,7 @@ export function createDeploymentMatrixReport({ projectRoot = process.cwd(), repo
     checkHttpWorkflowSmokeScripts(projectRoot, packageJson),
     checkManagedServerSmokeScripts(projectRoot, packageJson),
     checkManagedUiSmokeScripts(projectRoot, packageJson),
+    checkCliContractsScript(projectRoot, packageJson),
     checkReleaseScripts(packageJson),
     checkRuntimeProfileManifest(projectRoot),
     checkFiles(projectRoot, 'docker-artifacts', REQUIRED_FILES.docker),
@@ -210,7 +226,8 @@ function checkTauriDesktopShell(projectRoot, packageJson) {
     !mainText.includes('ffmpeg') &&
     !mainText.includes('/api/video-cut/v1') &&
     devStackText.includes('SDKWORK_VIDEO_CUT_RUNTIME_MODE') &&
-    devStackText.includes('VITE_VIDEO_CUT_HOST_MODE') &&
+    !devStackText.includes('VITE_VIDEO_CUT_HOST_MODE') &&
+    !devStackText.includes('VITE_VIDEO_CUT_HOST_BASE_URL') &&
     devStackText.includes('http://127.0.0.1:6177/api/video-cut/v1');
 
   return checkResult({
@@ -249,13 +266,19 @@ function checkHttpWorkflowSmokeScripts(projectRoot, packageJson) {
   const expectedScriptNames = ['workflow:smoke', 'workflow:smoke:desktop:local', 'workflow:smoke:server:private'];
   const missing = expectedScriptNames.filter((name) => packageJson.scripts?.[name] !== REQUIRED_PACKAGE_SCRIPTS[name]);
   const scriptPath = 'scripts/run-video-cut-http-workflow-smoke.mjs';
+  const cliContractsScript = 'scripts/check-video-cut-cli-contracts.mjs';
   const scriptExists = existsSync(resolve(projectRoot, scriptPath));
+  const cliContractsScriptExists = existsSync(resolve(projectRoot, cliContractsScript));
 
   return checkResult({
     id: 'http-workflow-smoke-script-matrix',
-    evidence: `${expectedScriptNames.join(', ')}; ${scriptPath}`,
-    failMessage: `HTTP workflow smoke scripts missing or drifted: ${[...missing, ...(scriptExists ? [] : [scriptPath])].join(', ')}`,
-    passed: missing.length === 0 && scriptExists,
+    evidence: `${expectedScriptNames.join(', ')}; ${scriptPath}; ${cliContractsScript}`,
+    failMessage: `HTTP workflow smoke scripts missing or drifted: ${[
+      ...missing,
+      ...(scriptExists ? [] : [scriptPath]),
+      ...(cliContractsScriptExists ? [] : [cliContractsScript]),
+    ].join(', ')}`,
+    passed: missing.length === 0 && scriptExists && cliContractsScriptExists,
   });
 }
 
@@ -287,8 +310,24 @@ function checkManagedUiSmokeScripts(projectRoot, packageJson) {
   });
 }
 
+function checkCliContractsScript(projectRoot, packageJson) {
+  const scriptPath = 'scripts/check-video-cut-cli-contracts.mjs';
+  const passed =
+    packageJson.scripts?.['check:cli-contracts'] === REQUIRED_PACKAGE_SCRIPTS['check:cli-contracts'] &&
+    existsSync(resolve(projectRoot, scriptPath));
+
+  return checkResult({
+    id: 'cli-contracts-script',
+    evidence: `check:cli-contracts; ${scriptPath}`,
+    failMessage: 'check:cli-contracts must point to the pure Node CLI contract checker.',
+    passed,
+  });
+}
+
 function checkReleaseScripts(packageJson) {
-  const names = Object.keys(REQUIRED_PACKAGE_SCRIPTS).filter((name) => name.startsWith('release:') || name === COMMAND);
+  const names = Object.keys(REQUIRED_PACKAGE_SCRIPTS).filter(
+    (name) => name.startsWith('release:') || name === 'check:release-contracts' || name === 'verify:release-signature',
+  );
   const missing = names.filter((name) => packageJson.scripts?.[name] !== REQUIRED_PACKAGE_SCRIPTS[name]);
 
   return checkResult({

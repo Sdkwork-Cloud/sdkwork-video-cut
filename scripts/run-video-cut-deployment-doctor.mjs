@@ -2,16 +2,18 @@
 
 import { pathToFileURL } from 'node:url';
 
+import { normalizeCliArgs } from './lib/cli-args.mjs';
+import { redactReport } from './lib/report-safety.mjs';
+
 const DEFAULT_HOST_URL = 'http://127.0.0.1:6177/api/video-cut/v1';
 const REPORT_VERSION = 'video-cut.deployment-doctor.cli.v1';
-const REDACTED_PATH = '<redacted-path>';
 
 export function parseDoctorArgs(argv, env = process.env) {
-  const args = [...argv];
+  const args = normalizeCliArgs(argv);
   let profile = 'desktop-dev';
   let deploymentMode = 'desktop-local';
-  let hostUrl = env.SDKWORK_VIDEO_CUT_HOST_URL || env.VITE_VIDEO_CUT_HOST_BASE_URL || DEFAULT_HOST_URL;
-  let authToken = env.SDKWORK_VIDEO_CUT_SERVER_TOKEN || env.VITE_VIDEO_CUT_SERVER_TOKEN || '';
+  let hostUrl = env.SDKWORK_VIDEO_CUT_HOST_URL || DEFAULT_HOST_URL;
+  let authToken = env.SDKWORK_VIDEO_CUT_SERVER_TOKEN || '';
   let json = false;
   let timeoutMs = 10_000;
 
@@ -83,20 +85,23 @@ export async function createDeploymentDoctorReport({
   const summary = summarizeChecks(checks);
   const ok = summary.fail === 0 && health.status === 'ok' && doctor.reportVersion === 'video-cut.doctor.v1';
 
-  return redactReport({
-    reportVersion: REPORT_VERSION,
-    ok,
-    profile,
-    deploymentMode,
-    hostUrl: normalizedHostUrl,
-    generatedAt: new Date().toISOString(),
-    health: ok ? doctor.health : 'unavailable',
-    hostHealth: health,
-    capability,
-    doctor,
-    checks,
-    summary,
-  });
+  return redactReport(
+    {
+      reportVersion: REPORT_VERSION,
+      ok,
+      profile,
+      deploymentMode,
+      hostUrl: normalizedHostUrl,
+      generatedAt: new Date().toISOString(),
+      health: ok ? doctor.health : 'unavailable',
+      hostHealth: health,
+      capability,
+      doctor,
+      checks,
+      summary,
+    },
+    [authToken],
+  );
 }
 
 function requireValue(args, index, name) {
@@ -157,40 +162,6 @@ function summarizeChecks(checks) {
     },
     { ok: 0, warn: 0, fail: 0 },
   );
-}
-
-function redactReport(report) {
-  return JSON.parse(
-    JSON.stringify(report, (key, value) => {
-      if (key === 'apiKey' || key === 'token' || key === 'serverToken' || key === 'authToken' || key === 'authorization') {
-        return undefined;
-      }
-
-      if (typeof value === 'string' && shouldRedactLocalPath(key, value)) {
-        return REDACTED_PATH;
-      }
-
-      return value;
-    }),
-  );
-}
-
-function shouldRedactLocalPath(key, value) {
-  const normalizedKey = String(key || '').toLowerCase();
-  const isPathField =
-    normalizedKey === 'path' ||
-    normalizedKey.endsWith('path') ||
-    normalizedKey.endsWith('root') ||
-    normalizedKey.includes('workspace') ||
-    normalizedKey.includes('artifact') ||
-    normalizedKey.includes('temp');
-
-  return isPathField && isAbsoluteLocalPath(value);
-}
-
-function isAbsoluteLocalPath(value) {
-  const trimmed = String(value || '').trim();
-  return /^[A-Za-z]:[\\/]/.test(trimmed) || trimmed.startsWith('\\\\') || trimmed.startsWith('/');
 }
 
 function printHumanReport(report) {

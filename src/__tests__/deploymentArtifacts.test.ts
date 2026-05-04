@@ -47,7 +47,10 @@ describe('deployment artifacts', () => {
     expect(tauriDev).toContain('--no-dev-server-wait');
     expect(tauriDev).toContain('beforeDevCommand');
     expect(devStack).toContain('SDKWORK_VIDEO_CUT_RUNTIME_MODE');
-    expect(devStack).toContain('VITE_VIDEO_CUT_HOST_MODE');
+    expect(tauriDev).toContain('createBrowserChildProcessEnv');
+    expect(devStack).toContain('createBrowserChildProcessEnv');
+    expect(devStack).not.toContain('VITE_VIDEO_CUT_HOST_MODE');
+    expect(devStack).not.toContain('VITE_VIDEO_CUT_HOST_BASE_URL');
     expect(devStack).toContain("'exec', 'vite'");
     expect(devStack).toContain('http://127.0.0.1:6177/api/video-cut/v1');
   });
@@ -66,7 +69,8 @@ describe('deployment artifacts', () => {
     expect(dockerfile).toContain('AS host-build');
     expect(dockerfile).toContain('AS host-runtime');
     expect(dockerfile).toContain('AS web-runtime');
-    expect(dockerfile).toContain('VITE_VIDEO_CUT_HOST_MODE=http');
+    expect(dockerfile).not.toContain('VITE_VIDEO_CUT_HOST_MODE');
+    expect(dockerfile).not.toContain('VITE_VIDEO_CUT_HOST_BASE_URL');
     expect(dockerfile).toContain('SDKWORK_VIDEO_CUT_BIND_HOST=0.0.0.0');
     expect(dockerfile).toContain('SDKWORK_VIDEO_CUT_PORT=6177');
     expect(dockerfile).toContain('SDKWORK_VIDEO_CUT_WORKSPACE_ROOT=/data/workspace');

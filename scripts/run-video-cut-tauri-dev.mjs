@@ -5,6 +5,8 @@ import { createWriteStream, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { createBrowserChildProcessEnv } from './lib/safe-env.mjs';
+
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptDir, '..');
 const runtimeDir = resolve(projectRoot, 'artifacts/runtime');
@@ -24,7 +26,7 @@ function spawnLogged(name, command, args, env = {}) {
   const err = createWriteStream(resolve(runtimeDir, `${name}.err.log`), { flags: 'a' });
   const child = spawn(commandName(command), args, {
     cwd: projectRoot,
-    env: { ...process.env, ...env },
+    env: name.includes('tauri-dev-app') ? createBrowserChildProcessEnv(process.env, env) : { ...process.env, ...env },
     shell: process.platform === 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -83,10 +85,7 @@ async function main() {
     'tauri-dev-app',
     'pnpm',
     ['exec', 'tauri', 'dev', '--config', tauriConfigOverridePath, '--no-dev-server-wait'],
-    {
-      VITE_VIDEO_CUT_HOST_MODE: 'http',
-      VITE_VIDEO_CUT_HOST_BASE_URL: hostUrl,
-    },
+    {},
   );
 
   stack.on('exit', (code, signal) => {

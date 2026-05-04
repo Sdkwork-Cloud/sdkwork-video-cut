@@ -33,6 +33,7 @@ describe('deployment doctor CLI', () => {
 
     const options = parseDoctorArgs(
       [
+        '--',
         'server-dev',
         '--deployment-mode',
         'server-private',

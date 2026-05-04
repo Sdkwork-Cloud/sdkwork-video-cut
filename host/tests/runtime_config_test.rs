@@ -133,25 +133,16 @@ fn runtime_config_maps_standard_environment_into_effective_settings() {
 }
 
 #[test]
-fn runtime_config_prefers_standard_environment_over_legacy_aliases() {
-    let config = RuntimeHostConfig::from_env_map(&env(&[
+fn runtime_config_rejects_legacy_video_cut_environment_aliases() {
+    let error = RuntimeHostConfig::from_env_map(&env(&[
         ("VIDEO_CUT_HOST_BIND", "127.0.0.1:6000"),
-        ("VIDEO_CUT_WORKSPACE_ROOT", "legacy-workspace"),
         ("SDKWORK_VIDEO_CUT_BIND_HOST", "127.0.0.1"),
         ("SDKWORK_VIDEO_CUT_PORT", "6199"),
-        ("SDKWORK_VIDEO_CUT_WORKSPACE_ROOT", "standard-workspace"),
     ]))
-    .expect("runtime config");
+    .expect_err("new runtime standard must reject legacy VIDEO_CUT_* aliases");
 
-    assert_eq!(config.bind_addr.to_string(), "127.0.0.1:6199");
-    assert_eq!(
-        config.workspace_root.to_string_lossy(),
-        "standard-workspace"
-    );
-    assert_eq!(
-        config.settings["storage"]["workspaceRoot"],
-        "standard-workspace"
-    );
+    assert!(error.contains("VIDEO_CUT_HOST_BIND"));
+    assert!(error.contains("SDKWORK_VIDEO_CUT_*"));
 }
 
 #[test]

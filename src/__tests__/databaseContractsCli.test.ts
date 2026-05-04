@@ -23,6 +23,10 @@ describe('database contracts CLI', () => {
   it('parses json output mode and optional report directory', async () => {
     const { parseDatabaseContractsArgs } = await loadCliModule();
 
+    expect(parseDatabaseContractsArgs(['--', '--json', '--report-dir', 'tmp/database'])).toEqual({
+      json: true,
+      reportDir: 'tmp/database',
+    });
     expect(parseDatabaseContractsArgs(['--json', '--report-dir', 'tmp/database'])).toEqual({
       json: true,
       reportDir: 'tmp/database',

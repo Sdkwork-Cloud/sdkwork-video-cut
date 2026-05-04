@@ -56,6 +56,7 @@ describe('managed server workflow smoke CLI', () => {
 
     const options = parseManagedServerSmokeArgs(
       [
+        '--',
         'server-dev',
         '--deployment-mode',
         'server-private',

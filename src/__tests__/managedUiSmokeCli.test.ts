@@ -56,6 +56,7 @@ describe('managed UI workflow smoke CLI', () => {
 
     const options = parseManagedUiSmokeArgs(
       [
+        '--',
         'server-dev',
         '--deployment-mode',
         'server-private',
@@ -178,15 +179,20 @@ describe('managed UI workflow smoke CLI', () => {
         '--strictPort',
       ]),
       expect.objectContaining({
-        env: expect.objectContaining({
-          VITE_VIDEO_CUT_HOST_BASE_URL: 'http://127.0.0.1:18077/api/video-cut/v1',
-          VITE_VIDEO_CUT_HOST_MODE: 'http',
-          VITE_VIDEO_CUT_SERVER_TOKEN: 'managed-ui-token',
-        }),
+        env: expect.any(Object),
       }),
     );
+    expect(spawnImpl.mock.calls[1][2].env).not.toHaveProperty('VITE_VIDEO_CUT_HOST_BASE_URL');
+    expect(spawnImpl.mock.calls[1][2].env).not.toHaveProperty('VITE_VIDEO_CUT_HOST_MODE');
+    expect(spawnImpl.mock.calls[1][2].env).not.toHaveProperty('VITE_VIDEO_CUT_SERVER_TOKEN');
+    expect(
+      Object.keys(spawnImpl.mock.calls[1][2].env).filter(
+        (key) => key.startsWith('VITE_') || key.startsWith('SDKWORK_VIDEO_CUT_') || key.startsWith('VIDEO_CUT_'),
+      ),
+    ).toEqual([]);
     expect(browserWorkflowImpl).toHaveBeenCalledWith(
       expect.objectContaining({
+        authToken: 'managed-ui-token',
         hostUrl: 'http://127.0.0.1:18077/api/video-cut/v1',
         webUrl: 'http://127.0.0.1:18078',
       }),

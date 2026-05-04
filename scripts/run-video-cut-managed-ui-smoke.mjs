@@ -7,11 +7,15 @@ import { createServer } from 'node:net';
 import { basename, dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { createBrowserChildProcessEnv } from './lib/safe-env.mjs';
+import { normalizeCliArgs } from './lib/cli-args.mjs';
+import { redactReport, reportContainsSensitiveData } from './lib/report-safety.mjs';
+
 const REPORT_VERSION = 'video-cut.managed-ui-workflow-smoke.v1';
 const API_ROUTE_PREFIX = '/api/video-cut/v1';
 
 export function parseManagedUiSmokeArgs(argv, env = process.env) {
-  const args = [...argv];
+  const args = normalizeCliArgs(argv);
   let profile = 'server-dev';
   let deploymentMode = 'server-private';
   let bindHost = '127.0.0.1';
@@ -256,12 +260,7 @@ export async function createManagedUiWorkflowSmokeReport({
 
     webChild = spawnImpl(process.execPath, [viteBinPath, '--host', bindHost, '--port', String(resolvedWebPort), '--strictPort'], {
       cwd: projectRoot,
-      env: {
-        ...process.env,
-        VITE_VIDEO_CUT_HOST_BASE_URL: resolvedHostUrl,
-        VITE_VIDEO_CUT_HOST_MODE: 'http',
-        VITE_VIDEO_CUT_SERVER_TOKEN: serverToken,
-      },
+      env: createBrowserChildProcessEnv(process.env),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -281,6 +280,7 @@ export async function createManagedUiWorkflowSmokeReport({
       sourceFile,
     });
     const browserWorkflow = await browserWorkflowImpl({
+      authToken: serverToken,
       chromeExecutablePath,
       hostUrl: resolvedHostUrl,
       sourceFilePath: fixture.path,
@@ -351,7 +351,7 @@ export async function createManagedUiWorkflowSmokeReport({
       checks,
       ok: summary.fail === 0,
       summary,
-    });
+    }, [serverToken]);
     writeReportIfRequested(reportPath, report);
     return report;
   } finally {
@@ -381,6 +381,7 @@ function writeReportIfRequested(reportPath, report) {
 }
 
 async function runBrowserUiWorkflow({
+  authToken = '',
   chromeExecutablePath,
   hostUrl,
   sourceFilePath,
@@ -400,6 +401,16 @@ async function runBrowserUiWorkflow({
 
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    await page.addInitScript(
+      ({ hostBaseUrl, token }) => {
+        window.__SDKWORK_VIDEO_CUT_RUNTIME_CONFIG__ = {
+          authToken: token || undefined,
+          hostBaseUrl,
+          hostMode: 'http',
+        };
+      },
+      { hostBaseUrl: hostUrl, token: authToken },
+    );
     const artifactContentRequests = [];
     page.on('request', (request) => {
       const url = request.url();
@@ -832,30 +843,6 @@ function summarizeChecks(checks) {
       return summary;
     },
     { ok: 0, warn: 0, fail: 0 },
-  );
-}
-
-function reportContainsSensitiveData(report, token) {
-  const serialized = JSON.stringify(report);
-  const trimmedToken = String(token || '').trim();
-  return Boolean(
-    (trimmedToken && serialized.includes(trimmedToken)) ||
-      serialized.includes('VITE_VIDEO_CUT_SERVER_TOKEN') ||
-      serialized.includes('SDKWORK_VIDEO_CUT_SERVER_TOKEN') ||
-      serialized.includes('"apiKey"') ||
-      /\bsk-[A-Za-z0-9_-]{8,}/.test(serialized),
-  );
-}
-
-function redactReport(report) {
-  return JSON.parse(
-    JSON.stringify(report, (key, value) => {
-      if (key === 'token' || key === 'serverToken' || key === 'authToken' || key === 'apiKey') {
-        return undefined;
-      }
-
-      return value;
-    }),
   );
 }
 

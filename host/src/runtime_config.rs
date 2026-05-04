@@ -29,8 +29,7 @@ const ENV_STT_TRANSCRIPTION_MODEL: &str = "SDKWORK_VIDEO_CUT_STT_TRANSCRIPTION_M
 const ENV_STT_PROVIDER_PROFILE: &str = "SDKWORK_VIDEO_CUT_STT_PROVIDER_PROFILE";
 const ENV_STT_RESOURCE_ID: &str = "SDKWORK_VIDEO_CUT_STT_RESOURCE_ID";
 
-const LEGACY_BIND: &str = "VIDEO_CUT_HOST_BIND";
-const LEGACY_WORKSPACE_ROOT: &str = "VIDEO_CUT_WORKSPACE_ROOT";
+const FORBIDDEN_LEGACY_ENV_PREFIX: &str = "VIDEO_CUT_";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeSecret {
@@ -56,7 +55,7 @@ impl RuntimeHostConfig {
         let mut settings = default_settings();
         let mut runtime_secrets = Vec::new();
 
-        apply_legacy_aliases(&mut settings, env)?;
+        reject_legacy_environment_aliases(env)?;
         apply_standard_environment(&mut settings, env, &mut runtime_secrets)?;
         validate_runtime_security(&settings, &runtime_secrets)?;
 
@@ -76,23 +75,22 @@ impl RuntimeHostConfig {
     }
 }
 
-fn apply_legacy_aliases(settings: &mut Value, env: &HashMap<String, String>) -> Result<(), String> {
-    if let Some(bind) = non_blank(env, LEGACY_BIND) {
-        let bind_addr = bind
-            .parse::<SocketAddr>()
-            .map_err(|error| format!("{LEGACY_BIND} must be host:port: {error}"))?;
-        settings["runtime"]["bindHost"] = json!(bind_addr.ip().to_string());
-        settings["runtime"]["port"] = json!(bind_addr.port());
-        settings["runtime"]["publicBaseUrl"] = json!(format!("http://{bind_addr}"));
+fn reject_legacy_environment_aliases(env: &HashMap<String, String>) -> Result<(), String> {
+    let mut legacy_keys = env
+        .keys()
+        .filter(|key| key.starts_with(FORBIDDEN_LEGACY_ENV_PREFIX))
+        .cloned()
+        .collect::<Vec<_>>();
+    legacy_keys.sort();
+
+    if legacy_keys.is_empty() {
+        return Ok(());
     }
 
-    if let Some(workspace_root) = non_blank(env, LEGACY_WORKSPACE_ROOT) {
-        settings["storage"]["workspaceRoot"] = json!(workspace_root);
-        settings["storage"]["artifactRoot"] = json!(format!("{workspace_root}/artifacts"));
-        settings["storage"]["tempRoot"] = json!(format!("{workspace_root}/tmp"));
-    }
-
-    Ok(())
+    Err(format!(
+        "Legacy VIDEO_CUT_* environment variables are not supported. Use SDKWORK_VIDEO_CUT_* only. Offending keys: {}",
+        legacy_keys.join(", ")
+    ))
 }
 
 fn apply_standard_environment(

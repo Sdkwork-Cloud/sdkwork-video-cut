@@ -25,10 +25,17 @@ describe('governance standard CLI', () => {
 
     expect(packageJson.scripts).toMatchObject({
       'check:architecture-standards': 'node scripts/check-video-cut-governance-suite.mjs architecture-standards',
+      'check:cli-contracts': 'node scripts/check-video-cut-cli-contracts.mjs',
+      'check:contracts': 'node scripts/check-video-cut-openapi-contracts.mjs',
+      'check:deployment-artifacts': 'node scripts/check-video-cut-deployment-artifacts.mjs',
+      'check:smoke-evidence': 'node scripts/check-video-cut-smoke-evidence-contracts.mjs',
       'check:runtime-boundaries': 'node scripts/check-video-cut-governance-suite.mjs runtime-boundaries',
       'check:security': 'node scripts/check-video-cut-governance-suite.mjs security',
       'check:license': 'node scripts/check-video-cut-governance-suite.mjs license',
       'check:release-flow': 'node scripts/check-video-cut-governance-suite.mjs release-flow',
+      'verify:release-signature': 'node scripts/verify-video-cut-release-signature.mjs',
+      'release:package:matrix': 'node scripts/release/run-release-matrix.mjs',
+      'release:smoke:matrix': 'node scripts/release/run-release-smoke-matrix.mjs',
       'check:media-pipeline':
         'cargo test --manifest-path host/Cargo.toml media -- --nocapture && vitest --run src/__tests__/mediaContracts.test.ts src/__tests__/resultsPage.test.tsx',
       'check:multi-mode': 'node scripts/check-video-cut-deployment-matrix.mjs',
@@ -86,6 +93,12 @@ describe('governance standard CLI', () => {
         'plan-update-validates-split-plan-contract',
         'cyclonedx-sbom-generated',
         'release-command-writes-standard-files',
+        'cli-contracts-command-present',
+        'deployment-artifacts-command-present',
+        'openapi-contracts-command-present',
+        'smoke-evidence-contracts-command-present',
+        'release-contracts-command-present',
+        'release-signature-verifier-command-present',
         'release-runtime-profile-registry-source-of-truth',
         'release-smoke-scripts-bind-report-evidence',
         'release-reports-use-project-relative-paths',
@@ -105,6 +118,11 @@ describe('governance standard CLI', () => {
     const { createGovernanceReport, parseGovernanceArgs } = await loadGovernanceModule();
     const reportDir = mkdtempSync(resolve(tmpdir(), 'video-cut-license-'));
 
+    expect(parseGovernanceArgs(['license', '--', '--json', '--report-dir', reportDir])).toEqual({
+      category: 'license',
+      json: true,
+      reportDir,
+    });
     expect(parseGovernanceArgs(['license', '--json', '--report-dir', reportDir])).toEqual({
       category: 'license',
       json: true,

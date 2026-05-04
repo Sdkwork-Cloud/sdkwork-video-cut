@@ -82,7 +82,7 @@ GET  /api/video-cut/v1/tasks/{taskId}/artifacts/{artifactId}/download
 GET  /api/video-cut/v1/tasks/{taskId}/artifacts/{artifactId}/content
 ```
 
-`/api/local/v1` 只允许作为 desktop-local 早期兼容 alias 存在于 route 层，不允许出现在 feature/core 包或正式契约中。
+`/api/video-cut/v1` is the only public business API route in every runtime profile. `/api/local/v1` is forbidden in Host routing, frontend clients, deployment assets, OpenAPI, and formal architecture contracts.
 
 ## Envelope
 

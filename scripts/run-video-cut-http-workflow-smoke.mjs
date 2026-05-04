@@ -5,16 +5,19 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { basename, dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { normalizeCliArgs } from './lib/cli-args.mjs';
+import { redactReport, reportContainsSensitiveData } from './lib/report-safety.mjs';
+
 const DEFAULT_HOST_URL = 'http://127.0.0.1:6177/api/video-cut/v1';
 const REPORT_VERSION = 'video-cut.http-workflow-smoke.v1';
 const API_ROUTE_PREFIX = '/api/video-cut/v1';
 
 export function parseHttpWorkflowSmokeArgs(argv, env = process.env) {
-  const args = [...argv];
+  const args = normalizeCliArgs(argv);
   let profile = 'desktop-dev';
   let deploymentMode = 'desktop-local';
-  let hostUrl = env.SDKWORK_VIDEO_CUT_HOST_URL || env.VITE_VIDEO_CUT_HOST_BASE_URL || DEFAULT_HOST_URL;
-  let authToken = env.SDKWORK_VIDEO_CUT_SERVER_TOKEN || env.VITE_VIDEO_CUT_SERVER_TOKEN || '';
+  let hostUrl = env.SDKWORK_VIDEO_CUT_HOST_URL || DEFAULT_HOST_URL;
+  let authToken = env.SDKWORK_VIDEO_CUT_SERVER_TOKEN || '';
   let sourceFile = '';
   let fixtureDir = 'artifacts/smoke';
   let ffmpegPath = env.SDKWORK_VIDEO_CUT_FFMPEG_PATH || 'ffmpeg';
@@ -336,7 +339,7 @@ export async function createHttpWorkflowSmokeReport({
       checks,
       ok: summary.fail === 0,
       summary,
-    });
+    }, [authToken]);
     writeReportIfRequested(reportPath, report);
     return report;
   } finally {
@@ -669,29 +672,6 @@ function summarizeChecks(checks) {
       return summary;
     },
     { ok: 0, warn: 0, fail: 0 },
-  );
-}
-
-function reportContainsSensitiveData(report, authToken) {
-  const serialized = JSON.stringify(report);
-  const token = String(authToken || '').trim();
-  return Boolean(
-    (token && serialized.includes(token)) ||
-      serialized.includes('"authorization"') ||
-      serialized.includes('"apiKey"') ||
-      /\bsk-[A-Za-z0-9_-]{8,}/.test(serialized),
-  );
-}
-
-function redactReport(report) {
-  return JSON.parse(
-    JSON.stringify(report, (key, value) => {
-      if (key === 'apiKey' || key === 'token' || key === 'serverToken' || key === 'authToken' || key === 'authorization') {
-        return undefined;
-      }
-
-      return value;
-    }),
   );
 }
 
