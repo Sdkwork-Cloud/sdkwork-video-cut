@@ -1,10 +1,11 @@
 import type { AppAsset, AssetStorageInfo, AssetType } from '@sdkwork/autocut-types';
-import { INITIAL_ASSETS } from './assets.mock';
 import { createAutoCutObjectUrl, revokeAutoCutObjectUrl } from './download.service';
 import { dispatchAutoCutEvent } from './events.service';
 import { createAutoCutId, createAutoCutTimestamp } from './identity.service';
 import { randomDelay } from './timing';
 import { readAutoCutStorage, writeAutoCutStorage } from './storage.service';
+
+const EMPTY_ASSETS: AppAsset[] = [];
 
 function inferAssetTypeFromFile(file: File): AssetType {
   if (file.type.startsWith('video/')) {
@@ -24,12 +25,12 @@ function inferAssetTypeFromFile(file: File): AssetType {
 
 export async function getAssets(): Promise<AppAsset[]> {
   await randomDelay(50, 100);
-  return readAutoCutStorage<AppAsset[]>('assets', INITIAL_ASSETS);
+  return readLocalAssets();
 }
 
 export async function addAsset(asset: AppAsset): Promise<void> {
   await randomDelay();
-  const assets = readAutoCutStorage<AppAsset[]>('assets', INITIAL_ASSETS);
+  const assets = readLocalAssets();
   writeAutoCutStorage('assets', [asset, ...assets]);
   dispatchAutoCutEvent('assetAdded', asset);
 }
@@ -66,7 +67,7 @@ export async function createAssetFolder(name: string): Promise<AppAsset> {
 }
 
 export async function deleteAsset(assetId: string): Promise<void> {
-  const assets = readAutoCutStorage<AppAsset[]>('assets', INITIAL_ASSETS);
+  const assets = readLocalAssets();
   const deletedAsset = assets.find((asset) => asset.id === assetId);
   if (deletedAsset?.url?.startsWith('blob:')) {
     revokeAutoCutObjectUrl(deletedAsset.url);
@@ -78,9 +79,13 @@ export async function deleteAsset(assetId: string): Promise<void> {
 
 export async function getStorageInfo(): Promise<AssetStorageInfo> {
   await randomDelay(20, 50);
-  const assets = readAutoCutStorage<AppAsset[]>('assets', INITIAL_ASSETS);
+  const assets = readLocalAssets();
   return {
     used: assets.reduce((total, asset) => total + asset.size, 0),
     total: 100 * 1024 * 1024 * 1024,
   };
+}
+
+function readLocalAssets() {
+  return readAutoCutStorage<AppAsset[]>('assets', EMPTY_ASSETS);
 }

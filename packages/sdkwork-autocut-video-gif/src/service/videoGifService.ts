@@ -5,10 +5,10 @@ import {
   addTask,
   createAutoCutId,
   createAutoCutTimestamp,
+  failAutoCutProcessingTask,
+  failAutoCutUnsupportedNativeProcessingTask,
   getAutoCutNativeHostClient,
-  getAutoCutSampleGifUrl,
   resolveAutoCutOutputRootDir,
-  simulateTaskProgress,
   updateTask,
   validateAutoCutProcessingSource,
 } from '@sdkwork/autocut-services';
@@ -118,25 +118,11 @@ export async function processVideoGif(params: VideoGifParams) {
         ...completedData,
       });
     } catch (error) {
-      await updateTask(newTask.id, {
-        status: AUTOCUT_TASK_STATUS.failed,
-        progressMessage: '浠诲姟澶辫触',
-        errorMessage: String(error),
-      });
+      return await failAutoCutProcessingTask(newTask.id, String(error));
     }
 
     return { success: true, taskId: newTask.id };
   }
 
-  simulateTaskProgress(
-    newTask.id,
-    [
-      { progress: 20, message: '鎻愬彇瑙嗛搴忓垪甯?..', durationMs: 1500 },
-      { progress: 50, message: '璁＄畻鍏ㄥ眬璋冭壊鏉?..', durationMs: 2000 },
-      { progress: 85, message: '搴旂敤鎶栧姩绠楁硶涓庤壊褰╅噺鍖?..', durationMs: 2500 },
-    ],
-    async () => finishVideoGifTask(newTask, getAutoCutSampleGifUrl(), 2 * 1024 * 1024),
-  );
-
-  return { success: true, taskId: newTask.id };
+  return await failAutoCutUnsupportedNativeProcessingTask(newTask, 'video GIF generation');
 }

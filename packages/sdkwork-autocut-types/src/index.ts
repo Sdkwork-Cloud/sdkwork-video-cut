@@ -493,6 +493,11 @@ export interface AutoCutLlmConnectionTestResult {
   content: string;
 }
 
+export interface AutoCutTaskProcessResult {
+  success: true;
+  taskId: string;
+}
+
 export interface AutoCutSecuritySettings {
   twoFactorEnabled: boolean;
   passwordChangeRequestedAt?: string;

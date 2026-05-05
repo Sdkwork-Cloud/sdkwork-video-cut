@@ -5,10 +5,10 @@ import {
   addTask,
   createAutoCutId,
   createAutoCutTimestamp,
+  failAutoCutProcessingTask,
+  failAutoCutUnsupportedNativeProcessingTask,
   getAutoCutNativeHostClient,
-  getAutoCutSampleVideoUrl,
   resolveAutoCutOutputRootDir,
-  simulateTaskProgress,
   updateTask,
   validateAutoCutProcessingSource,
 } from '@sdkwork/autocut-services';
@@ -114,29 +114,11 @@ export async function processVideoEnhance(params: VideoEnhanceParams) {
         ...completedData,
       });
     } catch (error) {
-      await updateTask(newTask.id, {
-        status: AUTOCUT_TASK_STATUS.failed,
-        progressMessage: '视频高清化失败',
-        errorMessage: String(error),
-      });
+      return await failAutoCutProcessingTask(newTask.id, String(error));
     }
 
     return { success: true, taskId: newTask.id };
   }
 
-  const videoUrl = getAutoCutSampleVideoUrl();
-
-  simulateTaskProgress(
-    newTask.id,
-    [
-      { progress: 10, message: '分析视频噪点与伪影...', durationMs: 2000 },
-      { progress: 30, message: '执行清晰度增强与去模糊...', durationMs: 4000 },
-      { progress: 60, message: '进行帧率标准化处理...', durationMs: 3000 },
-      { progress: 85, message: '后期画面色彩映射优化...', durationMs: 2000 },
-      { progress: 95, message: '高码率视频编码输出...', durationMs: 2000 },
-    ],
-    async () => finishVideoEnhanceTask(newTask, videoUrl, 45 * 1024 * 1024),
-  );
-
-  return { success: true, taskId: newTask.id };
+  return await failAutoCutUnsupportedNativeProcessingTask(newTask, 'video enhancement');
 }

@@ -5,10 +5,10 @@ import {
   addTask,
   createAutoCutId,
   createAutoCutTimestamp,
+  failAutoCutProcessingTask,
+  failAutoCutUnsupportedNativeProcessingTask,
   getAutoCutNativeHostClient,
-  getAutoCutSampleVideoUrl,
   resolveAutoCutOutputRootDir,
-  simulateTaskProgress,
   updateTask,
   validateAutoCutProcessingSource,
 } from '@sdkwork/autocut-services';
@@ -124,27 +124,11 @@ export async function processVideoConvert(params: VideoConvertParams) {
         ...completedData,
       });
     } catch (error) {
-      await updateTask(newTask.id, {
-        status: AUTOCUT_TASK_STATUS.failed,
-        progressMessage: '视频格式转换失败',
-        errorMessage: String(error),
-      });
+      return await failAutoCutProcessingTask(newTask.id, String(error));
     }
 
     return { success: true, taskId: newTask.id };
   }
 
-  const videoUrl = getAutoCutSampleVideoUrl();
-
-  simulateTaskProgress(
-    newTask.id,
-    [
-      { progress: 20, message: '重新复用视频流...', durationMs: 1500 },
-      { progress: 60, message: `重新编码音频轨道至 ${params.audioCodec}...`, durationMs: 2500 },
-      { progress: 95, message: '快速封包写入...', durationMs: 1500 },
-    ],
-    async () => finishVideoConvertTask(newTask, videoUrl, 20 * 1024 * 1024),
-  );
-
-  return { success: true, taskId: newTask.id };
+  return await failAutoCutUnsupportedNativeProcessingTask(newTask, 'video conversion');
 }

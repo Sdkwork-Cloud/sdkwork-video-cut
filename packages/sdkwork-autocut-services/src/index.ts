@@ -12,7 +12,6 @@ export * from './service/native-host-client.service';
 export * from './service/processing-source.service';
 export * from './service/runtime-environment.service';
 export * from './service/settings.service';
-export * from './service/simulation.service';
 export * from './service/storage.service';
 export * from './service/tasks.service';
 export * from './service/tools.service';

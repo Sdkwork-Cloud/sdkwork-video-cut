@@ -4,7 +4,7 @@ import { Card, Button, FileUpload, TaskFailureState } from '@sdkwork/autocut-com
 
 import { Upload, Settings, Play, Minimize2, Activity, ArrowRight, Download, Zap } from 'lucide-react';
 import { useToast } from '@sdkwork/autocut-commons';
-import { downloadAutoCutUrl, getTasks, listenAutoCutEvent, openAutoCutPreviewUrl, reportAutoCutDiagnostic } from '@sdkwork/autocut-services';
+import { downloadAutoCutUrl, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent, openAutoCutPreviewUrl, reportAutoCutDiagnostic } from '@sdkwork/autocut-services';
 import { AUTOCUT_TASK_STATUS, isAutoCutTaskActiveStatus, type AppTask } from '@sdkwork/autocut-types';
 
 function formatBytes(bytes: number, decimals = 2) {
@@ -55,6 +55,11 @@ export function VideoCompressPage() {
         setActiveTask(null);
       }
     } catch (e) {
+      const failedTaskId = getAutoCutProcessingTaskErrorTaskId(e);
+      if (failedTaskId) {
+        setActiveTaskId(failedTaskId);
+        setActiveTask(null);
+      }
       reportAutoCutDiagnostic('error', 'video-compress', 'Video compression failed', e);
       toast('压缩服务通信故障', 'error');
     }

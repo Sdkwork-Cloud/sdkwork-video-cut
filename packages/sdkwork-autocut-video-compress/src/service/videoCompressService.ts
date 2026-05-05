@@ -5,17 +5,14 @@ import {
   addTask,
   createAutoCutId,
   createAutoCutTimestamp,
+  failAutoCutProcessingTask,
+  failAutoCutUnsupportedNativeProcessingTask,
   getAutoCutNativeHostClient,
-  getAutoCutSampleVideoUrl,
   resolveAutoCutOutputRootDir,
-  simulateTaskProgress,
   updateTask,
   validateAutoCutProcessingSource,
 } from '@sdkwork/autocut-services';
 import { resolveAutoCutTrustedSourcePath } from '@sdkwork/autocut-commons';
-
-const SIMULATED_ORIGINAL_SIZE = 55 * 1024 * 1024;
-const SIMULATED_COMPRESSED_SIZE = 12 * 1024 * 1024;
 
 function resolveDesktopSourcePath(file: File | null | undefined) {
   return resolveAutoCutTrustedSourcePath(file);
@@ -138,34 +135,11 @@ export async function processVideoCompress(params: VideoCompressParams) {
         ...completedData,
       });
     } catch (error) {
-      await updateTask(newTask.id, {
-        status: AUTOCUT_TASK_STATUS.failed,
-        progressMessage: '视频压缩失败',
-        errorMessage: String(error),
-      });
+      return await failAutoCutProcessingTask(newTask.id, String(error));
     }
 
     return { success: true, taskId: newTask.id };
   }
 
-  const videoUrl = getAutoCutSampleVideoUrl();
-
-  simulateTaskProgress(
-    newTask.id,
-    [
-      { progress: 10, message: '分析视频复杂度与码率...', durationMs: 1500 },
-      { progress: 35, message: '执行二次编码通行 (Pass 1)...', durationMs: 2000 },
-      { progress: 65, message: '执行量化压缩优化 (Pass 2)...', durationMs: 3000 },
-      { progress: 90, message: '封装容器并写入元数据...', durationMs: 1500 },
-    ],
-    async () =>
-      finishVideoCompressTask(
-        newTask,
-        videoUrl,
-        SIMULATED_ORIGINAL_SIZE,
-        SIMULATED_COMPRESSED_SIZE,
-      ),
-  );
-
-  return { success: true, taskId: newTask.id };
+  return await failAutoCutUnsupportedNativeProcessingTask(newTask, 'video compression');
 }

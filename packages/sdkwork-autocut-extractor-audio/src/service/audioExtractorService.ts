@@ -5,10 +5,10 @@ import {
   addTask,
   createAutoCutId,
   createAutoCutTimestamp,
+  failAutoCutProcessingTask,
+  failAutoCutUnsupportedNativeProcessingTask,
   getAutoCutNativeHostClient,
-  getAutoCutSampleAudioUrl,
   resolveAutoCutOutputRootDir,
-  simulateTaskProgress,
   updateTask,
   validateAutoCutProcessingSource,
 } from '@sdkwork/autocut-services';
@@ -112,25 +112,11 @@ export async function processAudioExtraction(params: AudioExtractionParams) {
         ...completedData,
       });
     } catch (error) {
-      await updateTask(newTask.id, {
-        status: AUTOCUT_TASK_STATUS.failed,
-        progressMessage: '任务失败',
-        errorMessage: String(error),
-      });
+      return await failAutoCutProcessingTask(newTask.id, String(error));
     }
 
     return { success: true, taskId: newTask.id };
   }
 
-  simulateTaskProgress(
-    newTask.id,
-    [
-      { progress: 20, message: '分析视频容器与音轨...', durationMs: 1500 },
-      { progress: 60, message: '分离无损音频流...', durationMs: 1500 },
-      { progress: 85, message: `转码到目标格式 ${params.format} (${params.quality}k)...`, durationMs: 2000 },
-    ],
-    async () => finishAudioExtractionTask(newTask, getAutoCutSampleAudioUrl(), 5 * 1024 * 1024),
-  );
-
-  return { success: true, taskId: newTask.id };
+  return await failAutoCutUnsupportedNativeProcessingTask(newTask, 'audio extraction');
 }

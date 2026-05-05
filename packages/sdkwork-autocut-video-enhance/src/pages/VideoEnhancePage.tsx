@@ -4,7 +4,7 @@ import { Card, Button, FileUpload, TaskFailureState } from '@sdkwork/autocut-com
 
 import { Upload, Settings, Play, Monitor, Activity, Download, CheckCircle2 } from 'lucide-react';
 import { useToast } from '@sdkwork/autocut-commons';
-import { downloadAutoCutUrl, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic } from '@sdkwork/autocut-services';
+import { downloadAutoCutUrl, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic } from '@sdkwork/autocut-services';
 import { AUTOCUT_TASK_STATUS, isAutoCutTaskActiveStatus, type AppTask } from '@sdkwork/autocut-types';
 
 export function VideoEnhancePage() {
@@ -47,6 +47,11 @@ export function VideoEnhancePage() {
         setActiveTask(null);
       }
     } catch (e) {
+      const failedTaskId = getAutoCutProcessingTaskErrorTaskId(e);
+      if (failedTaskId) {
+        setActiveTaskId(failedTaskId);
+        setActiveTask(null);
+      }
       reportAutoCutDiagnostic('error', 'video-enhance', 'Video enhancement failed', e);
       toast('无法连接到增强引擎节点', 'error');
     }

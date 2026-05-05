@@ -51,7 +51,7 @@ const processingWorkflows = [
     pageMarkers: ['WebGLPlayer', "listenAutoCutEvent('taskUpdated'", "listenAutoCutEvent('taskAdded'", 'setActiveLeftTab("tasks")', 'navigate(`/tasks/${task.id}`)'],
     serviceMarkers: [
       'addTask',
-      'simulateTaskProgress',
+      'failAutoCutUnsupportedNativeProcessingTask',
       'addAsset',
       'addMessage',
       'sliceResults',
@@ -82,7 +82,7 @@ const processingWorkflows = [
     pageMarkers: ['downloadExtractedTextFile', 'writeAutoCutClipboardText', "listenAutoCutEvent('taskUpdated'", 'setActiveTaskId'],
     serviceMarkers: [
       'addTask',
-      'simulateTaskProgress',
+      'failAutoCutUnsupportedNativeProcessingTask',
       'addAsset',
       'addMessage',
       'extractedText',
@@ -104,7 +104,19 @@ const processingWorkflows = [
     service: 'packages/sdkwork-autocut-extractor-audio/src/service/audioExtractorService.ts',
     processFn: 'processAudioExtraction',
     pageMarkers: ['downloadAutoCutUrl', "listenAutoCutEvent('taskUpdated'", 'setActiveTaskId'],
-    serviceMarkers: ['addTask', 'simulateTaskProgress', 'addAsset', 'addMessage', 'audioUrl'],
+    serviceMarkers: [
+      'addTask',
+      'failAutoCutUnsupportedNativeProcessingTask',
+      'addAsset',
+      'addMessage',
+      'audioUrl',
+      'getAutoCutNativeHostClient',
+      'resolveAutoCutTrustedSourcePath',
+      'resolveAutoCutOutputRootDir',
+      'importMediaFile',
+      'extractAudio',
+      'createAssetUrl',
+    ],
   },
   {
     name: 'video-gif',
@@ -114,7 +126,7 @@ const processingWorkflows = [
     pageMarkers: ['downloadAutoCutUrl', "listenAutoCutEvent('taskUpdated'", 'setActiveTaskId'],
     serviceMarkers: [
       'addTask',
-      'simulateTaskProgress',
+      'failAutoCutUnsupportedNativeProcessingTask',
       'addAsset',
       'addMessage',
       'gifUrl',
@@ -132,7 +144,7 @@ const processingWorkflows = [
     pageMarkers: ['downloadAutoCutUrl', 'openAutoCutPreviewUrl', "listenAutoCutEvent('taskUpdated'", 'setActiveTaskId'],
     serviceMarkers: [
       'addTask',
-      'simulateTaskProgress',
+      'failAutoCutUnsupportedNativeProcessingTask',
       'addAsset',
       'addMessage',
       'videoUrl',
@@ -151,7 +163,7 @@ const processingWorkflows = [
     pageMarkers: ['downloadAutoCutUrl', "listenAutoCutEvent('taskUpdated'", 'setActiveTaskId'],
     serviceMarkers: [
       'addTask',
-      'simulateTaskProgress',
+      'failAutoCutUnsupportedNativeProcessingTask',
       'addAsset',
       'addMessage',
       'videoUrl',
@@ -169,7 +181,7 @@ const processingWorkflows = [
     pageMarkers: ['downloadAutoCutUrl', "listenAutoCutEvent('taskUpdated'", 'setActiveTaskId'],
     serviceMarkers: [
       'addTask',
-      'simulateTaskProgress',
+      'failAutoCutUnsupportedNativeProcessingTask',
       'addAsset',
       'addMessage',
       'videoUrl',
@@ -185,7 +197,9 @@ const processingWorkflows = [
     service: 'packages/sdkwork-autocut-subtitle-translate/src/service/subtitleTranslateService.ts',
     processFn: 'processSubtitleTranslate',
     pageMarkers: ['downloadAutoCutUrl', "listenAutoCutEvent('taskUpdated'", 'setActiveTaskId'],
-    serviceMarkers: ['addTask', 'simulateTaskProgress', 'addAsset', 'addMessage', 'videoUrl'],
+    producesGeneratedAssets: false,
+    returnsSuccess: false,
+    serviceMarkers: ['addTask', 'failAutoCutUnsupportedNativeProcessingTask', 'sourceFileId: params.fileId'],
   },
   {
     name: 'voice-translate',
@@ -193,7 +207,9 @@ const processingWorkflows = [
     service: 'packages/sdkwork-autocut-voice-translate/src/service/voiceTranslateService.ts',
     processFn: 'processVoiceTranslate',
     pageMarkers: ['downloadAutoCutUrl', "listenAutoCutEvent('taskUpdated'", 'setActiveTaskId'],
-    serviceMarkers: ['addTask', 'simulateTaskProgress', 'addAsset', 'addMessage', 'videoUrl'],
+    producesGeneratedAssets: false,
+    returnsSuccess: false,
+    serviceMarkers: ['addTask', 'failAutoCutUnsupportedNativeProcessingTask', 'sourceFileId: params.fileId'],
   },
 ];
 
@@ -203,7 +219,18 @@ for (const workflow of processingWorkflows) {
   assertIncludes(serviceSource, `export async function ${workflow.processFn}`, `${workflow.name} exports its processing workflow function`);
   assertIncludes(pageSource, `${workflow.processFn}(`, `${workflow.name} page invokes its processing workflow function`);
   assertIncludes(serviceSource, 'AUTOCUT_TASK_STATUS.pending', `${workflow.name} service creates a pending task`);
-  assertIncludes(serviceSource, 'return { success: true, taskId: newTask.id }', `${workflow.name} service returns a task id result contract`);
+  if (workflow.returnsSuccess !== false) {
+    assertRule(
+      serviceSource.includes('return { success: true, taskId: newTask.id }') ||
+        serviceSource.includes('return { success: true, taskId: durableTaskId }'),
+      `${workflow.name} service returns a task id result contract`,
+    );
+    assertIncludes(
+      serviceSource,
+      'failAutoCutProcessingTask(newTask.id, String(error))',
+      `${workflow.name} service rejects native command failures instead of returning success`,
+    );
+  }
   assertIncludes(
     serviceSource,
     'validateAutoCutProcessingSource',
@@ -231,6 +258,11 @@ for (const workflow of processingWorkflows) {
   assertRule(
     pageSource.includes('activeTask.errorMessage') || pageSource.includes('task.errorMessage'),
     `${workflow.name} page displays the task error message`,
+  );
+  assertIncludes(
+    pageSource,
+    'getAutoCutProcessingTaskErrorTaskId',
+    `${workflow.name} page can surface persisted failed tasks created by fail-closed processing`,
   );
   if (workflow.name !== 'slicer') {
     assertIncludes(
@@ -310,6 +342,11 @@ assertIncludes(taskDetailPage, 'downloadTaskExecutionResultFile', 'TaskDetailPag
 assertIncludes(taskDetailPage, 'TaskFailureState', 'TaskDetailPage renders the standard failed task state');
 assertIncludes(taskDetailPage, 'task.status === AUTOCUT_TASK_STATUS.failed', 'TaskDetailPage branches failed tasks before pending or processing views');
 assertIncludes(taskDetailPage, 'errorMessage={task.errorMessage}', 'TaskDetailPage passes task error messages into the failed task state');
+assertIncludes(taskDetailPage, 'handleSlicePreviewSelect', 'TaskDetailPage routes slice preview clicks through a dedicated selection handler');
+assertIncludes(taskDetailPage, 'onClick={() => handleSlicePreviewSelect(slice.id)}', 'TaskDetailPage lets each generated slice select its own preview video');
+assertIncludes(taskDetailPage, 'const selectedSlice = sliceResults.find((slice) => slice.id === activePreviewUrl) ?? sliceResults[0] ?? null', 'TaskDetailPage resolves the selected slice result before rendering the player');
+assertIncludes(taskDetailPage, 'key={selectedSlice.id}', 'TaskDetailPage remounts the video player when a different slice is selected');
+assertIncludes(taskDetailPage, 'src={selectedSlice.url}', 'TaskDetailPage plays the selected slice artifact URL instead of a shared placeholder');
 assertMatches(
   taskDetailPage,
   /<Button className="mt-4" variant="outline" onClick=\{\(\) => downloadTaskExecutionResultFile\(task\)\}/u,
@@ -318,9 +355,11 @@ assertMatches(
 
 for (const workflow of processingWorkflows) {
   const serviceSource = read(workflow.service);
-  assertIncludes(serviceSource, 'sourceTaskId: newTask.id', `${workflow.name} service stores sourceTaskId on generated assets`);
-  assertIncludes(serviceSource, 'sourceTaskType: newTask.type', `${workflow.name} service stores sourceTaskType on generated assets`);
-  assertIncludes(serviceSource, 'generatedAssetIds', `${workflow.name} service returns generatedAssetIds to the completed task`);
+  if (workflow.producesGeneratedAssets !== false) {
+    assertIncludes(serviceSource, 'sourceTaskId: newTask.id', `${workflow.name} service stores sourceTaskId on generated assets`);
+    assertIncludes(serviceSource, 'sourceTaskType: newTask.type', `${workflow.name} service stores sourceTaskType on generated assets`);
+    assertIncludes(serviceSource, 'generatedAssetIds', `${workflow.name} service returns generatedAssetIds to the completed task`);
+  }
   assertIncludes(serviceSource, 'sourceFileId: params.fileId', `${workflow.name} service stores selected source file id on the task`);
 }
 
@@ -337,6 +376,21 @@ if (exists(processingSourceServicePath)) {
     processingSourceService,
     'export function validateAutoCutProcessingSource',
     'processing-source.service.ts exports validateAutoCutProcessingSource',
+  );
+  assertIncludes(
+    processingSourceService,
+    'AutoCutProcessingTaskError',
+    'processing-source.service.ts exposes a typed failed-task error',
+  );
+  assertIncludes(
+    processingSourceService,
+    'failAutoCutProcessingTask',
+    'processing-source.service.ts exposes a standard failed-task transition helper',
+  );
+  assertIncludes(
+    processingSourceService,
+    'getAutoCutProcessingTaskErrorTaskId',
+    'processing-source.service.ts exposes a helper for reading failed task ids',
   );
   assertIncludes(
     processingSourceService,
@@ -524,6 +578,13 @@ assertIncludes(slicerPage, 'useLocation', 'SlicerPage reads route state from the
 assertIncludes(slicerPage, 'initialFile', 'SlicerPage initializes the selected source file from route state');
 assertIncludes(slicerPage, 'resolveAutoCutTrustedSourcePath(file)', 'SlicerPage detects trusted desktop-selected video source paths');
 assertIncludes(slicerPage, 'getAutoCutNativeHostClient().createAssetUrl(trustedSourcePath)', 'SlicerPage previews desktop-selected videos through the Tauri asset protocol');
+assertIncludes(slicerPage, 'selectAutoCutTrustedLocalVideoFile', 'SlicerPage prefers the desktop trusted local video chooser when replacing the source video');
+assertIncludes(slicerPage, 'createAutoCutTrustedLocalFile', 'SlicerPage converts replacement desktop videos into File-compatible trusted inputs');
+assertMatches(
+  slicerPage,
+  /handleReplaceVideo[\s\S]*selectAutoCutTrustedLocalVideoFile[\s\S]*createAutoCutTrustedLocalFile[\s\S]*setFile\(trustedFile\)/u,
+  'SlicerPage replacement video flow preserves trusted source paths so native slicing runs real FFmpeg logic',
+);
 for (const hardCodedLlmModelOption of [
   '<option value="gpt-5.5">',
   '<option value="gpt-5.4-mini">',

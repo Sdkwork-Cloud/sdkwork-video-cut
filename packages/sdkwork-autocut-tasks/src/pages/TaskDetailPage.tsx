@@ -61,6 +61,10 @@ export function TaskDetailPage() {
   const [activePreviewUrl, setActivePreviewUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  const handleSlicePreviewSelect = (sliceId: string) => {
+    setActivePreviewUrl(sliceId);
+  };
+
   useEffect(() => {
     const fetchTask = () => {
       getTasks().then(tasks => {
@@ -123,6 +127,7 @@ export function TaskDetailPage() {
 
     if (task.type === '视频切片') {
       const sliceResults = task.sliceResults || [];
+      const selectedSlice = sliceResults.find((slice) => slice.id === activePreviewUrl) ?? sliceResults[0] ?? null;
       return (
           <div className="flex flex-col xl:flex-row gap-6 h-full flex-1 min-h-0">
             {/* Left: File List */}
@@ -142,7 +147,7 @@ export function TaskDetailPage() {
                         ? 'border-blue-500/50 bg-blue-500/10'
                         : 'border-[#222] bg-[#1A1A1A] hover:border-[#444] hover:bg-[#222]'
                     }`}
-                    onClick={() => setActivePreviewUrl(slice.id)}
+                    onClick={() => handleSlicePreviewSelect(slice.id)}
                   >
                     <div className="w-24 h-16 bg-black rounded shadow-inner overflow-hidden relative shrink-0 border border-[#333]">
                       <img src={slice.thumbnailUrl} alt="" className="w-full h-full object-cover opacity-60" />
@@ -183,15 +188,16 @@ export function TaskDetailPage() {
 
             {/* Right: Player Preview */}
             <div className="flex-1 bg-[#111] rounded-xl border border-[#222] flex flex-col items-center justify-center relative overflow-hidden group">
-               {activePreviewUrl ? (
+               {selectedSlice ? (
                  <div className="w-full h-full flex flex-col">
                    <div className="flex-1 bg-black w-full relative flex items-center justify-center">
                      <div className="absolute top-4 left-4 z-10 px-3 py-1.5 bg-black/60 backdrop-blur-md rounded border border-white/10 flex items-center gap-2">
                        <CheckCircle2 size={14} className="text-blue-400" />
-                       <span className="text-[11px] text-white">正在预览: {sliceResults.find(s => s.id === activePreviewUrl)?.name}</span>
+                       <span className="text-[11px] text-white">正在预览: {selectedSlice.name}</span>
                      </div>
                      <video
-                       src={sliceResults.find(s => s.id === activePreviewUrl)?.url}
+                       key={selectedSlice.id}
+                       src={selectedSlice.url}
                        className="w-full h-full max-h-full object-contain"
                        controls
                        autoPlay

@@ -116,6 +116,22 @@ const requiredDatetimeServicePath = 'packages/sdkwork-autocut-services/src/servi
 const requiredDownloadServicePath = 'packages/sdkwork-autocut-services/src/service/download.service.ts';
 const requiredProcessingSourceServicePath = 'packages/sdkwork-autocut-services/src/service/processing-source.service.ts';
 const requiredNativeHostClientServicePath = 'packages/sdkwork-autocut-services/src/service/native-host-client.service.ts';
+const requiredTasksServicePath = 'packages/sdkwork-autocut-services/src/service/tasks.service.ts';
+const requiredAssetsServicePath = 'packages/sdkwork-autocut-services/src/service/assets.service.ts';
+const requiredMessagesServicePath = 'packages/sdkwork-autocut-services/src/service/messages.service.ts';
+const requiredToolsRegistryPath = 'packages/sdkwork-autocut-services/src/service/tools.registry.ts';
+const requiredSlicerServicePath = 'packages/sdkwork-autocut-slicer/src/service/slicerService.ts';
+const realProcessingServicePaths = [
+  requiredSlicerServicePath,
+  'packages/sdkwork-autocut-extractor-text/src/service/extractorTextService.ts',
+  'packages/sdkwork-autocut-extractor-audio/src/service/audioExtractorService.ts',
+  'packages/sdkwork-autocut-video-gif/src/service/videoGifService.ts',
+  'packages/sdkwork-autocut-video-compress/src/service/videoCompressService.ts',
+  'packages/sdkwork-autocut-video-convert/src/service/videoConvertService.ts',
+  'packages/sdkwork-autocut-video-enhance/src/service/videoEnhanceService.ts',
+  'packages/sdkwork-autocut-subtitle-translate/src/service/subtitleTranslateService.ts',
+  'packages/sdkwork-autocut-voice-translate/src/service/voiceTranslateService.ts',
+];
 const requiredTrustedFileSourcePath = 'packages/sdkwork-autocut-commons/src/service/trusted-file-source.service.ts';
 const requiredNativeHostCommandSourcePath = 'packages/sdkwork-autocut-desktop/src-tauri/src/commands.rs';
 const requiredNativeHostContractSourcePath = 'packages/sdkwork-autocut-desktop/src-tauri/src/host_contract.rs';
@@ -943,6 +959,21 @@ const nativeFfmpegToolchainManifestSource = fs.existsSync(path.join(rootDir, req
 const nativeHostClientServiceSource = fs.existsSync(path.join(rootDir, requiredNativeHostClientServicePath))
   ? fs.readFileSync(path.join(rootDir, requiredNativeHostClientServicePath), 'utf8')
   : '';
+const tasksServiceSource = fs.existsSync(path.join(rootDir, requiredTasksServicePath))
+  ? fs.readFileSync(path.join(rootDir, requiredTasksServicePath), 'utf8')
+  : '';
+const assetsServiceSource = fs.existsSync(path.join(rootDir, requiredAssetsServicePath))
+  ? fs.readFileSync(path.join(rootDir, requiredAssetsServicePath), 'utf8')
+  : '';
+const messagesServiceSource = fs.existsSync(path.join(rootDir, requiredMessagesServicePath))
+  ? fs.readFileSync(path.join(rootDir, requiredMessagesServicePath), 'utf8')
+  : '';
+const slicerServiceSource = fs.existsSync(path.join(rootDir, requiredSlicerServicePath))
+  ? fs.readFileSync(path.join(rootDir, requiredSlicerServicePath), 'utf8')
+  : '';
+const servicesIndexSource = fs.existsSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/index.ts'))
+  ? fs.readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/index.ts'), 'utf8')
+  : '';
 const serviceBehaviorCheckSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-service-behavior.mjs'))
   ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-service-behavior.mjs'), 'utf8')
   : '';
@@ -1266,8 +1297,8 @@ const desktopMainSource = fs.existsSync(path.join(desktopSrcDir, 'main.tsx'))
 const desktopNativeHostSource = fs.existsSync(path.join(desktopSrcDir, 'native-host.ts'))
   ? fs.readFileSync(path.join(desktopSrcDir, 'native-host.ts'), 'utf8')
   : '';
-const toolsRegistrySource = fs.existsSync(path.join(packagesDir, 'sdkwork-autocut-services', 'src', 'service', 'tools.mock.ts'))
-  ? fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-services', 'src', 'service', 'tools.mock.ts'), 'utf8')
+const toolsRegistrySource = fs.existsSync(path.join(rootDir, requiredToolsRegistryPath))
+  ? fs.readFileSync(path.join(rootDir, requiredToolsRegistryPath), 'utf8')
   : '';
 const serviceIndexSource = fs.existsSync(path.join(packagesDir, 'sdkwork-autocut-services', 'src', 'index.ts'))
   ? fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-services', 'src', 'index.ts'), 'utf8')
@@ -1978,6 +2009,13 @@ assertRule(
   exists(requiredProcessingSourceServicePath),
   '@sdkwork/autocut-services defines canonical processing-source.service.ts',
 );
+assertRule(
+    processingSourceServiceSource.includes('class AutoCutProcessingTaskError') &&
+    processingSourceServiceSource.includes('readonly taskId: string') &&
+    processingSourceServiceSource.includes('failAutoCutProcessingTask') &&
+    processingSourceServiceSource.includes('getAutoCutProcessingTaskErrorTaskId'),
+  'processing-source.service.ts exposes typed failed task diagnostics for UI surfaces',
+);
 for (const marker of requiredProcessingSourceServiceMarkers) {
   assertRule(processingSourceServiceSource.includes(marker), `processing-source.service.ts exposes ${marker}`);
 }
@@ -1991,6 +2029,73 @@ for (const marker of requiredNativeHostClientServiceMarkers) {
 assertRule(
   serviceIndexSource.includes("export * from './service/native-host-client.service'"),
   '@sdkwork/autocut-services exports the canonical native host client service',
+);
+assertRule(exists(requiredTasksServicePath), '@sdkwork/autocut-services defines canonical tasks.service.ts');
+assertRule(
+  tasksServiceSource.includes('getAutoCutNativeHostClient'),
+  'tasks.service.ts reads native task snapshots through the canonical native host client',
+);
+assertRule(
+  tasksServiceSource.includes('listNativeTasks'),
+  'tasks.service.ts uses autocut_list_native_tasks for database-backed task center data',
+);
+assertRule(
+  !/\btasks\.mock\b/u.test(tasksServiceSource) && !/\bINITIAL_TASKS\b/u.test(tasksServiceSource),
+  'tasks.service.ts does not seed task center data from mock/default tasks',
+);
+assertRule(
+  !/readAutoCutStorage<[^>]*AppTask[^>]*>\(\s*['"]tasks['"]\s*,\s*INITIAL_TASKS/u.test(tasksServiceSource),
+  'tasks.service.ts defaults browser task storage to an empty collection instead of mock tasks',
+);
+assertRule(exists(requiredAssetsServicePath), '@sdkwork/autocut-services defines canonical assets.service.ts');
+assertRule(
+  !/\bassets\.mock\b/u.test(assetsServiceSource) && !/\bINITIAL_ASSETS\b/u.test(assetsServiceSource),
+  'assets.service.ts does not seed asset center data from mock/default assets',
+);
+assertRule(exists(requiredMessagesServicePath), '@sdkwork/autocut-services defines canonical messages.service.ts');
+assertRule(
+  !/\bmessages\.mock\b/u.test(messagesServiceSource) && !/\bINITIAL_MESSAGES\b/u.test(messagesServiceSource),
+  'messages.service.ts does not seed message center data from mock/default messages',
+);
+assertRule(exists(requiredToolsRegistryPath), '@sdkwork/autocut-services defines canonical tools.registry.ts');
+assertRule(!exists('packages/sdkwork-autocut-services/src/service/tools.mock.ts'), 'tool catalog uses registry naming instead of mock naming');
+assertRule(exists(requiredSlicerServicePath), '@sdkwork/autocut-slicer defines canonical slicerService.ts');
+assertRule(!slicerServiceSource.includes('createSampleSliceResults'), 'slicerService.ts does not generate fake slice result lists');
+assertRule(!slicerServiceSource.includes('getAutoCutSampleSliceThumbnailUrl'), 'slicerService.ts does not assign sample thumbnails to generated slices');
+assertRule(!slicerServiceSource.includes('simulateTaskProgress'), 'slicerService.ts does not simulate automatic video slicing completion');
+assertRule(
+  slicerServiceSource.includes('failAutoCutUnsupportedNativeProcessingTask(newTask,') &&
+    slicerServiceSource.includes("'automatic slicing'"),
+  'slicerService.ts fails closed when native trusted local slicing is unavailable',
+);
+for (const relativePath of realProcessingServicePaths) {
+  const source = exists(relativePath) ? fs.readFileSync(path.join(rootDir, relativePath), 'utf8') : '';
+  assertRule(exists(relativePath), `${relativePath} exists as a canonical processing service`);
+  assertRule(!source.includes('simulateTaskProgress'), `${relativePath} does not simulate task progress`);
+  assertRule(!source.includes('getAutoCutSampleVideoUrl'), `${relativePath} does not use sample video URLs as generated output`);
+  assertRule(!source.includes('getAutoCutSampleAudioUrl'), `${relativePath} does not use sample audio URLs as generated output`);
+  assertRule(!source.includes('getAutoCutSampleGifUrl'), `${relativePath} does not use sample GIF URLs as generated output`);
+  assertRule(!source.includes('getAutoCutSampleSliceThumbnailUrl'), `${relativePath} does not use sample thumbnails as generated output`);
+  assertRule(!source.includes('createFallbackExtractedText'), `${relativePath} does not create fallback transcript text`);
+  assertRule(!source.includes('SIMULATED_'), `${relativePath} does not persist simulated media metadata`);
+  assertRule(
+    source.includes('failAutoCutUnsupportedNativeProcessingTask'),
+    `${relativePath} fails closed when real native processing is unavailable`,
+  );
+  if (
+    relativePath !== 'packages/sdkwork-autocut-subtitle-translate/src/service/subtitleTranslateService.ts' &&
+    relativePath !== 'packages/sdkwork-autocut-voice-translate/src/service/voiceTranslateService.ts'
+  ) {
+    assertRule(
+      source.includes('failAutoCutProcessingTask(newTask.id, String(error))'),
+      `${relativePath} rejects native command failures instead of returning success`,
+    );
+  }
+}
+assertRule(!exists('packages/sdkwork-autocut-services/src/service/simulation.service.ts'), 'shared services no longer expose simulated task progress helpers');
+assertRule(
+  !servicesIndexSource.includes("export * from './service/simulation.service'"),
+  'services index does not export simulated task progress helpers',
 );
 assertRule(
   exists(requiredTrustedFileSourcePath),

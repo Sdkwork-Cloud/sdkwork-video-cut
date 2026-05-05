@@ -13,12 +13,11 @@ import {
   createAutoCutOpenAiCompatibleChatCompletion,
   createAutoCutTimestamp,
   getAutoCutNativeHostClient,
-  getAutoCutSampleSliceThumbnailUrl,
-  getAutoCutSampleVideoUrl,
   reportAutoCutDiagnostic,
   resolveAutoCutOutputRootDir,
   resolveAutoCutSpeechTranscriptionRuntimeConfig,
-  simulateTaskProgress,
+  failAutoCutProcessingTask,
+  failAutoCutUnsupportedNativeProcessingTask,
   updateTask,
   validateAutoCutProcessingSource,
   type AutoCutSpeechTranscriptionSegment,
@@ -374,20 +373,6 @@ function createNativeSliceResult(
   };
 }
 
-function createSampleSliceResults(newTask: AppTask): TaskSliceResult[] {
-  const videoUrl = getAutoCutSampleVideoUrl();
-
-  return Array.from({ length: DEFAULT_SLICE_COUNT }).map((_, index) => ({
-    id: `${newTask.id}-s${index}`,
-    name: `${newTask.name}_高光片段_${index + 1}.mp4`,
-    duration: 20 + index * 5,
-    size: (10 + index) * 1024 * 1024,
-    resolution: '1080P',
-    thumbnailUrl: getAutoCutSampleSliceThumbnailUrl(newTask.id, index),
-    url: videoUrl,
-  }));
-}
-
 export async function processVideoSlice(params: VideoSliceParams) {
   validateAutoCutProcessingSource({ ...params, allowExternalUrl: true });
 
@@ -408,6 +393,8 @@ export async function processVideoSlice(params: VideoSliceParams) {
       progress: 15,
       progressMessage: '正在准备本地视频切片...',
     });
+
+    let durableTaskId = newTask.id;
 
     try {
       const outputRootDir = await resolveAutoCutOutputRootDir();
@@ -468,9 +455,15 @@ export async function processVideoSlice(params: VideoSliceParams) {
             }
           : {}),
       });
+      const completedTask: AppTask = {
+        ...newTask,
+        id: nativeResult.taskUuid,
+        sourceFileId: importedMedia.assetUuid,
+      };
+      durableTaskId = completedTask.id;
       const sliceResults = nativeResult.slices.map((nativeSlice, index) =>
         createNativeSliceResult(
-          newTask,
+          completedTask,
           nativeSlice,
           index,
           nativeHostClient.createAssetUrl(nativeSlice.artifactPath),
@@ -480,37 +473,23 @@ export async function processVideoSlice(params: VideoSliceParams) {
             : undefined,
         ),
       );
-      const completedData = await finishVideoSliceTask(newTask, sliceResults);
+      const completedData = await finishVideoSliceTask(completedTask, sliceResults);
 
       await updateTask(newTask.id, {
         status: AUTOCUT_TASK_STATUS.completed,
         progress: 100,
         progressMessage: '视频切片完成。',
         completedAt: createAutoCutTimestamp(),
+        id: completedTask.id,
+        sourceFileId: importedMedia.assetUuid,
         ...completedData,
       });
     } catch (error) {
-      await updateTask(newTask.id, {
-        status: AUTOCUT_TASK_STATUS.failed,
-        progressMessage: '视频切片失败。',
-        errorMessage: String(error),
-      });
+      return await failAutoCutProcessingTask(newTask.id, String(error));
     }
 
-    return { success: true, taskId: newTask.id };
+    return { success: true, taskId: durableTaskId };
   }
 
-  simulateTaskProgress(
-    newTask.id,
-    [
-      { progress: 10, message: '准备媒体分析...', durationMs: 1000 },
-      { progress: 30, message: '分析视频与音频轨道...', durationMs: 2000 },
-      { progress: 50, message: '规划高光片段...', durationMs: 3000 },
-      { progress: 75, message: '提取候选剪辑点...', durationMs: 2500 },
-      { progress: 95, message: '整理切片结果...', durationMs: 2000 },
-    ],
-    async () => finishVideoSliceTask(newTask, createSampleSliceResults(newTask)),
-  );
-
-  return { success: true, taskId: newTask.id };
+  return await failAutoCutUnsupportedNativeProcessingTask(newTask, 'automatic slicing');
 }

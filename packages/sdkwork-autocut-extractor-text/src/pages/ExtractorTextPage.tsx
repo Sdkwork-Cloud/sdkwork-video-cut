@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { FileText, Type, Download, PlayCircle, Activity, Copy, CheckCircle2 } from 'lucide-react';
 import { FileUpload, Button, TaskFailureState } from '@sdkwork/autocut-commons';
 import { useToast } from '@sdkwork/autocut-commons';
-import { downloadExtractedTextFile, formatExtractedText, getTasks, listenAutoCutEvent, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
+import { downloadExtractedTextFile, formatExtractedText, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
 import { AUTOCUT_TASK_STATUS, isAutoCutTaskActiveStatus, type AppTask } from '@sdkwork/autocut-types';
 
 export function ExtractorTextPage() {
@@ -44,6 +44,11 @@ export function ExtractorTextPage() {
         setActiveTask(null); // Reset while loading
       }
     } catch(e) {
+      const failedTaskId = getAutoCutProcessingTaskErrorTaskId(e);
+      if (failedTaskId) {
+        setActiveTaskId(failedTaskId);
+        setActiveTask(null);
+      }
       toast('提取任务创建失败', 'error');
     }
   };

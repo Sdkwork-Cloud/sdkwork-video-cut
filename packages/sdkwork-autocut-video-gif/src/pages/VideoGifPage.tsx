@@ -4,7 +4,7 @@ import { Card, Button, FileUpload, TaskFailureState } from '@sdkwork/autocut-com
 
 import { Upload, Settings, Play, Image as ImageIcon, Activity, Download } from 'lucide-react';
 import { useToast } from '@sdkwork/autocut-commons';
-import { downloadAutoCutUrl, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic } from '@sdkwork/autocut-services';
+import { downloadAutoCutUrl, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic } from '@sdkwork/autocut-services';
 import { AUTOCUT_TASK_STATUS, isAutoCutTaskActiveStatus, type AppTask } from '@sdkwork/autocut-types';
 
 export function VideoGifPage() {
@@ -47,6 +47,11 @@ export function VideoGifPage() {
         setActiveTask(null);
       }
     } catch (e) {
+      const failedTaskId = getAutoCutProcessingTaskErrorTaskId(e);
+      if (failedTaskId) {
+        setActiveTaskId(failedTaskId);
+        setActiveTask(null);
+      }
       reportAutoCutDiagnostic('error', 'video-gif', 'Video GIF processing failed', e);
       toast('GIF转码生成失败', 'error');
     }

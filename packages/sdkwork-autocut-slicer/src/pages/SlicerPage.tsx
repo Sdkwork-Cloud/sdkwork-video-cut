@@ -2,9 +2,9 @@ import { processVideoSlice } from '../service/slicerService';
 import React, { useState, useEffect, useRef } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowLeft, Play, Pause, Settings2, Scissors, CheckCircle2, MicOff, Waves, Video, RefreshCcw, XCircle, ChevronRight, Type } from "lucide-react";
-import { Button, useToast, TaskFailureState, resolveAutoCutTrustedSourcePath } from "@sdkwork/autocut-commons";
+import { Button, useToast, TaskFailureState, createAutoCutTrustedLocalFile, resolveAutoCutTrustedSourcePath } from "@sdkwork/autocut-commons";
 import { AUTOCUT_SLICE_LLM_MODEL_OPTIONS, AUTOCUT_TASK_STATUS, type SliceMode, type SliceAlgorithm, type SliceHighlightEngine, type SliceLLM, type AppTask, type VideoSliceParams } from "@sdkwork/autocut-types";
-import { createAutoCutObjectUrl, getAutoCutNativeHostClient, getAutoCutSampleVideoUrl, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic, resolveAutoCutLlmRuntimeConfig, revokeAutoCutObjectUrl } from "@sdkwork/autocut-services";
+import { createAutoCutObjectUrl, getAutoCutNativeHostClient, getAutoCutProcessingTaskErrorTaskId, getAutoCutSampleVideoUrl, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic, resolveAutoCutLlmRuntimeConfig, revokeAutoCutObjectUrl, selectAutoCutTrustedLocalVideoFile } from "@sdkwork/autocut-services";
 import { WebGLPlayer, WebGLPlayerRef, WebGLPlayerDragState } from "../components/WebGLPlayer";
 import type { TextEffectStyle } from "../components/WebGLPlayer";
 
@@ -32,6 +32,7 @@ export function SlicerPage() {
   const [searchParams] = useSearchParams();
   const { toast } = useToast();
   const playerRef = useRef<WebGLPlayerRef>(null);
+  const replaceVideoInputRef = useRef<HTMLInputElement>(null);
   const initialSourceUrl = searchParams.get('url')?.trim() ?? '';
   const initialFile = (location.state as { initialFile?: File } | null)?.initialFile ?? null;
 
@@ -329,10 +330,43 @@ export function SlicerPage() {
       setActiveLeftTab("tasks");
       toast('切片任务分发成功，正在云端解析中', 'success');
     } catch (e) {
+      const failedTaskId = getAutoCutProcessingTaskErrorTaskId(e);
+      if (failedTaskId) {
+        setActiveLeftTab("tasks");
+      }
       reportAutoCutDiagnostic('error', 'slicer', 'Video slicing failed', e);
       setIsProcessing(false);
       toast('参数配置异常或服务未响应', 'error');
     }
+  };
+
+  const handleReplaceVideoFallbackSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = event.target.files?.[0] ?? null;
+    if (selectedFile) {
+      setFile(selectedFile);
+    }
+    event.target.value = '';
+  };
+
+  const fallbackReplaceVideoFileChooser = () => {
+    replaceVideoInputRef.current?.click();
+  };
+
+  const handleReplaceVideo = async () => {
+    try {
+      const selectedVideo = await selectAutoCutTrustedLocalVideoFile();
+      if (!selectedVideo) {
+        return;
+      }
+
+      const trustedFile = createAutoCutTrustedLocalFile(selectedVideo);
+      setFile(trustedFile);
+      return;
+    } catch (error) {
+      reportAutoCutDiagnostic('warning', 'slicer', 'Desktop trusted video replacement failed, using browser fallback', error);
+    }
+
+    fallbackReplaceVideoFileChooser();
   };
 
   return (
@@ -583,14 +617,20 @@ export function SlicerPage() {
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
-                <label className="px-3 py-2 text-[11px] font-medium bg-[#222] hover:bg-[#333] border border-[#333] hover:border-[#444] rounded-lg transition-colors text-gray-300 flex items-center gap-2 cursor-pointer">
+                <button
+                  type="button"
+                  className="px-3 py-2 text-[11px] font-medium bg-[#222] hover:bg-[#333] border border-[#333] hover:border-[#444] rounded-lg transition-colors text-gray-300 flex items-center gap-2 cursor-pointer"
+                  onClick={handleReplaceVideo}
+                >
                   <RefreshCcw size={14} /> 更换视频文件
-                  <input type="file" className="hidden" accept="video/*" onChange={e => {
-                     if (e.target.files && e.target.files[0]) {
-                        setFile(e.target.files[0]);
-                     }
-                  }} />
-                </label>
+                </button>
+                <input
+                  ref={replaceVideoInputRef}
+                  type="file"
+                  className="hidden"
+                  accept="video/*"
+                  onChange={handleReplaceVideoFallbackSelected}
+                />
               </div>
             </div>
 

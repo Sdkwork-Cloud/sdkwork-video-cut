@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { Music, Download, PlayCircle, Waves, Activity } from 'lucide-react';
 import { FileUpload, Button, TaskFailureState } from '@sdkwork/autocut-commons';
 import { useToast } from '@sdkwork/autocut-commons';
-import { downloadAutoCutUrl, getTasks, listenAutoCutEvent } from '@sdkwork/autocut-services';
+import { downloadAutoCutUrl, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent } from '@sdkwork/autocut-services';
 import { AUTOCUT_TASK_STATUS, isAutoCutTaskActiveStatus, type AppTask } from '@sdkwork/autocut-types';
 
 export function AudioExtractorPage() {
@@ -43,6 +43,11 @@ export function AudioExtractorPage() {
         setActiveTask(null);
       }
     } catch(e) {
+      const failedTaskId = getAutoCutProcessingTaskErrorTaskId(e);
+      if (failedTaskId) {
+        setActiveTaskId(failedTaskId);
+        setActiveTask(null);
+      }
       toast('音频提取环境异常，服务处理失败', 'error');
     }
   };

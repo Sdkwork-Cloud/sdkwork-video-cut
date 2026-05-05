@@ -7,11 +7,12 @@ import {
   createAutoCutId,
   createAutoCutTextObjectUrl,
   createAutoCutTimestamp,
+  failAutoCutProcessingTask,
+  failAutoCutUnsupportedNativeProcessingTask,
   getAutoCutNativeHostClient,
   reportAutoCutDiagnostic,
   resolveAutoCutOutputRootDir,
   resolveAutoCutSpeechTranscriptionRuntimeConfig,
-  simulateTaskProgress,
   updateTask,
   validateAutoCutProcessingSource,
   type AutoCutSpeechTranscriptionSegment,
@@ -93,15 +94,6 @@ async function finishExtractorTextTask(newTask: AppTask, extractedText: Extracte
   };
 }
 
-function createFallbackExtractedText(): ExtractedTextSegment[] {
-  return [
-    { time: '00:00:00', speaker: 'Speaker 1', text: 'Local speech transcription is not configured in this runtime.' },
-    { time: '00:00:05', speaker: 'Speaker 1', text: 'Configure a desktop local Whisper-compatible toolchain to produce real transcripts.' },
-    { time: '00:00:10', speaker: 'Speaker 2', text: 'The browser fallback keeps the workflow demonstrable without claiming real ASR output.' },
-    { time: '00:00:15', speaker: 'Speaker 1', text: 'Native desktop mode stores real transcript files under the corresponding task output directory.' },
-  ];
-}
-
 export async function processExtractorText(params: ExtractorTextParams) {
   validateAutoCutProcessingSource(params);
 
@@ -158,23 +150,11 @@ export async function processExtractorText(params: ExtractorTextParams) {
       });
     } catch (error) {
       reportAutoCutDiagnostic('error', 'extractor-text.native-transcription', 'Native speech transcription failed', error);
-      await updateTask(newTask.id, {
-        status: AUTOCUT_TASK_STATUS.failed,
-        progressMessage: 'Native speech transcription failed.',
-        errorMessage: String(error),
-      });
+      return await failAutoCutProcessingTask(newTask.id, String(error));
     }
 
     return { success: true, taskId: newTask.id };
   }
 
-  simulateTaskProgress(newTask.id, [
-    { progress: 15, message: 'Extracting speech candidates...', durationMs: 1500 },
-    { progress: 40, message: 'Preparing fallback transcript workflow...', durationMs: 2000 },
-    { progress: 65, message: 'Building transcript preview...', durationMs: 2500 },
-    { progress: 85, message: 'Formatting transcript text...', durationMs: 1500 },
-    { progress: 95, message: 'Saving transcript asset...', durationMs: 1000 },
-  ], async () => finishExtractorTextTask(newTask, createFallbackExtractedText()));
-
-  return { success: true, taskId: newTask.id };
+  return await failAutoCutUnsupportedNativeProcessingTask(newTask, 'speech transcription');
 }

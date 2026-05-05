@@ -289,14 +289,26 @@ async function assertRejectedProcessingWorkflow({ services, workflow }) {
   const rejectedMessage = rejectedError instanceof Error ? rejectedError.message : '';
   assertRule(rejectedError instanceof Error, `${workflow.name} rejects invalid processing source`);
   assertRule(
-    rejectedMessage.toLowerCase().includes('source media'),
-    `${workflow.name} rejection explains that a source media input is required`,
+    rejectedMessage.toLowerCase().includes(workflow.expectedMessagePart ?? 'source media'),
+    `${workflow.name} rejection explains ${workflow.expectedMessagePart ?? 'source media'}`,
   );
-  assertEqual(readScopedStoredArray(services, 'tasks').length, 0, `${workflow.name} rejection does not persist tasks`);
+  const storedTasks = readScopedStoredArray(services, 'tasks');
+  if (workflow.expectFailedTask) {
+    assertEqual(storedTasks.length, 1, `${workflow.name} rejection persists one failed task for user-visible diagnostics`);
+    assertEqual(storedTasks[0]?.status, 'failed', `${workflow.name} rejection persists failed task status`);
+    assertRule(
+      String(storedTasks[0]?.errorMessage ?? '').toLowerCase().includes(workflow.expectedMessagePart ?? 'source media'),
+      `${workflow.name} rejection stores the actionable failure reason on the task`,
+    );
+    assertEqual(taskAddedEvents.details.length, 1, `${workflow.name} rejection dispatches taskAdded for the failed task`);
+    assertRule(taskUpdatedEvents.details.length >= 1, `${workflow.name} rejection dispatches taskUpdated for failed task state`);
+  } else {
+    assertEqual(storedTasks.length, 0, `${workflow.name} rejection does not persist tasks`);
+    assertEqual(taskAddedEvents.details.length, 0, `${workflow.name} rejection does not dispatch taskAdded`);
+    assertEqual(taskUpdatedEvents.details.length, 0, `${workflow.name} rejection does not dispatch taskUpdated`);
+  }
   assertEqual(readScopedStoredArray(services, 'assets').length, 0, `${workflow.name} rejection does not persist generated assets`);
   assertEqual(readScopedStoredArray(services, 'messages').length, 0, `${workflow.name} rejection does not persist messages`);
-  assertEqual(taskAddedEvents.details.length, 0, `${workflow.name} rejection does not dispatch taskAdded`);
-  assertEqual(taskUpdatedEvents.details.length, 0, `${workflow.name} rejection does not dispatch taskUpdated`);
   assertEqual(assetAddedEvents.details.length, 0, `${workflow.name} rejection does not dispatch assetAdded`);
   assertEqual(messageAddedEvents.details.length, 0, `${workflow.name} rejection does not dispatch messageAdded`);
 }
@@ -366,6 +378,263 @@ async function run() {
       server,
       'packages/sdkwork-autocut-voice-translate/src/service/voiceTranslateService.ts',
     );
+
+    resetStorage();
+    services.resetAutoCutNativeHostClient();
+    const emptyBrowserTasks = await withImmediateTimers(() => services.getTasks());
+    assertEqual(emptyBrowserTasks.length, 0, 'getTasks does not seed browser fallback storage with mock tasks');
+
+    resetStorage();
+    const nativeTaskListCommands = [];
+    services.configureAutoCutNativeHostClient(services.createAutoCutNativeHostClient(async (command, args) => {
+      nativeTaskListCommands.push({ command, args });
+      if (command === 'autocut_host_capabilities') {
+        return {
+          contractVersion: 'task-list-contract',
+          hostKind: 'native-host',
+          databaseContractReady: true,
+          sqliteMigrationReady: true,
+          databaseHealthCommandReady: true,
+          ffmpegProbeCommandReady: true,
+          mediaImportCommandReady: true,
+          mediaFileDescribeCommandReady: true,
+          localVideoFileSelectCommandReady: true,
+          localDirectorySelectCommandReady: true,
+          audioExtractionCommandReady: true,
+          audioExtractionFromAssetReady: true,
+          videoGifCommandReady: true,
+          videoSliceCommandReady: true,
+          videoCompressCommandReady: true,
+          videoConvertCommandReady: true,
+          videoEnhanceCommandReady: true,
+          speechTranscriptionCommandReady: true,
+          speechTranscriptionToolchainReady: true,
+          speechTranscriptionProbeCommandReady: true,
+          speechTranscriptionFileSelectCommandReady: true,
+          llmHttpCommandReady: true,
+          llmSecretStoreReady: true,
+          nativeTaskQueryCommandReady: true,
+          nativeTaskCancelCommandReady: true,
+          nativeTaskRecoveryCommandReady: true,
+          nativeTaskRetryCommandReady: true,
+          nativeTaskProgressEventsReady: true,
+          nativeWorkerLeaseReady: true,
+          ffmpegToolchainManifestReady: true,
+          ffmpegToolchainResolverReady: true,
+          ffmpegBundledReady: false,
+          ffmpegExecutionReady: false,
+          supportedCommands: ['autocut_list_native_tasks'],
+        };
+      }
+      if (command === 'autocut_list_native_tasks') {
+        return [
+          {
+            uuid: 'ops-task-slice-contract',
+            taskType: 6,
+            status: 2,
+            progress: 100,
+            sourceAssetUuid: 'asset-slice-contract',
+            inputJson: JSON.stringify({
+              operation: 'videoSlice',
+              assetUuid: 'asset-slice-contract',
+              outputFormat: 'mp4',
+            }),
+            outputJson: JSON.stringify({
+              assetUuid: 'asset-slice-contract',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-contract/outputs',
+              sliceCount: 1,
+              sliceResults: [
+                {
+                  artifactUuid: 'slice-artifact-contract',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-contract/outputs/slice-001.mp4',
+                  thumbnailArtifactUuid: 'slice-thumb-contract',
+                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-contract/outputs/slice-001.jpg',
+                  subtitleArtifactUuid: 'slice-subtitle-contract',
+                  subtitleArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-contract/outputs/slice-001.srt',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-contract/outputs',
+                  byteSize: 1234567,
+                  thumbnailByteSize: 12345,
+                  subtitleByteSize: 234,
+                  subtitleFormat: 'srt',
+                  format: 'mp4',
+                  startMs: 1000,
+                  durationMs: 15000,
+                  label: 'Opening',
+                },
+              ],
+            }),
+            createdAt: '2026-05-05T00:00:00.000Z',
+            updatedAt: '2026-05-05T00:05:00.000Z',
+            stages: [],
+            events: [
+              {
+                uuid: 'ops-event-slice-progress-contract',
+                eventType: 8,
+                payload: {
+                  operation: 'videoSlice',
+                  phase: 'ffmpeg-progress-streamed',
+                  source: 'ffmpeg-progress',
+                  progress: 88,
+                },
+                payloadJson: '{"operation":"videoSlice","phase":"ffmpeg-progress-streamed","source":"ffmpeg-progress","progress":88}',
+                createdAt: '2026-05-05T00:04:00.000Z',
+                updatedAt: '2026-05-05T00:04:00.000Z',
+              },
+            ],
+            workerLeases: [],
+          },
+          {
+            uuid: 'ops-task-transcript-contract',
+            taskType: 7,
+            status: 2,
+            progress: 100,
+            sourceAssetUuid: 'asset-transcript-contract',
+            inputJson: JSON.stringify({
+              operation: 'speechTranscription',
+              assetUuid: 'asset-transcript-contract',
+              language: 'zh',
+            }),
+            outputJson: JSON.stringify({
+              assetUuid: 'asset-transcript-contract',
+              artifactUuid: 'transcript-artifact-contract',
+              transcriptPath: 'D:/autocut/media/tasks/ops-task-transcript-contract/outputs/transcript.json',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-transcript-contract/outputs',
+              language: 'zh',
+              segmentCount: 2,
+              segments: [
+                { startMs: 0, endMs: 1400, text: 'hello', speaker: 'Speaker 1' },
+                { startMs: 1500, endMs: 3200, text: 'world', speaker: 'Speaker 2' },
+              ],
+              text: 'hello world',
+              byteSize: 4567,
+            }),
+            createdAt: '2026-05-05T00:01:00.000Z',
+            updatedAt: '2026-05-05T00:06:00.000Z',
+            stages: [],
+            events: [],
+            workerLeases: [],
+          },
+          {
+            uuid: 'ops-task-compress-contract',
+            taskType: 3,
+            status: 2,
+            progress: 100,
+            sourceAssetUuid: 'asset-compress-contract',
+            inputJson: JSON.stringify({
+              operation: 'videoCompress',
+              assetUuid: 'asset-compress-contract',
+              compressionMode: 'balanced',
+            }),
+            outputJson: JSON.stringify({
+              assetUuid: 'asset-compress-contract',
+              artifactUuid: 'compress-artifact-contract',
+              artifactPath: 'D:/autocut/media/tasks/ops-task-compress-contract/outputs/compressed.mp4',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-compress-contract/outputs',
+              format: 'mp4',
+              byteSize: 2500,
+              originalByteSize: 10000,
+            }),
+            createdAt: '2026-05-05T00:02:00.000Z',
+            updatedAt: '2026-05-05T00:07:00.000Z',
+            stages: [],
+            events: [
+              {
+                uuid: 'ops-event-compress-completed-contract',
+                eventType: 2,
+                payload: {
+                  operation: 'videoCompress',
+                  artifactUuid: 'compress-artifact-contract',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-compress-contract/outputs/compressed.mp4',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-compress-contract/outputs',
+                  byteSize: 2500,
+                  originalByteSize: 10000,
+                  progress: 100,
+                  phase: 'completed',
+                  source: 'native-host',
+                },
+                payloadJson: '{}',
+                createdAt: '2026-05-05T00:07:00.000Z',
+                updatedAt: '2026-05-05T00:07:00.000Z',
+              },
+            ],
+            workerLeases: [],
+          },
+          {
+            uuid: 'ops-task-failed-contract',
+            taskType: 1,
+            status: 3,
+            progress: 42,
+            sourceAssetUuid: 'asset-failed-contract',
+            inputJson: JSON.stringify({
+              operation: 'audioExtraction',
+              assetUuid: 'asset-failed-contract',
+              outputFormat: 'wav',
+            }),
+            outputJson: '{}',
+            errorCode: 'FFMPEG_AUDIO_EXTRACTION_FAILED',
+            errorMessage: 'ffmpeg exited with status 1',
+            createdAt: '2026-05-05T00:03:00.000Z',
+            updatedAt: '2026-05-05T00:08:00.000Z',
+            stages: [],
+            events: [],
+            workerLeases: [],
+          },
+        ];
+      }
+
+      throw new Error(`Unexpected task list native host command: ${command}`);
+    }, {
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    }));
+    const nativeTasks = await withImmediateTimers(() => services.getTasks());
+    assertIncludes(
+      nativeTaskListCommands.map((entry) => entry.command),
+      'autocut_list_native_tasks',
+      'getTasks queries persisted native ops_task snapshots when the native task bridge is ready',
+    );
+    assertEqual(
+      nativeTaskListCommands.find((entry) => entry.command === 'autocut_list_native_tasks')?.args?.request?.limit,
+      100,
+      'getTasks bounds the native task list query to the native database contract limit',
+    );
+    assertEqual(nativeTasks.length, 4, 'getTasks maps every returned native ops_task snapshot');
+    const nativeSliceTask = nativeTasks.find((task) => task.id === 'ops-task-slice-contract');
+    assertEqual(nativeSliceTask?.type, types.AUTOCUT_TASK_TYPES[0], 'native video slice tasks map to the AppTask slice type');
+    assertEqual(nativeSliceTask?.status, types.AUTOCUT_TASK_STATUS.completed, 'native completed status maps to completed AppTask status');
+    assertEqual(nativeSliceTask?.completedAt, '2026-05-05T00:05:00.000Z', 'native completed tasks expose updatedAt as completedAt');
+    assertEqual(nativeSliceTask?.resultCount, 1, 'native slice output_json sliceCount maps to AppTask resultCount');
+    assertEqual(nativeSliceTask?.generatedAssetIds?.[0], 'slice-artifact-contract', 'native slice output maps generated asset ids from artifact UUIDs');
+    assertEqual(
+      nativeSliceTask?.sliceResults?.[0]?.url,
+      'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fops-task-slice-contract%2Foutputs%2Fslice-001.mp4',
+      'native slice output artifactPath is converted to a safe desktop asset URL',
+    );
+    assertEqual(
+      nativeSliceTask?.sliceResults?.[0]?.thumbnailUrl,
+      'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fops-task-slice-contract%2Foutputs%2Fslice-001.jpg',
+      'native slice thumbnail artifactPath is converted to a safe desktop asset URL',
+    );
+    assertEqual(
+      nativeSliceTask?.sliceResults?.[0]?.subtitleUrl,
+      'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fops-task-slice-contract%2Foutputs%2Fslice-001.srt',
+      'native slice subtitle artifactPath is converted to a safe desktop asset URL',
+    );
+    const nativeTranscriptTask = nativeTasks.find((task) => task.id === 'ops-task-transcript-contract');
+    assertEqual(nativeTranscriptTask?.type, types.AUTOCUT_TASK_TYPES[1], 'native speech transcription tasks map to the AppTask text extraction type');
+    assertEqual(nativeTranscriptTask?.resultCount, 2, 'native speech transcription segmentCount maps to AppTask resultCount');
+    assertEqual(nativeTranscriptTask?.extractedText?.[1]?.time, '00:00:01', 'native speech transcription segment startMs maps to display timestamps');
+    assertEqual(nativeTranscriptTask?.extractedText?.[1]?.speaker, 'Speaker 2', 'native speech transcription segment speakers are preserved');
+    const nativeCompressTask = nativeTasks.find((task) => task.id === 'ops-task-compress-contract');
+    assertEqual(nativeCompressTask?.type, types.AUTOCUT_TASK_TYPES[4], 'native video compress tasks map to the AppTask compression type');
+    assertEqual(nativeCompressTask?.videoUrl, 'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fops-task-compress-contract%2Foutputs%2Fcompressed.mp4', 'native compression artifactPath maps to videoUrl');
+    assertEqual(nativeCompressTask?.fileSizeStats?.originalSize, 10000, 'native compression originalByteSize maps to fileSizeStats');
+    assertEqual(nativeCompressTask?.fileSizeStats?.newSize, 2500, 'native compression byteSize maps to fileSizeStats');
+    assertEqual(nativeCompressTask?.fileSizeStats?.compressionRatio, 0.75, 'native compression ratio is derived from real output sizes');
+    const nativeFailedTask = nativeTasks.find((task) => task.id === 'ops-task-failed-contract');
+    assertEqual(nativeFailedTask?.type, types.AUTOCUT_TASK_TYPES[2], 'native audio extraction tasks map to the AppTask audio extraction type');
+    assertEqual(nativeFailedTask?.status, types.AUTOCUT_TASK_STATUS.failed, 'native failed status maps to failed AppTask status');
+    assertEqual(nativeFailedTask?.errorMessage, 'ffmpeg exited with status 1', 'native task errorMessage is preserved');
+    services.resetAutoCutNativeHostClient();
     const commons = await loadModule(server, 'packages/sdkwork-autocut-commons/src/index.ts');
 
     assertEqual(services.createAutoCutStorageKey('tasks'), 'autocut_release_tasks', 'storage key factory namespaces release task data');
@@ -2045,6 +2314,11 @@ async function run() {
     );
     assertEqual(nativeVideoSliceWorkflowResult.success, true, 'video slice native workflow reports success');
     assertEqual(
+      nativeVideoSliceWorkflowResult.taskId,
+      'native-slice-task',
+      'video slice native workflow returns the durable native ops_task UUID instead of a temporary browser task id',
+    );
+    assertEqual(
       nativeVideoSliceWorkflowCommands[0]?.kind,
       'import',
       'video slice native workflow imports local media before slicing',
@@ -2209,6 +2483,192 @@ async function run() {
       nativeVideoSliceWorkflowTask?.sliceResults?.[0]?.thumbnailUrl,
       'video slice native workflow stores safe thumbnail URLs on generated assets',
     );
+    services.resetAutoCutNativeHostClient();
+    services.configureAutoCutApprovedAiSdkBridge(null);
+
+    resetStorage();
+    const failingNativeVideoSliceSourceFile = new File(['video'], 'failing-native-source.mp4', { type: 'video/mp4' });
+    Object.defineProperty(failingNativeVideoSliceSourceFile, 'path', {
+      configurable: true,
+      value: 'D:/media/failing-native-source.mp4',
+    });
+    services.configureAutoCutNativeHostClient({
+      getCapabilities: async () => ({
+        contractVersion: 'contract-test',
+        hostKind: 'native-host',
+        databaseContractReady: true,
+        sqliteMigrationReady: true,
+        databaseHealthCommandReady: true,
+        ffmpegProbeCommandReady: true,
+        mediaImportCommandReady: true,
+        mediaFileDescribeCommandReady: true,
+        localVideoFileSelectCommandReady: true,
+        localDirectorySelectCommandReady: true,
+        audioExtractionCommandReady: false,
+        audioExtractionFromAssetReady: false,
+        videoGifCommandReady: false,
+        videoSliceCommandReady: true,
+        videoCompressCommandReady: false,
+        videoConvertCommandReady: false,
+        videoEnhanceCommandReady: false,
+        speechTranscriptionCommandReady: false,
+        speechTranscriptionToolchainReady: false,
+        speechTranscriptionProbeCommandReady: false,
+        speechTranscriptionFileSelectCommandReady: false,
+        llmHttpCommandReady: false,
+        llmSecretStoreReady: false,
+        nativeTaskQueryCommandReady: true,
+        nativeTaskCancelCommandReady: false,
+        nativeTaskRecoveryCommandReady: false,
+        nativeTaskRetryCommandReady: false,
+        nativeTaskProgressEventsReady: false,
+        nativeWorkerLeaseReady: true,
+        ffmpegToolchainManifestReady: true,
+        ffmpegToolchainResolverReady: true,
+        ffmpegBundledReady: false,
+        ffmpegExecutionReady: false,
+        supportedCommands: ['autocut_import_media_file', 'autocut_slice_video'],
+      }),
+      getDatabaseHealth: async () => ({
+        ready: true,
+        databasePath: 'memory',
+        appliedMigrations: ['baseline'],
+        verifiedTables: ['media_asset'],
+        missingTables: [],
+        diagnostics: [],
+      }),
+      probeFfmpeg: async () => ({
+        available: true,
+        executable: 'ffmpeg',
+        sourceKind: 'system-path',
+        manifestReady: true,
+        bundledReady: false,
+        versionLine: 'ffmpeg contract',
+        diagnostics: [],
+      }),
+      importMediaFile: async () => ({
+        assetUuid: 'failing-native-slice-asset',
+        sandboxPath: `${configuredOutputDirectory}/inputs/failing-native-slice-asset.mp4`,
+        byteSize: 765000,
+        name: 'failing-native-source.mp4',
+        mediaType: 'video',
+        mimeType: 'video/mp4',
+      }),
+      describeLocalMediaFile: async (request) => ({
+        sourcePath: request.sourcePath,
+        byteSize: 765000,
+        name: 'failing-native-source.mp4',
+        mediaType: 'video',
+        mimeType: 'video/mp4',
+      }),
+      selectLocalVideoFile: async () => null,
+      selectLocalDirectory: async () => null,
+      extractAudio: async () => {
+        throw new Error('audio extraction is not configured for failing native video slice workflow contract');
+      },
+      generateGif: async () => {
+        throw new Error('video GIF is not configured for failing native video slice workflow contract');
+      },
+      sliceVideo: async () => {
+        throw new Error('ffmpeg slice failed with status 1');
+      },
+      transcribeMedia: async () => {
+        throw new Error('speech transcription is not configured for failing native video slice workflow contract');
+      },
+      probeSpeechTranscription: async () => {
+        throw new Error('speech transcription probe is not configured for failing native video slice workflow contract');
+      },
+      selectSpeechTranscriptionFile: async () => null,
+      compressVideo: async () => {
+        throw new Error('video compression is not configured for failing native video slice workflow contract');
+      },
+      convertVideo: async () => {
+        throw new Error('video conversion is not configured for failing native video slice workflow contract');
+      },
+      enhanceVideo: async () => {
+        throw new Error('video enhancement is not configured for failing native video slice workflow contract');
+      },
+      sendLlmHttpRequest: async () => {
+        throw new Error('LLM HTTP is not configured for failing native video slice workflow contract');
+      },
+      saveLlmSecret: async (request) => ({
+        secretName: request.secretName,
+        saved: false,
+      }),
+      getLlmSecret: async (request) => ({
+        secretName: request.secretName,
+        configured: false,
+      }),
+      deleteLlmSecret: async (request) => ({
+        secretName: request.secretName,
+        deleted: false,
+      }),
+      listNativeTasks: async () => [],
+      cancelNativeTask: async (request) => ({
+        taskUuid: request.taskUuid,
+        status: 0,
+        canceled: false,
+        message: 'not configured',
+      }),
+      recoverNativeTasks: async () => ({
+        inspected: 0,
+        recovered: 0,
+        interrupted: 0,
+        canceled: 0,
+        expiredLeases: 0,
+        deferred: 0,
+        taskUuids: [],
+      }),
+      retryNativeTask: async (request) => ({
+        taskUuid: request.taskUuid,
+        retryTaskUuid: '',
+        status: 0,
+        retried: false,
+        message: 'not configured',
+      }),
+      runAudioSmoke: async () => ({
+        artifactUuid: 'native-audio-smoke',
+        taskUuid: 'native-audio-smoke-task',
+        sourceAssetUuid: '',
+        artifactPath: createNativeTaskOutputArtifact('native-audio-smoke-task', 'native-audio-smoke.wav').artifactPath,
+        taskOutputDir: createNativeTaskOutputArtifact('native-audio-smoke-task', 'native-audio-smoke.wav').taskOutputDir,
+        byteSize: 1,
+        format: 'wav',
+        ffmpegExecutable: 'ffmpeg',
+      }),
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    await assertRejects(
+      () =>
+        withImmediateTimers(async () =>
+          processVideoSlice({
+            fileId: 'asset-source-failing-native-video-slice',
+            file: failingNativeVideoSliceSourceFile,
+            mode: 'contract-mode',
+            llmModel: 'deepseek-chat',
+            minDuration: 15,
+            maxDuration: 60,
+            baseAlgorithm: 'scene',
+            highlightEngine: 'emotion',
+            enableNoiseReduction: true,
+            enableCoughFilter: true,
+            enableRepeatFilter: true,
+            enableSubtitles: false,
+          }),
+        ),
+      'ffmpeg slice failed with status 1',
+      'video slice native command failure',
+    );
+    const failingNativeVideoSliceTasks = readScopedStoredArray(services, 'tasks');
+    assertEqual(failingNativeVideoSliceTasks.length, 1, 'video slice native command failure persists one task');
+    assertEqual(failingNativeVideoSliceTasks[0]?.status, types.AUTOCUT_TASK_STATUS.failed, 'video slice native command failure marks the task failed');
+    assertIncludes(
+      String(failingNativeVideoSliceTasks[0]?.errorMessage ?? ''),
+      'ffmpeg slice failed with status 1',
+      'video slice native command failure stores the native error message',
+    );
+    assertEqual(readScopedStoredArray(services, 'assets').length, 0, 'video slice native command failure does not persist generated assets');
+    assertEqual(readScopedStoredArray(services, 'messages').length, 0, 'video slice native command failure does not persist success messages');
     services.resetAutoCutNativeHostClient();
     services.configureAutoCutApprovedAiSdkBridge(null);
 
@@ -3627,6 +4087,12 @@ async function run() {
     assertRule(storedTasks.every((storedTask) => storedTask.id !== task.id), 'deleteTask removes the task from persisted storage');
 
     resetStorage();
+    const emptyAssets = await services.getAssets();
+    const emptyStorageInfo = await services.getStorageInfo();
+    assertEqual(emptyAssets.length, 0, 'getAssets does not seed asset center data from mock/default assets');
+    assertEqual(emptyStorageInfo.used, 0, 'getStorageInfo reports zero used bytes for a clean workspace');
+
+    resetStorage();
     const assetAddedEvents = captureEvents(services, 'assetAdded');
     const assetDeletedEvents = captureEvents(services, 'assetDeleted');
     const storageBeforeAssetMutation = await services.getStorageInfo();
@@ -3666,6 +4132,10 @@ async function run() {
       storedAssets.some((asset) => asset.id === folder.id) && storedAssets.every((asset) => asset.id !== importedAsset.id),
       'asset mutations are persisted after import, folder creation, and delete',
     );
+
+    resetStorage();
+    const emptyMessages = await services.getMessages();
+    assertEqual(emptyMessages.length, 0, 'getMessages does not seed message center data from mock/default messages');
 
     resetStorage();
     const messageAddedEvents = captureEvents(services, 'messageAdded');
@@ -4193,12 +4663,32 @@ async function run() {
     );
 
     const workflowVideoFile = (name) => new File(['video'], name, { type: 'video/mp4' });
-    const processingWorkflows = [
+    const rejectedProcessingWorkflows = [
       {
-        name: 'slicer',
+        name: 'slicer with unsupported browser fallback',
         process: processVideoSlice,
         params: {
-          fileId: 'asset-source-slicer',
+          fileId: 'asset-source-slicer-browser-file',
+          file: workflowVideoFile('browser-source.mp4'),
+          mode: 'contract-mode',
+          llmModel: 'gpt-4o',
+          minDuration: 15,
+          maxDuration: 60,
+          baseAlgorithm: 'scene',
+          highlightEngine: 'emotion',
+          enableNoiseReduction: true,
+          enableCoughFilter: true,
+          enableRepeatFilter: true,
+          enableSubtitles: true,
+        },
+        expectFailedTask: true,
+        expectedMessagePart: 'trusted local desktop media file',
+      },
+      {
+        name: 'slicer with external URL instead of desktop local source',
+        process: processVideoSlice,
+        params: {
+          fileId: 'asset-source-slicer-url',
           url: 'https://video.example.com/source.mp4',
           mode: 'contract-mode',
           llmModel: 'gpt-4o',
@@ -4211,12 +4701,11 @@ async function run() {
           enableRepeatFilter: true,
           enableSubtitles: true,
         },
-        taskFields: ['sliceResults', 'resultCount'],
-        minAssets: 5,
-        expectedTaskNamePart: 'video.example.com',
+        expectFailedTask: true,
+        expectedMessagePart: 'trusted local desktop media file',
       },
       {
-        name: 'extractor text',
+        name: 'extractor text with unsupported browser fallback',
         process: processExtractorText,
         params: {
           fileId: 'asset-source-extractor-text',
@@ -4225,11 +4714,11 @@ async function run() {
           format: 'raw',
           separateSpeakers: true,
         },
-        taskFields: ['extractedText', 'resultCount'],
-        minAssets: 1,
+        expectFailedTask: true,
+        expectedMessagePart: 'trusted local desktop media file',
       },
       {
-        name: 'extractor audio',
+        name: 'extractor audio with unsupported browser fallback',
         process: processAudioExtraction,
         params: {
           fileId: 'asset-source-extractor-audio',
@@ -4238,11 +4727,11 @@ async function run() {
           quality: '320',
           channel: 'stereo',
         },
-        taskFields: ['audioUrl'],
-        minAssets: 1,
+        expectFailedTask: true,
+        expectedMessagePart: 'trusted local desktop media file',
       },
       {
-        name: 'video gif',
+        name: 'video gif with unsupported browser fallback',
         process: processVideoGif,
         params: {
           fileId: 'asset-source-video-gif',
@@ -4251,22 +4740,22 @@ async function run() {
           resolution: '720p',
           dither: true,
         },
-        taskFields: ['gifUrl'],
-        minAssets: 1,
+        expectFailedTask: true,
+        expectedMessagePart: 'trusted local desktop media file',
       },
       {
-        name: 'video compress',
+        name: 'video compress with unsupported browser fallback',
         process: processVideoCompress,
         params: {
           fileId: 'asset-source-video-compress',
           file: workflowVideoFile('video-compress.mp4'),
           compressionMode: 'balanced',
         },
-        taskFields: ['videoUrl', 'fileSizeStats'],
-        minAssets: 1,
+        expectFailedTask: true,
+        expectedMessagePart: 'trusted local desktop media file',
       },
       {
-        name: 'video convert',
+        name: 'video convert with unsupported browser fallback',
         process: processVideoConvert,
         params: {
           fileId: 'asset-source-video-convert',
@@ -4276,11 +4765,11 @@ async function run() {
           audioCodec: 'aac',
           resolution: '1080p',
         },
-        taskFields: ['videoUrl'],
-        minAssets: 1,
+        expectFailedTask: true,
+        expectedMessagePart: 'trusted local desktop media file',
       },
       {
-        name: 'video enhance',
+        name: 'video enhance with unsupported browser fallback',
         process: processVideoEnhance,
         params: {
           fileId: 'asset-source-video-enhance',
@@ -4289,11 +4778,11 @@ async function run() {
           enhanceMode: 'balanced',
           frameRate: '60',
         },
-        taskFields: ['videoUrl'],
-        minAssets: 1,
+        expectFailedTask: true,
+        expectedMessagePart: 'trusted local desktop media file',
       },
       {
-        name: 'subtitle translate',
+        name: 'subtitle translate with unsupported browser fallback',
         process: processSubtitleTranslate,
         params: {
           fileId: 'asset-source-subtitle-translate',
@@ -4303,11 +4792,11 @@ async function run() {
           keepOriginal: true,
           hardcode: true,
         },
-        taskFields: ['videoUrl'],
-        minAssets: 1,
+        expectFailedTask: true,
+        expectedMessagePart: 'trusted local desktop media file',
       },
       {
-        name: 'voice translate',
+        name: 'voice translate with unsupported browser fallback',
         process: processVoiceTranslate,
         params: {
           fileId: 'asset-source-voice-translate',
@@ -4317,16 +4806,9 @@ async function run() {
           voiceCloneSync: true,
           bgmHandling: 'keep',
         },
-        taskFields: ['videoUrl'],
-        minAssets: 1,
+        expectFailedTask: true,
+        expectedMessagePart: 'trusted local desktop media file',
       },
-    ];
-
-    for (const workflow of processingWorkflows) {
-      await assertProcessingWorkflow({ services, types, workflow });
-    }
-
-    const rejectedProcessingWorkflows = [
       {
         name: 'slicer without media source',
         process: processVideoSlice,

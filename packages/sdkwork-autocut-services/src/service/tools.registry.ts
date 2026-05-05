@@ -1,6 +1,6 @@
 import type { AppTool } from '@sdkwork/autocut-types';
 
-export const INITIAL_TOOLS: AppTool[] = [
+export const AUTOCUT_TOOLS: AppTool[] = [
   {
     id: 'slicer',
     name: '视频智能切片',
