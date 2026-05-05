@@ -273,14 +273,16 @@ schema registry 至少 SHOULD 支持：
 | 字段 | 逻辑类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `id` | `int64` | MUST | 内部主键，单表唯一，推荐全局唯一 |
-| `uuid` | `string(36..64)` | SHOULD | 外部稳定标识，用于 API、同步、补偿、跨库引用 |
+| `uuid` | `string(36..64)` | MUST | 外部稳定标识，用于 API、同步、补偿、跨库引用 |
 | `code` | `string(32..128)` | MAY | 业务编码、字典编码、可读引用 |
 | `business_no` | `string(32..128)` | MAY | 业务单号，例如订单号、支付单号 |
 
 规则：
 
+- 每张表都必须同时定义 `id` 和 `uuid`。
+- `id` 的逻辑类型必须是 `int64`，语言映射为 long/64 位整数语义；Java 可映射为 `Long`/`long`，Rust 可映射为 `i64`，TypeScript API/SDK 应按 `int64` 序列化策略处理。
 - `id` MUST 使用 64 位整数或可稳定映射到 64 位的内部 ID。推荐雪花 ID、号段服务、数据库序列批量领取、ULID/UUID 派生策略。新系统 SHOULD NOT 依赖单库自增 ID 作为跨服务主键策略。
-- `uuid` SHOULD 全局唯一，推荐 UUID v7、UUID v4、ULID、KSUID 或组织统一字符串 ID。对外 API 优先暴露 `uuid`、`code` 或 `business_no`，不要默认暴露内部自增 ID。
+- `uuid` MUST 全局唯一，推荐 UUID v7、UUID v4、ULID、KSUID 或组织统一字符串 ID。对外 API 优先暴露 `uuid`、`code` 或 `business_no`，不要默认暴露内部自增 ID。
 - `code` 用于人类可读或配置引用，MUST 明确唯一范围，例如全局唯一、租户内唯一、类型内唯一。
 - `business_no` 一旦对外发布 MUST 不可复用。
 
@@ -2185,8 +2187,8 @@ CI、结构变更工具或 schema linter SHOULD 实现以下规则。
 | --- | --- | --- |
 | DB001 | MUST | 表名和字段名为小写下划线 |
 | DB002 | MUST | 持久业务表有主键 |
-| DB003 | MUST | L1 及以上业务表有 `id`、`created_at`、`updated_at` |
-| DB004 | SHOULD | 核心业务表有 `uuid` 唯一约束 |
+| DB003 | MUST | 所有业务表有 `id`、`uuid`、`created_at`、`updated_at` |
+| DB004 | MUST | 核心业务表有 `uuid` 唯一约束 |
 | DB005 | MUST | 多租户表有 `tenant_id` |
 | DB006 | MUST | 多租户列表索引以 `tenant_id` 开头 |
 | DB007 | MUST | 金额字段不用 float/double |
@@ -2264,8 +2266,8 @@ CI、结构变更工具或 schema linter SHOULD 实现以下规则。
 
 - [ ] 已选择表画像和合规等级。
 - [ ] 已明确事实来源，是否为主表、读模型、日志、派生索引。
-- [ ] 已定义 `id` 生成策略。
-- [ ] 已定义 `uuid` 或等价外部稳定 ID。
+- [ ] 已定义 `id` 生成策略，且 `id` 为 `int64`/long 语义。
+- [ ] 已定义 `uuid` 外部稳定 ID。
 - [ ] 已包含 `created_at/updated_at/version`，或说明为什么不需要。
 - [ ] 已明确是否需要 `tenant_id/organization_id/data_scope`。
 - [ ] 已明确是否需要 `user_id`、`owner_type/owner_id`。

@@ -1,0 +1,176 @@
+table_name: ops_schema_migration
+table_profile: migration_history
+owner_team: sdkwork-video-cut-host
+compliance_level: L1
+contract_version: 1.0.0
+system_of_record: true
+write_owner: sdkwork-video-cut-host
+columns:
+  id: { type: int64, required: true, primary_key: true }
+  uuid: { type: string, length: 64, required: true, unique: true }
+  provider_id: { type: string, length: 32, required: true }
+  migration_id: { type: string, length: 128, required: true }
+  contract_version: { type: string, length: 64, required: true }
+  status: { type: string, length: 32, required: true }
+  applied_at: { type: instant, required: true }
+  checksum: { type: string, length: 32, required: true }
+  diagnostics_json: { type: json, required: true, default: "{}" }
+  created_at: { type: instant, required: true }
+  updated_at: { type: instant, required: true }
+  version: { type: int64, required: true, default: 0 }
+indexes:
+  - name: uk_ops_schema_migration_uuid
+    unique: true
+    columns: [uuid]
+  - name: uk_ops_schema_migration_provider_migration
+    unique: true
+    columns: [provider_id, migration_id]
+  - name: idx_ops_schema_migration_status_applied
+    columns: [provider_id, status, applied_at, id]
+
+table_name: media_asset
+table_profile: owner_entity
+owner_team: sdkwork-video-cut-host
+compliance_level: L1
+contract_version: 1.0.0
+system_of_record: true
+write_owner: sdkwork-video-cut-host
+columns:
+  id: { type: int64, required: true, primary_key: true }
+  uuid: { type: string, length: 64, required: true, unique: true }
+  tenant_id: { type: int64, required: true, default: 0 }
+  organization_id: { type: int64, required: true, default: 0 }
+  owner_id: { type: int64, required: true, default: 0 }
+  created_at: { type: instant, required: true }
+  updated_at: { type: instant, required: true }
+  version: { type: int64, required: true, default: 0 }
+indexes:
+  - name: uk_media_asset_uuid
+    unique: true
+    columns: [uuid]
+  - name: idx_media_asset_owner_status_updated
+    columns: [tenant_id, organization_id, owner_type, owner_id, status, updated_at, id]
+
+table_name: media_artifact
+table_profile: core_entity
+owner_team: sdkwork-video-cut-host
+compliance_level: L1
+contract_version: 1.0.0
+system_of_record: true
+write_owner: sdkwork-video-cut-host
+columns:
+  id: { type: int64, required: true, primary_key: true }
+  uuid: { type: string, length: 64, required: true, unique: true }
+  tenant_id: { type: int64, required: true, default: 0 }
+  organization_id: { type: int64, required: true, default: 0 }
+  created_at: { type: instant, required: true }
+  updated_at: { type: instant, required: true }
+  version: { type: int64, required: true, default: 0 }
+indexes:
+  - name: uk_media_artifact_uuid
+    unique: true
+    columns: [uuid]
+  - name: idx_media_artifact_task_created
+    columns: [tenant_id, organization_id, task_uuid, created_at, id]
+
+table_name: ops_task
+table_profile: event_log
+owner_team: sdkwork-video-cut-host
+compliance_level: L1
+contract_version: 1.0.0
+system_of_record: true
+write_owner: sdkwork-video-cut-host
+columns:
+  id: { type: int64, required: true, primary_key: true }
+  uuid: { type: string, length: 64, required: true, unique: true }
+  tenant_id: { type: int64, required: true, default: 0 }
+  organization_id: { type: int64, required: true, default: 0 }
+  created_at: { type: instant, required: true }
+  updated_at: { type: instant, required: true }
+  version: { type: int64, required: true, default: 0 }
+indexes:
+  - name: uk_ops_task_uuid
+    unique: true
+    columns: [uuid]
+  - name: idx_ops_task_status_updated
+    columns: [tenant_id, organization_id, status, updated_at, id]
+
+table_name: ops_task_event
+table_profile: event_log
+owner_team: sdkwork-video-cut-host
+compliance_level: L1
+contract_version: 1.0.0
+system_of_record: true
+write_owner: sdkwork-video-cut-host
+columns:
+  id: { type: int64, required: true, primary_key: true }
+  uuid: { type: string, length: 64, required: true, unique: true }
+  tenant_id: { type: int64, required: true, default: 0 }
+  organization_id: { type: int64, required: true, default: 0 }
+  created_at: { type: instant, required: true }
+  updated_at: { type: instant, required: true }
+  version: { type: int64, required: true, default: 0 }
+indexes:
+  - name: uk_ops_task_event_uuid
+    unique: true
+    columns: [uuid]
+  - name: idx_ops_task_event_task_created
+    columns: [tenant_id, organization_id, task_uuid, created_at, id]
+
+table_name: ops_stage_run
+table_profile: event_log
+owner_team: sdkwork-video-cut-host
+compliance_level: L1
+contract_version: 1.0.0
+system_of_record: true
+write_owner: sdkwork-video-cut-host
+columns:
+  id: { type: int64, required: true, primary_key: true }
+  uuid: { type: string, length: 64, required: true, unique: true }
+  tenant_id: { type: int64, required: true, default: 0 }
+  organization_id: { type: int64, required: true, default: 0 }
+  created_at: { type: instant, required: true }
+  updated_at: { type: instant, required: true }
+  version: { type: int64, required: true, default: 0 }
+indexes:
+  - name: uk_ops_stage_run_uuid
+    unique: true
+    columns: [uuid]
+  - name: idx_ops_stage_run_task_stage
+    columns: [tenant_id, organization_id, task_uuid, stage_type, id]
+
+table_name: ops_worker_lease
+table_profile: event_log
+owner_team: sdkwork-video-cut-host
+compliance_level: L2
+contract_version: 1.0.0
+system_of_record: true
+write_owner: sdkwork-video-cut-host
+columns:
+  id: { type: int64, required: true, primary_key: true }
+  uuid: { type: string, length: 64, required: true, unique: true }
+  tenant_id: { type: int64, required: true, default: 0 }
+  organization_id: { type: int64, required: true, default: 0 }
+  worker_id: { type: string, length: 128, required: true }
+  task_uuid: { type: string, length: 64, required: true }
+  lease_status: { type: enum_int32, required: true }
+  lease_token: { type: string, length: 64, required: true }
+  acquired_at: { type: instant, required: true }
+  heartbeat_at: { type: instant, required: true }
+  expires_at: { type: instant, required: true }
+  released_at: { type: instant, required: false }
+  diagnostics_json: { type: json, required: true, default: "{}" }
+  created_at: { type: instant, required: true }
+  updated_at: { type: instant, required: true }
+  version: { type: int64, required: true, default: 0 }
+indexes:
+  - name: uk_ops_worker_lease_uuid
+    unique: true
+    columns: [uuid]
+  - name: uk_ops_worker_lease_task_active
+    unique: true
+    columns: [task_uuid, lease_status]
+  - name: idx_ops_worker_lease_status_expires
+    columns: [tenant_id, organization_id, lease_status, expires_at, id]
+  - name: idx_ops_worker_lease_task_updated
+    columns: [tenant_id, organization_id, task_uuid, updated_at, id]

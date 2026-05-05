@@ -1,0 +1,375 @@
+#!/usr/bin/env node
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import process from 'node:process';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const evidenceSchemaVersion = '2026-05-05.autocut-native-release-smoke.v1';
+const desktopTauriRelativePath = 'packages/sdkwork-autocut-desktop/src-tauri';
+const cargoManifestRelativePath = `${desktopTauriRelativePath}/Cargo.toml`;
+const defaultOutputRelativePath = 'artifacts/release/autocut-native-release-smoke.json';
+const rustToolchain = '1.90.0';
+const nativeSmokeCargoTargetDirPrefixes = {
+  rust: 'sdkwork-autocut-native-smoke-target-rust-',
+  llmSecret: 'sdkwork-autocut-native-smoke-target-llm-secret-',
+};
+
+export function createAutoCutNativeReleaseSmokeEvidence({
+  rootDir = process.cwd(),
+  generatedAt = new Date().toISOString(),
+  outputPath,
+  skipRustSmoke = false,
+  runRealLlmSecretSmoke = isAutoCutTruthyFlag(process.env.SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE),
+  runCommand = runAutoCutNativeReleaseSmokeCommand,
+} = {}) {
+  const resolvedRootDir = path.resolve(rootDir);
+  const cargoManifestPath = path.join(resolvedRootDir, cargoManifestRelativePath);
+  if (!fs.existsSync(cargoManifestPath) || !fs.statSync(cargoManifestPath).isFile()) {
+    throw new Error(`missing AutoCut native host Cargo manifest: ${cargoManifestPath}`);
+  }
+
+  const cargoManifestSource = fs.readFileSync(cargoManifestPath, 'utf8');
+  const packageName = parseCargoPackageName(cargoManifestSource);
+  const rustSmokeCargoTargetDir = createAutoCutNativeSmokeCargoTargetDir(
+    resolvedRootDir,
+    generatedAt,
+    nativeSmokeCargoTargetDirPrefixes.rust,
+  );
+  const llmSecretCargoTargetDir = createAutoCutNativeSmokeCargoTargetDir(
+    resolvedRootDir,
+    generatedAt,
+    nativeSmokeCargoTargetDirPrefixes.llmSecret,
+  );
+  const rustSmoke = createRustSmokeEvidence({
+    rootDir: resolvedRootDir,
+    cargoManifestPath,
+    cargoTargetDir: rustSmokeCargoTargetDir,
+    skipRustSmoke,
+    runCommand,
+  });
+  const llmSecretStoreSmoke = createRealLlmSecretStoreSmokeEvidence({
+    rootDir: resolvedRootDir,
+    cargoManifestPath,
+    cargoTargetDir: llmSecretCargoTargetDir,
+    runRealLlmSecretSmoke,
+    runCommand,
+  });
+  const commandMatrix = createNativeCommandMatrix({
+    rustSmokeReady: !rustSmoke.skipped && rustSmoke.success,
+    llmSecretStoreSmokeReady: !llmSecretStoreSmoke.skipped && llmSecretStoreSmoke.success,
+  });
+  const nativeReleaseSmokeReady =
+    commandMatrix.every((command) => command.evidenceReady);
+
+  return {
+    schemaVersion: evidenceSchemaVersion,
+    generatedAt,
+    outputPath: outputPath ? toPosixRelative(resolvedRootDir, outputPath) : undefined,
+    nativeHost: {
+      packageName,
+      manifestPath: toPosixRelative(resolvedRootDir, cargoManifestPath),
+      desktopTauriPath: desktopTauriRelativePath,
+      toolchain: rustToolchain,
+      cargoTargetDirs: {
+        rustSmoke: rustSmokeCargoTargetDir,
+        llmSecretStoreSmoke: llmSecretCargoTargetDir,
+      },
+    },
+    readiness: {
+      nativeReleaseSmokeReady,
+      realLlmSecretStoreSmokeReady: !llmSecretStoreSmoke.skipped && llmSecretStoreSmoke.success,
+      ffmpegExecutionReady: false,
+    },
+    commandMatrix,
+    rustSmoke,
+    llmSecretStoreSmoke,
+  };
+}
+
+export function writeAutoCutNativeReleaseSmokeEvidence({
+  rootDir = process.cwd(),
+  outputPath,
+  ...options
+} = {}) {
+  const resolvedRootDir = path.resolve(rootDir);
+  const resolvedOutputPath = path.resolve(
+    outputPath ?? path.join(resolvedRootDir, defaultOutputRelativePath),
+  );
+  const evidence = createAutoCutNativeReleaseSmokeEvidence({
+    rootDir: resolvedRootDir,
+    outputPath: resolvedOutputPath,
+    ...options,
+  });
+  fs.mkdirSync(path.dirname(resolvedOutputPath), { recursive: true });
+  fs.writeFileSync(`${resolvedOutputPath}.tmp`, `${JSON.stringify(evidence, null, 2)}\n`);
+  fs.renameSync(`${resolvedOutputPath}.tmp`, resolvedOutputPath);
+  return {
+    outputPath: resolvedOutputPath,
+    evidence,
+  };
+}
+
+export function formatAutoCutNativeReleaseSmokeEvidenceMessage(result) {
+  return [
+    `ok - autocut native release smoke evidence ${result.outputPath}`,
+    `nativeReleaseSmokeReady=${result.evidence.readiness.nativeReleaseSmokeReady}`,
+    `ffmpegExecutionReady=${result.evidence.readiness.ffmpegExecutionReady}`,
+  ].join(' ');
+}
+
+export function runAutoCutNativeReleaseSmokeCommand(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    cwd: options.cwd ?? process.cwd(),
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      ...(options.env ?? {}),
+    },
+    shell: false,
+    windowsHide: true,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  if (result.error) {
+    throw new Error(`run AutoCut native release smoke command failed: ${result.error.message}`);
+  }
+  return {
+    status: result.status ?? 1,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+  };
+}
+
+function createRealLlmSecretStoreSmokeEvidence({
+  rootDir,
+  cargoManifestPath,
+  cargoTargetDir,
+  runRealLlmSecretSmoke,
+  runCommand,
+}) {
+  const testName = 'llm_secret_runtime::tests::real_windows_keyring_store_saves_reads_and_deletes_llm_secret';
+  const command = 'cargo';
+  const args = [
+    `+${rustToolchain}`,
+    'test',
+    '--manifest-path',
+    toPosixRelative(rootDir, cargoManifestPath),
+    testName,
+    '--',
+    '--ignored',
+    '--exact',
+    '--test-threads=1',
+    '--nocapture',
+  ];
+  const commandLine = [command, ...args].join(' ');
+  if (!runRealLlmSecretSmoke) {
+    return {
+      requested: false,
+      skipped: true,
+      success: false,
+      status: null,
+      command: commandLine,
+      stdout: '',
+      stderr: '',
+      reason: 'Set SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE=true or pass --run-real-llm-secret-smoke to exercise the real Windows credential store.',
+    };
+  }
+
+  if (process.platform !== 'win32') {
+    throw new Error('AutoCut real LLM secret store smoke can only run on Windows.');
+  }
+
+  const result = runCommand(command, args, {
+    cwd: rootDir,
+    env: {
+      CARGO_TARGET_DIR: cargoTargetDir,
+      SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE: 'true',
+    },
+  });
+  const status = Number.isInteger(result.status) ? result.status : 1;
+  const stdout = String(result.stdout ?? '');
+  const stderr = String(result.stderr ?? '');
+  if (status !== 0) {
+    const detail = stderr.trim() || stdout.trim() || `exit ${status}`;
+    throw new Error(`AutoCut real LLM secret store smoke failed: ${detail}`);
+  }
+
+  if (!stdout.includes('autocut-real-llm-secret-store-smoke=passed')) {
+    throw new Error('AutoCut real LLM secret store smoke did not emit the required success marker.');
+  }
+
+  return {
+    requested: true,
+    skipped: false,
+    success: true,
+    status,
+    command: commandLine,
+    stdout: trimReleaseSmokeOutput(stdout),
+    stderr: trimReleaseSmokeOutput(stderr),
+  };
+}
+
+function createRustSmokeEvidence({ rootDir, cargoManifestPath, cargoTargetDir, skipRustSmoke, runCommand }) {
+  const command = 'cargo';
+  const args = [
+    `+${rustToolchain}`,
+    'test',
+    '--manifest-path',
+    toPosixRelative(rootDir, cargoManifestPath),
+    '--',
+    '--nocapture',
+  ];
+  const commandLine = [command, ...args].join(' ');
+  if (skipRustSmoke) {
+    return {
+      skipped: true,
+      success: false,
+      status: null,
+      command: commandLine,
+      stdout: '',
+      stderr: '',
+    };
+  }
+
+  const result = runCommand(command, args, {
+    cwd: rootDir,
+    env: {
+      CARGO_TARGET_DIR: cargoTargetDir,
+    },
+  });
+  const status = Number.isInteger(result.status) ? result.status : 1;
+  const stdout = String(result.stdout ?? '');
+  const stderr = String(result.stderr ?? '');
+  if (status !== 0) {
+    const detail = stderr.trim() || stdout.trim() || `exit ${status}`;
+    throw new Error(`AutoCut native release smoke failed: ${detail}`);
+  }
+
+  return {
+    skipped: false,
+    success: true,
+    status,
+    command: commandLine,
+    stdout: trimReleaseSmokeOutput(stdout),
+    stderr: trimReleaseSmokeOutput(stderr),
+  };
+}
+
+function createAutoCutNativeSmokeCargoTargetDir(rootDir, generatedAt, targetDirPrefix) {
+  const sanitizedTimestamp = generatedAt.replace(/[^0-9A-Za-z]+/gu, '');
+  const suffix = sanitizedTimestamp || String(Date.now());
+  const targetDir = path.join(os.tmpdir(), `${targetDirPrefix}${suffix}`);
+  const resolvedTargetDir = path.resolve(targetDir);
+  const resolvedRootDir = path.resolve(rootDir);
+  if (resolvedTargetDir.startsWith(`${resolvedRootDir}${path.sep}`)) {
+    throw new Error('AutoCut native smoke Cargo target directory must stay outside the workspace.');
+  }
+  fs.mkdirSync(resolvedTargetDir, { recursive: true });
+  return resolvedTargetDir;
+}
+
+function createNativeCommandMatrix({ rustSmokeReady, llmSecretStoreSmokeReady }) {
+  return [
+    {
+      command: 'autocut_host_capabilities',
+      purpose: 'native host contract and supported command inventory',
+      evidenceSource: 'host_contract::tests::capabilities_report_ffmpeg_toolchain_contract_without_claiming_execution',
+      evidenceReady: rustSmokeReady,
+    },
+    {
+      command: 'autocut_ffmpeg_probe',
+      purpose: 'FFmpeg resolver and probe boundary without claiming execution readiness',
+      evidenceSource: 'media_runtime::probe_autocut_ffmpeg plus release smoke preflight manifest checks',
+      evidenceReady: rustSmokeReady,
+    },
+    {
+      command: 'autocut_audio_smoke',
+      purpose: 'deterministic FFmpeg sine-source audio extraction smoke',
+      evidenceSource: 'media_runtime::tests::audio_smoke_generates_non_empty_artifact_with_ffmpeg',
+      evidenceReady: rustSmokeReady,
+    },
+    {
+      command: 'autocut_recover_native_tasks',
+      purpose: 'durable task recovery, expired worker lease, and deferred active lease behavior',
+      evidenceSource: 'media_runtime::tests::native_task_recovery_*',
+      evidenceReady: rustSmokeReady,
+    },
+    {
+      command: 'autocut_save_llm_secret',
+      purpose: 'native Windows credential manager write path for desktop LLM API keys',
+      evidenceSource: 'llm_secret_runtime::tests::real_windows_keyring_store_saves_reads_and_deletes_llm_secret',
+      evidenceReady: llmSecretStoreSmokeReady,
+    },
+    {
+      command: 'autocut_get_llm_secret',
+      purpose: 'native Windows credential manager read path for desktop LLM API key restoration',
+      evidenceSource: 'llm_secret_runtime::tests::real_windows_keyring_store_saves_reads_and_deletes_llm_secret',
+      evidenceReady: llmSecretStoreSmokeReady,
+    },
+    {
+      command: 'autocut_delete_llm_secret',
+      purpose: 'native Windows credential manager delete path for desktop LLM API key clearing',
+      evidenceSource: 'llm_secret_runtime::tests::real_windows_keyring_store_saves_reads_and_deletes_llm_secret',
+      evidenceReady: llmSecretStoreSmokeReady,
+    },
+  ];
+}
+
+function isAutoCutTruthyFlag(value) {
+  return /^(?:1|true|yes)$/iu.test(String(value ?? '').trim());
+}
+
+function parseCargoPackageName(source) {
+  const packageNameMatch = source.match(/^\s*name\s*=\s*"([^"]+)"/mu);
+  if (!packageNameMatch) {
+    throw new Error('AutoCut native host Cargo manifest must declare package.name.');
+  }
+  return packageNameMatch[1];
+}
+
+function trimReleaseSmokeOutput(output) {
+  const maxLength = 20000;
+  if (output.length <= maxLength) {
+    return output;
+  }
+  return `${output.slice(0, maxLength)}\n[autocut-release-smoke-output-truncated]`;
+}
+
+function toPosixRelative(rootDir, targetPath) {
+  return path.relative(rootDir, targetPath).replaceAll(path.sep, '/');
+}
+
+function parseArgs(argv) {
+  const options = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--output') {
+      options.outputPath = argv[index + 1];
+      index += 1;
+    } else if (arg === '--skip-rust-smoke') {
+      options.skipRustSmoke = true;
+    } else if (arg === '--run-real-llm-secret-smoke') {
+      options.runRealLlmSecretSmoke = true;
+    } else {
+      throw new Error(`Unknown AutoCut native release smoke argument: ${arg}`);
+    }
+  }
+  return options;
+}
+
+function main() {
+  const result = writeAutoCutNativeReleaseSmokeEvidence(parseArgs(process.argv.slice(2)));
+  console.log(formatAutoCutNativeReleaseSmokeEvidenceMessage(result));
+}
+
+if (path.resolve(process.argv[1] ?? '') === __filename) {
+  try {
+    main();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}

@@ -1,0 +1,2382 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import process from 'node:process';
+import { execFileSync } from 'node:child_process';
+import ts from 'typescript';
+
+const rootDir = process.cwd();
+const packagesDir = path.join(rootDir, 'packages');
+const desktopPackageName = 'sdkwork-autocut-desktop';
+const desktopPackageDir = path.join(packagesDir, desktopPackageName);
+const desktopSrcDir = path.join(desktopPackageDir, 'src');
+const desktopTauriDir = path.join(desktopPackageDir, 'src-tauri');
+const internalPrefix = '@sdkwork/autocut-';
+const allowedDesktopSourceFiles = new Set([
+  'packages/sdkwork-autocut-desktop/src/App.tsx',
+  'packages/sdkwork-autocut-desktop/src/index.ts',
+  'packages/sdkwork-autocut-desktop/src/main.tsx',
+  'packages/sdkwork-autocut-desktop/src/native-host.ts',
+  'packages/sdkwork-autocut-desktop/src/vite-env.d.ts',
+]);
+const allowedDesktopPackageEntries = new Set([
+  'dist',
+  'index.html',
+  'node_modules',
+  'package.json',
+  'public',
+  'rust-toolchain.toml',
+  'src',
+  'src-tauri',
+  'tsconfig.json',
+  'vite.config.ts',
+]);
+const allowedDesktopPublicEntries = new Set(['favicon.svg']);
+const allowedDesktopTauriEntries = new Set([
+  'binaries',
+  'build.rs',
+  'Cargo.lock',
+  'Cargo.toml',
+  'database',
+  'gen',
+  'icons',
+  'src',
+  'target',
+  'tauri.conf.json',
+]);
+const allowedDesktopTauriIconEntries = new Set(['icon.ico']);
+const allowedDesktopTauriBinariesEntries = new Set([
+  'ffmpeg.toolchain.json',
+  'linux-x86_64',
+  'macos-aarch64',
+  'macos-x86_64',
+  'windows-x86_64',
+]);
+const allowedDesktopTauriSrcEntries = new Set([
+  'commands.rs',
+  'database_contract.rs',
+  'database_runtime.rs',
+  'host_contract.rs',
+  'llm_http_runtime.rs',
+  'llm_secret_runtime.rs',
+  'main.rs',
+  'media_runtime.rs',
+]);
+const forbiddenRootRuntimeFiles = [
+  '.dockerignore',
+  'metadata.json',
+  'package-lock.json',
+  'replace_polling.mjs',
+  'scaffold.ts',
+  'server.ts',
+  'tsconfig.node.tsbuildinfo',
+  'tsconfig.node.json',
+  'tsconfig.tsbuildinfo',
+  'update-mock-results.ts',
+];
+const forbiddenRootRuntimeDirs = [
+  'deploy',
+  'host',
+  'models',
+  'workspace',
+  'workspace-server-private-smoke',
+];
+const forbiddenTauriGeneratedDirs = ['packages/sdkwork-autocut-desktop/src-tauri/gen'];
+const allowedScriptFiles = new Set([
+  'scripts/check-autocut-architecture.mjs',
+  'scripts/check-autocut-feature-workflows.mjs',
+  'scripts/check-autocut-service-behavior.mjs',
+  'scripts/clean-autocut-generated.mjs',
+  'scripts/ensure-autocut-tauri-rust-toolchain.mjs',
+  'scripts/ensure-autocut-tauri-rust-toolchain.test.mjs',
+  'scripts/prepare-autocut-ffmpeg-sidecar.mjs',
+  'scripts/prepare-autocut-ffmpeg-sidecar.test.mjs',
+  'scripts/check-autocut-release-smoke-preflight.mjs',
+  'scripts/check-autocut-release-smoke-preflight.test.mjs',
+  'scripts/check-autocut-commercial-release-readiness.mjs',
+  'scripts/check-autocut-commercial-release-readiness.test.mjs',
+  'scripts/write-autocut-installer-signature-evidence.mjs',
+  'scripts/write-autocut-installer-signature-evidence.test.mjs',
+  'scripts/write-autocut-native-release-smoke.mjs',
+  'scripts/write-autocut-native-release-smoke.test.mjs',
+  'scripts/write-autocut-release-evidence.mjs',
+  'scripts/write-autocut-release-evidence.test.mjs',
+]);
+const allowedDocs = new Set([
+  'docs/architecture/16-autocut-frontend-module-standard.md',
+  'docs/architecture/17-autocut-database-contract-standard.md',
+  'docs/superpowers/plans/2026-05-04-autocut-desktop-standardization.md',
+]);
+const requiredDatabaseContractDoc = 'docs/architecture/17-autocut-database-contract-standard.md';
+const requiredStorageServicePath = 'packages/sdkwork-autocut-services/src/service/storage.service.ts';
+const legacyStorageServicePath = 'packages/sdkwork-autocut-services/src/service/storage.ts';
+const requiredRuntimeEnvironmentServicePath = 'packages/sdkwork-autocut-services/src/service/runtime-environment.service.ts';
+const requiredSettingsServicePath = 'packages/sdkwork-autocut-services/src/service/settings.service.ts';
+const requiredMediaFixturesServicePath = 'packages/sdkwork-autocut-services/src/service/media-fixtures.service.ts';
+const requiredDatetimeServicePath = 'packages/sdkwork-autocut-services/src/service/datetime.service.ts';
+const requiredDownloadServicePath = 'packages/sdkwork-autocut-services/src/service/download.service.ts';
+const requiredProcessingSourceServicePath = 'packages/sdkwork-autocut-services/src/service/processing-source.service.ts';
+const requiredNativeHostClientServicePath = 'packages/sdkwork-autocut-services/src/service/native-host-client.service.ts';
+const requiredTrustedFileSourcePath = 'packages/sdkwork-autocut-commons/src/service/trusted-file-source.service.ts';
+const requiredNativeHostCommandSourcePath = 'packages/sdkwork-autocut-desktop/src-tauri/src/commands.rs';
+const requiredNativeHostContractSourcePath = 'packages/sdkwork-autocut-desktop/src-tauri/src/host_contract.rs';
+const requiredNativeDatabaseContractSourcePath = 'packages/sdkwork-autocut-desktop/src-tauri/src/database_contract.rs';
+const requiredNativeDatabaseRuntimeSourcePath = 'packages/sdkwork-autocut-desktop/src-tauri/src/database_runtime.rs';
+const requiredNativeMediaRuntimeSourcePath = 'packages/sdkwork-autocut-desktop/src-tauri/src/media_runtime.rs';
+const requiredNativeLlmHttpRuntimeSourcePath = 'packages/sdkwork-autocut-desktop/src-tauri/src/llm_http_runtime.rs';
+const requiredNativeLlmSecretRuntimeSourcePath = 'packages/sdkwork-autocut-desktop/src-tauri/src/llm_secret_runtime.rs';
+const requiredNativeFfmpegToolchainManifestPath = 'packages/sdkwork-autocut-desktop/src-tauri/binaries/ffmpeg.toolchain.json';
+const requiredNativeSqliteBaselinePath = 'packages/sdkwork-autocut-desktop/src-tauri/database/schema/sqlite/001_baseline.sql';
+const requiredNativeSchemaRegistryPath = 'packages/sdkwork-autocut-desktop/src-tauri/database/schema-registry/autocut_host_baseline.yaml';
+const allowedRootEntries = new Set([
+  '.git',
+  '.env.example',
+  '.gitattributes',
+  '.gitignore',
+  'ARCHITECT.md',
+  'DATABASE_SPEC.md',
+  'README.md',
+  'artifacts',
+  'docs',
+  'node_modules',
+  'package.json',
+  'packages',
+  'pnpm-lock.yaml',
+  'pnpm-workspace.yaml',
+  'scripts',
+  'tsconfig.json',
+]);
+const requiredRoutePaths = [
+  '/',
+  '/tools',
+  '/assets',
+  '/tasks',
+  '/tasks/:taskId',
+  '/messages',
+  '/slicer',
+  '/extractor-text',
+  '/extractor-audio',
+  '/video-gif',
+  '/video-compress',
+  '/video-convert',
+  '/video-enhance',
+  '/subtitle-translate',
+  '/voice-translate',
+  '/settings',
+];
+const requiredLazyPackages = [
+  '@sdkwork/autocut-home',
+  '@sdkwork/autocut-tools',
+  '@sdkwork/autocut-assets',
+  '@sdkwork/autocut-tasks',
+  '@sdkwork/autocut-messages',
+  '@sdkwork/autocut-slicer',
+  '@sdkwork/autocut-extractor-text',
+  '@sdkwork/autocut-extractor-audio',
+  '@sdkwork/autocut-video-gif',
+  '@sdkwork/autocut-video-compress',
+  '@sdkwork/autocut-video-convert',
+  '@sdkwork/autocut-video-enhance',
+  '@sdkwork/autocut-subtitle-translate',
+  '@sdkwork/autocut-voice-translate',
+  '@sdkwork/autocut-settings',
+];
+const requiredRootInternalDependencies = new Set([
+  '@sdkwork/autocut-desktop',
+]);
+const requiredDesktopInternalDependencies = new Set([
+  '@sdkwork/autocut-commons',
+  '@sdkwork/autocut-core',
+  ...requiredLazyPackages,
+]);
+const forbiddenRootDependencies = new Set(['@google/genai', 'cors', 'dotenv', 'express']);
+const requiredRootToolDependencies = new Set([
+  '@tailwindcss/vite',
+  '@tauri-apps/api',
+  '@vitejs/plugin-react',
+  'vite',
+]);
+const requiredDesktopDependencies = new Set([
+  '@tailwindcss/vite',
+  '@tauri-apps/api',
+  '@vitejs/plugin-react',
+  'lucide-react',
+  'pixi.js',
+  'react',
+  'react-dom',
+  'react-router-dom',
+  'vite',
+]);
+const allowedRootDependencies = new Set([
+  ...requiredRootToolDependencies,
+  '@tauri-apps/cli',
+  '@types/node',
+  '@types/react',
+  '@types/react-dom',
+  'tailwindcss',
+  'typescript',
+]);
+const externalDependencyAllowlist = new Set([
+  '@ai-sdk/openai-compatible',
+  '@tauri-apps/api',
+  'ai',
+  'lucide-react',
+  'pixi.js',
+  'react',
+  'react-dom',
+  'react-router-dom',
+]);
+const requiredDatabaseSpecMarkers = [
+  '# 通用数据库定义标准规范',
+  'L1',
+  'Schema Registry',
+  'schema registry',
+  '<module_prefix>',
+  'DB061',
+  'DB072',
+  '每张表都必须同时定义 `id` 和 `uuid`',
+  '`id` 的逻辑类型必须是 `int64`，语言映射为 long/64 位整数语义',
+  'id',
+  'uuid',
+  'int64',
+  'created_at',
+  'updated_at',
+  'version',
+];
+const requiredDatabaseContractMarkers = [
+  'DATABASE_SPEC.md',
+  '每张表都必须同时定义 `id` 和 `uuid`',
+  '`id` 的逻辑类型必须是 `int64`，语言映射为 Java/Rust/TypeScript 侧的 long/64 位整数语义',
+  '新建表最低合规等级为 L1',
+  'schema registry',
+  'media',
+  'ops',
+  'studio',
+  'MUST NOT 使用 `autocut_`、`video_cut_`、`sdkwork_`、`plus_`',
+];
+const forbiddenDatabaseTablePrefixes = ['autocut', 'video_cut', 'sdkwork', 'plus', 'app', 'sys', 'common'];
+const requiredStorageServiceMarkers = [
+  'AUTO_CUT_STORAGE_NAMESPACE',
+  'AUTO_CUT_STORAGE_KEYS',
+  'AutoCutStorageKey',
+  'createAutoCutStorageKey',
+  'getAutoCutRuntimeEnvironment',
+  'readAutoCutStorage',
+  'writeAutoCutStorage',
+  'removeAutoCutStorage',
+];
+const requiredRuntimeEnvironmentServiceMarkers = [
+  'AutoCutRuntimeEnvironment',
+  'configureAutoCutRuntimeEnvironment',
+  'getAutoCutRuntimeEnvironment',
+  'createAutoCutRuntimeScopedName',
+  "'dev'",
+  "'release'",
+];
+const requiredMediaFixturesMarkers = [
+  'AUTO_CUT_MEDIA_FIXTURES',
+  'getAutoCutSampleVideoUrl',
+  'getAutoCutSampleAudioUrl',
+  'getAutoCutSampleGifUrl',
+  'getAutoCutSampleThumbnailUrl',
+  'getAutoCutSampleSliceThumbnailUrl',
+];
+const requiredDatetimeServiceMarkers = [
+  'getAutoCutTimestampMs',
+  'compareAutoCutTimestampDesc',
+  'sortAutoCutRecordsByCreatedAtDesc',
+  'formatAutoCutDateTime',
+];
+const requiredDownloadServiceMarkers = [
+  'createAutoCutObjectUrl',
+  'revokeAutoCutObjectUrl',
+  'createAutoCutTextObjectUrl',
+  'downloadAutoCutUrl',
+  'formatExtractedText',
+  'downloadExtractedTextFile',
+];
+const requiredProcessingSourceServiceMarkers = [
+  'AutoCutProcessingSourceInput',
+  'validateAutoCutProcessingSource',
+  'allowExternalUrl?: boolean',
+  'source media',
+  'new URL',
+  "parsed.protocol !== 'http:' && parsed.protocol !== 'https:'",
+];
+const requiredNativeHostClientServiceMarkers = [
+  'AutoCutNativeInvoke',
+  'AutoCutNativeHostClient',
+  'sourceKind',
+  'manifestReady',
+  'bundledReady',
+  'createAutoCutNativeHostClient',
+  'AutoCutNativeAssetUrlFactory',
+  'configureAutoCutNativeHostClient',
+  'getAutoCutNativeHostClient',
+  'autocut_host_capabilities',
+  'autocut_database_health',
+  'autocut_ffmpeg_probe',
+  'autocut_import_media_file',
+  'autocut_describe_local_media_file',
+  'autocut_select_local_video_file',
+  'autocut_list_native_tasks',
+  'autocut_cancel_native_task',
+  'autocut_recover_native_tasks',
+  'autocut_retry_native_task',
+  'autocut_transcribe_media',
+  'autocut_extract_audio',
+  'autocut_generate_gif',
+  'autocut_slice_video',
+  'autocut_compress_video',
+  'autocut_convert_video',
+  'autocut_enhance_video',
+  'autocut_audio_smoke',
+  'assetUuid',
+  'outputRootDir',
+  'mediaImportCommandReady',
+  'mediaFileDescribeCommandReady',
+  'localVideoFileSelectCommandReady',
+  'localDirectorySelectCommandReady',
+  'nativeTaskQueryCommandReady',
+  'nativeTaskCancelCommandReady',
+  'nativeTaskRecoveryCommandReady',
+  'nativeTaskRetryCommandReady',
+  'nativeTaskProgressEventsReady',
+  'nativeWorkerLeaseReady',
+  'audioExtractionFromAssetReady',
+  'videoGifCommandReady',
+  'videoSliceCommandReady',
+  'videoCompressCommandReady',
+  'videoConvertCommandReady',
+  'videoEnhanceCommandReady',
+  'speechTranscriptionCommandReady',
+  'speechTranscriptionToolchainReady',
+  'AutoCutSpeechTranscriptionRequest',
+  'AutoCutSpeechTranscriptionResult',
+  'AutoCutSpeechTranscriptionSegment',
+  'transcribeMedia',
+  'AutoCutVideoGifRequest',
+  'AutoCutVideoGifResult',
+  'generateGif',
+  'AutoCutVideoSliceRequest',
+  'AutoCutVideoSliceArtifactResult',
+  'AutoCutVideoSliceResult',
+  'sliceVideo',
+  'thumbnailArtifactUuid',
+  'thumbnailArtifactPath',
+  'thumbnailByteSize',
+  'subtitleFormat',
+  'subtitleStyleId',
+  'subtitleSegments',
+  'subtitleArtifactUuid',
+  'subtitleArtifactPath',
+  'subtitleByteSize',
+  'AutoCutNativeTaskSnapshot',
+  'AutoCutNativeTaskQueryRequest',
+  'AutoCutNativeTaskCancelRequest',
+  'AutoCutNativeTaskCancelResult',
+  'AutoCutNativeTaskRecoveryRequest',
+  'AutoCutNativeTaskRecoveryResult',
+  'expiredLeases',
+  'deferred',
+  'AutoCutNativeTaskRetryRequest',
+  'AutoCutNativeTaskRetryResult',
+  'AutoCutNativeWorkerLeaseSnapshot',
+  'listNativeTasks',
+  'cancelNativeTask',
+  'recoverNativeTasks',
+  'retryNativeTask',
+  'AutoCutVideoCompressRequest',
+  'AutoCutVideoCompressResult',
+  'compressVideo',
+  'AutoCutVideoConvertRequest',
+  'AutoCutVideoConvertResult',
+  'convertVideo',
+  'AutoCutVideoEnhanceRequest',
+  'AutoCutVideoEnhanceResult',
+  'enhanceVideo',
+  'taskOutputDir',
+];
+const requiredTrustedFileSourceMarkers = [
+  'AutoCutTrustedLocalFile',
+  'AutoCutTrustedFileSourceDescriptor',
+  'createAutoCutTrustedLocalFile',
+  'resolveAutoCutTrustedSourcePath',
+  'dispatchAutoCutTrustedFileSourceDrop',
+  'listenAutoCutTrustedFileSourceDrop',
+  'hasAutoCutTrustedSourcePath',
+  'sourcePath',
+];
+const requiredNativeHostMarkers = [
+  'AUTOCUT_HOST_CONTRACT_VERSION',
+  'AutoCutHostCapabilities',
+  'native-host',
+  'ffmpegExecutionReady',
+  'ffmpegProbeCommandReady',
+  'mediaImportCommandReady',
+  'mediaFileDescribeCommandReady',
+  'localVideoFileSelectCommandReady',
+  'localDirectorySelectCommandReady',
+  'nativeTaskQueryCommandReady',
+  'nativeTaskCancelCommandReady',
+  'nativeTaskRecoveryCommandReady',
+  'nativeTaskRetryCommandReady',
+  'nativeTaskProgressEventsReady',
+  'nativeWorkerLeaseReady',
+  'audioExtractionCommandReady',
+  'audioExtractionFromAssetReady',
+  'videoGifCommandReady',
+  'videoSliceCommandReady',
+  'videoCompressCommandReady',
+  'videoConvertCommandReady',
+  'videoEnhanceCommandReady',
+  'speechTranscriptionCommandReady',
+  'speechTranscriptionToolchainReady',
+  'llmHttpCommandReady',
+  'llmSecretStoreReady',
+  'ffmpegToolchainManifestReady',
+  'ffmpegToolchainResolverReady',
+  'ffmpegBundledReady',
+  'databaseContractReady',
+  'sqliteMigrationReady',
+  'databaseHealthCommandReady',
+];
+const requiredNativeDatabaseMarkers = [
+  'AUTOCUT_DATABASE_CONTRACT_VERSION',
+  'AutoCutDatabaseContract',
+  'AutoCutDatabaseTableContract',
+  'media_asset',
+  'media_artifact',
+  'ops_task',
+  'ops_task_event',
+  'ops_stage_run',
+  'ops_worker_lease',
+  'ops_schema_migration',
+];
+const requiredNativeDatabaseRuntimeMarkers = [
+  'AUTOCUT_SQLITE_BASELINE_MIGRATION_ID',
+  'AUTOCUT_SQLITE_BASELINE_SQL',
+  'AutoCutDatabaseHealth',
+  'run_autocut_database_migrations',
+  'verify_autocut_database_schema',
+  'ops_schema_migration',
+  'PRAGMA foreign_keys = ON',
+  'include_str!("../database/schema/sqlite/001_baseline.sql")',
+];
+const requiredNativeMediaRuntimeMarkers = [
+  'AutoCutFfmpegProbe',
+  'AutoCutFfmpegToolchain',
+  'AutoCutFfmpegToolchainManifest',
+  'AUTOCUT_FFMPEG_TOOLCHAIN_MANIFEST_JSON',
+  'AUTOCUT_MEDIA_TASK_DIR',
+  'AUTOCUT_MEDIA_TASK_OUTPUT_DIR',
+  'AutoCutMediaImportRequest',
+  'AutoCutMediaImportResult',
+  'AutoCutLocalMediaFileDescription',
+  'describe_autocut_local_media_file',
+  'AutoCutAudioExtractionRequest',
+  'AutoCutAudioExtractionResult',
+  'AutoCutVideoGifRequest',
+  'AutoCutVideoGifResult',
+  'AutoCutVideoSliceRequest',
+  'AutoCutVideoSliceResult',
+  'AutoCutVideoCompressRequest',
+  'AutoCutVideoCompressResult',
+  'AutoCutVideoConvertRequest',
+  'AutoCutVideoConvertResult',
+  'AutoCutVideoEnhanceRequest',
+  'AutoCutVideoEnhanceResult',
+  'AutoCutSpeechTranscriptionRequest',
+  'AutoCutSpeechTranscriptionResult',
+  'AutoCutSpeechTranscriptionSegment',
+  'task_output_dir',
+  'taskOutputDir',
+  'output_root_dir',
+  'outputRootDir',
+  'probe_autocut_ffmpeg',
+  'import_autocut_media_file',
+  'autocut_describe_local_media_file',
+  'select_autocut_local_video_file',
+  'select_autocut_local_directory',
+  'SUPPORTED_VIDEO_FILE_DIALOG_EXTENSIONS',
+  'pick_folder',
+  'resolve_autocut_request_media_root',
+  'autocut_media_root_for_request',
+  'AutoCut outputRootDir must be an absolute directory path',
+  'autocut_operation_output_root_dir_payload',
+  'insert_autocut_output_root_dir_payload',
+  'retry_output_root_dir',
+  'native_media_task_writes_artifact_inside_configured_output_root',
+  'native_task_retry_preserves_configured_output_root',
+  'autocut_task_output_dir',
+  'AutoCutNativeTaskSnapshot',
+  'AutoCutNativeTaskQueryRequest',
+  'AutoCutNativeTaskCancelRequest',
+  'AutoCutNativeTaskCancelResult',
+  'AutoCutNativeTaskRecoveryRequest',
+  'AutoCutNativeTaskRecoveryResult',
+  'AutoCutNativeTaskRetryRequest',
+  'AutoCutNativeTaskRetryResult',
+  'list_autocut_native_tasks',
+  'autocut_list_native_tasks',
+  'cancel_autocut_native_task',
+  'autocut_cancel_native_task',
+  'recover_autocut_native_tasks',
+  'autocut_recover_native_tasks',
+  'retry_autocut_native_task',
+  'autocut_retry_native_task',
+  'OPS_STATUS_CANCEL_REQUESTED',
+  'OPS_STATUS_CANCELED',
+  'OPS_STATUS_INTERRUPTED',
+  'OPS_TASK_EVENT_TYPE_CANCEL_REQUESTED',
+  'OPS_TASK_EVENT_TYPE_CANCELED',
+  'OPS_TASK_EVENT_TYPE_INTERRUPTED',
+  'OPS_TASK_EVENT_TYPE_RETRY_REQUESTED',
+  'OPS_TASK_EVENT_TYPE_PROGRESS',
+  'recover_autocut_native_tasks_on_connection',
+  'retry_autocut_native_task_in_root_with_toolchain',
+  'record_ops_task_progress',
+  'parse_ffmpeg_progress_percent',
+  'parse_ffmpeg_duration_millis',
+  'append_ffmpeg_progress_output_args',
+  'run_tracked_ffmpeg_command_with_progress',
+  'record_ffmpeg_streaming_progress',
+  'read_child_pipe_by_line',
+  'AutoCutFfmpegPipeEvent',
+  'standardize_native_task_event_payload',
+  'parse_native_task_event_payload',
+  'OPS_WORKER_LEASE_STATUS_ACTIVE',
+  'OPS_WORKER_LEASE_STATUS_RELEASED',
+  'OPS_WORKER_LEASE_STATUS_EXPIRED',
+  'AutoCutNativeWorkerLeaseSnapshot',
+  'AutoCutOpsWorkerLease',
+  'AutoCutRecoveryLeaseSignal',
+  'acquire_ops_worker_lease',
+  'heartbeat_ops_worker_lease',
+  'release_ops_worker_lease',
+  'expire_stale_ops_worker_leases',
+  'has_active_ops_worker_lease',
+  'read_recovery_lease_signal',
+  'native_task_recovery_event_payload',
+  'begin_native_media_task_worker_lease',
+  'read_native_worker_leases',
+  'mark_ops_task_interrupted',
+  'AutoCutTrackedNativeMediaProcess',
+  'run_tracked_native_media_command',
+  'has_tracked_native_media_process',
+  'cancel_tracked_native_media_process',
+  'stop_tracked_native_media_child',
+  'stop_and_join_tracked_native_media_child_after_error',
+  'AutoCutThrottledPoll',
+  'NATIVE_MEDIA_POLL_HEARTBEAT_INTERVAL',
+  'native_media_poll_throttler_can_force_final_run',
+  'run_tracked_ffmpeg_command_with_progress',
+  'extract_autocut_audio_from_asset',
+  'generate_autocut_gif_from_asset',
+  'autocut_generate_gif',
+  'slice_autocut_video_from_asset',
+  'autocut_slice_video',
+  'compress_autocut_video_from_asset',
+  'autocut_compress_video',
+  'convert_autocut_video_from_asset',
+  'autocut_convert_video',
+  'enhance_autocut_video_from_asset',
+  'autocut_enhance_video',
+  'transcribe_autocut_media_from_asset',
+  'autocut_transcribe_media',
+  'AutoCutSpeechToolchain',
+  'resolve_autocut_speech_toolchain',
+  'SDKWORK_AUTOCUT_WHISPER_EXECUTABLE',
+  'SDKWORK_AUTOCUT_WHISPER_MODEL',
+  'run_ffmpeg_speech_audio_extract',
+  'run_local_whisper_transcription',
+  'parse_whisper_transcript_json',
+  'MEDIA_ARTIFACT_TYPE_TRANSCRIPT',
+  'MEDIA_ARTIFACT_TYPE_VIDEO_SLICE_SUBTITLE',
+  'OPS_TASK_TYPE_SPEECH_TRANSCRIPTION',
+  'OPS_STAGE_TYPE_SPEECH_TRANSCRIPTION',
+  'run_autocut_audio_smoke',
+  'resolve_autocut_ffmpeg_toolchain',
+  'resolve_autocut_ffmpeg_toolchain_for_app',
+  'resolve_autocut_ffmpeg_toolchain_from_candidate_manifests',
+  'autocut_ffmpeg_toolchain_manifest_candidate_paths',
+  'resource_dir',
+  'resolve_ffmpeg_executable_from_toolchain',
+  'ffmpeg.toolchain.json',
+  'SDKWORK_AUTOCUT_FFMPEG',
+  'Sha256',
+  'verify_autocut_ffmpeg_sidecar_integrity',
+  'checksum mismatch',
+  'byteSize mismatch',
+  'source_kind',
+  'bundled_ready',
+  'manifest_ready',
+  'asset_uuid',
+  'source_asset_uuid',
+  'media_asset',
+  'media_artifact',
+  'ops_task',
+  'ops_stage_run',
+  '.join(AUTOCUT_MEDIA_TASK_DIR)',
+  '.join(AUTOCUT_MEDIA_TASK_OUTPUT_DIR)',
+  'Command::new',
+  '.args(',
+  'fs::copy',
+  'ensure_safe_import_source_path',
+  'ensure_safe_media_path',
+  'run_ffmpeg_video_gif',
+  'run_ffmpeg_video_slices',
+  'run_ffmpeg_video_slice',
+  'run_ffmpeg_video_slice_thumbnail',
+  'insert_media_slice_thumbnail_artifact',
+  'MEDIA_ARTIFACT_TYPE_VIDEO_SLICE_THUMBNAIL',
+  'thumbnail_artifact_path',
+  'thumbnail_byte_size',
+  'run_ffmpeg_video_compress',
+  'run_ffmpeg_video_convert',
+  'run_ffmpeg_video_enhance',
+  'normalize_video_gif_fps',
+  'normalize_video_gif_resolution',
+  'normalize_video_slice_clips',
+  'normalize_video_slice_format',
+  'adjust_video_slice_clips_for_source_duration',
+  'read_ffmpeg_media_duration_millis',
+  'normalize_video_compress_mode',
+  'normalize_video_convert_format',
+  'normalize_video_convert_codec',
+  'normalize_video_convert_resolution',
+  'normalize_video_enhance_resolution',
+  'normalize_video_enhance_mode',
+  'normalize_video_enhance_frame_rate',
+  'image/gif',
+  'image/jpeg',
+  'video/mp4',
+  'libx264',
+  'libvpx-vp9',
+  'unsharp',
+  '-movflags',
+  'scale=-2',
+  '-nostdin',
+  '-vn',
+  'lavfi',
+];
+const forbiddenRemoteFixtureUrlPatterns = [
+  /https:\/\/storage\.googleapis\.com\/gtv-videos-bucket\/sample\/BigBuckBunny\.mp4/u,
+  /https:\/\/commondatastorage\.googleapis\.com\/gtv-videos-bucket\/sample\/BigBuckBunny\.mp4/u,
+  /https:\/\/www\.soundhelix\.com\/examples\/mp3\/SoundHelix-Song-1\.mp3/u,
+  /https:\/\/media\.giphy\.com\/media\/3o7aD2saalEvW6vWgA\/giphy\.gif/u,
+  /https:\/\/picsum\.photos\/seed\//u,
+];
+const requiredCspRemoteSources = [
+  'https://storage.googleapis.com',
+  'https://commondatastorage.googleapis.com',
+  'https://www.soundhelix.com',
+  'https://media.giphy.com',
+  'https://picsum.photos',
+];
+
+const businessPackagesWithService = new Set([
+  'sdkwork-autocut-extractor-audio',
+  'sdkwork-autocut-extractor-text',
+  'sdkwork-autocut-services',
+  'sdkwork-autocut-slicer',
+  'sdkwork-autocut-subtitle-translate',
+  'sdkwork-autocut-video-compress',
+  'sdkwork-autocut-video-convert',
+  'sdkwork-autocut-video-enhance',
+  'sdkwork-autocut-video-gif',
+  'sdkwork-autocut-voice-translate',
+]);
+const forbiddenSourcePatterns = [
+  {
+    pattern: /@ts-ignore/u,
+    message: 'does not suppress TypeScript with @ts-ignore',
+  },
+  {
+    pattern: /@ts-expect-error/u,
+    message: 'does not suppress TypeScript with @ts-expect-error',
+  },
+  {
+    pattern: /eslint-disable/u,
+    message: 'does not suppress lint or type governance with eslint-disable',
+  },
+  {
+    pattern: /\bTODO\b/u,
+    message: 'does not commit TODO markers into AutoCut source',
+  },
+  {
+    pattern: /\bFIXME\b/u,
+    message: 'does not commit FIXME markers into AutoCut source',
+  },
+];
+
+function readJson(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function exists(relativePath) {
+  return fs.existsSync(path.join(rootDir, relativePath));
+}
+
+function listFiles(dirPath, predicate = () => true) {
+  if (!fs.existsSync(dirPath)) {
+    return [];
+  }
+  const output = [];
+  for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+    const absolute = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      output.push(...listFiles(absolute, predicate));
+    } else if (predicate(absolute)) {
+      output.push(absolute);
+    }
+  }
+  return output;
+}
+
+const failures = [];
+const pass = [];
+
+function assertRule(condition, message) {
+  if (condition) {
+    pass.push(message);
+  } else {
+    failures.push(message);
+  }
+}
+
+function assertNoForbiddenSourcePatterns(relativePath, sourceText) {
+  for (const { pattern, message } of forbiddenSourcePatterns) {
+    assertRule(!pattern.test(sourceText), `${relativePath} ${message}`);
+  }
+}
+
+function assertNoTypeScriptNonNullAssertions(relativePath, sourceText) {
+  const sourceFile = ts.createSourceFile(
+    relativePath,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    relativePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const nonNullAssertions = [];
+  const visit = (node) => {
+    if (ts.isNonNullExpression(node)) {
+      const { line, character } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+      nonNullAssertions.push(`${line + 1}:${character + 1}`);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  assertRule(
+    nonNullAssertions.length === 0,
+    `${relativePath} avoids TypeScript non-null assertions (${nonNullAssertions.join(', ')})`,
+  );
+}
+
+function stripSqlComments(sqlSource) {
+  return sqlSource.replace(/--.*$/gmu, '').replace(/\/\*[\s\S]*?\*\//gu, '');
+}
+
+function extractSqlCreateTables(sqlSource) {
+  const tables = [];
+  const normalizedSource = stripSqlComments(sqlSource);
+  const createTablePattern = /create\s+table\s+(?:if\s+not\s+exists\s+)?(["`[]?[a-zA-Z_][\w$]*["`\]]?(?:\s*\.\s*["`[]?[a-zA-Z_][\w$]*["`\]]?)*)\s*\(/giu;
+  for (const match of normalizedSource.matchAll(createTablePattern)) {
+    const rawName = match[1];
+    const normalizedName = rawName
+      .split('.')
+      .at(-1)
+      ?.replace(/["`\[\]\s]/gu, '')
+      .toLowerCase();
+    if (normalizedName) {
+      tables.push({ name: normalizedName, bodyStart: match.index + match[0].length });
+    }
+  }
+  return tables.map((table, index) => {
+    const end = index + 1 < tables.length ? tables[index + 1].bodyStart : normalizedSource.length;
+    return { ...table, body: normalizedSource.slice(table.bodyStart, end) };
+  });
+}
+
+function extractYamlTableContracts(sourceText) {
+  const matches = [];
+  const tablePattern = /(?:^|\n)\s*table_name:\s*['"]?([a-z][a-z0-9_]+)['"]?/gmu;
+  const tableMatches = [...sourceText.matchAll(tablePattern)];
+  for (let index = 0; index < tableMatches.length; index += 1) {
+    const match = tableMatches[index];
+    const nextMatch = tableMatches[index + 1];
+    const start = match.index ?? 0;
+    const end = nextMatch?.index ?? sourceText.length;
+    matches.push({
+      name: match[1].toLowerCase(),
+      body: sourceText.slice(start, end),
+    });
+  }
+  return matches;
+}
+
+function extractJsonTableContracts(sourceText) {
+  try {
+    const parsed = JSON.parse(sourceText);
+    const candidates = Array.isArray(parsed) ? parsed : [parsed];
+    return candidates
+      .filter((candidate) => candidate && typeof candidate === 'object' && typeof candidate.table_name === 'string')
+      .map((candidate) => ({
+        name: candidate.table_name.toLowerCase(),
+        body: candidate,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function assertStandardDatabaseTableName(tableName, relativePath) {
+  const firstSegment = tableName.split('_')[0];
+  assertRule(
+    /^[a-z][a-z0-9_]*$/u.test(tableName),
+    `${relativePath} table ${tableName} uses lowercase underscore database naming`,
+  );
+  assertRule(tableName.includes('_'), `${relativePath} table ${tableName} includes a business module prefix and entity name`);
+  assertRule(
+    !forbiddenDatabaseTablePrefixes.includes(firstSegment),
+    `${relativePath} table ${tableName} does not use a forbidden product/project/common prefix`,
+  );
+}
+
+function assertSqlTableHasIdentityColumns(table, relativePath) {
+  const body = table.body.toLowerCase();
+  assertRule(
+    /(?:^|[\s,(])id\s+(?:bigint|integer|int8|number\s*\(\s*19\s*\)|numeric\s*\(\s*19\s*,\s*0\s*\))/u.test(body),
+    `${relativePath} table ${table.name} defines id as long/int64 storage`,
+  );
+  assertRule(/(?:^|[\s,(])uuid\s+(?:varchar|char|text|uuid|nvarchar)/u.test(body), `${relativePath} table ${table.name} defines uuid`);
+}
+
+function assertYamlTableHasIdentityColumns(table, relativePath) {
+  const body = table.body.toLowerCase();
+  assertRule(
+    /(?:^|\n)\s*id:\s*\{[^}\n]*type:\s*int64\b/u.test(body) ||
+      /(?:^|\n)\s*id:\s*(?:\r?\n)(?:\s+[a-z_]+:\s*[^\n]*\r?\n)*\s+type:\s*int64\b/u.test(body),
+    `${relativePath} table ${table.name} declares columns.id as int64`,
+  );
+  assertRule(/(?:^|\n)\s*uuid:\s*/u.test(body), `${relativePath} table ${table.name} declares columns.uuid`);
+}
+
+function assertJsonTableHasIdentityColumns(table, relativePath) {
+  const columns = table.body.columns;
+  const idColumn = columns?.id;
+  const uuidColumn = columns?.uuid;
+  assertRule(
+    idColumn && typeof idColumn === 'object' && idColumn.type === 'int64',
+    `${relativePath} table ${table.name} declares columns.id as int64`,
+  );
+  assertRule(Boolean(uuidColumn), `${relativePath} table ${table.name} declares columns.uuid`);
+}
+
+const rootPackage = readJson(path.join(rootDir, 'package.json'));
+const rootTsconfig = readJson(path.join(rootDir, 'tsconfig.json'));
+const desktopPackage = fs.existsSync(path.join(desktopPackageDir, 'package.json'))
+  ? readJson(path.join(desktopPackageDir, 'package.json'))
+  : {};
+const tauriConfig = fs.existsSync(path.join(desktopTauriDir, 'tauri.conf.json'))
+  ? readJson(path.join(desktopTauriDir, 'tauri.conf.json'))
+  : {};
+const rootGitignore = fs.readFileSync(path.join(rootDir, '.gitignore'), 'utf8');
+const rootGitAttributes = fs.existsSync(path.join(rootDir, '.gitattributes'))
+  ? fs.readFileSync(path.join(rootDir, '.gitattributes'), 'utf8')
+  : '';
+const architectSource = fs.existsSync(path.join(rootDir, 'ARCHITECT.md'))
+  ? fs.readFileSync(path.join(rootDir, 'ARCHITECT.md'), 'utf8')
+  : '';
+const readmeSource = fs.existsSync(path.join(rootDir, 'README.md'))
+  ? fs.readFileSync(path.join(rootDir, 'README.md'), 'utf8')
+  : '';
+const frontendStandardSource = fs.existsSync(path.join(rootDir, 'docs/architecture/16-autocut-frontend-module-standard.md'))
+  ? fs.readFileSync(path.join(rootDir, 'docs/architecture/16-autocut-frontend-module-standard.md'), 'utf8')
+  : '';
+const viteConfigSource = fs.existsSync(path.join(desktopPackageDir, 'vite.config.ts'))
+  ? fs.readFileSync(path.join(desktopPackageDir, 'vite.config.ts'), 'utf8')
+  : '';
+const indexHtmlSource = fs.existsSync(path.join(desktopPackageDir, 'index.html'))
+  ? fs.readFileSync(path.join(desktopPackageDir, 'index.html'), 'utf8')
+  : '';
+const cargoTomlSource = fs.existsSync(path.join(desktopTauriDir, 'Cargo.toml'))
+  ? fs.readFileSync(path.join(desktopTauriDir, 'Cargo.toml'), 'utf8')
+  : '';
+const mainRsSource = fs.existsSync(path.join(desktopTauriDir, 'src', 'main.rs'))
+  ? fs.readFileSync(path.join(desktopTauriDir, 'src', 'main.rs'), 'utf8')
+  : '';
+const rustToolchainSource = fs.existsSync(path.join(desktopPackageDir, 'rust-toolchain.toml'))
+  ? fs.readFileSync(path.join(desktopPackageDir, 'rust-toolchain.toml'), 'utf8')
+  : '';
+const workspaceSource = fs.readFileSync(path.join(rootDir, 'pnpm-workspace.yaml'), 'utf8');
+const databaseSpecSource = fs.existsSync(path.join(rootDir, 'DATABASE_SPEC.md'))
+  ? fs.readFileSync(path.join(rootDir, 'DATABASE_SPEC.md'), 'utf8')
+  : '';
+const databaseContractSource = fs.existsSync(path.join(rootDir, requiredDatabaseContractDoc))
+  ? fs.readFileSync(path.join(rootDir, requiredDatabaseContractDoc), 'utf8')
+  : '';
+const nativeHostCommandSource = fs.existsSync(path.join(rootDir, requiredNativeHostCommandSourcePath))
+  ? fs.readFileSync(path.join(rootDir, requiredNativeHostCommandSourcePath), 'utf8')
+  : '';
+const nativeHostContractSource = fs.existsSync(path.join(rootDir, requiredNativeHostContractSourcePath))
+  ? fs.readFileSync(path.join(rootDir, requiredNativeHostContractSourcePath), 'utf8')
+  : '';
+const nativeDatabaseContractSource = fs.existsSync(path.join(rootDir, requiredNativeDatabaseContractSourcePath))
+  ? fs.readFileSync(path.join(rootDir, requiredNativeDatabaseContractSourcePath), 'utf8')
+  : '';
+const nativeDatabaseRuntimeSource = fs.existsSync(path.join(rootDir, requiredNativeDatabaseRuntimeSourcePath))
+  ? fs.readFileSync(path.join(rootDir, requiredNativeDatabaseRuntimeSourcePath), 'utf8')
+  : '';
+const nativeMediaRuntimeSource = fs.existsSync(path.join(rootDir, requiredNativeMediaRuntimeSourcePath))
+  ? fs.readFileSync(path.join(rootDir, requiredNativeMediaRuntimeSourcePath), 'utf8')
+  : '';
+const nativeLlmHttpRuntimeSource = fs.existsSync(path.join(rootDir, requiredNativeLlmHttpRuntimeSourcePath))
+  ? fs.readFileSync(path.join(rootDir, requiredNativeLlmHttpRuntimeSourcePath), 'utf8')
+  : '';
+const nativeLlmSecretRuntimeSource = fs.existsSync(path.join(rootDir, requiredNativeLlmSecretRuntimeSourcePath))
+  ? fs.readFileSync(path.join(rootDir, requiredNativeLlmSecretRuntimeSourcePath), 'utf8')
+  : '';
+const nativeFfmpegToolchainManifestSource = fs.existsSync(path.join(rootDir, requiredNativeFfmpegToolchainManifestPath))
+  ? fs.readFileSync(path.join(rootDir, requiredNativeFfmpegToolchainManifestPath), 'utf8')
+  : '';
+const nativeHostClientServiceSource = fs.existsSync(path.join(rootDir, requiredNativeHostClientServicePath))
+  ? fs.readFileSync(path.join(rootDir, requiredNativeHostClientServicePath), 'utf8')
+  : '';
+const serviceBehaviorCheckSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-service-behavior.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-service-behavior.mjs'), 'utf8')
+  : '';
+const nativeReleaseSmokeCheckSource = fs.existsSync(path.join(rootDir, 'scripts/write-autocut-native-release-smoke.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/write-autocut-native-release-smoke.mjs'), 'utf8')
+  : '';
+const nativeSqliteBaselineSource = fs.existsSync(path.join(rootDir, requiredNativeSqliteBaselinePath))
+  ? fs.readFileSync(path.join(rootDir, requiredNativeSqliteBaselinePath), 'utf8')
+  : '';
+const nativeSchemaRegistrySource = fs.existsSync(path.join(rootDir, requiredNativeSchemaRegistryPath))
+  ? fs.readFileSync(path.join(rootDir, requiredNativeSchemaRegistryPath), 'utf8')
+  : '';
+const workspaceCatalogNames = new Set(
+  [...workspaceSource.matchAll(/^\s{2}['"]?([^:'"\s][^:'"]*?)['"]?:\s*[^\s]+/gmu)].map((match) => match[1].trim()),
+);
+const workspaceCatalogVersions = Object.fromEntries(
+  [...workspaceSource.matchAll(/^\s{2}['"]?([^:'"\s][^:'"]*?)['"]?:\s*([^\s]+)/gmu)].map((match) => [
+    match[1].trim(),
+    match[2].trim(),
+  ]),
+);
+const trackedTauriGeneratedFiles = execFileSync('git', ['ls-files', '--', 'packages/sdkwork-autocut-desktop/src-tauri/gen'], {
+  cwd: rootDir,
+  encoding: 'utf8',
+})
+  .split(/\r?\n/u)
+  .filter(Boolean);
+const packageDirs = fs.readdirSync(packagesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory());
+const packageNames = new Set(packageDirs.map((entry) => `${internalPrefix}${entry.name.replace(/^sdkwork-autocut-/, '')}`));
+
+for (const scriptName of ['dev', 'build', 'typecheck', 'test', 'tauri:before-dev', 'tauri:dev', 'tauri:build']) {
+  assertRule(Boolean(rootPackage.scripts?.[scriptName]), `root package.json defines script ${scriptName}`);
+}
+assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-feature-workflows.mjs'), 'root test runs the AutoCut feature workflow governance check');
+assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-service-behavior.mjs'), 'root test runs the AutoCut service behavior contract');
+
+assertRule(rootPackage.packageManager?.startsWith('pnpm@'), 'root package.json declares pnpm packageManager');
+assertRule(rootPackage.workspaces?.length === 1 && rootPackage.workspaces[0] === 'packages/*', 'root package.json workspace list only includes packages/*');
+assertRule(workspaceSource.includes("  - 'packages/*'"), 'pnpm-workspace.yaml includes only the packages/* workspace');
+assertRule(exists('.gitattributes'), 'root .gitattributes defines repository binary storage policy');
+assertRule(
+  rootGitAttributes.includes('packages/sdkwork-autocut-desktop/src-tauri/binaries/**/ffmpeg filter=lfs diff=lfs merge=lfs -text') &&
+    rootGitAttributes.includes('packages/sdkwork-autocut-desktop/src-tauri/binaries/**/ffmpeg.exe filter=lfs diff=lfs merge=lfs -text'),
+  'root .gitattributes stores bundled FFmpeg sidecars through Git LFS',
+);
+assertRule(architectSource.includes('Git LFS'), 'ARCHITECT.md documents Git LFS for bundled FFmpeg sidecars');
+assertRule(readmeSource.includes('git lfs install'), 'README documents Git LFS setup before committing bundled FFmpeg sidecars');
+assertRule(exists('packages/sdkwork-autocut-desktop/package.json'), 'AutoCut desktop app is defined as packages/sdkwork-autocut-desktop');
+assertRule(!exists('src'), 'root src is not used for the AutoCut desktop app package');
+assertRule(!exists('src-tauri'), 'root src-tauri is not used; Tauri lives in packages/sdkwork-autocut-desktop');
+assertRule(!exists('vite.config.ts'), 'root vite.config.ts is not used; Vite config lives in packages/sdkwork-autocut-desktop');
+assertRule(!exists('index.html'), 'root index.html is not used; HTML entry lives in packages/sdkwork-autocut-desktop');
+assertRule(desktopPackage.name === '@sdkwork/autocut-desktop', 'desktop package manifest name is @sdkwork/autocut-desktop');
+assertRule(desktopPackage.version === rootPackage.version, 'desktop package version matches root package.json version');
+assertRule(rootPackage.version === tauriConfig.version, 'root package.json version matches desktop Tauri application version');
+assertRule(cargoTomlSource.includes(`version = "${rootPackage.version}"`), 'desktop Tauri Cargo.toml package version matches root package.json version');
+assertRule(cargoTomlSource.includes('name = "sdkwork-video-cut-desktop"'), 'Tauri Cargo.toml uses the standard desktop crate name');
+assertRule(cargoTomlSource.includes('edition = "2024"'), 'Tauri Cargo.toml uses Rust 2024 edition');
+assertRule(exists('packages/sdkwork-autocut-desktop/rust-toolchain.toml'), 'desktop package pins a package-local Rust toolchain');
+assertRule(rustToolchainSource.includes('channel = "1.90.0"'), 'desktop Tauri Rust toolchain pins rustc 1.90.0');
+assertRule(rustToolchainSource.includes('"x86_64-pc-windows-msvc"'), 'desktop Tauri Rust toolchain declares the Windows MSVC target');
+for (const [relativePath, sourceText] of [
+  ['ARCHITECT.md', architectSource],
+  ['README.md', readmeSource],
+  ['docs/architecture/16-autocut-frontend-module-standard.md', frontendStandardSource],
+]) {
+  assertRule(
+    sourceText.includes('packages/sdkwork-autocut-desktop/rust-toolchain.toml'),
+    `${relativePath} documents the package-local Rust toolchain file`,
+  );
+  assertRule(sourceText.includes('1.90.0'), `${relativePath} documents the pinned Rust toolchain version`);
+}
+for (const [relativePath, sourceText] of [
+  ['ARCHITECT.md', architectSource],
+  ['README.md', readmeSource],
+  ['docs/architecture/16-autocut-frontend-module-standard.md', frontendStandardSource],
+]) {
+  assertRule(
+    sourceText.includes('scripts/ensure-autocut-tauri-rust-toolchain.test.mjs'),
+    `${relativePath} documents the executable Rust toolchain guard contract test`,
+  );
+}
+assertRule(indexHtmlSource.includes('<title>SDKWork Video Cut</title>'), 'desktop index.html title matches the Tauri product name');
+assertRule(rootPackage.version === '0.1.0', 'AutoCut desktop application version starts at 0.1.0');
+assertRule(desktopPackage.scripts?.dev?.includes('--host 127.0.0.1'), 'desktop dev binds to loopback for desktop-local development');
+assertRule(desktopPackage.scripts?.dev?.includes('--port 3000'), 'desktop dev uses the standard AutoCut web port 3000');
+assertRule(desktopPackage.scripts?.dev?.includes('--strictPort'), 'desktop dev uses strictPort for deterministic desktop-local startup');
+assertRule(desktopPackage.scripts?.['dev:tauri-web']?.includes('--host 127.0.0.1'), 'desktop dev:tauri-web binds to loopback for Tauri development');
+assertRule(desktopPackage.scripts?.['dev:tauri-web']?.includes('--port 5173'), 'desktop dev:tauri-web uses the Tauri devUrl port 5173');
+assertRule(desktopPackage.scripts?.['dev:tauri-web']?.includes('--strictPort'), 'desktop dev:tauri-web uses strictPort for deterministic Tauri startup');
+assertRule(desktopPackage.scripts?.['tauri:before-dev'] === 'pnpm dev:tauri-web', 'desktop tauri:before-dev delegates to the deterministic Tauri web dev script');
+assertRule(rootPackage.scripts?.dev?.includes('--filter @sdkwork/autocut-desktop'), 'root dev delegates to the desktop package');
+assertRule(rootPackage.scripts?.build?.includes('--filter @sdkwork/autocut-desktop'), 'root build delegates to the desktop package');
+assertRule(rootPackage.scripts?.typecheck?.includes('pnpm -r'), 'root typecheck runs recursive workspace typecheck');
+assertRule(rootPackage.scripts?.lint?.includes('check:autocut-architecture'), 'root lint includes AutoCut architecture governance');
+assertRule(rootPackage.scripts?.clean === 'node scripts/clean-autocut-generated.mjs', 'root clean delegates to the standard generated-output cleanup script');
+assertRule(exists('scripts/ensure-autocut-tauri-rust-toolchain.mjs'), 'AutoCut defines a Rust toolchain guard script for desktop Tauri commands');
+assertRule(
+  rootPackage.scripts?.test?.includes('node scripts/ensure-autocut-tauri-rust-toolchain.test.mjs'),
+  'root test runs the AutoCut Tauri Rust toolchain guard contract',
+);
+assertRule(!rootPackage.scripts?.start, 'root package.json does not define a legacy Node start script');
+assertRule(exists('DATABASE_SPEC.md'), 'root DATABASE_SPEC.md exists as the canonical database definition standard');
+for (const marker of requiredDatabaseSpecMarkers) {
+  assertRule(databaseSpecSource.includes(marker), `DATABASE_SPEC.md contains required database standard marker ${marker}`);
+}
+assertRule(exists(requiredDatabaseContractDoc), `${requiredDatabaseContractDoc} exists as the AutoCut database contract standard`);
+for (const marker of requiredDatabaseContractMarkers) {
+  assertRule(databaseContractSource.includes(marker), `${requiredDatabaseContractDoc} contains required AutoCut database marker ${marker}`);
+}
+
+const allRootDeps = {
+  ...(rootPackage.dependencies ?? {}),
+  ...(rootPackage.devDependencies ?? {}),
+};
+const allDesktopDeps = {
+  ...(desktopPackage.dependencies ?? {}),
+  ...(desktopPackage.devDependencies ?? {}),
+};
+for (const depName of requiredRootToolDependencies) {
+  assertRule(Boolean(allRootDeps[depName]), `root package.json declares required workspace orchestration dependency ${depName}`);
+}
+for (const depName of requiredRootInternalDependencies) {
+  assertRule(rootPackage.dependencies?.[depName] === 'workspace:*', `root package.json declares desktop package dependency ${depName} with workspace:*`);
+}
+for (const depName of requiredDesktopDependencies) {
+  assertRule(Boolean(allDesktopDeps[depName]), `desktop package.json declares required runtime/tool dependency ${depName}`);
+}
+for (const depName of requiredDesktopInternalDependencies) {
+  assertRule(desktopPackage.dependencies?.[depName] === 'workspace:*', `desktop package.json declares AutoCut package dependency ${depName} with workspace:*`);
+}
+for (const depName of forbiddenRootDependencies) {
+  assertRule(!allRootDeps[depName], `root package.json does not depend on legacy AI Studio/server dependency ${depName}`);
+  assertRule(!allDesktopDeps[depName], `desktop package.json does not depend on legacy AI Studio/server dependency ${depName}`);
+}
+assertRule(
+  workspaceCatalogVersions['@tauri-apps/api'] === '2.10.1' &&
+    workspaceCatalogVersions['@tauri-apps/cli'] === '2.10.1',
+  'pnpm catalog pins Tauri JavaScript packages to the Rust tauri 2.10 minor line',
+);
+for (const depName of Object.keys(allRootDeps)) {
+  if (depName.startsWith(internalPrefix)) {
+    assertRule(packageNames.has(depName), `root package.json dependency ${depName} is a known AutoCut package`);
+    assertRule(allRootDeps[depName] === 'workspace:*', `root package.json dependency ${depName} uses workspace:*`);
+  } else {
+    assertRule(allowedRootDependencies.has(depName), `root package.json dependency ${depName} is allowed by AutoCut desktop standard`);
+    assertRule(allRootDeps[depName] === 'catalog:', `root package.json dependency ${depName} uses pnpm catalog version`);
+    assertRule(workspaceCatalogNames.has(depName), `pnpm catalog declares root dependency ${depName}`);
+  }
+}
+
+for (const excludedPath of ['artifacts/**', 'packages/sdkwork-autocut-desktop/src-tauri/target/**', 'packages/sdkwork-autocut-desktop/dist/**']) {
+  assertRule(rootTsconfig.exclude?.includes(excludedPath), `root tsconfig excludes ${excludedPath}`);
+}
+assertRule(rootTsconfig.compilerOptions?.strict === true, 'root tsconfig enables strict TypeScript checking');
+assertRule(rootTsconfig.compilerOptions?.exactOptionalPropertyTypes === true, 'root tsconfig distinguishes absent optional fields from explicit undefined');
+assertRule(rootTsconfig.compilerOptions?.noUncheckedIndexedAccess === true, 'root tsconfig requires indexed access boundary handling');
+assertRule(rootTsconfig.compilerOptions?.noUnusedLocals === true, 'root tsconfig rejects unused local declarations');
+assertRule(rootTsconfig.compilerOptions?.noUnusedParameters === true, 'root tsconfig rejects unused function parameters');
+for (const legacyExcludedPath of ['host/target/**', 'workspace/**', 'workspace-server-private-smoke/**']) {
+  assertRule(
+    !rootTsconfig.exclude?.includes(legacyExcludedPath),
+    `root tsconfig does not retain legacy runtime exclude ${legacyExcludedPath}`,
+  );
+}
+assertRule(
+  !rootTsconfig.compilerOptions?.paths?.['@sdkwork/*'],
+  'root tsconfig does not expose broad @sdkwork/* workspace alias',
+);
+assertRule(
+  !rootTsconfig.compilerOptions?.paths?.['@/*'],
+  'root tsconfig does not expose @/* root source alias',
+);
+assertRule(
+  rootTsconfig.compilerOptions?.paths?.['@sdkwork/autocut-*']?.[0] === './packages/sdkwork-autocut-*/src/index.ts',
+  'root tsconfig exposes only the @sdkwork/autocut-* package alias',
+);
+assertRule(frontendStandardSource.includes('noUnusedLocals'), 'frontend module standard documents noUnusedLocals as a TypeScript baseline');
+assertRule(frontendStandardSource.includes('noUnusedParameters'), 'frontend module standard documents noUnusedParameters as a TypeScript baseline');
+assertRule(frontendStandardSource.includes('strict'), 'frontend module standard documents strict TypeScript as a baseline');
+assertRule(frontendStandardSource.includes('exactOptionalPropertyTypes'), 'frontend module standard documents exactOptionalPropertyTypes as a TypeScript baseline');
+assertRule(frontendStandardSource.includes('noUncheckedIndexedAccess'), 'frontend module standard documents noUncheckedIndexedAccess as a TypeScript baseline');
+assertRule(frontendStandardSource.includes('Task result traceability'), 'frontend module standard documents task result traceability');
+assertRule(frontendStandardSource.includes('sourceTaskId'), 'frontend module standard documents sourceTaskId');
+assertRule(frontendStandardSource.includes('sourceFileId'), 'frontend module standard documents sourceFileId');
+assertRule(frontendStandardSource.includes('generatedAssetIds'), 'frontend module standard documents generatedAssetIds');
+assertRule(frontendStandardSource.includes('Service-layer source validation'), 'frontend module standard documents service-layer source validation');
+assertRule(frontendStandardSource.includes('validateAutoCutProcessingSource'), 'frontend module standard documents validateAutoCutProcessingSource');
+assertRule(frontendStandardSource.includes('autocut_host_capabilities'), 'frontend module standard documents the native host capabilities command');
+assertRule(frontendStandardSource.includes('ffmpegExecutionReady'), 'frontend module standard documents the honest FFmpeg execution readiness flag');
+assertRule(frontendStandardSource.includes('autocut_database_health'), 'frontend module standard documents the native database health command');
+assertRule(frontendStandardSource.includes('sqliteMigrationReady'), 'frontend module standard documents the SQLite migration readiness flag');
+assertRule(frontendStandardSource.includes('autocut_ffmpeg_probe'), 'frontend module standard documents the native FFmpeg probe command');
+assertRule(frontendStandardSource.includes('autocut_import_media_file'), 'frontend module standard documents the native media import command');
+assertRule(frontendStandardSource.includes('autocut_describe_local_media_file'), 'frontend module standard documents the native local file describe command');
+assertRule(frontendStandardSource.includes('autocut_select_local_video_file'), 'frontend module standard documents the native local video file chooser command');
+assertRule(frontendStandardSource.includes('autocut_select_local_directory'), 'frontend module standard documents the native local directory chooser command');
+assertRule(frontendStandardSource.includes('autocut_extract_audio'), 'frontend module standard documents the native audio extraction command');
+assertRule(frontendStandardSource.includes('autocut_cancel_native_task'), 'frontend module standard documents the native task cancellation command');
+assertRule(frontendStandardSource.includes('nativeTaskCancelCommandReady'), 'frontend module standard documents native task cancel readiness');
+assertRule(frontendStandardSource.includes('autocut_recover_native_tasks'), 'frontend module standard documents the native task recovery command');
+assertRule(frontendStandardSource.includes('nativeTaskRecoveryCommandReady'), 'frontend module standard documents native task recovery readiness');
+assertRule(frontendStandardSource.includes('autocut_retry_native_task'), 'frontend module standard documents the native task retry command');
+assertRule(frontendStandardSource.includes('nativeTaskRetryCommandReady'), 'frontend module standard documents native task retry readiness');
+assertRule(frontendStandardSource.includes('nativeTaskProgressEventsReady'), 'frontend module standard documents native task progress event readiness');
+assertRule(frontendStandardSource.includes('nativeWorkerLeaseReady'), 'frontend module standard documents native worker lease readiness');
+assertRule(frontendStandardSource.includes('ops_task.progress'), 'frontend module standard documents persisted native task progress snapshots');
+assertRule(frontendStandardSource.includes('OPS_TASK_EVENT_TYPE_PROGRESS'), 'frontend module standard documents native task progress audit events');
+assertRule(frontendStandardSource.includes('AutoCutNativeTaskSnapshot.workerLeases'), 'frontend module standard documents native worker lease snapshots');
+assertRule(frontendStandardSource.includes('AutoCutNativeTaskRecoveryResult.expiredLeases'), 'frontend module standard documents typed expired worker lease recovery diagnostics');
+assertRule(frontendStandardSource.includes('AutoCutNativeTaskRecoveryResult.deferred'), 'frontend module standard documents typed deferred worker lease recovery diagnostics');
+assertRule(frontendStandardSource.includes('reason: "expiredWorkerLease"'), 'frontend module standard documents expired worker lease recovery event reason');
+assertRule(frontendStandardSource.includes('AutoCutNativeTaskEventSnapshot'), 'frontend module standard documents native task event snapshots');
+assertRule(frontendStandardSource.includes('payloadJson'), 'frontend module standard documents raw native task event payloadJson audit copy');
+assertRule(frontendStandardSource.includes('payload` is the parsed'), 'frontend module standard documents parsed native task event payload contract');
+assertRule(frontendStandardSource.includes('autocut_generate_gif'), 'frontend module standard documents the native video GIF command');
+assertRule(frontendStandardSource.includes('autocut_compress_video'), 'frontend module standard documents the native video compression command');
+assertRule(frontendStandardSource.includes('autocut_convert_video'), 'frontend module standard documents the native video conversion command');
+assertRule(frontendStandardSource.includes('autocut_enhance_video'), 'frontend module standard documents the native video enhancement command');
+assertRule(frontendStandardSource.includes('assetUuid'), 'frontend module standard documents assetUuid based native media processing');
+assertRule(frontendStandardSource.includes('media_artifact'), 'frontend module standard documents native media artifact registration');
+assertRule(frontendStandardSource.includes('native-host-client.service.ts'), 'frontend module standard documents the typed native host client service');
+assertRule(frontendStandardSource.includes('configureAutoCutNativeHostClient'), 'frontend module standard documents native host client configuration');
+assertRule(frontendStandardSource.includes('ffmpegBundledReady'), 'frontend module standard documents bundled FFmpeg readiness');
+assertRule(frontendStandardSource.includes('ffmpegToolchainManifestReady'), 'frontend module standard documents FFmpeg toolchain manifest readiness');
+assertRule(frontendStandardSource.includes('ffmpegToolchainResolverReady'), 'frontend module standard documents FFmpeg toolchain resolver readiness');
+assertRule(frontendStandardSource.includes('每个 package 的 `tsconfig.json` 必须继承根 `../../tsconfig.json`'), 'frontend module standard documents package tsconfig inheritance');
+assertRule(frontendStandardSource.includes('desktop package 的 `tsconfig.json` 必须额外包含 `vite.config.ts`'), 'frontend module standard documents desktop package tsconfig scope');
+assertRule(frontendStandardSource.includes('不得使用 TypeScript 非空断言'), 'frontend module standard forbids TypeScript non-null assertions');
+assertRule(databaseContractSource.includes('001_baseline.sql'), 'database contract standard documents the package-local SQLite baseline');
+assertRule(databaseContractSource.includes('autocut_host_baseline.yaml'), 'database contract standard documents the package-local schema registry');
+assertRule(databaseContractSource.includes('media_artifact'), 'database contract standard documents media_artifact');
+assertRule(databaseContractSource.includes('ops_stage_run'), 'database contract standard documents ops_stage_run');
+assertRule(databaseContractSource.includes('ops_worker_lease'), 'database contract standard documents ops_worker_lease');
+assertRule(databaseContractSource.includes('ops_schema_migration'), 'database contract standard documents ops_schema_migration');
+assertRule(databaseContractSource.includes('run_autocut_database_migrations'), 'database contract standard documents the native SQLite migration runtime');
+assertRule(databaseContractSource.includes('autocut_import_media_file'), 'database contract standard documents asset registration through media import');
+assertRule(databaseContractSource.includes('Native task cancellation uses the existing `ops` tables'), 'database contract standard documents native task cancellation through existing ops tables');
+assertRule(databaseContractSource.includes('No `autocut_*` or'), 'database contract standard forbids product-prefixed task tables for native cancellation');
+assertRule(databaseContractSource.includes('cancel requested'), 'database contract standard documents cancel requested task state');
+assertRule(databaseContractSource.includes('non-canceled acknowledgement without blind database mutation'), 'database contract standard documents non-blind native cancellation mutation');
+assertRule(databaseContractSource.includes('Native task recovery also uses only the existing `ops` tables'), 'database contract standard documents native task recovery through existing ops tables');
+assertRule(databaseContractSource.includes('interrupted'), 'database contract standard documents interrupted task recovery state');
+assertRule(databaseContractSource.includes('autocut_recover_native_tasks'), 'database contract standard documents the native task recovery command');
+assertRule(databaseContractSource.includes('must not mutate completed, failed, canceled, or'), 'database contract standard documents non-blind native recovery mutation');
+assertRule(databaseContractSource.includes('Native task retry uses the existing `ops` tables'), 'database contract standard documents native task retry through existing ops tables');
+assertRule(databaseContractSource.includes('autocut_retry_native_task'), 'database contract standard documents the native task retry command');
+assertRule(databaseContractSource.includes('Native task progress uses the existing `ops` tables'), 'database contract standard documents native task progress through existing ops tables');
+assertRule(databaseContractSource.includes('ops_task.progress'), 'database contract standard documents ops_task.progress as the progress snapshot');
+assertRule(databaseContractSource.includes('OPS_TASK_EVENT_TYPE_PROGRESS'), 'database contract standard documents progress audit events');
+assertRule(databaseContractSource.includes('parse_ffmpeg_progress_percent'), 'database contract standard documents FFmpeg progress parsing contract');
+assertRule(databaseContractSource.includes('run_tracked_ffmpeg_command_with_progress'), 'database contract standard documents streaming native task progress');
+assertRule(databaseContractSource.includes('record_ffmpeg_streaming_progress'), 'database contract standard documents persisted streaming progress updates');
+assertRule(databaseContractSource.includes('standardize_native_task_event_payload'), 'database contract standard documents standardized native task event payload writes');
+assertRule(databaseContractSource.includes('AutoCutNativeTaskEventSnapshot'), 'database contract standard documents typed native task event snapshots');
+assertRule(databaseContractSource.includes('payloadJson'), 'database contract standard documents raw native task event payloadJson audit copy');
+assertRule(databaseContractSource.includes('Native durable execution uses `ops_worker_lease`'), 'database contract standard documents native durable worker lease execution');
+assertRule(databaseContractSource.includes('nativeWorkerLeaseReady'), 'database contract standard documents native worker lease readiness capability');
+assertRule(databaseContractSource.includes('Recovery is lease-aware'), 'database contract standard documents lease-aware native task recovery');
+assertRule(databaseContractSource.includes('AutoCutNativeTaskRecoveryResult'), 'database contract standard documents typed native recovery diagnostics');
+assertRule(databaseContractSource.includes('expiredLeases'), 'database contract standard documents expired worker lease recovery count');
+assertRule(databaseContractSource.includes('deferred'), 'database contract standard documents deferred active lease recovery count');
+assertRule(databaseContractSource.includes('retry requested'), 'database contract standard documents retry requested task events');
+assertRule(databaseContractSource.includes('must create a new `ops_task`'), 'database contract standard documents retry creates a new task');
+assertRule(databaseContractSource.includes('assetUuid'), 'database contract standard documents assetUuid as the processing boundary');
+assertRule(databaseContractSource.includes('source_asset_uuid'), 'database contract standard documents artifact source asset traceability');
+assertRule(architectSource.includes('ffmpeg.toolchain.json'), 'ARCHITECT.md documents the package-local FFmpeg toolchain manifest');
+assertRule(architectSource.includes('prepare-autocut-ffmpeg-sidecar.mjs'), 'ARCHITECT.md documents the standardized FFmpeg sidecar preparation script');
+assertRule(architectSource.includes('check-autocut-release-smoke-preflight.mjs'), 'ARCHITECT.md documents the standardized release smoke preflight script');
+assertRule(architectSource.includes('write-autocut-native-release-smoke.mjs'), 'ARCHITECT.md documents the standardized native release smoke evidence writer script');
+assertRule(architectSource.includes('--run-real-llm-secret-smoke'), 'ARCHITECT.md documents the real Windows LLM secret store smoke gate');
+assertRule(architectSource.includes('write-autocut-installer-signature-evidence.mjs'), 'ARCHITECT.md documents the standardized installer signature evidence writer script');
+assertRule(architectSource.includes('write-autocut-release-evidence.mjs'), 'ARCHITECT.md documents the standardized release evidence writer script');
+assertRule(architectSource.includes('check-autocut-commercial-release-readiness.mjs'), 'ARCHITECT.md documents the standardized commercial release readiness gate script');
+assertRule(architectSource.includes('runtime-environment.service.ts'), 'ARCHITECT.md documents the runtime environment service boundary');
+assertRule(architectSource.includes('autocut_dev_settings'), 'ARCHITECT.md documents dev-scoped browser settings storage');
+assertRule(architectSource.includes('autocut_release_settings'), 'ARCHITECT.md documents release-scoped browser settings storage');
+assertRule(architectSource.includes('outputDirectory'), 'ARCHITECT.md documents configurable native outputDirectory');
+assertRule(architectSource.includes('outputRootDir'), 'ARCHITECT.md documents native outputRootDir request propagation');
+assertRule(architectSource.includes('{outputRootDir}/tasks/{task_uuid}/outputs/'), 'ARCHITECT.md documents configured task output directory layout');
+assertRule(architectSource.includes('dev-default'), 'ARCHITECT.md documents dev-scoped native LLM secret names');
+assertRule(architectSource.includes('release-default'), 'ARCHITECT.md documents release-scoped native LLM secret names');
+assertRule(frontendStandardSource.includes('prepare-autocut-ffmpeg-sidecar.mjs'), 'frontend module standard documents FFmpeg sidecar preparation');
+assertRule(frontendStandardSource.includes('check-autocut-release-smoke-preflight.mjs'), 'frontend module standard documents FFmpeg release smoke preflight');
+assertRule(frontendStandardSource.includes('write-autocut-native-release-smoke.mjs'), 'frontend module standard documents native release smoke evidence generation');
+assertRule(frontendStandardSource.includes('--run-real-llm-secret-smoke'), 'frontend module standard documents the real Windows LLM secret store smoke gate');
+assertRule(frontendStandardSource.includes('write-autocut-installer-signature-evidence.mjs'), 'frontend module standard documents installer signature evidence generation');
+assertRule(frontendStandardSource.includes('write-autocut-release-evidence.mjs'), 'frontend module standard documents release evidence generation');
+assertRule(frontendStandardSource.includes('check-autocut-commercial-release-readiness.mjs'), 'frontend module standard documents commercial release readiness gating');
+assertRule(frontendStandardSource.includes('runtime-environment.service.ts'), 'frontend module standard documents the runtime environment service boundary');
+assertRule(frontendStandardSource.includes('autocut_dev_settings'), 'frontend module standard documents dev-scoped browser settings storage');
+assertRule(frontendStandardSource.includes('autocut_release_settings'), 'frontend module standard documents release-scoped browser settings storage');
+assertRule(frontendStandardSource.includes('outputDirectory'), 'frontend module standard documents configurable native outputDirectory');
+assertRule(frontendStandardSource.includes('outputRootDir'), 'frontend module standard documents native outputRootDir request propagation');
+assertRule(frontendStandardSource.includes('{outputRootDir}/tasks/{task_uuid}/outputs/'), 'frontend module standard documents configured task output directory layout');
+assertRule(frontendStandardSource.includes('dev-default'), 'frontend module standard documents dev-scoped native LLM secret names');
+assertRule(frontendStandardSource.includes('release-default'), 'frontend module standard documents release-scoped native LLM secret names');
+assertRule(readmeSource.includes('pnpm prepare:ffmpeg-sidecar'), 'README documents the FFmpeg sidecar preparation command');
+assertRule(readmeSource.includes('pnpm release:smoke-preflight'), 'README documents the FFmpeg release smoke preflight command');
+assertRule(readmeSource.includes('pnpm release:native-smoke'), 'README documents the native release smoke evidence command');
+assertRule(readmeSource.includes('--run-real-llm-secret-smoke'), 'README documents the real Windows LLM secret store smoke command');
+assertRule(readmeSource.includes('pnpm release:installer-signature'), 'README documents the installer signature evidence command');
+assertRule(readmeSource.includes('pnpm release:evidence'), 'README documents the release evidence command');
+assertRule(readmeSource.includes('pnpm release:commercial-ready'), 'README documents the commercial release readiness gate command');
+assertRule(readmeSource.includes('autocut_dev_settings'), 'README documents dev-scoped settings storage');
+assertRule(readmeSource.includes('autocut_release_settings'), 'README documents release-scoped settings storage');
+assertRule(readmeSource.includes('outputDirectory'), 'README documents configurable native outputDirectory');
+assertRule(readmeSource.includes('outputRootDir'), 'README documents native outputRootDir request propagation');
+assertRule(readmeSource.includes('{outputRootDir}/tasks/{task_uuid}/outputs/'), 'README documents configured task output directory layout');
+assertRule(architectSource.includes('expiredLeases'), 'ARCHITECT.md documents expired worker lease recovery diagnostics');
+assertRule(architectSource.includes('deferred'), 'ARCHITECT.md documents deferred worker lease recovery diagnostics');
+
+const desktopSrcFiles = listFiles(desktopSrcDir, (file) => /\.(ts|tsx)$/.test(file));
+const desktopCssFiles = listFiles(desktopSrcDir, (file) => /\.css$/.test(file));
+const appSource = fs.existsSync(path.join(desktopSrcDir, 'App.tsx'))
+  ? fs.readFileSync(path.join(desktopSrcDir, 'App.tsx'), 'utf8')
+  : '';
+const desktopMainSource = fs.existsSync(path.join(desktopSrcDir, 'main.tsx'))
+  ? fs.readFileSync(path.join(desktopSrcDir, 'main.tsx'), 'utf8')
+  : '';
+const desktopNativeHostSource = fs.existsSync(path.join(desktopSrcDir, 'native-host.ts'))
+  ? fs.readFileSync(path.join(desktopSrcDir, 'native-host.ts'), 'utf8')
+  : '';
+const toolsRegistrySource = fs.existsSync(path.join(packagesDir, 'sdkwork-autocut-services', 'src', 'service', 'tools.mock.ts'))
+  ? fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-services', 'src', 'service', 'tools.mock.ts'), 'utf8')
+  : '';
+const serviceIndexSource = fs.existsSync(path.join(packagesDir, 'sdkwork-autocut-services', 'src', 'index.ts'))
+  ? fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-services', 'src', 'index.ts'), 'utf8')
+  : '';
+const autocutTypesSource = fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-types', 'src', 'index.ts'), 'utf8');
+const tasksPageSource = fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-tasks', 'src', 'pages', 'TasksPage.tsx'), 'utf8');
+const taskDetailPageSource = fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-tasks', 'src', 'pages', 'TaskDetailPage.tsx'), 'utf8');
+const autocutEventSource = fs.existsSync(path.join(packagesDir, 'sdkwork-autocut-services', 'src', 'service', 'events.service.ts'))
+  ? fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-services', 'src', 'service', 'events.service.ts'), 'utf8')
+  : '';
+const storageServiceSource = fs.existsSync(path.join(rootDir, requiredStorageServicePath))
+  ? fs.readFileSync(path.join(rootDir, requiredStorageServicePath), 'utf8')
+  : '';
+const runtimeEnvironmentServiceSource = fs.existsSync(path.join(rootDir, requiredRuntimeEnvironmentServicePath))
+  ? fs.readFileSync(path.join(rootDir, requiredRuntimeEnvironmentServicePath), 'utf8')
+  : '';
+const settingsServiceSource = fs.existsSync(path.join(rootDir, requiredSettingsServicePath))
+  ? fs.readFileSync(path.join(rootDir, requiredSettingsServicePath), 'utf8')
+  : '';
+const mediaFixturesServiceSource = fs.existsSync(path.join(rootDir, requiredMediaFixturesServicePath))
+  ? fs.readFileSync(path.join(rootDir, requiredMediaFixturesServicePath), 'utf8')
+  : '';
+const datetimeServiceSource = fs.existsSync(path.join(rootDir, requiredDatetimeServicePath))
+  ? fs.readFileSync(path.join(rootDir, requiredDatetimeServicePath), 'utf8')
+  : '';
+const downloadServiceSource = fs.existsSync(path.join(rootDir, requiredDownloadServicePath))
+  ? fs.readFileSync(path.join(rootDir, requiredDownloadServicePath), 'utf8')
+  : '';
+const processingSourceServiceSource = fs.existsSync(path.join(rootDir, requiredProcessingSourceServicePath))
+  ? fs.readFileSync(path.join(rootDir, requiredProcessingSourceServicePath), 'utf8')
+  : '';
+const trustedFileSourceSource = fs.existsSync(path.join(rootDir, requiredTrustedFileSourcePath))
+  ? fs.readFileSync(path.join(rootDir, requiredTrustedFileSourcePath), 'utf8')
+  : '';
+const forbiddenRootDirs = ['components', 'domain', 'ports', 'services', 'utils'];
+for (const dir of forbiddenRootDirs) {
+  assertRule(!exists(`src/${dir}`), `root src/${dir} is not used for new AutoCut business implementation`);
+}
+
+for (const file of desktopSrcFiles) {
+  const relative = path.relative(rootDir, file).replaceAll(path.sep, '/');
+  assertRule(allowedDesktopSourceFiles.has(relative), `desktop package source file ${relative} is allowed thin-shell code`);
+  const sourceText = fs.readFileSync(file, 'utf8');
+  assertNoForbiddenSourcePatterns(relative, sourceText);
+  assertNoTypeScriptNonNullAssertions(relative, sourceText);
+  for (const importSpecifier of parseStaticImports(file)) {
+    if (importSpecifier.startsWith('.')) {
+      continue;
+    }
+    const depName = dependencyName(importSpecifier);
+    const isAllowedRootImport =
+      depName === 'react' ||
+      depName === 'react-dom' ||
+      depName === 'react-router-dom' ||
+      depName === '@tauri-apps/api' ||
+      depName.startsWith(internalPrefix);
+    assertRule(isAllowedRootImport, `${relative} imports only desktop-shell approved dependency ${depName}`);
+    if (depName.startsWith(internalPrefix)) {
+      assertRule(packageNames.has(depName), `${relative} imports known AutoCut package ${depName}`);
+      assertRule(desktopPackage.dependencies?.[depName] === 'workspace:*', `desktop package.json declares imported AutoCut dependency ${depName}`);
+    }
+  }
+}
+
+for (const entry of fs.readdirSync(desktopPackageDir, { withFileTypes: true })) {
+  assertRule(
+    allowedDesktopPackageEntries.has(entry.name),
+    `desktop package root entry ${entry.name} is allowed by the package-local desktop standard`,
+  );
+  if (entry.isFile()) {
+    assertRule(!entry.name.endsWith('.log'), `desktop package generated log ${entry.name} is not present`);
+    assertRule(!entry.name.endsWith('.tsbuildinfo'), `desktop package generated TypeScript build info ${entry.name} is not present`);
+  }
+}
+for (const entry of fs.readdirSync(path.join(desktopPackageDir, 'public'), { withFileTypes: true })) {
+  assertRule(
+    allowedDesktopPublicEntries.has(entry.name),
+    `desktop public entry ${entry.name} is an approved desktop static asset`,
+  );
+}
+for (const entry of fs.readdirSync(desktopTauriDir, { withFileTypes: true })) {
+  assertRule(
+    allowedDesktopTauriEntries.has(entry.name),
+    `desktop src-tauri entry ${entry.name} is allowed by the thin Tauri shell standard`,
+  );
+}
+for (const entry of fs.readdirSync(path.join(desktopTauriDir, 'icons'), { withFileTypes: true })) {
+  assertRule(
+    allowedDesktopTauriIconEntries.has(entry.name),
+    `desktop src-tauri icon entry ${entry.name} is an approved bundle icon`,
+  );
+}
+const desktopTauriBinariesDir = path.join(desktopTauriDir, 'binaries');
+assertRule(
+  fs.existsSync(desktopTauriBinariesDir),
+  'desktop src-tauri owns binaries directory for native toolchain contracts',
+);
+if (fs.existsSync(desktopTauriBinariesDir)) {
+  for (const entry of fs.readdirSync(desktopTauriBinariesDir, { withFileTypes: true })) {
+    assertRule(
+      allowedDesktopTauriBinariesEntries.has(entry.name),
+      `desktop src-tauri binaries entry ${entry.name} is an approved toolchain contract asset`,
+    );
+  }
+}
+for (const entry of fs.readdirSync(path.join(desktopTauriDir, 'src'), { withFileTypes: true })) {
+  assertRule(
+    allowedDesktopTauriSrcEntries.has(entry.name),
+    `desktop src-tauri/src entry ${entry.name} is allowed by the thin native shell standard`,
+  );
+}
+assertRule(cargoTomlSource.includes('tauri = { version = "=2.10.3", features = [] }'), 'desktop Tauri crate keeps tauri features explicit and empty');
+assertRule(cargoTomlSource.includes('tauri-build = { version = "=2.5.6", features = [] }'), 'desktop Tauri build crate is pinned exactly for deterministic CLI compatibility');
+assertRule(!cargoTomlSource.includes('tauri-plugin-'), 'desktop Tauri crate does not add native plugins without an architecture contract');
+assertRule(cargoTomlSource.includes('reqwest = { version = "0.12"'), 'desktop Tauri crate declares reqwest for the contracted native LLM HTTP bridge');
+assertRule(cargoTomlSource.includes('features = ["blocking", "json", "rustls-tls"]'), 'desktop Tauri reqwest dependency uses blocking rustls JSON transport for deterministic command execution');
+assertRule(cargoTomlSource.includes('keyring-core = "1.0.0"'), 'desktop Tauri crate declares keyring-core for the contracted native LLM secret store');
+assertRule(cargoTomlSource.includes('windows-native-keyring-store = "1.0.0"'), 'desktop Tauri crate declares the Windows native keyring store for desktop LLM secrets');
+assertRule(cargoTomlSource.includes('serde = { version = "1.0"'), 'desktop Tauri crate declares serde for native host DTO contracts');
+assertRule(cargoTomlSource.includes('serde_json = "1.0"'), 'desktop Tauri crate declares serde_json for native host diagnostics payloads');
+assertRule(cargoTomlSource.includes('sha2 = "0.10"'), 'desktop Tauri crate declares sha2 only for FFmpeg sidecar checksum verification');
+assertRule(cargoTomlSource.includes('rusqlite = { version = "0.32"'), 'desktop Tauri crate declares rusqlite after the database contract is implemented');
+assertRule(cargoTomlSource.includes('features = ["bundled"]'), 'desktop Tauri crate uses bundled SQLite for deterministic desktop builds');
+assertRule(cargoTomlSource.includes('rfd = { version = "0.16.0"'), 'desktop Tauri crate declares rfd for the contracted trusted local file chooser');
+assertRule(!cargoTomlSource.includes('sqlx'), 'desktop Tauri crate does not add SQLx before the database contract is implemented');
+assertRule(mainRsSource.includes('mod commands;'), 'desktop Tauri main.rs declares the native commands module');
+assertRule(mainRsSource.includes('mod database_contract;'), 'desktop Tauri main.rs declares the database contract module');
+assertRule(mainRsSource.includes('mod database_runtime;'), 'desktop Tauri main.rs declares the database runtime module');
+assertRule(mainRsSource.includes('mod host_contract;'), 'desktop Tauri main.rs declares the host contract module');
+assertRule(mainRsSource.includes('mod llm_http_runtime;'), 'desktop Tauri main.rs declares the LLM HTTP runtime module');
+assertRule(mainRsSource.includes('mod llm_secret_runtime;'), 'desktop Tauri main.rs declares the LLM secret runtime module');
+assertRule(mainRsSource.includes('mod media_runtime;'), 'desktop Tauri main.rs declares the media runtime module');
+assertRule(
+  mainRsSource.includes('commands::autocut_host_capabilities') &&
+    mainRsSource.includes('commands::autocut_database_health') &&
+    mainRsSource.includes('commands::autocut_ffmpeg_probe') &&
+    mainRsSource.includes('commands::autocut_import_media_file') &&
+    mainRsSource.includes('commands::autocut_describe_local_media_file') &&
+    mainRsSource.includes('commands::autocut_select_local_video_file') &&
+    mainRsSource.includes('commands::autocut_select_local_directory') &&
+    mainRsSource.includes('commands::autocut_list_native_tasks') &&
+    mainRsSource.includes('commands::autocut_cancel_native_task') &&
+    mainRsSource.includes('commands::autocut_recover_native_tasks') &&
+    mainRsSource.includes('commands::autocut_retry_native_task') &&
+    mainRsSource.includes('commands::autocut_transcribe_media') &&
+    mainRsSource.includes('commands::autocut_extract_audio') &&
+    mainRsSource.includes('commands::autocut_generate_gif') &&
+    mainRsSource.includes('commands::autocut_slice_video') &&
+    mainRsSource.includes('commands::autocut_compress_video') &&
+    mainRsSource.includes('commands::autocut_convert_video') &&
+    mainRsSource.includes('commands::autocut_enhance_video') &&
+    mainRsSource.includes('commands::autocut_llm_http_request') &&
+    mainRsSource.includes('commands::autocut_save_llm_secret') &&
+    mainRsSource.includes('commands::autocut_get_llm_secret') &&
+    mainRsSource.includes('commands::autocut_delete_llm_secret') &&
+    mainRsSource.includes('commands::autocut_audio_smoke'),
+  'desktop Tauri main.rs exposes only the standard native host, database, media, speech, LLM HTTP, and LLM secret runtime commands',
+);
+assertRule(exists(requiredNativeHostCommandSourcePath), 'desktop Tauri owns native host commands.rs');
+assertRule(exists(requiredNativeHostContractSourcePath), 'desktop Tauri owns host_contract.rs');
+assertRule(exists(requiredNativeDatabaseContractSourcePath), 'desktop Tauri owns database_contract.rs');
+assertRule(exists(requiredNativeDatabaseRuntimeSourcePath), 'desktop Tauri owns database_runtime.rs');
+assertRule(exists(requiredNativeMediaRuntimeSourcePath), 'desktop Tauri owns media_runtime.rs');
+assertRule(exists(requiredNativeLlmHttpRuntimeSourcePath), 'desktop Tauri owns llm_http_runtime.rs');
+assertRule(exists(requiredNativeLlmSecretRuntimeSourcePath), 'desktop Tauri owns llm_secret_runtime.rs');
+assertRule(exists(requiredNativeFfmpegToolchainManifestPath), 'desktop Tauri owns the FFmpeg toolchain manifest contract');
+assertRule(exists(requiredNativeSqliteBaselinePath), 'desktop Tauri owns SQLite baseline schema');
+assertRule(exists(requiredNativeSchemaRegistryPath), 'desktop Tauri owns schema registry baseline');
+assertRule(nativeHostCommandSource.includes('#[tauri::command]'), 'native host command is exposed through an explicit Tauri command');
+assertRule(nativeHostCommandSource.includes('autocut_host_capabilities'), 'native host command exposes autocut_host_capabilities');
+assertRule(nativeHostCommandSource.includes('host_contract::autocut_host_capabilities'), 'native host command delegates to host_contract');
+assertRule(nativeHostCommandSource.includes('autocut_database_health'), 'native host command exposes autocut_database_health');
+assertRule(nativeHostCommandSource.includes('autocut_ffmpeg_probe'), 'native host command exposes autocut_ffmpeg_probe');
+assertRule(nativeHostCommandSource.includes('autocut_import_media_file'), 'native host command exposes autocut_import_media_file');
+assertRule(nativeHostCommandSource.includes('autocut_describe_local_media_file'), 'native host command exposes autocut_describe_local_media_file');
+assertRule(nativeHostCommandSource.includes('autocut_select_local_video_file'), 'native host command exposes autocut_select_local_video_file');
+assertRule(nativeHostCommandSource.includes('autocut_select_local_directory'), 'native host command exposes autocut_select_local_directory');
+assertRule(nativeHostCommandSource.includes('autocut_list_native_tasks'), 'native host command exposes autocut_list_native_tasks');
+assertRule(nativeHostCommandSource.includes('autocut_cancel_native_task'), 'native host command exposes autocut_cancel_native_task');
+assertRule(nativeHostCommandSource.includes('autocut_recover_native_tasks'), 'native host command exposes autocut_recover_native_tasks');
+assertRule(nativeHostCommandSource.includes('autocut_retry_native_task'), 'native host command exposes autocut_retry_native_task');
+assertRule(nativeHostCommandSource.includes('autocut_transcribe_media'), 'native host command exposes autocut_transcribe_media');
+assertRule(nativeHostCommandSource.includes('autocut_extract_audio'), 'native host command exposes autocut_extract_audio');
+assertRule(nativeHostCommandSource.includes('autocut_generate_gif'), 'native host command exposes autocut_generate_gif');
+assertRule(nativeHostCommandSource.includes('autocut_slice_video'), 'native host command exposes autocut_slice_video');
+assertRule(nativeHostCommandSource.includes('autocut_compress_video'), 'native host command exposes autocut_compress_video');
+assertRule(nativeHostCommandSource.includes('autocut_convert_video'), 'native host command exposes autocut_convert_video');
+assertRule(nativeHostCommandSource.includes('autocut_enhance_video'), 'native host command exposes autocut_enhance_video');
+assertRule(nativeHostCommandSource.includes('autocut_llm_http_request'), 'native host command exposes autocut_llm_http_request');
+assertRule(nativeHostCommandSource.includes('autocut_save_llm_secret'), 'native host command exposes autocut_save_llm_secret');
+assertRule(nativeHostCommandSource.includes('autocut_get_llm_secret'), 'native host command exposes autocut_get_llm_secret');
+assertRule(nativeHostCommandSource.includes('autocut_delete_llm_secret'), 'native host command exposes autocut_delete_llm_secret');
+assertRule(nativeHostCommandSource.includes('autocut_audio_smoke'), 'native host command exposes autocut_audio_smoke');
+assertRule(
+  nativeHostCommandSource.includes('run_autocut_database_migrations'),
+  'native host command delegates database initialization to database_runtime',
+);
+assertRule(
+    nativeHostCommandSource.includes('media_runtime::probe_autocut_ffmpeg') &&
+    nativeHostCommandSource.includes('media_runtime::import_autocut_media_file') &&
+    nativeHostCommandSource.includes('media_runtime::describe_autocut_local_media_file') &&
+    nativeHostCommandSource.includes('media_runtime::select_autocut_local_directory') &&
+    nativeHostCommandSource.includes('media_runtime::list_autocut_native_tasks') &&
+    nativeHostCommandSource.includes('media_runtime::cancel_autocut_native_task') &&
+    nativeHostCommandSource.includes('media_runtime::recover_autocut_native_tasks') &&
+    nativeHostCommandSource.includes('media_runtime::retry_autocut_native_task') &&
+    nativeHostCommandSource.includes('media_runtime::transcribe_autocut_media_from_asset') &&
+    nativeHostCommandSource.includes('media_runtime::extract_autocut_audio_from_asset') &&
+    nativeHostCommandSource.includes('media_runtime::generate_autocut_gif_from_asset') &&
+    nativeHostCommandSource.includes('media_runtime::slice_autocut_video_from_asset') &&
+    nativeHostCommandSource.includes('media_runtime::compress_autocut_video_from_asset') &&
+    nativeHostCommandSource.includes('media_runtime::convert_autocut_video_from_asset') &&
+    nativeHostCommandSource.includes('media_runtime::enhance_autocut_video_from_asset') &&
+    nativeHostCommandSource.includes('media_runtime::run_autocut_audio_smoke'),
+  'native host command delegates media operations to media_runtime',
+);
+assertRule(
+  nativeHostCommandSource.includes('llm_http_runtime::send_autocut_llm_http_request'),
+  'native host command delegates LLM HTTP requests to llm_http_runtime',
+);
+assertRule(
+  nativeHostCommandSource.includes('llm_secret_runtime::save_autocut_llm_secret') &&
+    nativeHostCommandSource.includes('llm_secret_runtime::get_autocut_llm_secret') &&
+    nativeHostCommandSource.includes('llm_secret_runtime::delete_autocut_llm_secret'),
+  'native host command delegates LLM secret operations to llm_secret_runtime',
+);
+assertRule(
+  nativeHostCommandSource.includes('AutoCutLocalMediaFileDescription'),
+  'native local file describe command returns a typed local media description',
+);
+assertRule(
+  nativeHostCommandSource.includes('AutoCutVideoGifRequest') &&
+    nativeHostCommandSource.includes('AutoCutVideoGifResult'),
+  'native GIF command returns a typed video GIF result',
+);
+assertRule(
+  nativeHostCommandSource.includes('AutoCutVideoSliceRequest') &&
+    nativeHostCommandSource.includes('AutoCutVideoSliceResult'),
+  'native video slice command returns a typed video slice result',
+);
+assertRule(
+  nativeHostCommandSource.includes('AutoCutVideoCompressRequest') &&
+    nativeHostCommandSource.includes('AutoCutVideoCompressResult'),
+  'native video compression command returns a typed video compression result',
+);
+assertRule(
+  nativeHostCommandSource.includes('AutoCutVideoConvertRequest') &&
+    nativeHostCommandSource.includes('AutoCutVideoConvertResult'),
+  'native video conversion command returns a typed video conversion result',
+);
+assertRule(
+  nativeHostCommandSource.includes('AutoCutVideoEnhanceRequest') &&
+    nativeHostCommandSource.includes('AutoCutVideoEnhanceResult'),
+  'native video enhancement command returns a typed video enhancement result',
+);
+assertRule(
+  nativeHostCommandSource.includes('AutoCutSpeechTranscriptionRequest') &&
+    nativeHostCommandSource.includes('AutoCutSpeechTranscriptionResult'),
+  'native speech transcription command returns a typed speech transcription result',
+);
+for (const marker of requiredNativeHostMarkers) {
+  assertRule(nativeHostContractSource.includes(marker), `host_contract.rs contains ${marker}`);
+}
+for (const marker of [
+  'AutoCutLlmHttpRequest',
+  'AutoCutLlmHttpResponse',
+  'send_autocut_llm_http_request',
+  'reqwest::blocking::Client',
+  'https://',
+]) {
+  assertRule(nativeLlmHttpRuntimeSource.includes(marker), `llm_http_runtime.rs contains ${marker}`);
+}
+for (const marker of [
+  'AutoCutLlmSecretRequest',
+  'AutoCutSaveLlmSecretRequest',
+  'AutoCutGetLlmSecretResult',
+  'AutoCutDeleteLlmSecretResult',
+  'save_autocut_llm_secret',
+  'get_autocut_llm_secret',
+  'delete_autocut_llm_secret',
+  'keyring_core::Entry',
+  'windows_native_keyring_store::Store',
+  'keyring_core::Error::NoEntry',
+  'real_windows_keyring_store_saves_reads_and_deletes_llm_secret',
+  'SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE',
+  'autocut-real-llm-secret-store-smoke=passed',
+]) {
+  assertRule(nativeLlmSecretRuntimeSource.includes(marker), `llm_secret_runtime.rs contains ${marker}`);
+}
+for (const marker of requiredNativeDatabaseMarkers) {
+  assertRule(nativeDatabaseContractSource.includes(marker), `database_contract.rs contains ${marker}`);
+}
+for (const marker of requiredNativeDatabaseRuntimeMarkers) {
+  assertRule(nativeDatabaseRuntimeSource.includes(marker), `database_runtime.rs contains ${marker}`);
+}
+for (const marker of requiredNativeMediaRuntimeMarkers) {
+  assertRule(nativeMediaRuntimeSource.includes(marker), `media_runtime.rs contains ${marker}`);
+}
+assertRule(
+  nativeMediaRuntimeSource.includes('native_media_task_writes_artifact_inside_its_task_output_directory'),
+  'media_runtime.rs tests that native task artifacts are written under media/tasks/{task_uuid}/outputs',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir'),
+  'media_runtime.rs tests that native video slicing writes every slice under one task output directory',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('video_slice_skips_clips_that_start_after_source_duration'),
+  'media_runtime.rs tests that native video slicing skips clip plans outside source duration',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('video_slice_fails_when_all_clips_are_outside_source_duration'),
+  'media_runtime.rs tests that native video slicing fails with an audited task when every clip is outside source duration',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('native_media_poll_throttler_runs_immediately_then_waits_for_interval'),
+  'media_runtime.rs tests throttled native media polling for local speech-to-text heartbeat performance',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('native_media_poll_throttler_can_force_final_run'),
+  'media_runtime.rs tests the final native media heartbeat after local speech-to-text process exit',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('parse_whisper_transcript_json_accepts_segment_timeline'),
+  'media_runtime.rs tests Whisper JSON transcript parsing with segment timing',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('speech_transcription_requires_local_toolchain_without_fake_transcript'),
+  'media_runtime.rs tests that speech transcription fails closed when the local toolchain is not configured',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('video_slice_from_asset_writes_task_scoped_srt_subtitle_artifacts') &&
+    nativeMediaRuntimeSource.includes('write_video_slice_subtitle_artifact') &&
+    nativeMediaRuntimeSource.includes('build_video_slice_srt') &&
+    nativeMediaRuntimeSource.includes('insert_media_slice_subtitle_artifact'),
+  'media_runtime.rs tests and implements task-scoped SRT subtitle artifacts for transcript-assisted slicing',
+);
+assertRule(
+  frontendStandardSource.includes('autocut_transcribe_media') &&
+    frontendStandardSource.includes('SDKWORK_AUTOCUT_WHISPER_EXECUTABLE') &&
+    frontendStandardSource.includes('transcript-assisted intelligent slicing') &&
+    frontendStandardSource.includes('subtitleSegments') &&
+    frontendStandardSource.includes('settings-backed local speech-to-text'),
+  'frontend module standard documents local speech transcription, subtitle artifacts, and transcript-assisted intelligent slicing',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('complete_ops_slice_task') &&
+    nativeMediaRuntimeSource.includes('"sliceResults"') &&
+    nativeMediaRuntimeSource.includes('insert_media_slice_artifact') &&
+    nativeMediaRuntimeSource.includes('insert_media_slice_thumbnail_artifact') &&
+    nativeMediaRuntimeSource.includes('insert_media_slice_subtitle_artifact') &&
+    nativeMediaRuntimeSource.includes('thumbnailArtifactPath') &&
+    nativeMediaRuntimeSource.includes('subtitleArtifactPath'),
+  'media_runtime.rs persists native video slice output_json and video, thumbnail, and subtitle media_artifact rows',
+);
+for (const marker of [
+  '"tool": "ffmpeg"',
+  '"contractVersion"',
+  '"bundledReady"',
+  '"requiredBinary": "ffmpeg"',
+  '"license"',
+  '"integrity"',
+  '"sha256"',
+  '"byteSize"',
+  '"windows-x86_64"',
+  '"windows-x86_64/ffmpeg.exe"',
+  '"linux-x86_64/ffmpeg"',
+  '"macos-x86_64/ffmpeg"',
+  '"macos-aarch64/ffmpeg"',
+]) {
+  assertRule(
+    nativeFfmpegToolchainManifestSource.includes(marker),
+    `FFmpeg toolchain manifest contains ${marker}`,
+  );
+}
+assertRule(!nativeMediaRuntimeSource.includes('cmd /c'), 'media_runtime.rs does not execute through cmd /c');
+assertRule(!nativeMediaRuntimeSource.includes('powershell'), 'media_runtime.rs does not execute through powershell');
+assertRule(!nativeMediaRuntimeSource.includes('/bin/sh'), 'media_runtime.rs does not execute through a shell');
+for (const tableName of ['media_asset', 'media_artifact', 'ops_task', 'ops_task_event', 'ops_stage_run']) {
+  assertRule(
+    new RegExp(`CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${tableName}\\b`, 'iu').test(nativeSqliteBaselineSource),
+    `SQLite baseline creates ${tableName}`,
+  );
+  assertRule(nativeSchemaRegistrySource.includes(`table_name: ${tableName}`), `schema registry declares ${tableName}`);
+}
+assertRule(
+  /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?ops_worker_lease\b/iu.test(nativeSqliteBaselineSource),
+  'SQLite baseline creates ops_worker_lease',
+);
+assertRule(nativeSchemaRegistrySource.includes('table_name: ops_worker_lease'), 'schema registry declares ops_worker_lease');
+assertRule(
+  /CREATE\s+UNIQUE\s+INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?uk_ops_worker_lease_task_active\b/iu.test(nativeSqliteBaselineSource),
+  'SQLite baseline enforces one active worker lease per task',
+);
+assertRule(
+  /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?ops_schema_migration\b/iu.test(nativeSqliteBaselineSource),
+  'SQLite baseline creates ops_schema_migration',
+);
+assertRule(nativeSchemaRegistrySource.includes('table_name: ops_schema_migration'), 'schema registry declares ops_schema_migration');
+
+for (const relative of forbiddenRootRuntimeFiles) {
+  assertRule(!exists(relative), `root ${relative} is not a committed AutoCut desktop source file`);
+}
+for (const relative of forbiddenRootRuntimeDirs) {
+  assertRule(!exists(relative), `root ${relative}/ legacy runtime tree is not committed in the AutoCut desktop frontend app`);
+}
+for (const relative of forbiddenTauriGeneratedDirs) {
+  assertRule(rootGitignore.includes(`${relative}/`), `${relative}/ generated Tauri schema output is ignored`);
+}
+assertRule(trackedTauriGeneratedFiles.length === 0, 'desktop package src-tauri/gen generated schema files are not tracked by git');
+for (const legacyIgnoredPath of [
+  'package-lock.json',
+  '.dockerignore',
+  'deploy/',
+  'host/',
+  'models/',
+  'workspace/',
+  'workspace-server-private-smoke/',
+]) {
+  assertRule(!rootGitignore.includes(legacyIgnoredPath), `.gitignore does not hide legacy source path ${legacyIgnoredPath}`);
+}
+assertRule(!rootGitignore.includes('DATABASE_SPEC.md'), '.gitignore does not hide canonical DATABASE_SPEC.md');
+assertRule(tauriConfig.app?.security?.csp && tauriConfig.app.security.csp !== null, 'Tauri config defines a non-null content security policy');
+assertRule(
+  typeof tauriConfig.app?.security?.csp === 'string' && tauriConfig.app.security.csp.includes("default-src 'self'"),
+  "Tauri CSP restricts default-src to 'self'",
+);
+assertRule(
+  typeof tauriConfig.app?.security?.csp === 'string' && !tauriConfig.app.security.csp.includes('*'),
+  'Tauri CSP does not use wildcard sources',
+);
+const tauriCsp = typeof tauriConfig.app?.security?.csp === 'string' ? tauriConfig.app.security.csp : '';
+assertRule(!/(?:^|;)\s*img-src[^;]*\shttps:(?:\s|;)/u.test(tauriCsp), 'Tauri CSP img-src does not allow broad https sources');
+assertRule(!/(?:^|;)\s*media-src[^;]*\shttps:(?:\s|;)/u.test(tauriCsp), 'Tauri CSP media-src does not allow broad https sources');
+for (const cspSource of requiredCspRemoteSources) {
+  assertRule(tauriCsp.includes(cspSource), `Tauri CSP explicitly allows fixture source ${cspSource}`);
+}
+assertRule(tauriConfig.build?.devUrl === 'http://127.0.0.1:5173', 'Tauri devUrl uses loopback 127.0.0.1:5173');
+assertRule(tauriConfig.bundle?.active === true, 'Tauri bundling is active');
+assertRule(
+  rootPackage.scripts?.['prepare:ffmpeg-sidecar'] === 'node scripts/prepare-autocut-ffmpeg-sidecar.mjs',
+  'root package exposes the standardized FFmpeg sidecar preparation command',
+);
+assertRule(
+  rootPackage.scripts?.['release:smoke-preflight'] === 'node scripts/check-autocut-release-smoke-preflight.mjs',
+  'root package exposes the standardized AutoCut release smoke preflight command',
+);
+assertRule(
+  rootPackage.scripts?.['release:native-smoke'] === 'node scripts/write-autocut-native-release-smoke.mjs',
+  'root package exposes the standardized AutoCut native release smoke evidence command',
+);
+for (const marker of [
+  'runRealLlmSecretSmoke',
+  'SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE',
+  'CARGO_TARGET_DIR',
+  'createAutoCutNativeSmokeCargoTargetDir',
+  'sdkwork-autocut-native-smoke-target-rust-',
+  'sdkwork-autocut-native-smoke-target-llm-secret-',
+  'cargoTargetDirs',
+  '--run-real-llm-secret-smoke',
+  'realLlmSecretStoreSmokeReady',
+  'llmSecretStoreSmoke',
+  'autocut-real-llm-secret-store-smoke=passed',
+]) {
+  assertRule(nativeReleaseSmokeCheckSource.includes(marker), `native release smoke writer contains ${marker}`);
+}
+assertRule(
+  nativeReleaseSmokeCheckSource.includes('real_windows_keyring_store_saves_reads_and_deletes_llm_secret') &&
+    nativeReleaseSmokeCheckSource.includes('--ignored') &&
+    nativeReleaseSmokeCheckSource.includes('--test-threads=1'),
+  'native release smoke writer runs the real Windows LLM secret store smoke as an ignored serialized Rust test',
+);
+assertRule(
+  rootPackage.scripts?.['release:installer-signature'] === 'node scripts/write-autocut-installer-signature-evidence.mjs',
+  'root package exposes the standardized AutoCut installer signature evidence command',
+);
+assertRule(
+  rootPackage.scripts?.['release:evidence'] === 'node scripts/write-autocut-release-evidence.mjs',
+  'root package exposes the standardized AutoCut release evidence writer command',
+);
+assertRule(
+  rootPackage.scripts?.['release:commercial-ready'] === 'node scripts/check-autocut-commercial-release-readiness.mjs',
+  'root package exposes the standardized AutoCut commercial release readiness gate command',
+);
+assertRule(
+  rootPackage.scripts?.test?.includes('scripts/prepare-autocut-ffmpeg-sidecar.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/check-autocut-release-smoke-preflight.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/write-autocut-native-release-smoke.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/write-autocut-installer-signature-evidence.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/write-autocut-release-evidence.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/check-autocut-commercial-release-readiness.test.mjs'),
+  'root package test script covers FFmpeg sidecar preparation, release smoke preflight, native release smoke, installer signature, release evidence, and commercial readiness contracts',
+);
+assertRule(
+  tauriConfig.bundle?.resources?.['binaries/ffmpeg.toolchain.json'] === 'binaries/ffmpeg.toolchain.json',
+  'Tauri bundle includes the package-local FFmpeg toolchain manifest as a runtime resource',
+);
+assertRule(
+  tauriConfig.bundle?.resources?.['binaries/windows-x86_64'] === 'binaries/windows-x86_64',
+  'Tauri bundle includes the Windows FFmpeg sidecar directory as a runtime resource boundary',
+);
+assertRule(
+  tauriConfig.bundle?.resources?.['binaries/linux-x86_64'] === 'binaries/linux-x86_64',
+  'Tauri bundle includes the Linux FFmpeg sidecar directory as a runtime resource boundary',
+);
+assertRule(
+  tauriConfig.bundle?.resources?.['binaries/macos-x86_64'] === 'binaries/macos-x86_64',
+  'Tauri bundle includes the Intel macOS FFmpeg sidecar directory as a runtime resource boundary',
+);
+assertRule(
+  tauriConfig.bundle?.resources?.['binaries/macos-aarch64'] === 'binaries/macos-aarch64',
+  'Tauri bundle includes the Apple Silicon macOS FFmpeg sidecar directory as a runtime resource boundary',
+);
+for (const scriptFile of listFiles(path.join(rootDir, 'scripts'), (file) => /\.(mjs|cjs|js|ts)$/.test(file))) {
+  const relative = path.relative(rootDir, scriptFile).replaceAll(path.sep, '/');
+  assertRule(allowedScriptFiles.has(relative), `${relative} is an allowed AutoCut desktop governance script`);
+}
+if (exists('docs')) {
+  for (const docFile of listFiles(path.join(rootDir, 'docs'), (file) => /\.(md|yaml|yml|json)$/.test(file))) {
+    const relative = path.relative(rootDir, docFile).replaceAll(path.sep, '/');
+    assertRule(allowedDocs.has(relative), `${relative} is an allowed current AutoCut desktop document`);
+  }
+}
+
+const databaseDefinitionFiles = listFiles(rootDir, (file) => {
+  const relative = path.relative(rootDir, file).replaceAll(path.sep, '/');
+  if (!/\.(sql|ya?ml|json)$/u.test(relative)) {
+    return false;
+  }
+  return !(
+    relative.startsWith('node_modules/') ||
+    relative.startsWith('dist/') ||
+    relative.startsWith('packages/sdkwork-autocut-desktop/dist/') ||
+    relative.startsWith('artifacts/') ||
+    relative.startsWith('packages/sdkwork-autocut-desktop/src-tauri/target/')
+  );
+});
+for (const file of databaseDefinitionFiles) {
+  const relative = path.relative(rootDir, file).replaceAll(path.sep, '/');
+  const content = fs.readFileSync(file, 'utf8');
+  if (relative.endsWith('.sql')) {
+    for (const table of extractSqlCreateTables(content)) {
+      assertStandardDatabaseTableName(table.name, relative);
+      assertSqlTableHasIdentityColumns(table, relative);
+    }
+  } else if (/\.(ya?ml)$/u.test(relative)) {
+    for (const table of extractYamlTableContracts(content)) {
+      assertStandardDatabaseTableName(table.name, relative);
+      assertYamlTableHasIdentityColumns(table, relative);
+    }
+  } else if (relative.endsWith('.json')) {
+    for (const table of extractJsonTableContracts(content)) {
+      assertStandardDatabaseTableName(table.name, relative);
+      assertJsonTableHasIdentityColumns(table, relative);
+    }
+  }
+}
+
+const rootTextFiles = [
+  ...desktopSrcFiles,
+  path.join(desktopPackageDir, 'vite.config.ts'),
+  path.join(rootDir, '.env.example'),
+  path.join(rootDir, 'README.md'),
+].filter((file) => fs.existsSync(file));
+for (const file of rootTextFiles) {
+  const content = fs.readFileSync(file, 'utf8');
+  const relative = path.relative(rootDir, file).replaceAll(path.sep, '/');
+  if (/\.(ts|tsx|mjs)$/.test(relative)) {
+    assertNoForbiddenSourcePatterns(relative, content);
+  }
+  assertRule(!content.includes('GEMINI_API_KEY'), `${relative} does not expose AI Studio GEMINI_API_KEY wiring`);
+  assertRule(!content.includes('@google/genai'), `${relative} does not import Google GenAI directly`);
+  assertRule(!content.includes('AI Studio'), `${relative} does not contain AI Studio scaffolding copy`);
+}
+for (const rootEntry of fs.readdirSync(rootDir, { withFileTypes: true })) {
+  assertRule(allowedRootEntries.has(rootEntry.name), `root entry ${rootEntry.name} is allowed by the AutoCut desktop app standard`);
+  if (rootEntry.isFile()) {
+    assertRule(!rootEntry.name.endsWith('.log'), `root generated log ${rootEntry.name} is not present`);
+    assertRule(!rootEntry.name.endsWith('.tsbuildinfo'), `root generated TypeScript build info ${rootEntry.name} is not present`);
+  }
+}
+for (const file of desktopCssFiles) {
+  const content = fs.readFileSync(file, 'utf8');
+  const relative = path.relative(rootDir, file).replaceAll(path.sep, '/');
+  assertRule(relative === 'packages/sdkwork-autocut-desktop/src/index.css', `desktop stylesheet ${relative} is the allowed global style entry`);
+  assertRule(content.includes('@source "../../sdkwork-autocut-*/src/**/*.{ts,tsx}"'), `${relative} scans AutoCut workspace package sources for Tailwind utilities`);
+  assertRule(!content.includes('@import url('), `${relative} does not import remote CSS URLs`);
+  assertRule(!content.includes('fonts.googleapis.com'), `${relative} does not depend on Google Fonts CSS`);
+  assertRule(!content.includes('fonts.gstatic.com'), `${relative} does not depend on remote Google font assets`);
+}
+assertRule(appSource.includes('const AUTOCUT_ROUTES'), 'root App.tsx declares a canonical AUTOCUT_ROUTES table');
+const desktopRoutePaths = new Set([...appSource.matchAll(/path:\s*'([^']+)'/gu)].map((match) => match[1]));
+const registeredToolRoutes = [...toolsRegistrySource.matchAll(/route:\s*'([^']+)'/gu)].map((match) => match[1]);
+for (const routePath of requiredRoutePaths) {
+  assertRule(appSource.includes(`path: '${routePath}'`), `root route table includes ${routePath}`);
+}
+for (const routePath of registeredToolRoutes) {
+  assertRule(desktopRoutePaths.has(routePath), `tool registry route ${routePath} is mounted by the desktop app route table`);
+}
+for (const packageName of requiredLazyPackages) {
+  assertRule(appSource.includes(`import('${packageName}')`), `root route table lazy-loads ${packageName}`);
+}
+assertRule(appSource.includes('AUTOCUT_ROUTES.map'), 'root App.tsx renders routes from AUTOCUT_ROUTES');
+const requiredTaskTypes = [
+  '视频切片',
+  '文案提取',
+  '视频提音',
+  '视频转gif',
+  '视频压缩',
+  '视频格式转换',
+  '视频高清化',
+  '视频字幕翻译',
+  '视频人声翻译',
+];
+assertRule(autocutTypesSource.includes('AUTOCUT_TASK_TYPES'), '@sdkwork/autocut-types exports canonical AUTOCUT_TASK_TYPES');
+assertRule(autocutTypesSource.includes('export type TaskType = typeof AUTOCUT_TASK_TYPES[number]'), 'TaskType is derived from AUTOCUT_TASK_TYPES');
+assertRule(autocutTypesSource.includes('AUTOCUT_TASK_STATUS'), '@sdkwork/autocut-types exports canonical AUTOCUT_TASK_STATUS');
+assertRule(autocutTypesSource.includes('export type TaskStatus = typeof AUTOCUT_TASK_STATUS[keyof typeof AUTOCUT_TASK_STATUS]'), 'TaskStatus is derived from AUTOCUT_TASK_STATUS');
+assertRule(autocutTypesSource.includes('sourceTaskId?: string'), 'AppAsset records sourceTaskId for generated asset traceability');
+assertRule(autocutTypesSource.includes('sourceTaskType?: TaskType'), 'AppAsset records sourceTaskType for generated asset traceability');
+assertRule(autocutTypesSource.includes('sourceFileId?: string'), 'AppTask records sourceFileId for selected source asset traceability');
+assertRule(autocutTypesSource.includes('generatedAssetIds?: string[]'), 'AppTask records generatedAssetIds for task result traceability');
+assertRule(tasksPageSource.includes('Record<TaskType, React.ReactNode>'), 'TasksPage icon map is typed against every TaskType');
+assertRule(taskDetailPageSource.includes('Record<TaskType, string>'), 'TaskDetailPage reprocess route map is typed against every TaskType');
+for (const taskType of requiredTaskTypes) {
+  assertRule(autocutTypesSource.includes(`'${taskType}'`), `AUTOCUT_TASK_TYPES includes ${taskType}`);
+  assertRule(tasksPageSource.includes(`'${taskType}'`), `TasksPage icon map covers ${taskType}`);
+  assertRule(taskDetailPageSource.includes(`'${taskType}'`), `TaskDetailPage route map covers ${taskType}`);
+}
+const requiredEventNames = [
+  'taskAdded',
+  'taskUpdated',
+  'taskDeleted',
+  'assetAdded',
+  'assetDeleted',
+  'messageAdded',
+  'messagesUpdated',
+];
+assertRule(autocutEventSource.includes('AUTOCUT_EVENTS'), '@sdkwork/autocut-services defines canonical AUTOCUT_EVENTS');
+assertRule(autocutEventSource.includes('dispatchAutoCutEvent'), '@sdkwork/autocut-services exposes typed dispatchAutoCutEvent');
+assertRule(autocutEventSource.includes('listenAutoCutEvent'), '@sdkwork/autocut-services exposes typed listenAutoCutEvent');
+for (const eventName of requiredEventNames) {
+  assertRule(autocutEventSource.includes(`${eventName}:`), `AUTOCUT_EVENTS includes ${eventName}`);
+}
+assertRule(autocutEventSource.includes('settingsUpdated:'), 'AUTOCUT_EVENTS includes settingsUpdated');
+assertRule(exists(requiredStorageServicePath), '@sdkwork/autocut-services defines canonical storage.service.ts');
+assertRule(!exists(legacyStorageServicePath), '@sdkwork/autocut-services does not keep legacy storage.ts helper');
+for (const marker of requiredStorageServiceMarkers) {
+  assertRule(storageServiceSource.includes(marker), `storage.service.ts exposes ${marker}`);
+}
+assertRule(
+  storageServiceSource.includes('`${AUTO_CUT_STORAGE_NAMESPACE}_${getAutoCutRuntimeEnvironment()}_'),
+  'storage.service.ts namespaces browser key-value storage by runtime environment',
+);
+for (const storageKey of ['assets', 'tasks', 'messages', 'settings']) {
+  assertRule(storageServiceSource.includes(`${storageKey}:`), `storage.service.ts declares typed storage key ${storageKey}`);
+}
+assertRule(
+  exists(requiredRuntimeEnvironmentServicePath),
+  '@sdkwork/autocut-services defines canonical runtime-environment.service.ts',
+);
+for (const marker of requiredRuntimeEnvironmentServiceMarkers) {
+  assertRule(runtimeEnvironmentServiceSource.includes(marker), `runtime-environment.service.ts exposes ${marker}`);
+}
+assertRule(
+  serviceIndexSource.includes("export * from './service/runtime-environment.service'"),
+  '@sdkwork/autocut-services exports the canonical runtime environment service',
+);
+assertRule(
+  settingsServiceSource.includes('createAutoCutRuntimeScopedName') &&
+    settingsServiceSource.includes("createAutoCutRuntimeScopedName(AUTO_CUT_LLM_SECRET_NAME)"),
+  'settings.service.ts stores LLM secrets through runtime-scoped native secret names',
+);
+assertRule(
+  settingsServiceSource.includes('resolveAutoCutOutputRootDir') &&
+    settingsServiceSource.includes('outputDirectory') &&
+    settingsServiceSource.includes('return normalizeOptionalText(value) ?? \'\';') &&
+    !settingsServiceSource.includes("D:\\\\SDKWork\\\\AutoCut\\\\Media"),
+  'settings.service.ts persists configured native output directories without hard-coding an OS-specific default',
+);
+assertRule(
+  settingsServiceSource.includes('transientAutoCutLlmApiKeys = new Map<string, string>()') &&
+    settingsServiceSource.includes('transientAutoCutLlmApiKeys.get(runtimeEnvironment)') &&
+    settingsServiceSource.includes('transientAutoCutLlmApiKeys.delete(getAutoCutRuntimeEnvironment())'),
+  'settings.service.ts keeps transient LLM API keys isolated by runtime environment',
+);
+assertRule(
+  serviceBehaviorCheckSource.includes('autocut_dev_settings') &&
+    serviceBehaviorCheckSource.includes('autocut_release_settings') &&
+    serviceBehaviorCheckSource.includes('dev-default') &&
+    serviceBehaviorCheckSource.includes('release-default') &&
+    serviceBehaviorCheckSource.includes('dev runtime reloads the selected output directory after restart') &&
+    serviceBehaviorCheckSource.includes('release runtime leaves outputRootDir unset so the desktop host resolves a per-user app-data media root'),
+  'service behavior check covers dev/release settings, output directory, app-data fallback, and native secret isolation',
+);
+assertRule(exists(requiredMediaFixturesServicePath), '@sdkwork/autocut-services defines canonical media-fixtures.service.ts');
+for (const marker of requiredMediaFixturesMarkers) {
+  assertRule(mediaFixturesServiceSource.includes(marker), `media-fixtures.service.ts exposes ${marker}`);
+}
+assertRule(exists(requiredDatetimeServicePath), '@sdkwork/autocut-services defines canonical datetime.service.ts');
+for (const marker of requiredDatetimeServiceMarkers) {
+  assertRule(datetimeServiceSource.includes(marker), `datetime.service.ts exposes ${marker}`);
+}
+for (const marker of requiredDownloadServiceMarkers) {
+  assertRule(downloadServiceSource.includes(marker), `download.service.ts exposes ${marker}`);
+}
+assertRule(
+  exists(requiredProcessingSourceServicePath),
+  '@sdkwork/autocut-services defines canonical processing-source.service.ts',
+);
+for (const marker of requiredProcessingSourceServiceMarkers) {
+  assertRule(processingSourceServiceSource.includes(marker), `processing-source.service.ts exposes ${marker}`);
+}
+assertRule(
+  exists(requiredNativeHostClientServicePath),
+  '@sdkwork/autocut-services defines canonical native-host-client.service.ts',
+);
+for (const marker of requiredNativeHostClientServiceMarkers) {
+  assertRule(nativeHostClientServiceSource.includes(marker), `native-host-client.service.ts exposes ${marker}`);
+}
+assertRule(
+  serviceIndexSource.includes("export * from './service/native-host-client.service'"),
+  '@sdkwork/autocut-services exports the canonical native host client service',
+);
+assertRule(
+  exists(requiredTrustedFileSourcePath),
+  '@sdkwork/autocut-commons defines canonical trusted-file-source.service.ts',
+);
+for (const marker of requiredTrustedFileSourceMarkers) {
+  assertRule(trustedFileSourceSource.includes(marker), `trusted-file-source.service.ts exposes ${marker}`);
+}
+assertRule(
+  desktopMainSource.includes('configureDesktopNativeHostClient'),
+  'desktop main.tsx configures the native host client before rendering React',
+);
+assertRule(
+  desktopMainSource.includes('configureAutoCutRuntimeEnvironment') &&
+    desktopMainSource.includes("import.meta.env.DEV ? 'dev' : 'release'"),
+  'desktop main.tsx configures the AutoCut runtime environment from the Vite dev/release mode',
+);
+assertRule(
+  desktopMainSource.search(/configureAutoCutRuntimeEnvironment\(/u) >= 0 &&
+    desktopMainSource.search(/configureDesktopNativeHostClient\(/u) >= 0 &&
+    desktopMainSource.search(/configureAutoCutRuntimeEnvironment\(/u) < desktopMainSource.search(/configureDesktopNativeHostClient\(/u),
+  'desktop main.tsx configures runtime environment before native host setup',
+);
+assertRule(
+  desktopNativeHostSource.includes('window.__TAURI__') &&
+    desktopNativeHostSource.includes('createAutoCutNativeHostClient') &&
+    desktopNativeHostSource.includes('configureAutoCutNativeHostClient'),
+  'desktop native-host.ts adapts the Tauri invoke API into the canonical native host client',
+);
+assertRule(
+  desktopNativeHostSource.includes('recoverNativeTasks') && desktopNativeHostSource.includes('limit: 100'),
+  'desktop native-host.ts triggers native task recovery during native host setup',
+);
+assertRule(
+  desktopNativeHostSource.includes('recoverNativeTasks') && desktopNativeHostSource.includes('.catch('),
+  'desktop native-host.ts handles native task recovery startup failures without unhandled promises',
+);
+assertRule(
+  desktopNativeHostSource.includes("from '@tauri-apps/api/core'") &&
+    desktopNativeHostSource.includes('convertFileSrc') &&
+    desktopNativeHostSource.includes('createAssetUrl'),
+  'desktop native-host.ts converts native artifact paths through the Tauri asset protocol',
+);
+assertRule(
+  desktopNativeHostSource.includes("from '@tauri-apps/api/webview'") &&
+    desktopNativeHostSource.includes("from '@sdkwork/autocut-commons'") &&
+    desktopNativeHostSource.includes('getCurrentWebview') &&
+    desktopNativeHostSource.includes('onDragDropEvent') &&
+    desktopNativeHostSource.includes('dispatchAutoCutTrustedFileSourceDrop'),
+  'desktop native-host.ts bridges Tauri webview drag-drop paths into the trusted file source service',
+);
+for (const marker of [
+  'resetAutoCutNativeHostClient',
+  'native host fallback reports browser host kind',
+  'native host fallback task recovery',
+  'native host client invokes the media import command',
+  'native host client invokes the local file describe command',
+  'native host client invokes the local directory chooser command',
+  'native host client passes assetUuid under the Tauri request argument',
+  'native host client invokes the assetUuid video GIF command',
+  'native host client invokes the assetUuid video compression command',
+  'native host client invokes the assetUuid video conversion command',
+  'native host client invokes the assetUuid video enhancement command',
+  'native host client invokes the native task query command',
+  'native host client invokes the native task cancel command',
+  'native host client invokes the native task recovery command',
+  'native host client invokes the native task retry command',
+  'structured native task event payload operation',
+  'structured native task event payload phase',
+  'structured native task event payload source',
+  'structured native task event payload progress',
+  'raw native task event payloadJson for audits',
+  'native worker lease readiness',
+  'native worker lease workerId',
+  'native worker lease status',
+  'trusted file source bridge creates a File-compatible trusted local file',
+  'extractor audio native workflow imports local media before extraction',
+  'extractor audio native workflow converts native artifact paths to safe asset URLs',
+  'video GIF native workflow imports local media before generation',
+  'video GIF native workflow converts native artifact paths to safe asset URLs',
+  'video compress native workflow imports local media before compression',
+  'video compress native workflow converts native artifact paths to safe asset URLs',
+  'video convert native workflow imports local media before conversion',
+  'video convert native workflow converts native artifact paths to safe asset URLs',
+  'video enhance native workflow imports local media before enhancement',
+  'video enhance native workflow converts native artifact paths to safe asset URLs',
+  'createNativeTaskOutputArtifact',
+  'assertNativeTaskOutputArtifact',
+  'D:/autocut/media',
+  '`${outputRootDir}/tasks/${expectedTaskUuid}/outputs`',
+  'D:/autocut-configured-output',
+  'configured output directory to media import',
+  'configured output directory to audio extraction',
+  'taskOutputDir',
+  'stores the artifact inside its task output directory',
+]) {
+  assertRule(
+    serviceBehaviorCheckSource.includes(marker),
+    `service behavior check covers native host client marker ${marker}`,
+  );
+}
+assertRule(
+  !serviceIndexSource.includes("from '@sdkwork/autocut-commons'"),
+  '@sdkwork/autocut-services does not re-export commons UI/source bridge APIs',
+);
+assertRule(
+  !viteConfigSource.includes('^@sdkwork\\/([^/]+)$'),
+  'Vite config does not expose broad @sdkwork/* workspace alias',
+);
+assertRule(!viteConfigSource.includes("find: '@'"), 'Vite config does not expose @ root source alias');
+assertRule(
+  viteConfigSource.includes('^@sdkwork\\/autocut-([^/]+)$') &&
+    viteConfigSource.includes('../sdkwork-autocut-$1/src/index.ts'),
+  'Vite config exposes only the @sdkwork/autocut-* package alias',
+);
+assertRule(viteConfigSource.includes('manualChunks'), 'Vite config defines standard manual chunks for commercial desktop startup performance');
+assertRule(viteConfigSource.includes('autocut-pixi'), 'Vite config isolates Pixi rendering runtime into a stable manual chunk');
+assertRule(viteConfigSource.includes('autocut-ai'), 'Vite config isolates Vercel AI SDK runtime into a stable manual chunk');
+assertRule(viteConfigSource.includes('autocut-feature-'), 'Vite config groups internal AutoCut feature packages into stable manual chunks');
+
+const usedExternalCatalogNames = new Set([
+  ...Object.keys(allRootDeps),
+  ...Object.keys(allDesktopDeps),
+]);
+
+function parseStaticImports(filePath) {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const specs = [];
+  const patterns = [
+    /from\s+['"]([^'"]+)['"]/g,
+    /import\s+['"]([^'"]+)['"]/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of content.matchAll(pattern)) {
+      specs.push(match[1]);
+    }
+  }
+  return specs;
+}
+
+function dependencyName(importSpecifier) {
+  if (importSpecifier.startsWith('@')) {
+    return importSpecifier.split('/').slice(0, 2).join('/');
+  }
+  return importSpecifier.split('/')[0];
+}
+
+for (const packageDirent of packageDirs) {
+  const dirName = packageDirent.name;
+  const moduleName = dirName.replace(/^sdkwork-autocut-/, '');
+  const packagePath = path.join(packagesDir, dirName);
+  const manifestPath = path.join(packagePath, 'package.json');
+  const manifest = readJson(manifestPath);
+
+  assertRule(/^sdkwork-autocut-[a-z0-9-]+$/.test(dirName), `${dirName} uses sdkwork-autocut-* directory naming`);
+  assertRule(manifest.name === `${internalPrefix}${moduleName}`, `${dirName} manifest name is ${internalPrefix}${moduleName}`);
+  assertRule(manifest.version === rootPackage.version, `${manifest.name} version matches the root AutoCut desktop version`);
+  assertRule(manifest.private === true, `${manifest.name} is private`);
+  assertRule(manifest.type === 'module', `${manifest.name} is type module`);
+  assertRule(manifest.main === './src/index.ts', `${manifest.name} main points to ./src/index.ts`);
+  assertRule(manifest.module === './src/index.ts', `${manifest.name} module points to ./src/index.ts`);
+  assertRule(manifest.types === './src/index.ts', `${manifest.name} types points to ./src/index.ts`);
+  assertRule(manifest.exports?.['.']?.import === './src/index.ts', `${manifest.name} exports import points to ./src/index.ts`);
+  assertRule(manifest.exports?.['.']?.types === './src/index.ts', `${manifest.name} exports types points to ./src/index.ts`);
+  if (dirName === desktopPackageName) {
+    assertRule(manifest.scripts?.build === 'vite build', `${manifest.name} build script is vite build`);
+    assertRule(manifest.scripts?.dev?.startsWith('vite '), `${manifest.name} dev script is package-local Vite`);
+    assertRule(
+      manifest.scripts?.['tauri:dev']?.startsWith('node ../../scripts/ensure-autocut-tauri-rust-toolchain.mjs && '),
+      `${manifest.name} tauri:dev verifies the pinned Rust toolchain before launching Tauri`,
+    );
+    assertRule(
+      manifest.scripts?.['tauri:build']?.startsWith('node ../../scripts/ensure-autocut-tauri-rust-toolchain.mjs && '),
+      `${manifest.name} tauri:build verifies the pinned Rust toolchain before packaging Tauri`,
+    );
+    assertRule(manifest.scripts?.['tauri:build']?.endsWith('pnpm exec tauri build'), `${manifest.name} tauri:build runs the package-local Tauri CLI`);
+    assertRule(fs.existsSync(path.join(packagePath, 'index.html')), `${manifest.name} owns index.html`);
+    assertRule(fs.existsSync(path.join(packagePath, 'vite.config.ts')), `${manifest.name} owns vite.config.ts`);
+    assertRule(fs.existsSync(path.join(packagePath, 'src-tauri', 'tauri.conf.json')), `${manifest.name} owns src-tauri/tauri.conf.json`);
+  } else {
+    assertRule(manifest.scripts?.build === 'tsc --noEmit', `${manifest.name} build script is tsc --noEmit`);
+  }
+  assertRule(manifest.scripts?.typecheck === 'tsc --noEmit', `${manifest.name} typecheck script is tsc --noEmit`);
+  assertRule(manifest.scripts?.test === 'tsc --noEmit', `${manifest.name} test script is tsc --noEmit`);
+  assertRule(fs.existsSync(path.join(packagePath, 'tsconfig.json')), `${manifest.name} has package-local tsconfig.json`);
+  const packageTsconfig = readJson(path.join(packagePath, 'tsconfig.json'));
+  assertRule(packageTsconfig.extends === '../../tsconfig.json', `${manifest.name} package tsconfig inherits the root strict TypeScript baseline`);
+  if (dirName === desktopPackageName) {
+    assertRule(
+      JSON.stringify(packageTsconfig.include) === JSON.stringify(['src', 'vite.config.ts']),
+      `${manifest.name} package tsconfig checks desktop src and package-local Vite config`,
+    );
+  } else {
+    assertRule(
+      JSON.stringify(packageTsconfig.include) === JSON.stringify(['src']),
+      `${manifest.name} package tsconfig checks only its source boundary`,
+    );
+  }
+  assertRule(fs.existsSync(path.join(packagePath, 'src', 'index.ts')), `${manifest.name} has src/index.ts`);
+
+  const allDeps = {
+    ...(manifest.dependencies ?? {}),
+    ...(manifest.devDependencies ?? {}),
+    ...(manifest.peerDependencies ?? {}),
+  };
+  for (const [depName, version] of Object.entries(allDeps)) {
+    if (depName.startsWith(internalPrefix)) {
+      assertRule(version === 'workspace:*', `${manifest.name} depends on ${depName} with workspace:*`);
+    } else {
+      assertRule(version === 'catalog:', `${manifest.name} external dependency ${depName} uses pnpm catalog version`);
+      usedExternalCatalogNames.add(depName);
+      assertRule(workspaceCatalogNames.has(depName), `pnpm catalog declares ${manifest.name} external dependency ${depName}`);
+    }
+  }
+
+  const packageSourceFiles = listFiles(path.join(packagePath, 'src'), (file) => /\.(ts|tsx)$/.test(file));
+  for (const file of packageSourceFiles) {
+    const relative = path.relative(rootDir, file).replaceAll(path.sep, '/');
+    const sourceText = fs.readFileSync(file, 'utf8');
+    const packageRelative = path.relative(path.join(packagePath, 'src'), file).replaceAll(path.sep, '/');
+    const isPageSource = packageRelative.startsWith('pages/');
+    const isServiceSource = packageRelative.startsWith('service/');
+    if (!packageRelative.includes('/') && dirName !== desktopPackageName) {
+      assertRule(packageRelative === 'index.ts', `${manifest.name} keeps root src source file ${packageRelative} limited to public index.ts`);
+    }
+
+    const isDiagnosticsService = relative === 'packages/sdkwork-autocut-services/src/service/diagnostics.service.ts';
+    const isEventService = relative === 'packages/sdkwork-autocut-services/src/service/events.service.ts';
+    const isIdentityService = relative === 'packages/sdkwork-autocut-services/src/service/identity.service.ts';
+    const isStorageService = relative === requiredStorageServicePath;
+    const isNativeHostClientService = relative === requiredNativeHostClientServicePath;
+    const isDownloadService = relative === requiredDownloadServicePath;
+    const isProcessingSourceService = relative === requiredProcessingSourceServicePath;
+    const isMediaFixturesService = relative === requiredMediaFixturesServicePath;
+    const isDatetimeService = relative === requiredDatetimeServicePath;
+    const isTypesSource = relative === 'packages/sdkwork-autocut-types/src/index.ts';
+    assertNoForbiddenSourcePatterns(relative, sourceText);
+    assertNoTypeScriptNonNullAssertions(relative, sourceText);
+    assertRule(
+      isDiagnosticsService || !/console\.(log|warn|error)\(/.test(sourceText),
+      `${relative} reports diagnostics through the AutoCut diagnostics service`,
+    );
+    assertRule(!sourceText.includes('component: any'), `${relative} does not expose component as any`);
+    assertRule(!sourceText.includes('const handleUpdate = (e: any)'), `${relative} types task update event handlers without any`);
+    assertRule(!sourceText.includes('const handleDelete = (e: any)'), `${relative} types task delete event handlers without any`);
+    assertRule(!/\bany\b/.test(sourceText), `${relative} does not use any in package source`);
+    assertRule(
+      isTypesSource || !/['"](pending|processing|completed|failed)['"]/u.test(sourceText),
+      `${relative} references task statuses through AUTOCUT_TASK_STATUS`,
+    );
+    assertRule(
+      isDownloadService || !/new\s+Blob\(/u.test(sourceText),
+      `${relative} delegates file blob creation to AutoCut service helpers`,
+    );
+    assertRule(
+      isDownloadService || !/URL\.createObjectURL\(/u.test(sourceText),
+      `${relative} delegates object URL creation to AutoCut service helpers`,
+    );
+    assertRule(
+      isDownloadService || !/URL\.revokeObjectURL\(/u.test(sourceText),
+      `${relative} delegates object URL revocation to AutoCut service helpers`,
+    );
+    assertRule(
+      !isPageSource || !/document\.createElement\(\s*['"]a['"]\s*\)/u.test(sourceText),
+      `${relative} delegates browser download anchors to AutoCut service helpers`,
+    );
+    assertRule(
+      !isPageSource || !/\bconfirm\(/u.test(sourceText),
+      `${relative} delegates confirmation dialogs to AutoCut browser service helpers`,
+    );
+    assertRule(
+      !isPageSource || !/navigator\.clipboard/u.test(sourceText),
+      `${relative} delegates clipboard writes to AutoCut browser service helpers`,
+    );
+    assertRule(
+      !isPageSource || !/window\.open\(/u.test(sourceText),
+      `${relative} delegates external preview windows to AutoCut browser service helpers`,
+    );
+    assertRule(
+      !isServiceSource || isIdentityService || !/Date\.now\(\)/u.test(sourceText),
+      `${relative} delegates service IDs and relative timestamps to AutoCut identity helpers`,
+    );
+    assertRule(
+      !isServiceSource || isIdentityService || !/new Date\(\)\.toISOString\(\)/u.test(sourceText),
+      `${relative} delegates service timestamps to AutoCut identity helpers`,
+    );
+    assertRule(
+      isIdentityService || isDatetimeService || !/\bnew Date\(/u.test(sourceText),
+      `${relative} delegates timestamp parsing and formatting to datetime.service.ts`,
+    );
+    assertRule(
+      isDatetimeService || !/Date\.parse\(/u.test(sourceText),
+      `${relative} delegates timestamp parsing to datetime.service.ts`,
+    );
+    assertRule(
+      isDatetimeService || !/\.getTime\(\)/u.test(sourceText),
+      `${relative} delegates timestamp millisecond conversion to datetime.service.ts`,
+    );
+    assertRule(
+      !isServiceSource || isDatetimeService || !/\.sort\(/u.test(sourceText),
+      `${relative} delegates service datetime sorting to datetime.service.ts`,
+    );
+    assertRule(
+      isDatetimeService || !/\.toLocaleString\(/u.test(sourceText),
+      `${relative} delegates localized datetime formatting to datetime.service.ts`,
+    );
+    assertRule(
+      isStorageService || !/\b(?:localStorage|sessionStorage)\b/u.test(sourceText),
+      `${relative} accesses browser key-value storage only through storage.service.ts`,
+    );
+    assertRule(
+      isStorageService || isNativeHostClientService || !/['"]autocut_[a-z0-9_-]+['"]/u.test(sourceText),
+      `${relative} builds AutoCut browser storage keys only through storage.service.ts`,
+    );
+    for (const pattern of forbiddenRemoteFixtureUrlPatterns) {
+      assertRule(
+        isMediaFixturesService || !pattern.test(sourceText),
+        `${relative} references remote mock media only through media-fixtures.service.ts`,
+      );
+    }
+    const hasAutocutEventString = /['"]autocut-[a-z-]+['"]/.test(sourceText);
+    assertRule(!hasAutocutEventString || isEventService, `${relative} references AutoCut events through canonical service helpers`);
+    const hasAutocutCustomEventDispatch =
+      /window\.dispatchEvent\(\s*new\s+CustomEvent/u.test(sourceText) ||
+      /dispatchEvent\(\s*new\s+CustomEvent\s*\(\s*AUTOCUT_EVENTS/u.test(sourceText);
+    assertRule(!hasAutocutCustomEventDispatch || isEventService, `${relative} dispatches AutoCut custom events only through events.service.ts`);
+    const hasAutocutEventListener =
+      /window\.addEventListener\(\s*AUTOCUT_EVENTS/u.test(sourceText) ||
+      /window\.removeEventListener\(\s*AUTOCUT_EVENTS/u.test(sourceText);
+    assertRule(!hasAutocutEventListener || isEventService, `${relative} binds AutoCut custom events only through events.service.ts`);
+    assertRule(!sourceText.includes(' as EventListener'), `${relative} does not cast AutoCut event handlers with as EventListener`);
+    if (relative.includes('/src/service/') && !isProcessingSourceService && /export\s+async\s+function\s+process/u.test(sourceText)) {
+      assertRule(
+        sourceText.includes('validateAutoCutProcessingSource'),
+        `${relative} validates source media through processing-source.service.ts before creating tasks`,
+      );
+    }
+    const importsAddAssetFromSharedServices =
+      /import\s*\{[^}]*\baddAsset\b[^}]*\}\s*from\s*['"]@sdkwork\/autocut-services['"]/u.test(sourceText);
+    assertRule(!isPageSource || !importsAddAssetFromSharedServices, `${relative} delegates asset creation to AutoCut service workflow functions`);
+
+    for (const importSpecifier of parseStaticImports(file)) {
+      if (importSpecifier.startsWith('@/')) {
+        assertRule(false, `${relative} does not import from root alias ${importSpecifier}`);
+        continue;
+      }
+
+      if (importSpecifier.startsWith('../..')) {
+        assertRule(false, `${relative} does not cross package boundaries through relative import ${importSpecifier}`);
+        continue;
+      }
+
+      if (importSpecifier.startsWith('.')) {
+        continue;
+      }
+
+      const depName = dependencyName(importSpecifier);
+      if (depName.startsWith(internalPrefix)) {
+        assertRule(packageNames.has(depName), `${relative} imports known AutoCut package ${depName}`);
+        if (depName !== manifest.name) {
+          assertRule(allDeps[depName] === 'workspace:*', `${manifest.name} declares imported AutoCut dependency ${depName} as workspace:*`);
+        }
+        continue;
+      }
+
+      assertRule(externalDependencyAllowlist.has(depName), `${relative} imports allowed external dependency ${depName}`);
+      assertRule(Boolean(allDeps[depName]), `${manifest.name} declares directly imported external dependency ${depName}`);
+    }
+  }
+
+  if (businessPackagesWithService.has(dirName)) {
+    assertRule(fs.existsSync(path.join(packagePath, 'src', 'service')), `${manifest.name} has src/service`);
+  }
+}
+
+for (const catalogName of workspaceCatalogNames) {
+  assertRule(usedExternalCatalogNames.has(catalogName), `pnpm catalog entry ${catalogName} is used by root or package manifests`);
+}
+
+if (failures.length > 0) {
+  console.error('AutoCut architecture check failed:');
+  for (const failure of failures) {
+    console.error(`- ${failure}`);
+  }
+  console.error(`\n${pass.length} checks passed, ${failures.length} checks failed.`);
+  process.exit(1);
+}
+
+console.log(`AutoCut architecture check passed (${pass.length} checks).`);

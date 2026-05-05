@@ -1,0 +1,2 @@
+packages/sdkwork-autocut-desktop/src-tauri/binaries/**/ffmpeg filter=lfs diff=lfs merge=lfs -text
+packages/sdkwork-autocut-desktop/src-tauri/binaries/**/ffmpeg.exe filter=lfs diff=lfs merge=lfs -text

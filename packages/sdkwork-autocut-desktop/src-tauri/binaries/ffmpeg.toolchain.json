@@ -1,0 +1,45 @@
+{
+  "tool": "ffmpeg",
+  "contractVersion": "2026-05-05.ffmpeg-toolchain.v1",
+  "bundledReady": true,
+  "requiredBinary": "ffmpeg",
+  "license": {
+    "name": "FFmpeg",
+    "spdxExpression": "LGPL-2.1-or-later OR GPL-2.0-or-later",
+    "notice": "Bundled FFmpeg sidecars must keep their upstream license and build configuration notices with release artifacts."
+  },
+  "platforms": {
+    "windows-x86_64": {
+      "relativePath": "windows-x86_64/ffmpeg.exe",
+      "binaryName": "ffmpeg.exe",
+      "integrity": {
+        "sha256": "a136f062d304b5ed6688016dbcf8166f7ac62fff0939fc6b2baf6f3504d41c78",
+        "byteSize": 130443264
+      }
+    },
+    "linux-x86_64": {
+      "relativePath": "linux-x86_64/ffmpeg",
+      "binaryName": "ffmpeg",
+      "integrity": {
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "byteSize": 0
+      }
+    },
+    "macos-x86_64": {
+      "relativePath": "macos-x86_64/ffmpeg",
+      "binaryName": "ffmpeg",
+      "integrity": {
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "byteSize": 0
+      }
+    },
+    "macos-aarch64": {
+      "relativePath": "macos-aarch64/ffmpeg",
+      "binaryName": "ffmpeg",
+      "integrity": {
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "byteSize": 0
+      }
+    }
+  }
+}

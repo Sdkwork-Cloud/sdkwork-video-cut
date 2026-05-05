@@ -1,0 +1,221 @@
+#!/usr/bin/env node
+
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import process from 'node:process';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const evidenceSchemaVersion = '2026-05-05.autocut-installer-signature-evidence.v1';
+const bundleRelativeRoot = 'packages/sdkwork-autocut-desktop/src-tauri/target/release/bundle';
+const defaultOutputRelativePath = 'artifacts/release/autocut-installer-signature-evidence.json';
+
+export function createAutoCutInstallerSignatureEvidence({
+  rootDir = process.cwd(),
+  generatedAt = new Date().toISOString(),
+  runCommand = runAutoCutInstallerSignatureCommand,
+} = {}) {
+  const resolvedRootDir = path.resolve(rootDir);
+  const installers = installerSpecs(resolvedRootDir).map((spec) =>
+    createInstallerSignatureSnapshot({ rootDir: resolvedRootDir, spec, runCommand }),
+  );
+  const blockers = installers
+    .filter((installer) => !installer.signatureReady)
+    .map((installer) => ({
+      code: installer.exists ? 'INSTALLER_SIGNATURE_MISSING' : 'INSTALLER_MISSING',
+      installerKind: installer.kind,
+      path: installer.path,
+      message: installer.exists
+        ? `AutoCut ${installer.kind} installer is not signed or the signature cannot be verified.`
+        : `AutoCut ${installer.kind} installer is missing.`,
+    }));
+
+  return {
+    schemaVersion: evidenceSchemaVersion,
+    generatedAt,
+    readiness: {
+      installerSignatureReady: blockers.length === 0,
+    },
+    verification: {
+      platform: process.platform,
+      method: process.platform === 'win32' ? 'powershell-Get-AuthenticodeSignature' : 'unsupported-host-signed-evidence-required',
+    },
+    installers,
+    blockers,
+  };
+}
+
+export function writeAutoCutInstallerSignatureEvidence({
+  rootDir = process.cwd(),
+  outputPath,
+  ...options
+} = {}) {
+  const resolvedRootDir = path.resolve(rootDir);
+  const resolvedOutputPath = path.resolve(
+    outputPath ?? path.join(resolvedRootDir, defaultOutputRelativePath),
+  );
+  const evidence = createAutoCutInstallerSignatureEvidence({
+    rootDir: resolvedRootDir,
+    ...options,
+  });
+  fs.mkdirSync(path.dirname(resolvedOutputPath), { recursive: true });
+  fs.writeFileSync(`${resolvedOutputPath}.tmp`, `${JSON.stringify(evidence, null, 2)}\n`);
+  fs.renameSync(`${resolvedOutputPath}.tmp`, resolvedOutputPath);
+  return {
+    outputPath: resolvedOutputPath,
+    evidence,
+  };
+}
+
+export function formatAutoCutInstallerSignatureEvidenceMessage(result) {
+  return [
+    `ok - autocut installer signature evidence ${result.outputPath}`,
+    `installerSignatureReady=${result.evidence.readiness.installerSignatureReady}`,
+    `blockers=${result.evidence.blockers.length}`,
+  ].join(' ');
+}
+
+export function runAutoCutInstallerSignatureCommand(command, args) {
+  const result = spawnSync(command, args, {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    shell: false,
+    windowsHide: true,
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  if (result.error) {
+    return {
+      status: 1,
+      stdout: '',
+      stderr: result.error.message,
+    };
+  }
+  return {
+    status: result.status ?? 1,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+  };
+}
+
+function createInstallerSignatureSnapshot({ rootDir, spec, runCommand }) {
+  const exists = fs.existsSync(spec.absolutePath) && fs.statSync(spec.absolutePath).isFile();
+  const pathRelative = toPosixRelative(rootDir, spec.absolutePath);
+  if (!exists) {
+    return {
+      kind: spec.kind,
+      path: pathRelative,
+      exists: false,
+      byteSize: 0,
+      sha256: '',
+      signatureReady: false,
+      signatureStatus: 'missing',
+      signer: '',
+      diagnostics: [`missing installer: ${spec.absolutePath}`],
+    };
+  }
+
+  const bytes = fs.readFileSync(spec.absolutePath);
+  const signature = inspectInstallerSignature(spec.absolutePath, runCommand);
+  return {
+    kind: spec.kind,
+    path: pathRelative,
+    exists: true,
+    byteSize: bytes.length,
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    signatureReady: signature.ready,
+    signatureStatus: signature.status,
+    signer: signature.signer,
+    diagnostics: signature.diagnostics,
+  };
+}
+
+function inspectInstallerSignature(installerPath, runCommand) {
+  const command = 'powershell';
+  const args = [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    [
+      'param([Parameter(Mandatory=$true)][string]$LiteralPath);',
+      '$signature = Get-AuthenticodeSignature -LiteralPath $LiteralPath;',
+      '$subject = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { "" };',
+      'Write-Output ("Status=" + $signature.Status);',
+      'Write-Output ("Signer=" + $subject);',
+    ].join(' '),
+    '-LiteralPath',
+    installerPath,
+  ];
+  const result = runCommand(command, args);
+  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`.trim();
+  const statusMatch = output.match(/(?:^|\n)Status=(.+)(?:\n|$)/u);
+  const signerMatch = output.match(/(?:^|\n)Signer=(.*)(?:\n|$)/u);
+  const status = statusMatch ? statusMatch[1].trim() : result.status === 0 ? 'Valid' : 'NotSigned';
+  const signer = signerMatch ? signerMatch[1].trim() : extractSigner(output);
+  return {
+    ready: result.status === 0 && status === 'Valid',
+    status,
+    signer,
+    diagnostics: output ? [trimDiagnostics(output)] : [],
+  };
+}
+
+function extractSigner(output) {
+  const signerMatch = output.match(/SignerCertificate:\s*(.+)/u);
+  return signerMatch ? signerMatch[1].trim() : '';
+}
+
+function installerSpecs(rootDir) {
+  const bundleRoot = path.join(rootDir, bundleRelativeRoot);
+  return [
+    {
+      kind: 'msi',
+      absolutePath: path.join(bundleRoot, 'msi', 'SDKWork Video Cut_0.1.0_x64_en-US.msi'),
+    },
+    {
+      kind: 'nsis',
+      absolutePath: path.join(bundleRoot, 'nsis', 'SDKWork Video Cut_0.1.0_x64-setup.exe'),
+    },
+  ];
+}
+
+function trimDiagnostics(value) {
+  const maxLength = 4000;
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, maxLength)}\n[autocut-signature-diagnostics-truncated]`;
+}
+
+function toPosixRelative(rootDir, targetPath) {
+  return path.relative(rootDir, targetPath).replaceAll(path.sep, '/');
+}
+
+function parseArgs(argv) {
+  const options = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--output') {
+      options.outputPath = argv[index + 1];
+      index += 1;
+    } else {
+      throw new Error(`Unknown AutoCut installer signature evidence argument: ${arg}`);
+    }
+  }
+  return options;
+}
+
+function main() {
+  const result = writeAutoCutInstallerSignatureEvidence(parseArgs(process.argv.slice(2)));
+  console.log(formatAutoCutInstallerSignatureEvidenceMessage(result));
+}
+
+if (path.resolve(process.argv[1] ?? '') === __filename) {
+  try {
+    main();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}

@@ -1,6 +1,0 @@
-apiVersion: v2
-name: sdkwork-video-cut
-description: Local-first AI video cut application with a Rust host and web UI.
-type: application
-version: 0.1.0
-appVersion: "0.1.0"

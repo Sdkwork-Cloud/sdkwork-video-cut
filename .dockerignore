@@ -1,8 +1,0 @@
-dist
-host/target
-node_modules
-workspace
-*.log
-*.tsbuildinfo
-.git
-.gitignore
