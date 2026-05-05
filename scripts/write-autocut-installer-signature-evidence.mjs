@@ -133,26 +133,22 @@ function createInstallerSignatureSnapshot({ rootDir, spec, runCommand }) {
 
 function inspectInstallerSignature(installerPath, runCommand) {
   const command = 'powershell';
+  const literalInstallerPath = toPowerShellSingleQuotedString(installerPath);
   const args = [
     '-NoProfile',
     '-NonInteractive',
     '-Command',
     [
-      'param([Parameter(Mandatory=$true)][string]$LiteralPath);',
-      '$signature = Get-AuthenticodeSignature -LiteralPath $LiteralPath;',
+      `$signature = Get-AuthenticodeSignature -LiteralPath ${literalInstallerPath};`,
       '$subject = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { "" };',
       'Write-Output ("Status=" + $signature.Status);',
       'Write-Output ("Signer=" + $subject);',
     ].join(' '),
-    '-LiteralPath',
-    installerPath,
   ];
   const result = runCommand(command, args);
   const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`.trim();
-  const statusMatch = output.match(/(?:^|\n)Status=(.+)(?:\n|$)/u);
-  const signerMatch = output.match(/(?:^|\n)Signer=(.*)(?:\n|$)/u);
-  const status = statusMatch ? statusMatch[1].trim() : result.status === 0 ? 'Valid' : 'NotSigned';
-  const signer = signerMatch ? signerMatch[1].trim() : extractSigner(output);
+  const status = readSignatureOutputField(output, 'Status') ?? 'Unknown';
+  const signer = readSignatureOutputField(output, 'Signer') ?? extractSigner(output);
   return {
     ready: result.status === 0 && status === 'Valid',
     status,
@@ -164,6 +160,24 @@ function inspectInstallerSignature(installerPath, runCommand) {
 function extractSigner(output) {
   const signerMatch = output.match(/SignerCertificate:\s*(.+)/u);
   return signerMatch ? signerMatch[1].trim() : '';
+}
+
+function readSignatureOutputField(output, fieldName) {
+  const prefix = `${fieldName}=`;
+  const colonPrefix = `${fieldName}:`;
+  const line = output
+    .split(/\r?\n/u)
+    .map((entry) => entry.trim())
+    .find((entry) => entry.startsWith(prefix) || entry.startsWith(colonPrefix));
+  if (!line) {
+    return undefined;
+  }
+  const separator = line.startsWith(prefix) ? prefix : colonPrefix;
+  return line.slice(separator.length).trim();
+}
+
+function toPowerShellSingleQuotedString(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
 }
 
 function installerSpecs(rootDir) {

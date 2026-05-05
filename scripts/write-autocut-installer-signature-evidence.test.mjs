@@ -35,9 +35,8 @@ const unsignedEvidence = createAutoCutInstallerSignatureEvidence({
   runCommand(command, args) {
     assert.equal(command, 'powershell');
     assert.deepEqual(args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-Command']);
-    assert.equal(args.at(-2), '-LiteralPath');
-    assert.equal(args.at(-1)?.includes('SDKWork Video Cut'), true);
-    assert.equal(fs.existsSync(args.at(-1)), true);
+    assert.equal(args[3]?.includes('SDKWork Video Cut'), true);
+    assert.equal(args[3]?.includes('Get-AuthenticodeSignature'), true);
     return {
       status: 1,
       stdout: '',
@@ -63,14 +62,31 @@ assert.equal(
   true,
 );
 
+const notSignedStatusEvidence = createAutoCutInstallerSignatureEvidence({
+  rootDir: root,
+  generatedAt: '2026-05-05T00:00:00.000Z',
+  runCommand() {
+    return {
+      status: 0,
+      stdout: 'Status=NotSigned\r\nSigner=',
+      stderr: '',
+    };
+  },
+});
+
+assert.equal(notSignedStatusEvidence.readiness.installerSignatureReady, false);
+assert.equal(
+  notSignedStatusEvidence.installers.every((installer) => installer.signatureStatus === 'NotSigned'),
+  true,
+);
+
 const signedEvidence = createAutoCutInstallerSignatureEvidence({
   rootDir: root,
   generatedAt: '2026-05-05T00:00:00.000Z',
   runCommand(command, args) {
     assert.equal(command, 'powershell');
-    assert.equal(args.at(-2), '-LiteralPath');
-    assert.equal(args.at(-1)?.includes('SDKWork Video Cut'), true);
-    assert.equal(fs.existsSync(args.at(-1)), true);
+    assert.equal(args[3]?.includes('SDKWork Video Cut'), true);
+    assert.equal(args[3]?.includes('Get-AuthenticodeSignature'), true);
     return {
       status: 0,
       stdout: 'SignerCertificate: CN=SDKWork Release\nStatus: Valid',

@@ -104,6 +104,7 @@ const allowedScriptFiles = new Set([
 const allowedDocs = new Set([
   'docs/architecture/16-autocut-frontend-module-standard.md',
   'docs/architecture/17-autocut-database-contract-standard.md',
+  'docs/release/CHANGELOG.md',
   'docs/superpowers/plans/2026-05-04-autocut-desktop-standardization.md',
 ]);
 const requiredDatabaseContractDoc = 'docs/architecture/17-autocut-database-contract-standard.md';
