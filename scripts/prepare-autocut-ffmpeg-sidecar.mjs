@@ -6,6 +6,11 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import {
+  normalizeAutoCutCliArgs,
+  readAutoCutCliOptionValue,
+} from './autocut-cli-args.mjs';
+
 const __filename = fileURLToPath(import.meta.url);
 const allowedPlatforms = new Set([
   'windows-x86_64',
@@ -158,21 +163,34 @@ function requiredString(value, name) {
 
 function parseArgs(argv) {
   const options = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
+  const args = normalizeAutoCutCliArgs(argv);
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
     if (arg === '--accept-license') {
       options.acceptLicense = true;
     } else if (arg === '--dry-run') {
       options.dryRun = true;
     } else if (arg === '--platform') {
-      options.platform = argv[index + 1];
-      index += 1;
+      const option = readAutoCutCliOptionValue(args, index, {
+        optionName: arg,
+        commandName: 'AutoCut FFmpeg sidecar preparation',
+      });
+      options.platform = option.value;
+      index = option.nextIndex;
     } else if (arg === '--source') {
-      options.sourcePath = argv[index + 1];
-      index += 1;
+      const option = readAutoCutCliOptionValue(args, index, {
+        optionName: arg,
+        commandName: 'AutoCut FFmpeg sidecar preparation',
+      });
+      options.sourcePath = option.value;
+      index = option.nextIndex;
     } else if (arg === '--manifest') {
-      options.manifestPath = argv[index + 1];
-      index += 1;
+      const option = readAutoCutCliOptionValue(args, index, {
+        optionName: arg,
+        commandName: 'AutoCut FFmpeg sidecar preparation',
+      });
+      options.manifestPath = option.value;
+      index = option.nextIndex;
     } else {
       throw new Error(`Unknown AutoCut FFmpeg sidecar preparation argument: ${arg}`);
     }

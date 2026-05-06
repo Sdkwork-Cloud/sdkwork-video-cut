@@ -3,11 +3,16 @@ import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
 import {configureDesktopNativeHostClient} from './native-host';
-import {configureAutoCutRuntimeEnvironment, configureAutoCutVercelAiSdkBridge} from '@sdkwork/autocut-services';
+import {
+  configureAutoCutRuntimeEnvironment,
+  configureAutoCutVercelAiSdkBridge,
+  initializeAutoCutDefaultLlmSettingsFromEnvironment,
+} from '@sdkwork/autocut-services';
 
 configureAutoCutRuntimeEnvironment(import.meta.env.DEV ? 'dev' : 'release');
 configureDesktopNativeHostClient();
 configureAutoCutVercelAiSdkBridge();
+void initializeAutoCutDefaultLlmSettingsFromEnvironment().catch(() => undefined);
 
 const rootElement = document.getElementById('root');
 

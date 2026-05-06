@@ -8,6 +8,14 @@ const AUTOCUT_LLM_SECRET_SERVICE: &str = "com.sdkwork.video-cut.llm";
 const AUTOCUT_LLM_SECRET_USER_PREFIX: &str = "autocut-llm";
 const MAX_AUTOCUT_LLM_SECRET_NAME_BYTES: usize = 96;
 const MAX_AUTOCUT_LLM_SECRET_VALUE_BYTES: usize = 16 * 1024;
+const AUTOCUT_LLM_ENV_DEFAULT_SECRET_NAMES: &[&str] = &[
+    "dev-default",
+    "release-default",
+];
+const DEEPSEEK_ENV_API_KEY_NAMES: &[&str] = &[
+    "SDKWORK_AUTOCUT_DEEPSEEK_API_KEY",
+    "DEEPSEEK_API_KEY",
+];
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,10 +81,11 @@ pub fn get_autocut_llm_secret(
             secret_value: Some(secret_value),
         }),
         Err(keyring_core::Error::NoEntry) => Ok(AutoCutGetLlmSecretResult {
-            secret_name: normalized_secret_name,
+            secret_name: normalized_secret_name.clone(),
             configured: false,
-            secret_value: None,
-        }),
+            secret_value: resolve_default_deepseek_secret_from_environment(&normalized_secret_name),
+        }
+        .with_configured_from_secret_value()),
         Err(error) => Err(format!("Failed to read AutoCut LLM secret: {error}")),
     }
 }
@@ -162,12 +171,33 @@ fn validate_autocut_secret_value(secret_value: &str) -> Result<(), String> {
     Ok(())
 }
 
+impl AutoCutGetLlmSecretResult {
+    fn with_configured_from_secret_value(mut self) -> Self {
+        self.configured = self.secret_value.is_some();
+        self
+    }
+}
+
+fn resolve_default_deepseek_secret_from_environment(secret_name: &str) -> Option<String> {
+    if !AUTOCUT_LLM_ENV_DEFAULT_SECRET_NAMES.contains(&secret_name) {
+        return None;
+    }
+
+    DEEPSEEK_ENV_API_KEY_NAMES
+        .iter()
+        .find_map(|env_name| std::env::var(env_name).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use keyring_core::mock;
+    use std::sync::Mutex;
 
     static TEST_KEYRING_STORE_INIT: OnceLock<()> = OnceLock::new();
+    static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn ensure_test_keyring_store() {
         TEST_KEYRING_STORE_INIT.get_or_init(|| {
@@ -236,6 +266,79 @@ mod tests {
         .expect_err("blank secret values must be rejected");
 
         assert!(error.contains("required"));
+    }
+
+    #[test]
+    fn reads_default_deepseek_api_key_from_environment_when_secret_is_missing() {
+        let _env_guard = TEST_ENV_LOCK.lock().expect("env lock should not be poisoned");
+        ensure_test_keyring_store();
+        let secret_name = "release-default".to_string();
+        let _ = delete_autocut_llm_secret(AutoCutLlmSecretRequest {
+            secret_name: secret_name.clone(),
+        });
+        unsafe {
+            std::env::set_var("SDKWORK_AUTOCUT_DEEPSEEK_API_KEY", " sk-env-default-secret ");
+            std::env::remove_var("DEEPSEEK_API_KEY");
+        }
+
+        let loaded = get_autocut_llm_secret(AutoCutLlmSecretRequest {
+            secret_name: secret_name.clone(),
+        })
+        .expect("default DeepSeek environment key should load");
+
+        unsafe {
+            std::env::remove_var("SDKWORK_AUTOCUT_DEEPSEEK_API_KEY");
+        }
+
+        assert!(loaded.configured);
+        assert_eq!(loaded.secret_name, secret_name);
+        assert_eq!(loaded.secret_value.as_deref(), Some("sk-env-default-secret"));
+    }
+
+    #[test]
+    fn ignores_deepseek_environment_key_for_non_default_secret_names() {
+        let _env_guard = TEST_ENV_LOCK.lock().expect("env lock should not be poisoned");
+        ensure_test_keyring_store();
+        let secret_name = format!("test-env-{}-manual", std::process::id());
+        let _ = delete_autocut_llm_secret(AutoCutLlmSecretRequest {
+            secret_name: secret_name.clone(),
+        });
+        unsafe {
+            std::env::set_var("SDKWORK_AUTOCUT_DEEPSEEK_API_KEY", "sk-env-default-secret");
+        }
+
+        let loaded = get_autocut_llm_secret(AutoCutLlmSecretRequest { secret_name })
+            .expect("non-default LLM secret should load as missing");
+
+        unsafe {
+            std::env::remove_var("SDKWORK_AUTOCUT_DEEPSEEK_API_KEY");
+        }
+
+        assert!(!loaded.configured);
+        assert!(loaded.secret_value.is_none());
+    }
+
+    #[test]
+    fn ignores_deepseek_environment_key_for_unrecognized_default_secret_names() {
+        let _env_guard = TEST_ENV_LOCK.lock().expect("env lock should not be poisoned");
+        ensure_test_keyring_store();
+        let secret_name = format!("test-env-{}-default", std::process::id());
+        let _ = delete_autocut_llm_secret(AutoCutLlmSecretRequest {
+            secret_name: secret_name.clone(),
+        });
+        unsafe {
+            std::env::set_var("SDKWORK_AUTOCUT_DEEPSEEK_API_KEY", "sk-env-default-secret");
+        }
+
+        let loaded = get_autocut_llm_secret(AutoCutLlmSecretRequest { secret_name })
+            .expect("unrecognized default LLM secret should load as missing");
+
+        unsafe {
+            std::env::remove_var("SDKWORK_AUTOCUT_DEEPSEEK_API_KEY");
+        }
+
+        assert!(!loaded.configured);
+        assert!(loaded.secret_value.is_none());
     }
 
     #[cfg(windows)]

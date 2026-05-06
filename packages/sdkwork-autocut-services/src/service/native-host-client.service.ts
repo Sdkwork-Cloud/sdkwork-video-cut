@@ -67,6 +67,7 @@ export interface AutoCutMediaImportResult {
   name: string;
   mediaType: string;
   mimeType: string;
+  durationMs?: number;
 }
 
 export interface AutoCutLocalMediaFileDescription {
@@ -75,6 +76,7 @@ export interface AutoCutLocalMediaFileDescription {
   name: string;
   mediaType: string;
   mimeType: string;
+  durationMs?: number;
 }
 
 export interface AutoCutAudioExtractionRequest {
@@ -119,12 +121,19 @@ export interface AutoCutVideoSliceClipRequest {
   label: string;
 }
 
+export interface AutoCutVideoSliceRenderProfile {
+  targetAspectRatio: 'auto' | '16:9' | '9:16' | '1:1' | '4:3';
+  objectFit: 'contain' | 'cover';
+}
+
 export interface AutoCutVideoSliceRequest {
   assetUuid: string;
   clips: AutoCutVideoSliceClipRequest[];
   outputFormat: 'mp4';
   outputRootDir?: string;
+  renderProfile?: AutoCutVideoSliceRenderProfile;
   subtitleFormat?: 'srt';
+  subtitleMode?: 'none' | 'srt' | 'burned' | 'both';
   subtitleStyleId?: string;
   subtitleSegments?: AutoCutSpeechTranscriptionSegment[];
 }

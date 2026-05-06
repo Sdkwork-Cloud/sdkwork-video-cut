@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, PlayCircle, Play, Download, FolderOpen, Tag, CheckCircle2, Settings2, FileText, Music, Copy, ArrowRight, Activity, Zap } from 'lucide-react';
-import { createAutoCutTextObjectUrl, downloadAutoCutUrl, downloadExtractedTextFile, formatAutoCutDateTime, formatExtractedText, getTasks, listenAutoCutEvent, openAutoCutPreviewUrl, revokeAutoCutObjectUrl, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
+import { ArrowLeft, PlayCircle, Play, Download, FolderOpen, Tag, CheckCircle2, Settings2, FileText, Music, Copy, ArrowRight, Activity, Zap, ShieldAlert } from 'lucide-react';
+import { createAutoCutTextObjectUrl, downloadAutoCutUrl, downloadExtractedTextFile, downloadSmartSliceTaskEvidenceFile, formatAutoCutDateTime, formatExtractedText, getTasks, listenAutoCutEvent, openAutoCutPreviewUrl, revokeAutoCutObjectUrl, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
 import { Button, TaskFailureState } from '@sdkwork/autocut-commons';
 import { AUTOCUT_TASK_STATUS, type AppTask, type TaskType } from '@sdkwork/autocut-types';
+
+type SliceResult = NonNullable<AppTask['sliceResults']>[number];
 
 function formatBytes(bytes: number, decimals = 2) {
   if (!+bytes) return '0 Bytes';
@@ -34,6 +36,173 @@ function handleDownload(url: string | undefined, filename: string) {
   downloadAutoCutUrl(url, filename);
 }
 
+function formatSliceScore(score: number | undefined) {
+  return typeof score === 'number' && Number.isFinite(score) ? `${Math.round(score * 100)}%` : '--';
+}
+
+function formatSliceStoryShape(storyShape: SliceResult['storyShape']) {
+  switch (storyShape) {
+    case 'complete':
+      return 'Complete';
+    case 'setupOnly':
+      return 'Setup only';
+    case 'payoffOnly':
+      return 'Payoff only';
+    case 'contextOnly':
+      return 'Context';
+    case 'thin':
+      return 'Thin';
+    default:
+      return '--';
+  }
+}
+
+function formatSpeechContinuityGrade(grade: SliceResult['speechContinuityGrade']) {
+  switch (grade) {
+    case 'strong':
+      return 'Strong';
+    case 'repaired':
+      return 'Repaired';
+    case 'weak':
+      return 'Weak';
+    default:
+      return '--';
+  }
+}
+
+function formatPublishabilityGrade(grade: SliceResult['publishabilityGrade']) {
+  switch (grade) {
+    case 'excellent':
+      return 'Excellent';
+    case 'good':
+      return 'Good';
+    case 'review':
+      return 'Review';
+    case 'reject':
+      return 'Reject';
+    default:
+      return '--';
+  }
+}
+
+function formatPlatformReadinessGrade(grade: SliceResult['platformReadinessGrade']) {
+  switch (grade) {
+    case 'ready':
+      return 'Ready';
+    case 'review':
+      return 'Review';
+    case 'reject':
+      return 'Reject';
+    default:
+      return '--';
+  }
+}
+
+function formatSentenceBoundaryIntegrityGrade(grade: SliceResult['sentenceBoundaryIntegrityGrade']) {
+  switch (grade) {
+    case 'clean':
+      return 'Clean';
+    case 'repaired':
+      return 'Repaired';
+    case 'broken':
+      return 'Broken';
+    default:
+      return '--';
+  }
+}
+
+function formatSliceBoundaryGrade(grade: SliceResult['hookStrength'] | SliceResult['endingCompleteness']) {
+  switch (grade) {
+    case 'strong':
+      return 'Strong';
+    case 'contextual':
+      return 'Contextual';
+    case 'weak':
+      return 'Weak';
+    case 'complete':
+      return 'Complete';
+    case 'soft':
+      return 'Soft';
+    case 'open':
+      return 'Open';
+    default:
+      return '--';
+  }
+}
+
+function formatSliceContentArcGrade(grade: SliceResult['contentArcGrade']) {
+  switch (grade) {
+    case 'complete':
+      return 'Complete';
+    case 'partial':
+      return 'Partial';
+    case 'thin':
+      return 'Thin';
+    default:
+      return '--';
+  }
+}
+
+function formatSliceTopicCoherenceGrade(grade: SliceResult['topicCoherenceGrade']) {
+  switch (grade) {
+    case 'strong':
+      return 'Strong';
+    case 'mixed':
+      return 'Mixed';
+    case 'weak':
+      return 'Weak';
+    default:
+      return '--';
+  }
+}
+
+function formatSliceSourceRange(startMs: number | undefined, endMs: number | undefined) {
+  if (typeof startMs !== 'number' || typeof endMs !== 'number') {
+    return '--';
+  }
+
+  return `${Math.round(startMs / 1_000)}s - ${Math.round(endMs / 1_000)}s`;
+}
+
+function hasSliceReviewMetadata(slice: SliceResult) {
+  return Boolean(
+    slice.summary ||
+      slice.reason ||
+      slice.transcriptText ||
+      slice.qualityScore !== undefined ||
+      slice.continuityScore !== undefined ||
+      slice.publishabilityScore !== undefined ||
+      slice.publishabilityGrade ||
+      slice.publishabilityIssues?.length ||
+      slice.platformReadinessScore !== undefined ||
+      slice.platformReadinessGrade ||
+      slice.platformReadinessIssues?.length ||
+      slice.sentenceBoundaryIntegrityScore !== undefined ||
+      slice.sentenceBoundaryIntegrityGrade ||
+      slice.sentenceBoundaryIssues?.length ||
+      slice.boundaryQualityScore !== undefined ||
+      slice.hookStrength ||
+      slice.endingCompleteness ||
+      slice.contentArcScore !== undefined ||
+      slice.contentArcGrade ||
+      slice.contentArcStages?.length ||
+      slice.contentArcMissingStages?.length ||
+      slice.topicCoherenceScore !== undefined ||
+      slice.topicCoherenceGrade ||
+      slice.topicShiftCount !== undefined ||
+      slice.topicKeywords?.length ||
+      slice.transcriptCoverageScore !== undefined ||
+      slice.subtitleSegmentCount !== undefined ||
+      slice.speechContinuityGrade ||
+      slice.storyShape ||
+      slice.sourceStartMs !== undefined ||
+      slice.speechStartMs !== undefined ||
+      slice.boundaryPaddingBeforeMs !== undefined ||
+      slice.boundaryPaddingAfterMs !== undefined ||
+      slice.risks?.length,
+  );
+}
+
 function downloadTaskExecutionResultFile(task: AppTask) {
   const content = [
     `Task: ${task.name}`,
@@ -51,6 +220,10 @@ function downloadTaskExecutionResultFile(task: AppTask) {
   } finally {
     revokeAutoCutObjectUrl(url);
   }
+}
+
+function handleDownloadSmartSliceTaskEvidence(task: AppTask) {
+  downloadSmartSliceTaskEvidenceFile(task, `${task.name}_smart-slice-task.json`);
 }
 
 export function TaskDetailPage() {
@@ -135,6 +308,13 @@ export function TaskDetailPage() {
               <div className="p-4 border-b border-[#222] bg-[#151515] flex justify-between items-center shrink-0">
                 <h3 className="text-sm font-bold text-gray-200">生成的切片文件 ({task.resultCount || 0})</h3>
                 <div className="flex items-center gap-2 text-xs text-gray-500">
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded border border-[#333] bg-[#101010] px-2 py-1 text-emerald-300 hover:border-emerald-500/40 hover:bg-emerald-500/10 transition-colors"
+                    onClick={() => handleDownloadSmartSliceTaskEvidence(task)}
+                  >
+                    <Download size={12} /> Quality JSON
+                  </button>
                   <Settings2 size={14} /> 按时长排序
                 </div>
               </div>
@@ -160,13 +340,28 @@ export function TaskDetailPage() {
                     </div>
                     <div className="flex-1 min-w-0 flex flex-col justify-center">
                       <h4 className={`text-sm font-medium truncate ${activePreviewUrl === slice.id ? 'text-blue-400' : 'text-gray-200'}`}>
-                        {slice.name}
+                        {slice.title || slice.name}
                       </h4>
                       <div className="flex items-center gap-3 mt-1.5 text-[11px] text-gray-500">
                         <span className="flex items-center gap-1"><Tag size={10} /> 智能提取</span>
                         <span>{formatBytes(slice.size)}</span>
                         <span className="bg-[#333] px-1 rounded">{slice.resolution}</span>
                       </div>
+                      {(slice.qualityScore !== undefined || slice.continuityScore !== undefined) && (
+                        <div className="flex flex-wrap items-center gap-1.5 mt-2 text-[10px]">
+                          {slice.publishabilityGrade && (
+                            <span className="px-1.5 py-0.5 rounded bg-fuchsia-500/10 text-fuchsia-300 border border-fuchsia-500/20">
+                              P {formatPublishabilityGrade(slice.publishabilityGrade)}
+                            </span>
+                          )}
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                            Q {formatSliceScore(slice.qualityScore)}
+                          </span>
+                          <span className="px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/20">
+                            C {formatSliceScore(slice.continuityScore)}
+                          </span>
+                        </div>
+                      )}
                     </div>
                     <div className="shrink-0 flex items-center">
                       <button className="w-8 h-8 rounded hover:bg-black/50 flex items-center justify-center text-gray-400 hover:text-white transition-colors" onClick={(e) => {
@@ -203,6 +398,147 @@ export function TaskDetailPage() {
                        autoPlay
                      />
                    </div>
+                   {hasSliceReviewMetadata(selectedSlice) && (
+                     <div className="shrink-0 border-t border-[#222] bg-[#151515] p-4 space-y-3">
+                       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                         <div className="min-w-0">
+                           <h3 className="text-sm font-semibold text-gray-100 truncate">{selectedSlice.title || selectedSlice.name}</h3>
+                           <p className="text-[11px] text-gray-500 mt-1">Source {formatSliceSourceRange(selectedSlice.sourceStartMs, selectedSlice.sourceEndMs)}</p>
+                           <p className="text-[11px] text-gray-500 mt-1">
+                             Speech {formatSliceSourceRange(selectedSlice.speechStartMs, selectedSlice.speechEndMs)}
+                             {' '}
+                             ({Math.round((selectedSlice.boundaryPaddingBeforeMs ?? 0) / 10) / 100}s + {Math.round((selectedSlice.boundaryPaddingAfterMs ?? 0) / 10) / 100}s)
+                           </p>
+                         </div>
+                         <div className="flex flex-wrap items-center gap-2 text-[11px] shrink-0">
+                           <span className="px-2 py-1 rounded bg-fuchsia-500/10 text-fuchsia-300 border border-fuchsia-500/20">
+                             Publish {formatSliceScore(selectedSlice.publishabilityScore)} / {formatPublishabilityGrade(selectedSlice.publishabilityGrade)}
+                           </span>
+                           <span className="px-2 py-1 rounded bg-rose-500/10 text-rose-300 border border-rose-500/20">
+                             Platform {formatSliceScore(selectedSlice.platformReadinessScore)} / {formatPlatformReadinessGrade(selectedSlice.platformReadinessGrade)}
+                           </span>
+                           <span className="px-2 py-1 rounded bg-sky-500/10 text-sky-300 border border-sky-500/20">
+                             Sentence {formatSliceScore(selectedSlice.sentenceBoundaryIntegrityScore)} / {formatSentenceBoundaryIntegrityGrade(selectedSlice.sentenceBoundaryIntegrityGrade)}
+                           </span>
+                           <span className="px-2 py-1 rounded bg-orange-500/10 text-orange-300 border border-orange-500/20">
+                             Hook {formatSliceBoundaryGrade(selectedSlice.hookStrength)}
+                           </span>
+                           <span className="px-2 py-1 rounded bg-lime-500/10 text-lime-300 border border-lime-500/20">
+                             Ending {formatSliceBoundaryGrade(selectedSlice.endingCompleteness)}
+                           </span>
+                           <span className="px-2 py-1 rounded bg-teal-500/10 text-teal-300 border border-teal-500/20">
+                             Arc {formatSliceScore(selectedSlice.contentArcScore)} / {formatSliceContentArcGrade(selectedSlice.contentArcGrade)}
+                           </span>
+                           <span className="px-2 py-1 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
+                             Topic {formatSliceScore(selectedSlice.topicCoherenceScore)} / {formatSliceTopicCoherenceGrade(selectedSlice.topicCoherenceGrade)}
+                           </span>
+                           <span className="px-2 py-1 rounded bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                             Story {formatSliceStoryShape(selectedSlice.storyShape)}
+                           </span>
+                           <span className="px-2 py-1 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                             Quality {formatSliceScore(selectedSlice.qualityScore)}
+                           </span>
+                           <span className="px-2 py-1 rounded bg-blue-500/10 text-blue-300 border border-blue-500/20">
+                             Continuity {formatSliceScore(selectedSlice.continuityScore)}
+                           </span>
+                           <span className="px-2 py-1 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20">
+                             Transcript {formatSliceScore(selectedSlice.transcriptCoverageScore)}
+                           </span>
+                           <span className="px-2 py-1 rounded bg-slate-500/10 text-slate-300 border border-slate-500/20">
+                             {formatSpeechContinuityGrade(selectedSlice.speechContinuityGrade)}
+                           </span>
+                         </div>
+                       </div>
+                       {(selectedSlice.subtitleSegmentCount !== undefined || selectedSlice.subtitleUrl) && (
+                         <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-400">
+                           {selectedSlice.subtitleSegmentCount !== undefined && (
+                             <span className="inline-flex items-center gap-1 rounded border border-[#333] bg-[#101010] px-2 py-1">
+                               <FileText size={12} /> {selectedSlice.subtitleSegmentCount} subtitle segments
+                             </span>
+                           )}
+                           {selectedSlice.subtitleUrl && (
+                             <button
+                               type="button"
+                               className="inline-flex items-center gap-1 rounded border border-[#333] bg-[#101010] px-2 py-1 text-blue-300 hover:border-blue-500/40 hover:bg-blue-500/10 transition-colors"
+                               onClick={() => handleDownload(selectedSlice.subtitleUrl, `${selectedSlice.name}.srt`)}
+                             >
+                               <Download size={12} /> Subtitle
+                             </button>
+                           )}
+                         </div>
+                       )}
+                       {selectedSlice.summary && (
+                         <p className="text-xs leading-relaxed text-gray-300">{selectedSlice.summary}</p>
+                       )}
+                       {selectedSlice.reason && (
+                         <p className="text-xs leading-relaxed text-gray-400">{selectedSlice.reason}</p>
+                       )}
+                       {selectedSlice.transcriptText && (
+                         <div className="rounded border border-[#2A2A2A] bg-[#0F0F0F] p-3">
+                           <div className="mb-2 flex items-center gap-2 text-[11px] font-medium text-gray-400">
+                             <FileText size={12} /> Speech transcript
+                           </div>
+                           <p className="max-h-24 overflow-y-auto pr-1 text-xs leading-relaxed text-gray-300 custom-scrollbar">
+                             {selectedSlice.transcriptText}
+                           </p>
+                         </div>
+                       )}
+                       {selectedSlice.risks?.length ? (
+                         <div className="flex flex-wrap items-center gap-2">
+                           {selectedSlice.risks.map((risk) => (
+                             <span key={risk} className="inline-flex items-center gap-1 rounded border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-300">
+                               <ShieldAlert size={12} /> {risk}
+                             </span>
+                           ))}
+                         </div>
+                       ) : null}
+                       {selectedSlice.topicKeywords?.length ? (
+                         <div className="flex flex-wrap items-center gap-2">
+                           {selectedSlice.topicKeywords.map((keyword) => (
+                             <span key={keyword} className="inline-flex items-center gap-1 rounded border border-indigo-500/20 bg-indigo-500/10 px-2 py-1 text-[11px] text-indigo-300">
+                               <Tag size={12} /> {keyword}
+                             </span>
+                           ))}
+                         </div>
+                       ) : null}
+                       {selectedSlice.contentArcMissingStages?.length ? (
+                         <div className="flex flex-wrap items-center gap-2">
+                           {selectedSlice.contentArcMissingStages.map((stage) => (
+                             <span key={stage} className="inline-flex items-center gap-1 rounded border border-teal-500/20 bg-teal-500/10 px-2 py-1 text-[11px] text-teal-300">
+                               <ShieldAlert size={12} /> missing-{stage}
+                             </span>
+                           ))}
+                         </div>
+                       ) : null}
+                       {selectedSlice.publishabilityIssues?.length ? (
+                         <div className="flex flex-wrap items-center gap-2">
+                           {selectedSlice.publishabilityIssues.map((issue) => (
+                             <span key={issue} className="inline-flex items-center gap-1 rounded border border-rose-500/20 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-300">
+                               <ShieldAlert size={12} /> {issue}
+                             </span>
+                           ))}
+                         </div>
+                       ) : null}
+                       {selectedSlice.platformReadinessIssues?.length ? (
+                         <div className="flex flex-wrap items-center gap-2">
+                           {selectedSlice.platformReadinessIssues.map((issue) => (
+                             <span key={issue} className="inline-flex items-center gap-1 rounded border border-rose-500/20 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-300">
+                               <ShieldAlert size={12} /> {issue}
+                             </span>
+                           ))}
+                         </div>
+                       ) : null}
+                       {selectedSlice.sentenceBoundaryIssues?.length ? (
+                         <div className="flex flex-wrap items-center gap-2">
+                           {selectedSlice.sentenceBoundaryIssues.map((issue) => (
+                             <span key={issue} className="inline-flex items-center gap-1 rounded border border-sky-500/20 bg-sky-500/10 px-2 py-1 text-[11px] text-sky-300">
+                               <ShieldAlert size={12} /> {issue}
+                             </span>
+                           ))}
+                         </div>
+                       ) : null}
+                     </div>
+                   )}
                  </div>
                ) : (
                  <div className="flex flex-col items-center justify-center text-gray-500 gap-4">

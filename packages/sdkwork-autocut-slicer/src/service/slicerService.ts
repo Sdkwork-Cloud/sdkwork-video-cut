@@ -21,31 +21,22 @@ import {
   updateTask,
   validateAutoCutProcessingSource,
   type AutoCutSpeechTranscriptionSegment,
-  type AutoCutVideoSliceArtifactResult,
+  type AutoCutVideoSliceRenderProfile,
   type AutoCutVideoSliceClipRequest,
+  type AutoCutVideoSliceRequest,
+  type AutoCutVideoSliceArtifactResult,
 } from '@sdkwork/autocut-services';
-
-const DEFAULT_SLICE_COUNT = 5;
-const MIN_SLICE_DURATION_MS = 5_000;
-const MAX_SLICE_DURATION_MS = 10 * 60 * 1_000;
-
-interface NormalizedSlicePlanClip extends AutoCutVideoSliceClipRequest {
-  index: number;
-}
-
-function sortSliceClipsByStartMs(clips: NormalizedSlicePlanClip[]) {
-  const sorted: NormalizedSlicePlanClip[] = [];
-  for (const clip of clips) {
-    const insertIndex = sorted.findIndex((existingClip) => clip.startMs < existingClip.startMs);
-    if (insertIndex < 0) {
-      sorted.push(clip);
-    } else {
-      sorted.splice(insertIndex, 0, clip);
-    }
-  }
-
-  return sorted;
-}
+import {
+  buildTranscriptSliceCandidates,
+  createDeterministicSlicePlan,
+  createTranscriptAssistedSlicePlan,
+  getVideoSlicePlanningPolicy,
+  normalizeSliceDurationMs,
+  parseLlmSlicePlan,
+  validateVideoSliceParams,
+  type VideoSlicePlanningPolicy,
+  type NormalizedSlicePlanClip,
+} from './slicePlanner';
 
 function getVideoSliceSourceName(params: VideoSliceParams) {
   if (params.file) {
@@ -76,203 +67,25 @@ function createVideoSliceTask(params: VideoSliceParams): AppTask {
   };
 }
 
-function normalizeSliceDurationMs(durationSeconds: number) {
-  const durationMs = Math.round(durationSeconds * 1_000);
-  if (!Number.isFinite(durationMs)) {
-    return 15_000;
-  }
-
-  return Math.max(MIN_SLICE_DURATION_MS, Math.min(durationMs, MAX_SLICE_DURATION_MS));
-}
-
-function createDeterministicSlicePlan(params: VideoSliceParams): NormalizedSlicePlanClip[] {
-  const minDurationMs = normalizeSliceDurationMs(params.minDuration);
-  const maxDurationMs = normalizeSliceDurationMs(params.maxDuration);
-  const durationMs = Math.min(minDurationMs, maxDurationMs);
-  const spacingMs = Math.max(durationMs, 10_000);
-
-  return Array.from({ length: DEFAULT_SLICE_COUNT }).map((_, index) => ({
-    index,
-    startMs: index * spacingMs,
-    durationMs,
-    label: `高光片段 ${index + 1}`,
-  }));
-}
-
-function createTranscriptAssistedSlicePlan(
-  params: VideoSliceParams,
-  transcriptSegments: readonly AutoCutSpeechTranscriptionSegment[],
-): NormalizedSlicePlanClip[] {
-  const minDurationMs = normalizeSliceDurationMs(params.minDuration);
-  const maxDurationMs = normalizeSliceDurationMs(params.maxDuration);
-  const fallbackDurationMs = Math.min(minDurationMs, maxDurationMs);
-  const orderedSegments = sortSliceClipsByStartMs(
-    transcriptSegments
-      .filter((segment) => segment.text.trim())
-      .filter((segment) => Number.isFinite(segment.startMs) && segment.startMs >= 0)
-      .map((segment, index) => ({
-        index,
-        startMs: Math.round(segment.startMs),
-        durationMs: Math.max(
-          minDurationMs,
-          Math.min(Math.round(segment.endMs - segment.startMs), maxDurationMs),
-        ),
-        label: segment.text.trim().slice(0, 48) || `Transcript highlight ${index + 1}`,
-      })),
-  );
-
-  if (orderedSegments.length === 0) {
-    return createDeterministicSlicePlan(params);
-  }
-
-  const clips: NormalizedSlicePlanClip[] = [];
-  const appendClip = (startMs: number, durationMs: number, label: string) => {
-    if (clips.length >= DEFAULT_SLICE_COUNT) {
-      return;
-    }
-    const nextAvailableStartMs = clips.reduce(
-      (maxEnd, clip) => Math.max(maxEnd, clip.startMs + clip.durationMs),
-      0,
-    );
-    clips.push({
-      index: clips.length,
-      startMs: Math.max(startMs, clips.length === 0 ? 0 : nextAvailableStartMs),
-      durationMs: Math.max(minDurationMs, Math.min(durationMs, maxDurationMs)),
-      label: label.trim() || `Transcript highlight ${clips.length + 1}`,
-    });
-  };
-
-  for (const segment of orderedSegments) {
-    appendClip(segment.startMs, segment.durationMs, segment.label);
-  }
-
-  while (clips.length < DEFAULT_SLICE_COUNT) {
-    const startMs = clips.reduce((maxEnd, clip) => Math.max(maxEnd, clip.startMs + clip.durationMs), 0);
-    appendClip(startMs, fallbackDurationMs, `楂樺厜鐗囨 ${clips.length + 1}`);
-  }
-
-  return clips;
-}
-
-function normalizeCandidateSlicePlan(
-  candidates: NormalizedSlicePlanClip[],
-  params: VideoSliceParams,
-): NormalizedSlicePlanClip[] {
-  const minDurationMs = normalizeSliceDurationMs(params.minDuration);
-  const maxDurationMs = normalizeSliceDurationMs(params.maxDuration);
-  const fallbackDurationMs = Math.min(minDurationMs, maxDurationMs);
-  const normalizedCandidates = sortSliceClipsByStartMs(candidates
-    .filter((clip) => Number.isFinite(clip.startMs) && clip.startMs >= 0 && Number.isFinite(clip.durationMs))
-    .map((clip, index) => ({
-      index,
-      startMs: Math.round(clip.startMs),
-      durationMs: Math.max(minDurationMs, Math.min(Math.round(clip.durationMs), maxDurationMs)),
-      label: clip.label?.trim() || `楂樺厜鐗囨 ${index + 1}`,
-    })));
-
-  const clips: NormalizedSlicePlanClip[] = [];
-
-  const appendClip = (startMs: number, durationMs: number, label: string) => {
-    if (clips.length >= DEFAULT_SLICE_COUNT) {
-      return;
-    }
-
-    clips.push({
-      index: clips.length,
-      startMs,
-      durationMs,
-      label,
-    });
-  };
-
-  for (const candidate of normalizedCandidates) {
-    if (clips.length >= DEFAULT_SLICE_COUNT) {
-      break;
-    }
-
-    let nextAvailableStartMs = clips.reduce(
-      (maxEnd, clip) => Math.max(maxEnd, clip.startMs + clip.durationMs),
-      0,
-    );
-
-    while (clips.length < DEFAULT_SLICE_COUNT && nextAvailableStartMs + fallbackDurationMs <= candidate.startMs) {
-      appendClip(nextAvailableStartMs, fallbackDurationMs, `楂樺厜鐗囨 ${clips.length + 1}`);
-      nextAvailableStartMs += fallbackDurationMs;
-    }
-
-    if (clips.length >= DEFAULT_SLICE_COUNT) {
-      break;
-    }
-
-    nextAvailableStartMs = clips.reduce(
-      (maxEnd, clip) => Math.max(maxEnd, clip.startMs + clip.durationMs),
-      0,
-    );
-    if (candidate.startMs >= nextAvailableStartMs) {
-      appendClip(candidate.startMs, candidate.durationMs, candidate.label);
-    }
-  }
-
-  while (clips.length < DEFAULT_SLICE_COUNT) {
-    const startMs = clips.reduce((maxEnd, clip) => Math.max(maxEnd, clip.startMs + clip.durationMs), 0);
-    appendClip(startMs, fallbackDurationMs, `楂樺厜鐗囨 ${clips.length + 1}`);
-  }
-
-  return clips;
-}
-
-function parseLlmSlicePlan(
-  content: string,
-  params: VideoSliceParams,
-  fallbackPlan: NormalizedSlicePlanClip[],
-): NormalizedSlicePlanClip[] {
-  const jsonStart = content.indexOf('[');
-  const jsonEnd = content.lastIndexOf(']');
-  if (jsonStart < 0 || jsonEnd <= jsonStart) {
-    return fallbackPlan;
-  }
-
-  try {
-    const parsed = JSON.parse(content.slice(jsonStart, jsonEnd + 1));
-    if (!Array.isArray(parsed)) {
-      return fallbackPlan;
-    }
-
-    const minDurationMs = normalizeSliceDurationMs(params.minDuration);
-    const maxDurationMs = normalizeSliceDurationMs(params.maxDuration);
-    const normalized = parsed
-      .slice(0, DEFAULT_SLICE_COUNT)
-      .map((clip, index) => {
-        const startMs = Number(clip?.startMs);
-        const durationMs = Number(clip?.durationMs);
-        const label = typeof clip?.label === 'string' ? clip.label.trim() : '';
-        if (!Number.isFinite(startMs) || startMs < 0 || !Number.isFinite(durationMs)) {
-          return null;
-        }
-
-        return {
-          index,
-          startMs: Math.round(startMs),
-          durationMs: Math.max(minDurationMs, Math.min(Math.round(durationMs), maxDurationMs)),
-          label: label || `高光片段 ${index + 1}`,
-        };
-      })
-      .filter((clip): clip is NormalizedSlicePlanClip => Boolean(clip));
-
-    return normalized.length > 0 ? normalizeCandidateSlicePlan(normalized, params) : fallbackPlan;
-  } catch {
-    return fallbackPlan;
-  }
-}
-
 async function createIntelligentSlicePlan(
   params: VideoSliceParams,
   transcriptSegments: readonly AutoCutSpeechTranscriptionSegment[] = [],
 ) {
+  const trustedSourceDurationMs = resolveTrustedVideoSliceSourceDurationMs(params);
+  if (trustedSourceDurationMs !== undefined && trustedSourceDurationMs < 5_000) {
+    throw new Error('AutoCut source video is too short to produce a valid video slice.');
+  }
+
+  const planningParams = {
+    ...params,
+    ...(trustedSourceDurationMs !== undefined ? { sourceDurationMs: trustedSourceDurationMs } : {}),
+  };
+  const planningPolicy = getVideoSlicePlanningPolicy(planningParams);
+  const transcriptCandidates = buildTranscriptSliceCandidates(planningParams, transcriptSegments);
   const fallbackPlan =
-    transcriptSegments.length > 0
-      ? createTranscriptAssistedSlicePlan(params, transcriptSegments)
-      : createDeterministicSlicePlan(params);
+    transcriptCandidates.length > 0
+      ? createTranscriptAssistedSlicePlan(planningParams, transcriptSegments)
+      : createDeterministicSlicePlan(planningParams);
 
   try {
     const transcriptTimeline = transcriptSegments.slice(0, 80).map((segment) => ({
@@ -282,11 +95,12 @@ async function createIntelligentSlicePlan(
       text: segment.text,
     }));
     const result = await createAutoCutOpenAiCompatibleChatCompletion({
+      model: params.llmModel,
       messages: [
         {
           role: 'system',
           content:
-            'You are AutoCut video highlight planner. Return only a compact JSON array of clips with startMs, durationMs, and label.',
+            'You are AutoCut video highlight planner. Select continuous short-video windows only. Return only a compact JSON array with candidateId or startMs, durationMs/endMs, title, qualityScore, continuityScore, and risks.',
         },
         {
           role: 'user',
@@ -294,26 +108,97 @@ async function createIntelligentSlicePlan(
             mode: params.mode,
             baseAlgorithm: params.baseAlgorithm,
             highlightEngine: params.highlightEngine,
+            planningPolicy,
+            publishingTarget: {
+              platform: planningPolicy.targetPlatform,
+              aspectRatio: planningPolicy.targetAspectRatio,
+              objectFit: planningPolicy.videoObjectFit,
+            },
             minDurationMs: normalizeSliceDurationMs(params.minDuration),
             maxDurationMs: normalizeSliceDurationMs(params.maxDuration),
-            requestedClipCount: DEFAULT_SLICE_COUNT,
+            idealDurationMs: planningPolicy.idealDurationMs,
+            requestedClipCount: planningPolicy.targetSliceCount,
+            sliceCountMode: planningPolicy.sliceCountMode,
+            continuityLevel: planningPolicy.continuityLevel,
+            continuityJoinGapMs: planningPolicy.continuityJoinGapMs,
+            customKeywords: planningPolicy.customKeywords,
             filters: {
               noiseReduction: params.enableNoiseReduction,
               coughFilter: params.enableCoughFilter,
               repeatFilter: params.enableRepeatFilter,
               subtitles: params.enableSubtitles,
             },
-            transcriptAssisted: transcriptTimeline.length > 0,
+            phaseOneRules: [
+              'Each output clip must be one continuous source interval.',
+              'Prefer candidateWindows because they have deterministic continuity repair.',
+              'If transcript candidateWindows are present, choose candidateId instead of inventing raw midpoint timings.',
+              'Do not start clips at weak connector words unless the previous context is included.',
+              'Do not end clips at trailing connector words; include the next transcript segment when speech is incomplete.',
+              'Return fewer high-quality choices before inventing weak fixed-interval clips.',
+              'For fixed or coverage-first mode, fill up to requestedClipCount with continuous non-overlapping intervals.',
+              'For quality-first mode, return only strong publishable windows even if fewer than requestedClipCount.',
+            ],
+            transcriptAssisted: transcriptCandidates.length > 0,
+            candidateWindows: transcriptCandidates.map((candidate) => ({
+              id: candidate.candidateId,
+              startMs: candidate.startMs,
+              endMs: candidate.endMs,
+              durationMs: candidate.durationMs,
+              label: candidate.label,
+              score: candidate.score,
+              qualityScore: candidate.qualityScore,
+              continuityScore: candidate.continuityScore,
+              storyShape: candidate.storyShape,
+              publishabilityScore: candidate.publishabilityScore,
+              publishabilityGrade: candidate.publishabilityGrade,
+              publishabilityIssues: candidate.publishabilityIssues,
+              boundaryQualityScore: candidate.boundaryQualityScore,
+              hookStrength: candidate.hookStrength,
+              endingCompleteness: candidate.endingCompleteness,
+              contentArcScore: candidate.contentArcScore,
+              contentArcGrade: candidate.contentArcGrade,
+              contentArcStages: candidate.contentArcStages,
+              contentArcMissingStages: candidate.contentArcMissingStages,
+              topicCoherenceScore: candidate.topicCoherenceScore,
+              topicCoherenceGrade: candidate.topicCoherenceGrade,
+              topicShiftCount: candidate.topicShiftCount,
+              topicKeywords: candidate.topicKeywords,
+              platformReadinessScore: candidate.platformReadinessScore,
+              platformReadinessGrade: candidate.platformReadinessGrade,
+              platformReadinessIssues: candidate.platformReadinessIssues,
+              sentenceBoundaryIntegrityScore: candidate.sentenceBoundaryIntegrityScore,
+              sentenceBoundaryIntegrityGrade: candidate.sentenceBoundaryIntegrityGrade,
+              sentenceBoundaryIssues: candidate.sentenceBoundaryIssues,
+              risks: candidate.risks,
+              summary: candidate.summary,
+              transcriptCoverageScore: candidate.transcriptCoverageScore,
+              subtitleSegmentCount: candidate.subtitleSegmentCount,
+              speechContinuityGrade: candidate.speechContinuityGrade,
+              speechStartMs: candidate.speechStartMs,
+              speechEndMs: candidate.speechEndMs,
+              boundaryPaddingBeforeMs: candidate.boundaryPaddingBeforeMs,
+              boundaryPaddingAfterMs: candidate.boundaryPaddingAfterMs,
+              anchorSegmentIndex: candidate.anchorSegmentIndex,
+              text: candidate.text,
+            })),
             transcriptTimeline,
           }),
         },
       ],
     });
 
-    return parseLlmSlicePlan(result.content, params, fallbackPlan);
+    return parseLlmSlicePlan(result.content, planningParams, fallbackPlan, transcriptCandidates);
   } catch {
     return fallbackPlan;
   }
+}
+
+function resolveTrustedVideoSliceSourceDurationMs(params: VideoSliceParams) {
+  if (typeof params.sourceDurationMs === 'number' && Number.isFinite(params.sourceDurationMs) && params.sourceDurationMs > 0) {
+    return Math.round(params.sourceDurationMs);
+  }
+
+  return undefined;
 }
 
 async function finishVideoSliceTask(newTask: AppTask, sliceResults: TaskSliceResult[]) {
@@ -359,6 +244,7 @@ function createNativeSliceResult(
   url: string,
   thumbnailUrl: string,
   subtitleUrl?: string,
+  plannedClip?: NormalizedSlicePlanClip,
 ): TaskSliceResult {
   return {
     id: nativeSlice.artifactUuid,
@@ -370,11 +256,100 @@ function createNativeSliceResult(
     url,
     ...(subtitleUrl ? { subtitleUrl } : {}),
     ...(nativeSlice.subtitleFormat ? { subtitleFormat: nativeSlice.subtitleFormat } : {}),
+    ...(plannedClip?.title ? { title: plannedClip.title } : {}),
+    ...(plannedClip?.summary ? { summary: plannedClip.summary } : {}),
+    ...(plannedClip?.reason ? { reason: plannedClip.reason } : {}),
+    ...(plannedClip?.qualityScore !== undefined ? { qualityScore: plannedClip.qualityScore } : {}),
+    ...(plannedClip?.continuityScore !== undefined ? { continuityScore: plannedClip.continuityScore } : {}),
+    ...(plannedClip?.storyShape ? { storyShape: plannedClip.storyShape } : {}),
+    ...(plannedClip?.publishabilityScore !== undefined ? { publishabilityScore: plannedClip.publishabilityScore } : {}),
+    ...(plannedClip?.publishabilityGrade ? { publishabilityGrade: plannedClip.publishabilityGrade } : {}),
+    ...(plannedClip?.publishabilityIssues ? { publishabilityIssues: plannedClip.publishabilityIssues } : {}),
+    ...(plannedClip?.boundaryQualityScore !== undefined ? { boundaryQualityScore: plannedClip.boundaryQualityScore } : {}),
+    ...(plannedClip?.hookStrength ? { hookStrength: plannedClip.hookStrength } : {}),
+    ...(plannedClip?.endingCompleteness ? { endingCompleteness: plannedClip.endingCompleteness } : {}),
+    ...(plannedClip?.contentArcScore !== undefined ? { contentArcScore: plannedClip.contentArcScore } : {}),
+    ...(plannedClip?.contentArcGrade ? { contentArcGrade: plannedClip.contentArcGrade } : {}),
+    ...(plannedClip?.contentArcStages ? { contentArcStages: plannedClip.contentArcStages } : {}),
+    ...(plannedClip?.contentArcMissingStages ? { contentArcMissingStages: plannedClip.contentArcMissingStages } : {}),
+    ...(plannedClip?.topicCoherenceScore !== undefined ? { topicCoherenceScore: plannedClip.topicCoherenceScore } : {}),
+    ...(plannedClip?.topicCoherenceGrade ? { topicCoherenceGrade: plannedClip.topicCoherenceGrade } : {}),
+    ...(plannedClip?.topicShiftCount !== undefined ? { topicShiftCount: plannedClip.topicShiftCount } : {}),
+    ...(plannedClip?.topicKeywords ? { topicKeywords: plannedClip.topicKeywords } : {}),
+    ...(plannedClip?.platformReadinessScore !== undefined ? { platformReadinessScore: plannedClip.platformReadinessScore } : {}),
+    ...(plannedClip?.platformReadinessGrade ? { platformReadinessGrade: plannedClip.platformReadinessGrade } : {}),
+    ...(plannedClip?.platformReadinessIssues ? { platformReadinessIssues: plannedClip.platformReadinessIssues } : {}),
+    ...(plannedClip?.sentenceBoundaryIntegrityScore !== undefined
+      ? { sentenceBoundaryIntegrityScore: plannedClip.sentenceBoundaryIntegrityScore }
+      : {}),
+    ...(plannedClip?.sentenceBoundaryIntegrityGrade
+      ? { sentenceBoundaryIntegrityGrade: plannedClip.sentenceBoundaryIntegrityGrade }
+      : {}),
+    ...(plannedClip?.sentenceBoundaryIssues ? { sentenceBoundaryIssues: plannedClip.sentenceBoundaryIssues } : {}),
+    ...(plannedClip?.risks ? { risks: plannedClip.risks } : {}),
+    sourceStartMs: plannedClip?.sourceStartMs ?? nativeSlice.startMs,
+    sourceEndMs: plannedClip?.sourceEndMs ?? nativeSlice.startMs + nativeSlice.durationMs,
+    speechStartMs: plannedClip?.speechStartMs ?? plannedClip?.sourceStartMs ?? nativeSlice.startMs,
+    speechEndMs:
+      plannedClip?.speechEndMs ??
+      plannedClip?.sourceEndMs ??
+      nativeSlice.startMs + nativeSlice.durationMs,
+    boundaryPaddingBeforeMs: plannedClip?.boundaryPaddingBeforeMs ?? 0,
+    boundaryPaddingAfterMs: plannedClip?.boundaryPaddingAfterMs ?? 0,
+    ...(plannedClip?.transcriptText ? { transcriptText: plannedClip.transcriptText } : {}),
+    ...(plannedClip?.transcriptCoverageScore !== undefined
+      ? { transcriptCoverageScore: plannedClip.transcriptCoverageScore }
+      : {}),
+    ...(plannedClip?.subtitleSegmentCount !== undefined ? { subtitleSegmentCount: plannedClip.subtitleSegmentCount } : {}),
+    ...(plannedClip?.speechContinuityGrade ? { speechContinuityGrade: plannedClip.speechContinuityGrade } : {}),
+  };
+}
+
+function toNativeSliceClipRequest(clip: NormalizedSlicePlanClip): AutoCutVideoSliceClipRequest {
+  return {
+    startMs: clip.startMs,
+    durationMs: clip.durationMs,
+    label: clip.label,
+  };
+}
+
+function createVideoSliceRenderProfile(
+  planningPolicy: VideoSlicePlanningPolicy,
+): AutoCutVideoSliceRenderProfile | undefined {
+  if (planningPolicy.targetAspectRatio === 'auto') {
+    return undefined;
+  }
+
+  return {
+    targetAspectRatio: planningPolicy.targetAspectRatio,
+    objectFit: planningPolicy.videoObjectFit,
+  };
+}
+
+type VideoSliceSubtitleRequestProjection = Partial<Pick<
+  AutoCutVideoSliceRequest,
+  'subtitleFormat' | 'subtitleMode' | 'subtitleStyleId' | 'subtitleSegments'
+>>;
+
+function createVideoSliceSubtitleRequest(
+  params: VideoSliceParams,
+  transcriptSegments: AutoCutSpeechTranscriptionSegment[],
+): VideoSliceSubtitleRequestProjection {
+  if (!params.enableSubtitles || transcriptSegments.length === 0) {
+    return { subtitleMode: 'none' };
+  }
+
+  return {
+    subtitleFormat: 'srt',
+    subtitleMode: params.subtitleMode ?? 'both',
+    ...(params.subtitleStyleId ? { subtitleStyleId: params.subtitleStyleId } : {}),
+    subtitleSegments: transcriptSegments,
   };
 }
 
 export async function processVideoSlice(params: VideoSliceParams) {
   validateAutoCutProcessingSource({ ...params, allowExternalUrl: true });
+  validateVideoSliceParams(params);
 
   const newTask = createVideoSliceTask(params);
   await addTask(newTask);
@@ -436,7 +411,17 @@ export async function processVideoSlice(params: VideoSliceParams) {
           );
         }
       }
-      const clips = await createIntelligentSlicePlan(params, transcriptSegments);
+      const planningPolicy = getVideoSlicePlanningPolicy(params);
+      const renderProfile = createVideoSliceRenderProfile(planningPolicy);
+      const planningParams = {
+        ...params,
+        ...(importedMedia.durationMs !== undefined ? { sourceDurationMs: importedMedia.durationMs } : {}),
+      };
+      const plannedClips = await createIntelligentSlicePlan(planningParams, transcriptSegments);
+      if (plannedClips.length === 0) {
+        throw new Error('AutoCut source video is too short to produce a valid video slice.');
+      }
+      const nativeClips = plannedClips.map(toNativeSliceClipRequest);
       await updateTask(newTask.id, {
         status: AUTOCUT_TASK_STATUS.processing,
         progress: 70,
@@ -444,16 +429,11 @@ export async function processVideoSlice(params: VideoSliceParams) {
       });
       const nativeResult = await nativeHostClient.sliceVideo({
         assetUuid: importedMedia.assetUuid,
-        clips,
+        clips: nativeClips,
         outputFormat: 'mp4',
         ...(outputRootDir ? { outputRootDir } : {}),
-        ...(params.enableSubtitles && transcriptSegments.length > 0
-          ? {
-              subtitleFormat: 'srt',
-              ...(params.subtitleStyleId ? { subtitleStyleId: params.subtitleStyleId } : {}),
-              subtitleSegments: transcriptSegments,
-            }
-          : {}),
+        ...(renderProfile ? { renderProfile } : {}),
+        ...createVideoSliceSubtitleRequest(params, transcriptSegments),
       });
       const completedTask: AppTask = {
         ...newTask,
@@ -471,6 +451,7 @@ export async function processVideoSlice(params: VideoSliceParams) {
           nativeSlice.subtitleArtifactPath
             ? nativeHostClient.createAssetUrl(nativeSlice.subtitleArtifactPath)
             : undefined,
+          plannedClips[index],
         ),
       );
       const completedData = await finishVideoSliceTask(completedTask, sliceResults);

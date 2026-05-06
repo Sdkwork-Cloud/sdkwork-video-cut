@@ -175,6 +175,7 @@ pub struct AutoCutMediaImportResult {
     pub name: String,
     pub media_type: String,
     pub mime_type: String,
+    pub duration_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -185,6 +186,7 @@ pub struct AutoCutLocalMediaFileDescription {
     pub name: String,
     pub media_type: String,
     pub mime_type: String,
+    pub duration_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -239,6 +241,13 @@ pub struct AutoCutVideoSliceClipRequest {
     pub label: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoCutVideoSliceRenderProfile {
+    pub target_aspect_ratio: String,
+    pub object_fit: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoCutVideoSliceRequest {
@@ -246,7 +255,9 @@ pub struct AutoCutVideoSliceRequest {
     pub clips: Vec<AutoCutVideoSliceClipRequest>,
     pub output_format: String,
     pub output_root_dir: Option<String>,
+    pub render_profile: Option<AutoCutVideoSliceRenderProfile>,
     pub subtitle_format: Option<String>,
+    pub subtitle_mode: Option<String>,
     pub subtitle_style_id: Option<String>,
     pub subtitle_segments: Option<Vec<AutoCutSpeechTranscriptionSegment>>,
 }
@@ -649,17 +660,20 @@ pub fn import_autocut_media_file(
 ) -> Result<AutoCutMediaImportResult, String> {
     let connection = database_runtime::open_autocut_database_connection(app)?;
     let media_root = autocut_media_root_for_request(app, request.output_root_dir.as_deref())?;
-    import_autocut_media_file_in_root(&connection, &media_root, request)
+    let toolchain = resolve_autocut_ffmpeg_toolchain_for_app(app);
+    import_autocut_media_file_in_root(&connection, &media_root, request, &toolchain)
 }
 
 pub fn describe_autocut_local_media_file(
+    app: &AppHandle,
     request: AutoCutMediaImportRequest,
 ) -> Result<AutoCutLocalMediaFileDescription, String> {
     let _command_contract = "autocut_describe_local_media_file";
-    describe_autocut_local_media_file_from_path(Path::new(&request.source_path))
+    let toolchain = resolve_autocut_ffmpeg_toolchain_for_app(app);
+    describe_autocut_local_media_file_from_path(Path::new(&request.source_path), Some(&toolchain))
 }
 
-pub fn select_autocut_local_video_file() -> Result<Option<AutoCutLocalMediaFileDescription>, String> {
+pub fn select_autocut_local_video_file(app: &AppHandle) -> Result<Option<AutoCutLocalMediaFileDescription>, String> {
     let Some(source_path) = rfd::FileDialog::new()
         .set_title("Select video file")
         .add_filter("Video", SUPPORTED_VIDEO_FILE_DIALOG_EXTENSIONS)
@@ -668,7 +682,8 @@ pub fn select_autocut_local_video_file() -> Result<Option<AutoCutLocalMediaFileD
         return Ok(None);
     };
 
-    let description = describe_autocut_local_media_file_from_path(&source_path)?;
+    let toolchain = resolve_autocut_ffmpeg_toolchain_for_app(app);
+    let description = describe_autocut_local_media_file_from_path(&source_path, Some(&toolchain))?;
     if description.media_type != "video" {
         return Err("selected AutoCut source file must be a video file".to_string());
     }
@@ -1618,6 +1633,73 @@ fn normalize_video_slice_format(format: &str) -> Result<String, String> {
     }
 }
 
+fn normalize_video_slice_render_profile(
+    render_profile: Option<AutoCutVideoSliceRenderProfile>,
+) -> Result<Option<AutoCutVideoSliceRenderProfile>, String> {
+    let Some(render_profile) = render_profile else {
+        return Ok(None);
+    };
+
+    let target_aspect_ratio = render_profile.target_aspect_ratio.trim();
+    if target_aspect_ratio.is_empty() || target_aspect_ratio == "auto" {
+        return Ok(None);
+    }
+
+    let target_aspect_ratio = match target_aspect_ratio {
+        "16:9" | "9:16" | "1:1" | "4:3" => target_aspect_ratio.to_string(),
+        _ => {
+            return Err(format!(
+                "AutoCut video slicing renderProfile targetAspectRatio is unsupported: {target_aspect_ratio}"
+            ));
+        }
+    };
+
+    let object_fit = match render_profile.object_fit.trim() {
+        "" | "contain" => "contain".to_string(),
+        "cover" => "cover".to_string(),
+        value => {
+            return Err(format!(
+                "AutoCut video slicing renderProfile objectFit is unsupported: {value}"
+            ));
+        }
+    };
+
+    Ok(Some(AutoCutVideoSliceRenderProfile {
+        target_aspect_ratio,
+        object_fit,
+    }))
+}
+
+fn video_slice_render_dimensions(target_aspect_ratio: &str) -> Option<(i64, i64)> {
+    match target_aspect_ratio {
+        "16:9" => Some((1920, 1080)),
+        "9:16" => Some((1080, 1920)),
+        "1:1" => Some((1080, 1080)),
+        "4:3" => Some((1440, 1080)),
+        _ => None,
+    }
+}
+
+fn video_slice_render_filter_chain(
+    render_profile: Option<&AutoCutVideoSliceRenderProfile>,
+) -> Option<String> {
+    let render_profile = render_profile?;
+    let (target_width, target_height) =
+        video_slice_render_dimensions(render_profile.target_aspect_ratio.as_str())?;
+
+    let filter_chain = if render_profile.object_fit == "cover" {
+        format!(
+            "scale={target_width}:{target_height}:force_original_aspect_ratio=increase:flags=lanczos,crop={target_width}:{target_height}"
+        )
+    } else {
+        format!(
+            "scale={target_width}:{target_height}:force_original_aspect_ratio=decrease:flags=lanczos,pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2"
+        )
+    };
+
+    Some(format!("{filter_chain},setsar=1"))
+}
+
 fn normalize_video_slice_subtitle_format(format: Option<&str>) -> Result<Option<String>, String> {
     let Some(format) = format.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
@@ -1626,6 +1708,59 @@ fn normalize_video_slice_subtitle_format(format: Option<&str>) -> Result<Option<
     match format.to_ascii_lowercase().as_str() {
         "srt" => Ok(Some("srt".to_string())),
         _ => Err("unsupported video slice subtitleFormat, expected srt".to_string()),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoCutVideoSliceSubtitleMode {
+    None,
+    Srt,
+    Burned,
+    Both,
+}
+
+impl AutoCutVideoSliceSubtitleMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Srt => "srt",
+            Self::Burned => "burned",
+            Self::Both => "both",
+        }
+    }
+
+    fn writes_srt_sidecar(self) -> bool {
+        matches!(self, Self::Srt | Self::Both)
+    }
+
+    fn burns_into_video(self) -> bool {
+        matches!(self, Self::Burned | Self::Both)
+    }
+}
+
+fn normalize_video_slice_subtitle_mode(
+    mode: Option<&str>,
+    subtitle_format: Option<&str>,
+    has_subtitle_segments: bool,
+) -> Result<AutoCutVideoSliceSubtitleMode, String> {
+    if !has_subtitle_segments {
+        return Ok(AutoCutVideoSliceSubtitleMode::None);
+    }
+
+    let Some(mode) = mode.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(if subtitle_format == Some("srt") {
+            AutoCutVideoSliceSubtitleMode::Srt
+        } else {
+            AutoCutVideoSliceSubtitleMode::None
+        });
+    };
+
+    match mode.to_ascii_lowercase().as_str() {
+        "none" => Ok(AutoCutVideoSliceSubtitleMode::None),
+        "srt" => Ok(AutoCutVideoSliceSubtitleMode::Srt),
+        "burned" => Ok(AutoCutVideoSliceSubtitleMode::Burned),
+        "both" => Ok(AutoCutVideoSliceSubtitleMode::Both),
+        _ => Err("unsupported video slice subtitleMode, expected none, srt, burned, or both".to_string()),
     }
 }
 
@@ -1776,6 +1911,7 @@ fn import_autocut_media_file_in_root(
     connection: &Connection,
     root: &Path,
     request: AutoCutMediaImportRequest,
+    toolchain: &AutoCutFfmpegToolchain,
 ) -> Result<AutoCutMediaImportResult, String> {
     let root = resolve_autocut_request_media_root(root, request.output_root_dir.as_deref())?;
     let input_root = root.join(AUTOCUT_MEDIA_INPUT_DIR);
@@ -1831,6 +1967,11 @@ fn import_autocut_media_file_in_root(
 
     let media_type = classify_media_type(&source_extension).to_string();
     let mime_type = media_mime_type(&source_extension, &media_type).to_string();
+    let duration_ms = if media_type == "video" {
+        read_ffmpeg_media_duration_millis(toolchain, &sandbox_path).ok()
+    } else {
+        None
+    };
     connection
         .execute(
             r#"
@@ -1882,6 +2023,7 @@ fn import_autocut_media_file_in_root(
                 json!({
                     "sourcePath": source_path.display().to_string(),
                     "mediaType": media_type,
+                    "durationMs": duration_ms,
                     "importedBy": "autocut_import_media_file"
                 })
                 .to_string(),
@@ -1896,11 +2038,13 @@ fn import_autocut_media_file_in_root(
         name: source_name,
         media_type,
         mime_type,
+        duration_ms,
     })
 }
 
 fn describe_autocut_local_media_file_from_path(
     source_path: &Path,
+    toolchain: Option<&AutoCutFfmpegToolchain>,
 ) -> Result<AutoCutLocalMediaFileDescription, String> {
     let source_path = ensure_safe_import_source_path(source_path)?;
     let source_name = source_path
@@ -1922,6 +2066,13 @@ fn describe_autocut_local_media_file_from_path(
         .map_err(|error| format!("read local media file metadata failed: {error}"))?;
     let media_type = classify_media_type(&source_extension).to_string();
     let mime_type = media_mime_type(&source_extension, &media_type).to_string();
+    let duration_ms = if media_type == "video" {
+        toolchain.and_then(|ffmpeg_toolchain| {
+            read_ffmpeg_media_duration_millis(ffmpeg_toolchain, &source_path).ok()
+        })
+    } else {
+        None
+    };
 
     Ok(AutoCutLocalMediaFileDescription {
         source_path: source_path.display().to_string(),
@@ -1929,6 +2080,7 @@ fn describe_autocut_local_media_file_from_path(
         name: source_name,
         media_type,
         mime_type,
+        duration_ms,
     })
 }
 
@@ -2245,8 +2397,14 @@ fn slice_autocut_video_from_asset_in_root_with_toolchain(
 
     let output_format = normalize_video_slice_format(&request.output_format)?;
     let clips = normalize_video_slice_clips(&request.clips)?;
+    let render_profile = normalize_video_slice_render_profile(request.render_profile)?;
     let subtitle_format = normalize_video_slice_subtitle_format(request.subtitle_format.as_deref())?;
     let subtitle_segments = normalize_video_slice_subtitle_segments(request.subtitle_segments);
+    let subtitle_mode = normalize_video_slice_subtitle_mode(
+        request.subtitle_mode.as_deref(),
+        subtitle_format.as_deref(),
+        !subtitle_segments.is_empty(),
+    )?;
     let source_duration_ms = read_ffmpeg_media_duration_millis(toolchain, &input_path).ok();
     let task_uuid = autocut_uuid("ops-task")?;
     let task_output_dir = autocut_task_output_dir(&root, &task_uuid)?;
@@ -2255,9 +2413,11 @@ fn slice_autocut_video_from_asset_in_root_with_toolchain(
     let mut input_json = json!({
         "assetUuid": asset.uuid,
         "outputFormat": output_format.clone(),
+        "renderProfile": render_profile.clone(),
         "clips": clips,
         "requestedClips": clips,
         "subtitleFormat": subtitle_format,
+        "subtitleMode": subtitle_mode.as_str(),
         "subtitleStyleId": request.subtitle_style_id,
         "subtitleSegments": subtitle_segments.clone(),
         "subtitleSegmentCount": subtitle_segments.len()
@@ -2319,7 +2479,9 @@ fn slice_autocut_video_from_asset_in_root_with_toolchain(
         &task_output_dir,
         &clips,
         &output_format,
+        render_profile.as_ref(),
         subtitle_format.as_deref(),
+        subtitle_mode,
         &subtitle_segments,
         &worker_lease,
     );
@@ -3717,7 +3879,9 @@ fn run_ffmpeg_video_slices(
     task_output_dir: &Path,
     clips: &[AutoCutVideoSliceClipRequest],
     output_format: &str,
+    render_profile: Option<&AutoCutVideoSliceRenderProfile>,
     subtitle_format: Option<&str>,
+    subtitle_mode: AutoCutVideoSliceSubtitleMode,
     subtitle_segments: &[AutoCutSpeechTranscriptionSegment],
     worker_lease: &AutoCutOpsWorkerLease,
 ) -> Result<Vec<AutoCutVideoSliceOperationOutput>, String> {
@@ -3731,6 +3895,13 @@ fn run_ffmpeg_video_slices(
             monotonic_artifact_suffix()?,
             output_format
         ));
+        let burned_subtitle_path = write_video_slice_burned_subtitle_filter_artifact(
+            task_output_dir,
+            clip,
+            index,
+            subtitle_mode,
+            subtitle_segments,
+        )?;
         let video_output = run_ffmpeg_video_slice(
             connection,
             task_uuid,
@@ -3738,6 +3909,8 @@ fn run_ffmpeg_video_slices(
             input_path,
             &output_path,
             clip,
+            render_profile,
+            burned_subtitle_path.as_deref(),
             index,
             total_clips,
             worker_lease,
@@ -3754,6 +3927,7 @@ fn run_ffmpeg_video_slices(
             input_path,
             &thumbnail_path,
             clip,
+            render_profile,
             index,
             total_clips,
             worker_lease,
@@ -3762,7 +3936,11 @@ fn run_ffmpeg_video_slices(
             task_output_dir,
             clip,
             index,
-            subtitle_format,
+            if subtitle_mode.writes_srt_sidecar() {
+                subtitle_format
+            } else {
+                None
+            },
             subtitle_segments,
         )?;
         outputs.push(AutoCutVideoSliceOperationOutput {
@@ -3800,6 +3978,33 @@ fn write_video_slice_subtitle_artifact(
     fs::write(&output_path, subtitle_text)
         .map_err(|error| format!("write AutoCut video slice subtitle artifact failed: {error}"))?;
     build_media_operation_output(&output_path, "srt", "local-subtitle-writer".to_string()).map(Some)
+}
+
+fn write_video_slice_burned_subtitle_filter_artifact(
+    task_output_dir: &Path,
+    clip: &AutoCutVideoSliceClipRequest,
+    clip_index: usize,
+    subtitle_mode: AutoCutVideoSliceSubtitleMode,
+    subtitle_segments: &[AutoCutSpeechTranscriptionSegment],
+) -> Result<Option<PathBuf>, String> {
+    if !subtitle_mode.burns_into_video() || subtitle_segments.is_empty() {
+        return Ok(None);
+    }
+
+    let subtitle_text = build_video_slice_srt(clip, subtitle_segments);
+    if subtitle_text.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let output_path = task_output_dir.join(format!(
+        "video-slice-{:02}-burned-subtitle-{}.srt",
+        clip_index + 1,
+        monotonic_artifact_suffix()?
+    ));
+    fs::write(&output_path, subtitle_text)
+        .map_err(|error| format!("write AutoCut video slice burned subtitle filter artifact failed: {error}"))?;
+
+    Ok(Some(output_path))
 }
 
 fn build_video_slice_srt(
@@ -3875,6 +4080,32 @@ fn format_srt_timestamp(milliseconds: i64) -> String {
     format!("{hours:02}:{minutes:02}:{seconds:02},{millis:03}")
 }
 
+fn append_video_slice_burned_subtitle_filter(
+    filter_chain: Option<String>,
+    burned_subtitle_path: Option<&Path>,
+) -> Option<String> {
+    let Some(burned_subtitle_path) = burned_subtitle_path else {
+        return filter_chain;
+    };
+    let subtitle_filter = format!(
+        "subtitles='{}'",
+        escape_ffmpeg_filter_path(burned_subtitle_path)
+    );
+
+    Some(match filter_chain {
+        Some(filter_chain) => format!("{filter_chain},{subtitle_filter}"),
+        None => subtitle_filter,
+    })
+}
+
+fn escape_ffmpeg_filter_path(path: &Path) -> String {
+    path.display()
+        .to_string()
+        .replace('\\', "/")
+        .replace(':', "\\:")
+        .replace('\'', "\\'")
+}
+
 fn run_ffmpeg_video_slice(
     connection: &Connection,
     task_uuid: &str,
@@ -3882,6 +4113,8 @@ fn run_ffmpeg_video_slice(
     input_path: &Path,
     output_path: &Path,
     clip: &AutoCutVideoSliceClipRequest,
+    render_profile: Option<&AutoCutVideoSliceRenderProfile>,
+    burned_subtitle_path: Option<&Path>,
     clip_index: usize,
     total_clips: usize,
     worker_lease: &AutoCutOpsWorkerLease,
@@ -3910,6 +4143,13 @@ fn run_ffmpeg_video_slice(
         "-movflags",
         "+faststart",
     ]);
+    let filter_chain = append_video_slice_burned_subtitle_filter(
+        video_slice_render_filter_chain(render_profile),
+        burned_subtitle_path,
+    );
+    if let Some(filter_chain) = filter_chain {
+        command.args(["-vf", filter_chain.as_str()]);
+    }
     append_ffmpeg_progress_output_args(&mut command);
     command.arg(output_path);
     let output = run_tracked_ffmpeg_command_with_progress(
@@ -3941,6 +4181,7 @@ fn run_ffmpeg_video_slice_thumbnail(
     input_path: &Path,
     output_path: &Path,
     clip: &AutoCutVideoSliceClipRequest,
+    render_profile: Option<&AutoCutVideoSliceRenderProfile>,
     clip_index: usize,
     total_clips: usize,
     worker_lease: &AutoCutOpsWorkerLease,
@@ -3951,14 +4192,10 @@ fn run_ffmpeg_video_slice_thumbnail(
     command.args(["-ss", seconds_arg_from_millis(thumbnail_at_ms).as_str()]);
     command.args(["-i"]);
     command.arg(input_path);
-    command.args([
-        "-frames:v",
-        "1",
-        "-vf",
-        "scale=320:-2:flags=lanczos",
-        "-q:v",
-        "3",
-    ]);
+    let thumbnail_filter = video_slice_render_filter_chain(render_profile)
+        .map(|filter_chain| format!("{filter_chain},scale=320:-2:flags=lanczos"))
+        .unwrap_or_else(|| "scale=320:-2:flags=lanczos".to_string());
+    command.args(["-frames:v", "1", "-vf", thumbnail_filter.as_str(), "-q:v", "3"]);
     append_ffmpeg_progress_output_args(&mut command);
     command.arg(output_path);
     let output = run_tracked_ffmpeg_command_with_progress(
@@ -5369,7 +5606,16 @@ fn read_video_slice_retry_request(
         clips,
         output_format: retry_string_field(task, "outputFormat", Some("mp4"))?,
         output_root_dir: retry_output_root_dir(task)?,
+        render_profile: payload
+            .get("renderProfile")
+            .cloned()
+            .map(|value| {
+                serde_json::from_value::<AutoCutVideoSliceRenderProfile>(value)
+                    .map_err(|error| format!("parse AutoCut video slice retry renderProfile failed: {error}"))
+            })
+            .transpose()?,
         subtitle_format: retry_optional_string_field(task, "subtitleFormat")?,
+        subtitle_mode: retry_optional_string_field(task, "subtitleMode")?,
         subtitle_style_id: retry_optional_string_field(task, "subtitleStyleId")?,
         subtitle_segments: payload
             .get("subtitleSegments")
@@ -7726,6 +7972,7 @@ mod tests {
                 source_path: source_path.display().to_string(),
                 output_root_dir: None,
             },
+            &test_system_ffmpeg_toolchain(),
         )
         .expect("import media file");
 
@@ -7775,7 +8022,7 @@ mod tests {
         let source_root = unique_temp_dir("sdkwork-autocut-local-media-describe");
         let source_path = source_root.join("source clip.mp4");
         fs::write(&source_path, b"autocut source bytes").expect("write source media");
-        let description = describe_autocut_local_media_file_from_path(&source_path)
+        let description = describe_autocut_local_media_file_from_path(&source_path, None)
             .expect("describe local media file");
 
         assert_eq!(description.name, "source clip.mp4");
@@ -7804,6 +8051,7 @@ mod tests {
                 source_path: "relative.mp4".to_string(),
                 output_root_dir: None,
             },
+            &test_system_ffmpeg_toolchain(),
         )
         .expect_err("relative imports must be rejected");
         assert!(
@@ -7818,6 +8066,7 @@ mod tests {
                 source_path: root.join("missing.mp4").display().to_string(),
                 output_root_dir: None,
             },
+            &test_system_ffmpeg_toolchain(),
         )
         .expect_err("missing imports must be rejected");
         assert!(
@@ -7841,6 +8090,7 @@ mod tests {
                 source_path: source_path.display().to_string(),
                 output_root_dir: None,
             },
+            &test_system_ffmpeg_toolchain(),
         )
         .expect("import source audio");
 
@@ -7958,6 +8208,7 @@ mod tests {
                 source_path: source_path.display().to_string(),
                 output_root_dir: None,
             },
+            &test_system_ffmpeg_toolchain(),
         )
         .expect("import source audio");
 
@@ -8497,6 +8748,7 @@ mod tests {
                 source_path: source_path.display().to_string(),
                 output_root_dir: None,
             },
+            &test_system_ffmpeg_toolchain(),
         )
         .expect("import source media");
         let original_task_uuid = autocut_uuid("ops-task").expect("create original task uuid");
@@ -8573,6 +8825,7 @@ mod tests {
                 source_path: source_path.display().to_string(),
                 output_root_dir: Some(configured_root.display().to_string()),
             },
+            &test_system_ffmpeg_toolchain(),
         )
         .expect("import source media into configured output root");
         let original_task_uuid = autocut_uuid("ops-task").expect("create original task uuid");
@@ -8677,6 +8930,7 @@ mod tests {
                 source_path: source_path.display().to_string(),
                 output_root_dir: None,
             },
+            &test_system_ffmpeg_toolchain(),
         )
         .expect("import source audio");
 
@@ -8757,6 +9011,7 @@ mod tests {
                 source_path: source_path.display().to_string(),
                 output_root_dir: Some(configured_root.display().to_string()),
             },
+            &test_system_ffmpeg_toolchain(),
         )
         .expect("import source audio into configured output root");
 
@@ -8811,6 +9066,7 @@ mod tests {
                 source_path: source_path.display().to_string(),
                 output_root_dir: None,
             },
+            &test_system_ffmpeg_toolchain(),
         )
         .expect("import source video");
 
@@ -8901,6 +9157,7 @@ mod tests {
                 source_path: source_path.display().to_string(),
                 output_root_dir: None,
             },
+            &test_system_ffmpeg_toolchain(),
         )
         .expect("import source video");
 
@@ -8923,7 +9180,9 @@ mod tests {
                 ],
                 output_format: "mp4".to_string(),
                 output_root_dir: None,
+                render_profile: None,
                 subtitle_format: None,
+                subtitle_mode: None,
                 subtitle_style_id: None,
                 subtitle_segments: None,
             },
@@ -9040,6 +9299,7 @@ mod tests {
             )
             .expect("query slice ops_stage_run row");
         assert_eq!(stage_count, 1);
+        println!("autocut-video-slice-smoke=passed");
     }
 
     #[test]
@@ -9057,6 +9317,7 @@ mod tests {
                 source_path: source_path.display().to_string(),
                 output_root_dir: None,
             },
+            &test_system_ffmpeg_toolchain(),
         )
         .expect("import source video");
 
@@ -9072,7 +9333,9 @@ mod tests {
                 }],
                 output_format: "mp4".to_string(),
                 output_root_dir: None,
+                render_profile: None,
                 subtitle_format: Some("srt".to_string()),
+                subtitle_mode: None,
                 subtitle_style_id: Some("clean-default".to_string()),
                 subtitle_segments: Some(vec![
                     AutoCutSpeechTranscriptionSegment {
@@ -9173,6 +9436,130 @@ mod tests {
     }
 
     #[test]
+    fn video_slice_srt_subtitles_are_clipped_to_slice_boundaries() {
+        let clip = AutoCutVideoSliceClipRequest {
+            start_ms: 1_000,
+            duration_ms: 2_000,
+            label: "Boundary".to_string(),
+        };
+        let subtitle_text = build_video_slice_srt(
+            &clip,
+            &[
+                AutoCutSpeechTranscriptionSegment {
+                    start_ms: 500,
+                    end_ms: 1_200,
+                    text: "prefix overlap".to_string(),
+                    speaker: Some("Speaker 1".to_string()),
+                },
+                AutoCutSpeechTranscriptionSegment {
+                    start_ms: 1_300,
+                    end_ms: 2_200,
+                    text: "inside line".to_string(),
+                    speaker: None,
+                },
+                AutoCutSpeechTranscriptionSegment {
+                    start_ms: 2_900,
+                    end_ms: 3_500,
+                    text: "tail overlap".to_string(),
+                    speaker: None,
+                },
+                AutoCutSpeechTranscriptionSegment {
+                    start_ms: 3_500,
+                    end_ms: 4_000,
+                    text: "outside line".to_string(),
+                    speaker: None,
+                },
+            ],
+        );
+
+        assert!(
+            subtitle_text.contains("00:00:00,000 --> 00:00:00,200"),
+            "subtitle segment starting before the clip must be clamped to zero"
+        );
+        assert!(
+            subtitle_text.contains("00:00:01,900 --> 00:00:02,000"),
+            "subtitle segment ending after the clip must be clamped to the clip duration"
+        );
+        assert!(
+            !subtitle_text.contains("outside line"),
+            "subtitle segments outside the clip must be excluded"
+        );
+        assert!(
+            !subtitle_text.contains("00:00:02,001"),
+            "subtitle timestamps must never exceed the clip duration"
+        );
+    }
+
+    #[test]
+    fn video_slice_burned_subtitle_mode_renders_without_srt_sidecar() {
+        let root = unique_temp_dir("sdkwork-autocut-video-slice-burned-subtitle-root");
+        let source_root = unique_temp_dir("sdkwork-autocut-video-slice-burned-subtitle-source");
+        let source_path = source_root.join("clip.avi");
+        run_ffmpeg_test_video(&test_system_ffmpeg_toolchain(), &source_path)
+            .expect("create source video fixture");
+        let connection = prepared_connection();
+        let import_result = import_autocut_media_file_in_root(
+            &connection,
+            &root,
+            AutoCutMediaImportRequest {
+                source_path: source_path.display().to_string(),
+                output_root_dir: None,
+            },
+            &test_system_ffmpeg_toolchain(),
+        )
+        .expect("import source video");
+
+        let slice_result = slice_autocut_video_from_asset_in_root_with_toolchain(
+            &connection,
+            &root,
+            AutoCutVideoSliceRequest {
+                asset_uuid: import_result.asset_uuid.clone(),
+                clips: vec![AutoCutVideoSliceClipRequest {
+                    start_ms: 0,
+                    duration_ms: 300,
+                    label: "Burned".to_string(),
+                }],
+                output_format: "mp4".to_string(),
+                output_root_dir: None,
+                render_profile: None,
+                subtitle_format: Some("srt".to_string()),
+                subtitle_mode: Some("burned".to_string()),
+                subtitle_style_id: Some("clean-default".to_string()),
+                subtitle_segments: Some(vec![AutoCutSpeechTranscriptionSegment {
+                    start_ms: 0,
+                    end_ms: 250,
+                    text: "burn this subtitle".to_string(),
+                    speaker: None,
+                }]),
+            },
+            &test_system_ffmpeg_toolchain(),
+        )
+        .expect("slice video with burned subtitle mode");
+
+        assert_eq!(slice_result.slices.len(), 1);
+        assert!(
+            slice_result.slices[0].byte_size > 0,
+            "burned subtitle slice video artifact must be generated"
+        );
+        assert_eq!(
+            slice_result.slices[0].subtitle_artifact_path, None,
+            "burned-only subtitle mode must not create an SRT sidecar"
+        );
+
+        let subtitle_artifact_count = connection
+            .query_row(
+                "SELECT COUNT(*) FROM media_artifact WHERE task_uuid = ?1 AND artifact_type = ?2",
+                params![
+                    slice_result.task_uuid.as_str(),
+                    MEDIA_ARTIFACT_TYPE_VIDEO_SLICE_SUBTITLE,
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("query burned-only subtitle media artifact rows");
+        assert_eq!(subtitle_artifact_count, 0);
+    }
+
+    #[test]
     fn video_slice_skips_clips_that_start_after_source_duration() {
         let root = unique_temp_dir("sdkwork-autocut-video-slice-short-root");
         let source_root = unique_temp_dir("sdkwork-autocut-video-slice-short-source");
@@ -9187,6 +9574,7 @@ mod tests {
                 source_path: source_path.display().to_string(),
                 output_root_dir: None,
             },
+            &test_system_ffmpeg_toolchain(),
         )
         .expect("import short source video");
 
@@ -9209,7 +9597,9 @@ mod tests {
                 ],
                 output_format: "mp4".to_string(),
                 output_root_dir: None,
+                render_profile: None,
                 subtitle_format: None,
+                subtitle_mode: None,
                 subtitle_style_id: None,
                 subtitle_segments: None,
             },
@@ -9258,6 +9648,7 @@ mod tests {
                 source_path: source_path.display().to_string(),
                 output_root_dir: None,
             },
+            &test_system_ffmpeg_toolchain(),
         )
         .expect("import short source video");
 
@@ -9273,7 +9664,9 @@ mod tests {
                 }],
                 output_format: "mp4".to_string(),
                 output_root_dir: None,
+                render_profile: None,
                 subtitle_format: None,
+                subtitle_mode: None,
                 subtitle_style_id: None,
                 subtitle_segments: None,
             },
@@ -9407,6 +9800,7 @@ mod tests {
                 source_path: source_path.display().to_string(),
                 output_root_dir: None,
             },
+            &test_system_ffmpeg_toolchain(),
         )
         .expect("import source audio");
         let missing_speech_toolchain = AutoCutSpeechToolchain {
@@ -9510,6 +9904,7 @@ mod tests {
                 source_path: source_path.display().to_string(),
                 output_root_dir: None,
             },
+            &test_system_ffmpeg_toolchain(),
         )
         .expect("import source video");
 
@@ -9605,6 +10000,7 @@ mod tests {
                 source_path: source_path.display().to_string(),
                 output_root_dir: None,
             },
+            &test_system_ffmpeg_toolchain(),
         )
         .expect("import source video");
 
@@ -9699,6 +10095,7 @@ mod tests {
                 source_path: source_path.display().to_string(),
                 output_root_dir: None,
             },
+            &test_system_ffmpeg_toolchain(),
         )
         .expect("import source video");
 

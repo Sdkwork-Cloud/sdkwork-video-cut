@@ -47,14 +47,15 @@ pub fn autocut_import_media_file(
 
 #[tauri::command]
 pub fn autocut_describe_local_media_file(
+    app: AppHandle,
     request: AutoCutMediaImportRequest,
 ) -> Result<AutoCutLocalMediaFileDescription, String> {
-    media_runtime::describe_autocut_local_media_file(request)
+    media_runtime::describe_autocut_local_media_file(&app, request)
 }
 
 #[tauri::command]
-pub fn autocut_select_local_video_file() -> Result<Option<AutoCutLocalMediaFileDescription>, String> {
-    media_runtime::select_autocut_local_video_file()
+pub fn autocut_select_local_video_file(app: AppHandle) -> Result<Option<AutoCutLocalMediaFileDescription>, String> {
+    media_runtime::select_autocut_local_video_file(&app)
 }
 
 #[tauri::command]

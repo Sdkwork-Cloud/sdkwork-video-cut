@@ -7,6 +7,11 @@ import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import {
+  normalizeAutoCutCliArgs,
+  readAutoCutCliOptionValue,
+} from './autocut-cli-args.mjs';
+
 const __filename = fileURLToPath(import.meta.url);
 const evidenceSchemaVersion = '2026-05-05.autocut-native-release-smoke.v1';
 const desktopTauriRelativePath = 'packages/sdkwork-autocut-desktop/src-tauri';
@@ -15,6 +20,7 @@ const defaultOutputRelativePath = 'artifacts/release/autocut-native-release-smok
 const rustToolchain = '1.90.0';
 const nativeSmokeCargoTargetDirPrefixes = {
   rust: 'sdkwork-autocut-native-smoke-target-rust-',
+  videoSlice: 'sdkwork-autocut-native-smoke-target-video-slice-',
   llmSecret: 'sdkwork-autocut-native-smoke-target-llm-secret-',
 };
 
@@ -44,10 +50,22 @@ export function createAutoCutNativeReleaseSmokeEvidence({
     generatedAt,
     nativeSmokeCargoTargetDirPrefixes.llmSecret,
   );
+  const videoSliceCargoTargetDir = createAutoCutNativeSmokeCargoTargetDir(
+    resolvedRootDir,
+    generatedAt,
+    nativeSmokeCargoTargetDirPrefixes.videoSlice,
+  );
   const rustSmoke = createRustSmokeEvidence({
     rootDir: resolvedRootDir,
     cargoManifestPath,
     cargoTargetDir: rustSmokeCargoTargetDir,
+    skipRustSmoke,
+    runCommand,
+  });
+  const videoSliceSmoke = createVideoSliceSmokeEvidence({
+    rootDir: resolvedRootDir,
+    cargoManifestPath,
+    cargoTargetDir: videoSliceCargoTargetDir,
     skipRustSmoke,
     runCommand,
   });
@@ -60,6 +78,7 @@ export function createAutoCutNativeReleaseSmokeEvidence({
   });
   const commandMatrix = createNativeCommandMatrix({
     rustSmokeReady: !rustSmoke.skipped && rustSmoke.success,
+    videoSliceSmokeReady: !videoSliceSmoke.skipped && videoSliceSmoke.success,
     llmSecretStoreSmokeReady: !llmSecretStoreSmoke.skipped && llmSecretStoreSmoke.success,
   });
   const nativeReleaseSmokeReady =
@@ -76,16 +95,19 @@ export function createAutoCutNativeReleaseSmokeEvidence({
       toolchain: rustToolchain,
       cargoTargetDirs: {
         rustSmoke: rustSmokeCargoTargetDir,
+        videoSliceSmoke: videoSliceCargoTargetDir,
         llmSecretStoreSmoke: llmSecretCargoTargetDir,
       },
     },
     readiness: {
       nativeReleaseSmokeReady,
+      videoSliceSmokeReady: !videoSliceSmoke.skipped && videoSliceSmoke.success,
       realLlmSecretStoreSmokeReady: !llmSecretStoreSmoke.skipped && llmSecretStoreSmoke.success,
       ffmpegExecutionReady: false,
     },
     commandMatrix,
     rustSmoke,
+    videoSliceSmoke,
     llmSecretStoreSmoke,
   };
 }
@@ -258,6 +280,60 @@ function createRustSmokeEvidence({ rootDir, cargoManifestPath, cargoTargetDir, s
   };
 }
 
+function createVideoSliceSmokeEvidence({ rootDir, cargoManifestPath, cargoTargetDir, skipRustSmoke, runCommand }) {
+  const testName = 'media_runtime::tests::video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir';
+  const command = 'cargo';
+  const args = [
+    `+${rustToolchain}`,
+    'test',
+    '--manifest-path',
+    toPosixRelative(rootDir, cargoManifestPath),
+    testName,
+    '--',
+    '--exact',
+    '--test-threads=1',
+    '--nocapture',
+  ];
+  const commandLine = [command, ...args].join(' ');
+  if (skipRustSmoke) {
+    return {
+      skipped: true,
+      success: false,
+      status: null,
+      command: commandLine,
+      stdout: '',
+      stderr: '',
+    };
+  }
+
+  const result = runCommand(command, args, {
+    cwd: rootDir,
+    env: {
+      CARGO_TARGET_DIR: cargoTargetDir,
+    },
+  });
+  const status = Number.isInteger(result.status) ? result.status : 1;
+  const stdout = String(result.stdout ?? '');
+  const stderr = String(result.stderr ?? '');
+  if (status !== 0) {
+    const detail = stderr.trim() || stdout.trim() || `exit ${status}`;
+    throw new Error(`AutoCut native video slice smoke failed: ${detail}`);
+  }
+
+  if (!stdout.includes('autocut-video-slice-smoke=passed')) {
+    throw new Error('AutoCut native video slice smoke did not emit the required success marker.');
+  }
+
+  return {
+    skipped: false,
+    success: true,
+    status,
+    command: commandLine,
+    stdout: trimReleaseSmokeOutput(stdout),
+    stderr: trimReleaseSmokeOutput(stderr),
+  };
+}
+
 function createAutoCutNativeSmokeCargoTargetDir(rootDir, generatedAt, targetDirPrefix) {
   const sanitizedTimestamp = generatedAt.replace(/[^0-9A-Za-z]+/gu, '');
   const suffix = sanitizedTimestamp || String(Date.now());
@@ -271,7 +347,7 @@ function createAutoCutNativeSmokeCargoTargetDir(rootDir, generatedAt, targetDirP
   return resolvedTargetDir;
 }
 
-function createNativeCommandMatrix({ rustSmokeReady, llmSecretStoreSmokeReady }) {
+function createNativeCommandMatrix({ rustSmokeReady, videoSliceSmokeReady, llmSecretStoreSmokeReady }) {
   return [
     {
       command: 'autocut_host_capabilities',
@@ -290,6 +366,12 @@ function createNativeCommandMatrix({ rustSmokeReady, llmSecretStoreSmokeReady })
       purpose: 'deterministic FFmpeg sine-source audio extraction smoke',
       evidenceSource: 'media_runtime::tests::audio_smoke_generates_non_empty_artifact_with_ffmpeg',
       evidenceReady: rustSmokeReady,
+    },
+    {
+      command: 'autocut_slice_video',
+      purpose: 'real FFmpeg video slicing, task-scoped slice artifacts, thumbnails, task output JSON, and database stage completion',
+      evidenceSource: 'media_runtime::tests::video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir',
+      evidenceReady: videoSliceSmokeReady,
     },
     {
       command: 'autocut_recover_native_tasks',
@@ -344,11 +426,16 @@ function toPosixRelative(rootDir, targetPath) {
 
 function parseArgs(argv) {
   const options = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
+  const args = normalizeAutoCutCliArgs(argv);
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
     if (arg === '--output') {
-      options.outputPath = argv[index + 1];
-      index += 1;
+      const option = readAutoCutCliOptionValue(args, index, {
+        optionName: arg,
+        commandName: 'AutoCut native release smoke',
+      });
+      options.outputPath = option.value;
+      index = option.nextIndex;
     } else if (arg === '--skip-rust-smoke') {
       options.skipRustSmoke = true;
     } else if (arg === '--run-real-llm-secret-smoke') {

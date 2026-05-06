@@ -1,4 +1,9 @@
-import type { AutoCutLlmConnectionTestResult, AutoCutLlmRuntimeConfig } from '@sdkwork/autocut-types';
+import {
+  AUTOCUT_MODEL_VENDOR_PRESETS,
+  type AutoCutLlmConnectionTestResult,
+  type AutoCutLlmRuntimeConfig,
+  type ModelVendor,
+} from '@sdkwork/autocut-types';
 import { resolveAutoCutLlmRuntimeConfig } from './settings.service';
 
 export interface AutoCutOpenAiCompatibleMessage {
@@ -43,6 +48,7 @@ export async function createAutoCutOpenAiCompatibleChatCompletion(
 ): Promise<AutoCutOpenAiCompatibleChatCompletionResult> {
   const runtime = await resolveAutoCutLlmRuntimeConfig();
   validateAutoCutOpenAiCompatibleChatCompletionRequest(request, runtime);
+  const model = resolveAutoCutChatCompletionModel(request, runtime);
 
   if (!approvedAiSdkBridge) {
     throw new Error(
@@ -53,12 +59,50 @@ export async function createAutoCutOpenAiCompatibleChatCompletion(
   return approvedAiSdkBridge.createChatCompletion(
     {
       ...request,
-      model: request.model?.trim() || runtime.model,
+      model,
       temperature: request.temperature ?? runtime.temperature,
       maxTokens: request.maxTokens ?? runtime.maxTokens,
     },
     runtime,
   );
+}
+
+function resolveAutoCutChatCompletionModel(
+  request: AutoCutOpenAiCompatibleChatCompletionRequest,
+  runtime: AutoCutLlmRuntimeConfig,
+) {
+  const requestedModel = request.model?.trim();
+  if (!requestedModel) {
+    return runtime.model;
+  }
+
+  const requestedModelVendor = getAutoCutModelVendorForModel(requestedModel);
+  if (requestedModelVendor !== runtime.modelVendor) {
+    if (runtime.modelVendor === 'custom' && requestedModelVendor === null) {
+      return requestedModel;
+    }
+
+    throw new Error(
+      `AutoCut LLM model ${requestedModel} is not available for the configured ModelVendor ${runtime.modelVendor}.`,
+    );
+  }
+
+  return requestedModel;
+}
+
+export function getAutoCutModelVendorForModel(model: string): ModelVendor | null {
+  const normalizedModel = model.trim();
+  if (!normalizedModel) {
+    return null;
+  }
+
+  for (const preset of Object.values(AUTOCUT_MODEL_VENDOR_PRESETS)) {
+    if (preset.models.some((candidate) => candidate.id === normalizedModel)) {
+      return preset.vendor;
+    }
+  }
+
+  return null;
 }
 
 export async function testAutoCutLlmConnection(): Promise<AutoCutLlmConnectionTestResult> {

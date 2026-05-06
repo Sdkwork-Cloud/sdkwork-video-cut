@@ -117,9 +117,16 @@ async function readNativeTasks(): Promise<AppTask[] | null> {
       return null;
     }
 
+    const localTasks = readLocalTasks();
+    const localTaskById = new Map(localTasks.map((task) => [task.id, task]));
     const snapshots = await nativeHostClient.listNativeTasks({ limit: NATIVE_TASK_LIST_LIMIT });
     return sortAutoCutRecordsByCreatedAtDesc(
-      snapshots.map((snapshot) => mapNativeTaskSnapshotToAppTask(snapshot, nativeHostClient.createAssetUrl)),
+      snapshots.map((snapshot) =>
+        mergeNativeTaskWithLocalSliceMetadata(
+          mapNativeTaskSnapshotToAppTask(snapshot, nativeHostClient.createAssetUrl),
+          localTaskById.get(snapshot.uuid),
+        ),
+      ),
     );
   } catch {
     return null;
@@ -350,6 +357,7 @@ function mapNativeSliceResult(
   const thumbnailPath = readString(slice.thumbnailArtifactPath);
   const subtitlePath = readString(slice.subtitleArtifactPath);
   const label = readString(slice.label) ?? `Slice ${index + 1}`;
+  const startMs = readNumber(slice.startMs);
   const durationMs = readNumber(slice.durationMs) ?? 0;
   const byteSize = readNumber(slice.byteSize) ?? 0;
   const format = readString(slice.format) ?? 'mp4';
@@ -365,7 +373,100 @@ function mapNativeSliceResult(
     url: safeCreateNativeAssetUrl(artifactPath, createAssetUrl),
     ...(subtitlePath ? { subtitleUrl: safeCreateNativeAssetUrl(subtitlePath, createAssetUrl) } : {}),
     ...(subtitleFormat ? { subtitleFormat } : {}),
+    ...(startMs !== undefined ? { sourceStartMs: startMs } : {}),
+    ...(startMs !== undefined ? { sourceEndMs: startMs + durationMs } : {}),
   };
+}
+
+function mergeNativeTaskWithLocalSliceMetadata(nativeTask: AppTask, localTask: AppTask | undefined): AppTask {
+  if (!nativeTask.sliceResults?.length || !localTask?.sliceResults?.length) {
+    return nativeTask;
+  }
+
+  const localSliceById = new Map(localTask.sliceResults.map((slice) => [slice.id, slice]));
+  const sliceResults = nativeTask.sliceResults.map((nativeSlice) => {
+    const localSlice =
+      localSliceById.get(nativeSlice.id) ??
+      localTask.sliceResults?.find((candidate) => isSameSliceSourceWindow(nativeSlice, candidate));
+    if (!localSlice) {
+      return nativeSlice;
+    }
+
+    return {
+      ...nativeSlice,
+      ...(localSlice.title ? { title: localSlice.title } : {}),
+      ...(localSlice.summary ? { summary: localSlice.summary } : {}),
+      ...(localSlice.reason ? { reason: localSlice.reason } : {}),
+      ...(localSlice.qualityScore !== undefined ? { qualityScore: localSlice.qualityScore } : {}),
+      ...(localSlice.continuityScore !== undefined ? { continuityScore: localSlice.continuityScore } : {}),
+      ...(localSlice.storyShape ? { storyShape: localSlice.storyShape } : {}),
+      ...(localSlice.publishabilityScore !== undefined ? { publishabilityScore: localSlice.publishabilityScore } : {}),
+      ...(localSlice.publishabilityGrade ? { publishabilityGrade: localSlice.publishabilityGrade } : {}),
+      ...(localSlice.publishabilityIssues ? { publishabilityIssues: localSlice.publishabilityIssues } : {}),
+      ...(localSlice.boundaryQualityScore !== undefined ? { boundaryQualityScore: localSlice.boundaryQualityScore } : {}),
+      ...(localSlice.hookStrength ? { hookStrength: localSlice.hookStrength } : {}),
+      ...(localSlice.endingCompleteness ? { endingCompleteness: localSlice.endingCompleteness } : {}),
+      ...(localSlice.contentArcScore !== undefined ? { contentArcScore: localSlice.contentArcScore } : {}),
+      ...(localSlice.contentArcGrade ? { contentArcGrade: localSlice.contentArcGrade } : {}),
+      ...(localSlice.contentArcStages ? { contentArcStages: localSlice.contentArcStages } : {}),
+      ...(localSlice.contentArcMissingStages ? { contentArcMissingStages: localSlice.contentArcMissingStages } : {}),
+      ...(localSlice.topicCoherenceScore !== undefined ? { topicCoherenceScore: localSlice.topicCoherenceScore } : {}),
+      ...(localSlice.topicCoherenceGrade ? { topicCoherenceGrade: localSlice.topicCoherenceGrade } : {}),
+      ...(localSlice.topicShiftCount !== undefined ? { topicShiftCount: localSlice.topicShiftCount } : {}),
+      ...(localSlice.topicKeywords ? { topicKeywords: localSlice.topicKeywords } : {}),
+      ...(localSlice.platformReadinessScore !== undefined
+        ? { platformReadinessScore: localSlice.platformReadinessScore }
+        : {}),
+      ...(localSlice.platformReadinessGrade ? { platformReadinessGrade: localSlice.platformReadinessGrade } : {}),
+      ...(localSlice.platformReadinessIssues ? { platformReadinessIssues: localSlice.platformReadinessIssues } : {}),
+      ...(localSlice.sentenceBoundaryIntegrityScore !== undefined
+        ? { sentenceBoundaryIntegrityScore: localSlice.sentenceBoundaryIntegrityScore }
+        : {}),
+      ...(localSlice.sentenceBoundaryIntegrityGrade
+        ? { sentenceBoundaryIntegrityGrade: localSlice.sentenceBoundaryIntegrityGrade }
+        : {}),
+      ...(localSlice.sentenceBoundaryIssues ? { sentenceBoundaryIssues: localSlice.sentenceBoundaryIssues } : {}),
+      ...(localSlice.risks ? { risks: localSlice.risks } : {}),
+      ...(localSlice.sourceStartMs !== undefined ? { sourceStartMs: localSlice.sourceStartMs } : {}),
+      ...(localSlice.sourceEndMs !== undefined ? { sourceEndMs: localSlice.sourceEndMs } : {}),
+      ...(localSlice.speechStartMs !== undefined ? { speechStartMs: localSlice.speechStartMs } : {}),
+      ...(localSlice.speechEndMs !== undefined ? { speechEndMs: localSlice.speechEndMs } : {}),
+      ...(localSlice.boundaryPaddingBeforeMs !== undefined
+        ? { boundaryPaddingBeforeMs: localSlice.boundaryPaddingBeforeMs }
+        : {}),
+      ...(localSlice.boundaryPaddingAfterMs !== undefined
+        ? { boundaryPaddingAfterMs: localSlice.boundaryPaddingAfterMs }
+        : {}),
+      ...(localSlice.transcriptText ? { transcriptText: localSlice.transcriptText } : {}),
+      ...(localSlice.transcriptCoverageScore !== undefined
+        ? { transcriptCoverageScore: localSlice.transcriptCoverageScore }
+        : {}),
+      ...(localSlice.subtitleSegmentCount !== undefined ? { subtitleSegmentCount: localSlice.subtitleSegmentCount } : {}),
+      ...(localSlice.speechContinuityGrade ? { speechContinuityGrade: localSlice.speechContinuityGrade } : {}),
+    };
+  });
+
+  return {
+    ...nativeTask,
+    sliceResults,
+  };
+}
+
+function isSameSliceSourceWindow(nativeSlice: TaskSliceResult, localSlice: TaskSliceResult) {
+  const nativeStartMs = nativeSlice.sourceStartMs;
+  const nativeEndMs = nativeSlice.sourceEndMs;
+  const localStartMs = localSlice.sourceStartMs;
+  const localEndMs = localSlice.sourceEndMs;
+  if (
+    nativeStartMs === undefined ||
+    nativeEndMs === undefined ||
+    localStartMs === undefined ||
+    localEndMs === undefined
+  ) {
+    return false;
+  }
+
+  return Math.abs(nativeStartMs - localStartMs) <= 250 && Math.abs(nativeEndMs - localEndMs) <= 250;
 }
 
 function mapNativeSpeechSegment(value: unknown): NonNullable<AppTask['extractedText']>[number] | null {

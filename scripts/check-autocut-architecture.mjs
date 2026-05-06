@@ -82,9 +82,16 @@ const forbiddenRootRuntimeDirs = [
 ];
 const forbiddenTauriGeneratedDirs = ['packages/sdkwork-autocut-desktop/src-tauri/gen'];
 const allowedScriptFiles = new Set([
+  'scripts/autocut-cli-args.mjs',
+  'scripts/autocut-cli-args.test.mjs',
   'scripts/check-autocut-architecture.mjs',
   'scripts/check-autocut-feature-workflows.mjs',
+  'scripts/check-autocut-preview-release-readiness.mjs',
+  'scripts/check-autocut-preview-release-readiness.test.mjs',
+  'scripts/check-autocut-slicer-planner.mjs',
   'scripts/check-autocut-service-behavior.mjs',
+  'scripts/check-autocut-workspace-typecheck.mjs',
+  'scripts/check-autocut-workspace-typecheck.test.mjs',
   'scripts/clean-autocut-generated.mjs',
   'scripts/ensure-autocut-tauri-rust-toolchain.mjs',
   'scripts/ensure-autocut-tauri-rust-toolchain.test.mjs',
@@ -94,8 +101,20 @@ const allowedScriptFiles = new Set([
   'scripts/check-autocut-release-smoke-preflight.test.mjs',
   'scripts/check-autocut-commercial-release-readiness.mjs',
   'scripts/check-autocut-commercial-release-readiness.test.mjs',
+  'scripts/check-autocut-smart-slice-release-fixture.mjs',
+  'scripts/check-autocut-smart-slice-release-fixture.test.mjs',
+  'scripts/check-autocut-smart-slice-task-evidence.mjs',
+  'scripts/check-autocut-smart-slice-task-evidence.test.mjs',
+  'scripts/sign-autocut-release-installers.mjs',
+  'scripts/sign-autocut-release-installers.test.mjs',
   'scripts/write-autocut-installer-signature-evidence.mjs',
   'scripts/write-autocut-installer-signature-evidence.test.mjs',
+  'scripts/write-autocut-smart-slice-media-artifacts-evidence.mjs',
+  'scripts/write-autocut-smart-slice-media-artifacts-evidence.test.mjs',
+  'scripts/write-autocut-smart-slice-quality-evidence.mjs',
+  'scripts/write-autocut-smart-slice-quality-evidence.test.mjs',
+  'scripts/write-autocut-smart-slice-sample-evidence.mjs',
+  'scripts/write-autocut-smart-slice-sample-evidence.test.mjs',
   'scripts/write-autocut-native-release-smoke.mjs',
   'scripts/write-autocut-native-release-smoke.test.mjs',
   'scripts/write-autocut-release-evidence.mjs',
@@ -105,7 +124,10 @@ const allowedDocs = new Set([
   'docs/architecture/16-autocut-frontend-module-standard.md',
   'docs/architecture/17-autocut-database-contract-standard.md',
   'docs/release/CHANGELOG.md',
+  'docs/requirements/2026-05-05-smart-slicing-logic.md',
+  'docs/requirements/2026-05-05-smart-slicing-short-video-implementation-review.md',
   'docs/superpowers/plans/2026-05-04-autocut-desktop-standardization.md',
+  'docs/superpowers/plans/2026-05-06-smart-slicing-phase-one.md',
 ]);
 const requiredDatabaseContractDoc = 'docs/architecture/17-autocut-database-contract-standard.md';
 const requiredStorageServicePath = 'packages/sdkwork-autocut-services/src/service/storage.service.ts';
@@ -734,7 +756,7 @@ function exists(relativePath) {
   return fs.existsSync(path.join(rootDir, relativePath));
 }
 
-function listFiles(dirPath, predicate = () => true) {
+function listFiles(dirPath, predicate = () => true, shouldSkipDirectory = () => false) {
   if (!fs.existsSync(dirPath)) {
     return [];
   }
@@ -742,7 +764,9 @@ function listFiles(dirPath, predicate = () => true) {
   for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
     const absolute = path.join(dirPath, entry.name);
     if (entry.isDirectory()) {
-      output.push(...listFiles(absolute, predicate));
+      if (!shouldSkipDirectory(absolute)) {
+        output.push(...listFiles(absolute, predicate, shouldSkipDirectory));
+      }
     } else if (predicate(absolute)) {
       output.push(absolute);
     }
@@ -759,6 +783,96 @@ function assertRule(condition, message) {
   } else {
     failures.push(message);
   }
+}
+
+const forbiddenHighEntropyApiKeyPattern = /\bsk-[0-9a-fA-F]{24,}\b/u;
+
+function shouldSkipSecretGovernanceDirectory(dirPath) {
+  const relative = path.relative(rootDir, dirPath).replaceAll(path.sep, '/');
+  return (
+    relative === '.git' ||
+    relative === 'node_modules' ||
+    relative === 'artifacts' ||
+    relative.endsWith('/node_modules') ||
+    relative.endsWith('/dist') ||
+    relative.startsWith('packages/sdkwork-autocut-desktop/src-tauri/target') ||
+    relative.startsWith('packages/sdkwork-autocut-desktop/src-tauri/binaries/linux-') ||
+    relative.startsWith('packages/sdkwork-autocut-desktop/src-tauri/binaries/macos-') ||
+    relative.startsWith('packages/sdkwork-autocut-desktop/src-tauri/binaries/windows-')
+  );
+}
+
+function isSecretGovernanceTextFile(filePath) {
+  const relative = path.relative(rootDir, filePath).replaceAll(path.sep, '/');
+  return (
+    ['.env.example', 'ARCHITECT.md', 'DATABASE_SPEC.md', 'README.md', 'package.json', 'pnpm-workspace.yaml', 'tsconfig.json']
+      .includes(relative) ||
+    (/^(docs|packages|scripts)\//u.test(relative) &&
+      /\.(css|html|json|md|mjs|sql|toml|ts|tsx|ya?ml|rs)$/u.test(relative))
+  );
+}
+
+function readTrackedFilesUnderPath(relativePath) {
+  const normalizedPrefix = relativePath.replaceAll(path.sep, '/').replace(/\/+$/u, '');
+  try {
+    return execFileSync('git', ['ls-files', '--', normalizedPrefix], {
+      cwd: rootDir,
+      encoding: 'utf8',
+    })
+      .split(/\r?\n/u)
+      .filter(Boolean);
+  } catch {
+    return readTrackedFilesUnderPathFromGitIndex(normalizedPrefix);
+  }
+}
+
+function readTrackedFilesUnderPathFromGitIndex(normalizedPrefix) {
+  const indexPath = path.join(rootDir, '.git', 'index');
+  if (!fs.existsSync(indexPath)) {
+    return [];
+  }
+
+  const indexBuffer = fs.readFileSync(indexPath);
+  if (indexBuffer.subarray(0, 4).toString('ascii') !== 'DIRC' || indexBuffer.length < 12) {
+    return [];
+  }
+
+  const version = indexBuffer.readUInt32BE(4);
+  if (version < 2 || version > 3) {
+    return readTrackedFilesUnderPathFromGitIndexText(normalizedPrefix, indexBuffer);
+  }
+
+  const entryCount = indexBuffer.readUInt32BE(8);
+  const trackedFiles = [];
+  let offset = 12;
+  for (let index = 0; index < entryCount && offset + 62 <= indexBuffer.length; index += 1) {
+    const entryStart = offset;
+    const pathStart = offset + 62;
+    let pathEnd = pathStart;
+    while (pathEnd < indexBuffer.length && indexBuffer[pathEnd] !== 0) {
+      pathEnd += 1;
+    }
+    if (pathEnd >= indexBuffer.length) {
+      break;
+    }
+
+    const entryPath = indexBuffer.subarray(pathStart, pathEnd).toString('utf8');
+    if (entryPath === normalizedPrefix || entryPath.startsWith(`${normalizedPrefix}/`)) {
+      trackedFiles.push(entryPath);
+    }
+
+    const entryLength = pathEnd - entryStart + 1;
+    offset = entryStart + Math.ceil(entryLength / 8) * 8;
+  }
+
+  return trackedFiles;
+}
+
+function readTrackedFilesUnderPathFromGitIndexText(normalizedPrefix, indexBuffer) {
+  const text = indexBuffer.toString('utf8');
+  return [...text.matchAll(/[A-Za-z0-9_./-]+/gu)]
+    .map((match) => match[0])
+    .filter((entryPath) => entryPath === normalizedPrefix || entryPath.startsWith(`${normalizedPrefix}/`));
 }
 
 function assertNoForbiddenSourcePatterns(relativePath, sourceText) {
@@ -972,14 +1086,47 @@ const messagesServiceSource = fs.existsSync(path.join(rootDir, requiredMessagesS
 const slicerServiceSource = fs.existsSync(path.join(rootDir, requiredSlicerServicePath))
   ? fs.readFileSync(path.join(rootDir, requiredSlicerServicePath), 'utf8')
   : '';
+const slicePlannerSource = fs.existsSync(path.join(rootDir, 'packages/sdkwork-autocut-slicer/src/service/slicePlanner.ts'))
+  ? fs.readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-slicer/src/service/slicePlanner.ts'), 'utf8')
+  : '';
 const servicesIndexSource = fs.existsSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/index.ts'))
   ? fs.readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/index.ts'), 'utf8')
   : '';
 const serviceBehaviorCheckSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-service-behavior.mjs'))
   ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-service-behavior.mjs'), 'utf8')
   : '';
+const slicerPlannerCheckSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-slicer-planner.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-slicer-planner.mjs'), 'utf8')
+  : '';
 const nativeReleaseSmokeCheckSource = fs.existsSync(path.join(rootDir, 'scripts/write-autocut-native-release-smoke.mjs'))
   ? fs.readFileSync(path.join(rootDir, 'scripts/write-autocut-native-release-smoke.mjs'), 'utf8')
+  : '';
+const installerSigningSource = fs.existsSync(path.join(rootDir, 'scripts/sign-autocut-release-installers.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/sign-autocut-release-installers.mjs'), 'utf8')
+  : '';
+const smartSliceTaskEvidenceCheckSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-smart-slice-task-evidence.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-smart-slice-task-evidence.mjs'), 'utf8')
+  : '';
+const smartSliceReleaseFixtureCheckSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-smart-slice-release-fixture.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-smart-slice-release-fixture.mjs'), 'utf8')
+  : '';
+const smartSliceQualityEvidenceSource = fs.existsSync(path.join(rootDir, 'scripts/write-autocut-smart-slice-quality-evidence.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/write-autocut-smart-slice-quality-evidence.mjs'), 'utf8')
+  : '';
+const smartSliceMediaArtifactsEvidenceSource = fs.existsSync(path.join(rootDir, 'scripts/write-autocut-smart-slice-media-artifacts-evidence.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/write-autocut-smart-slice-media-artifacts-evidence.mjs'), 'utf8')
+  : '';
+const smartSliceSampleEvidenceSource = fs.existsSync(path.join(rootDir, 'scripts/write-autocut-smart-slice-sample-evidence.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/write-autocut-smart-slice-sample-evidence.mjs'), 'utf8')
+  : '';
+const releaseEvidenceSource = fs.existsSync(path.join(rootDir, 'scripts/write-autocut-release-evidence.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/write-autocut-release-evidence.mjs'), 'utf8')
+  : '';
+const previewReleaseReadinessSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-preview-release-readiness.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-preview-release-readiness.mjs'), 'utf8')
+  : '';
+const commercialReleaseReadinessSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-commercial-release-readiness.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-commercial-release-readiness.mjs'), 'utf8')
   : '';
 const nativeSqliteBaselineSource = fs.existsSync(path.join(rootDir, requiredNativeSqliteBaselinePath))
   ? fs.readFileSync(path.join(rootDir, requiredNativeSqliteBaselinePath), 'utf8')
@@ -996,12 +1143,7 @@ const workspaceCatalogVersions = Object.fromEntries(
     match[2].trim(),
   ]),
 );
-const trackedTauriGeneratedFiles = execFileSync('git', ['ls-files', '--', 'packages/sdkwork-autocut-desktop/src-tauri/gen'], {
-  cwd: rootDir,
-  encoding: 'utf8',
-})
-  .split(/\r?\n/u)
-  .filter(Boolean);
+const trackedTauriGeneratedFiles = readTrackedFilesUnderPath('packages/sdkwork-autocut-desktop/src-tauri/gen');
 const packageDirs = fs.readdirSync(packagesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory());
 const packageNames = new Set(packageDirs.map((entry) => `${internalPrefix}${entry.name.replace(/^sdkwork-autocut-/, '')}`));
 
@@ -1009,7 +1151,26 @@ for (const scriptName of ['dev', 'build', 'typecheck', 'test', 'tauri:before-dev
   assertRule(Boolean(rootPackage.scripts?.[scriptName]), `root package.json defines script ${scriptName}`);
 }
 assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-feature-workflows.mjs'), 'root test runs the AutoCut feature workflow governance check');
+assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-slicer-planner.mjs'), 'root test runs the AutoCut slicer planner contract');
 assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-service-behavior.mjs'), 'root test runs the AutoCut service behavior contract');
+assertRule(rootPackage.scripts?.test?.includes('node scripts/autocut-cli-args.test.mjs'), 'root test runs the AutoCut CLI argument normalization contract');
+assertRule(rootPackage.scripts?.typecheck === 'node scripts/check-autocut-workspace-typecheck.mjs', 'root typecheck uses the stable AutoCut workspace TypeScript API runner');
+assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-workspace-typecheck.test.mjs'), 'root test runs the AutoCut workspace typecheck runner contract');
+assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-workspace-typecheck.mjs'), 'root test runs the stable AutoCut workspace typecheck runner');
+assertRule(rootPackage.scripts?.['release:sign-installers'] === 'node scripts/sign-autocut-release-installers.mjs', 'root package.json defines the installer signing execution script');
+assertRule(rootPackage.scripts?.test?.includes('node scripts/sign-autocut-release-installers.test.mjs'), 'root test runs the installer signing execution contract');
+assertRule(rootPackage.scripts?.['release:smart-slice-sample'] === 'node scripts/write-autocut-smart-slice-sample-evidence.mjs', 'root package.json defines the smart slice sample release evidence script');
+assertRule(rootPackage.scripts?.test?.includes('node scripts/write-autocut-smart-slice-sample-evidence.test.mjs'), 'root test runs the smart slice sample evidence contract');
+assertRule(rootPackage.scripts?.['release:preview-ready'] === 'node scripts/check-autocut-preview-release-readiness.mjs', 'root package.json defines the unsigned preview release readiness gate');
+assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-preview-release-readiness.test.mjs'), 'root test runs the unsigned preview release readiness contract');
+assertRule(rootPackage.scripts?.['release:smart-slice-task'] === 'node scripts/check-autocut-smart-slice-task-evidence.mjs', 'root package.json defines the smart slice task evidence validation script');
+assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-smart-slice-task-evidence.test.mjs'), 'root test runs the smart slice task evidence validation contract');
+assertRule(rootPackage.scripts?.['release:smart-slice-quality'] === 'node scripts/write-autocut-smart-slice-quality-evidence.mjs', 'root package.json defines the smart slice quality release evidence script');
+assertRule(rootPackage.scripts?.test?.includes('node scripts/write-autocut-smart-slice-quality-evidence.test.mjs'), 'root test runs the smart slice quality evidence contract');
+assertRule(rootPackage.scripts?.['release:smart-slice-media-artifacts'] === 'node scripts/write-autocut-smart-slice-media-artifacts-evidence.mjs', 'root package.json defines the smart slice media artifacts release evidence script');
+assertRule(rootPackage.scripts?.test?.includes('node scripts/write-autocut-smart-slice-media-artifacts-evidence.test.mjs'), 'root test runs the smart slice media artifacts evidence contract');
+assertRule(rootPackage.scripts?.['release:smart-slice-fixture'] === 'node scripts/check-autocut-smart-slice-release-fixture.mjs', 'root package.json defines the smart slice release fixture smoke script');
+assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-smart-slice-release-fixture.test.mjs'), 'root test runs the smart slice release fixture contract');
 
 assertRule(rootPackage.packageManager?.startsWith('pnpm@'), 'root package.json declares pnpm packageManager');
 assertRule(rootPackage.workspaces?.length === 1 && rootPackage.workspaces[0] === 'packages/*', 'root package.json workspace list only includes packages/*');
@@ -1068,7 +1229,7 @@ assertRule(desktopPackage.scripts?.['dev:tauri-web']?.includes('--strictPort'), 
 assertRule(desktopPackage.scripts?.['tauri:before-dev'] === 'pnpm dev:tauri-web', 'desktop tauri:before-dev delegates to the deterministic Tauri web dev script');
 assertRule(rootPackage.scripts?.dev?.includes('--filter @sdkwork/autocut-desktop'), 'root dev delegates to the desktop package');
 assertRule(rootPackage.scripts?.build?.includes('--filter @sdkwork/autocut-desktop'), 'root build delegates to the desktop package');
-assertRule(rootPackage.scripts?.typecheck?.includes('pnpm -r'), 'root typecheck runs recursive workspace typecheck');
+assertRule(rootPackage.scripts?.typecheck === 'node scripts/check-autocut-workspace-typecheck.mjs', 'root typecheck runs the stable workspace TypeScript API runner');
 assertRule(rootPackage.scripts?.lint?.includes('check:autocut-architecture'), 'root lint includes AutoCut architecture governance');
 assertRule(rootPackage.scripts?.clean === 'node scripts/clean-autocut-generated.mjs', 'root clean delegates to the standard generated-output cleanup script');
 assertRule(exists('scripts/ensure-autocut-tauri-rust-toolchain.mjs'), 'AutoCut defines a Rust toolchain guard script for desktop Tauri commands');
@@ -1577,9 +1738,14 @@ for (const marker of [
   'AutoCutSaveLlmSecretRequest',
   'AutoCutGetLlmSecretResult',
   'AutoCutDeleteLlmSecretResult',
+  'AUTOCUT_LLM_ENV_DEFAULT_SECRET_NAMES',
+  '"dev-default"',
+  '"release-default"',
   'save_autocut_llm_secret',
   'get_autocut_llm_secret',
   'delete_autocut_llm_secret',
+  'reads_default_deepseek_api_key_from_environment_when_secret_is_missing',
+  'ignores_deepseek_environment_key_for_unrecognized_default_secret_names',
   'keyring_core::Entry',
   'windows_native_keyring_store::Store',
   'keyring_core::Error::NoEntry',
@@ -1632,10 +1798,14 @@ assertRule(
 );
 assertRule(
   nativeMediaRuntimeSource.includes('video_slice_from_asset_writes_task_scoped_srt_subtitle_artifacts') &&
+    nativeMediaRuntimeSource.includes('video_slice_burned_subtitle_mode_renders_without_srt_sidecar') &&
+    nativeMediaRuntimeSource.includes('video_slice_srt_subtitles_are_clipped_to_slice_boundaries') &&
     nativeMediaRuntimeSource.includes('write_video_slice_subtitle_artifact') &&
+    nativeMediaRuntimeSource.includes('normalize_video_slice_subtitle_mode') &&
+    nativeMediaRuntimeSource.includes('subtitle_mode') &&
     nativeMediaRuntimeSource.includes('build_video_slice_srt') &&
     nativeMediaRuntimeSource.includes('insert_media_slice_subtitle_artifact'),
-  'media_runtime.rs tests and implements task-scoped SRT subtitle artifacts for transcript-assisted slicing',
+  'media_runtime.rs tests and implements task-scoped SRT and burned subtitle artifacts for transcript-assisted slicing',
 );
 assertRule(
   frontendStandardSource.includes('autocut_transcribe_media') &&
@@ -1757,8 +1927,13 @@ for (const marker of [
   'CARGO_TARGET_DIR',
   'createAutoCutNativeSmokeCargoTargetDir',
   'sdkwork-autocut-native-smoke-target-rust-',
+  'sdkwork-autocut-native-smoke-target-video-slice-',
   'sdkwork-autocut-native-smoke-target-llm-secret-',
   'cargoTargetDirs',
+  'videoSliceSmoke',
+  'videoSliceSmokeReady',
+  'autocut_slice_video',
+  'autocut-video-slice-smoke=passed',
   '--run-real-llm-secret-smoke',
   'realLlmSecretStoreSmokeReady',
   'llmSecretStoreSmoke',
@@ -1773,25 +1948,198 @@ assertRule(
   'native release smoke writer runs the real Windows LLM secret store smoke as an ignored serialized Rust test',
 );
 assertRule(
+  nativeReleaseSmokeCheckSource.includes('video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir') &&
+    nativeReleaseSmokeCheckSource.includes('autocut-video-slice-smoke=passed') &&
+    nativeMediaRuntimeSource.includes('println!("autocut-video-slice-smoke=passed")'),
+  'native release smoke writer runs the exact native video slice artifact smoke and requires its success marker',
+);
+assertRule(
+  releaseEvidenceSource.includes('nativeVideoSliceSmokeReady') &&
+    releaseEvidenceSource.includes('videoSliceReady') &&
+    releaseEvidenceSource.includes('autocut-video-slice-smoke=passed'),
+  'release evidence aggregates native video slice smoke readiness instead of trusting only generic native smoke',
+);
+assertRule(
+  commercialReleaseReadinessSource.includes('NATIVE_VIDEO_SLICE_SMOKE_NOT_READY') &&
+    commercialReleaseReadinessSource.includes('nativeVideoSliceSmokeReady') &&
+    commercialReleaseReadinessSource.includes('videoSliceReady'),
+  'commercial release readiness blocks when native video slice smoke evidence is missing',
+);
+assertRule(
+  rootPackage.scripts?.['release:sign-installers'] === 'node scripts/sign-autocut-release-installers.mjs',
+  'root package exposes the standardized AutoCut installer signing execution command',
+);
+for (const marker of [
+  'SDKWORK_AUTOCUT_WINDOWS_SIGNING_PFX',
+  'SDKWORK_AUTOCUT_WINDOWS_SIGNING_PASSWORD',
+  'SDKWORK_AUTOCUT_WINDOWS_SIGNING_THUMBPRINT',
+  'SDKWORK_AUTOCUT_WINDOWS_SIGNING_TIMESTAMP_URL',
+  'SDKWORK_AUTOCUT_SIGNTOOL_PATH',
+  'signtool.exe',
+  'createAutoCutInstallerSigningPlan',
+  'signAutoCutReleaseInstallers',
+]) {
+  assertRule(installerSigningSource.includes(marker), `installer signing execution script contains ${marker}`);
+}
+assertRule(
   rootPackage.scripts?.['release:installer-signature'] === 'node scripts/write-autocut-installer-signature-evidence.mjs',
   'root package exposes the standardized AutoCut installer signature evidence command',
+);
+assertRule(
+  fs.readFileSync(path.join(rootDir, 'scripts/autocut-cli-args.mjs'), 'utf8').includes('normalizeAutoCutCliArgs') &&
+    fs.readFileSync(path.join(rootDir, 'scripts/autocut-cli-args.mjs'), 'utf8').includes('readAutoCutCliOptionValue') &&
+    fs.readFileSync(path.join(rootDir, 'scripts/autocut-cli-args.test.mjs'), 'utf8').includes("['--', '--platform'") &&
+    fs.readFileSync(path.join(rootDir, 'scripts/autocut-cli-args.test.mjs'), 'utf8').includes("['--task']"),
+  'release governance scripts share pnpm -- argument separator normalization and missing-value checks',
+);
+assertRule(
+  rootPackage.scripts?.['release:smart-slice-quality'] === 'node scripts/write-autocut-smart-slice-quality-evidence.mjs',
+  'root package exposes the standardized AutoCut smart slice quality evidence command',
+);
+assertRule(
+  rootPackage.scripts?.['release:smart-slice-media-artifacts'] === 'node scripts/write-autocut-smart-slice-media-artifacts-evidence.mjs',
+  'root package exposes the standardized AutoCut smart slice media artifacts evidence command',
+);
+assertRule(
+  rootPackage.scripts?.['release:smart-slice-task'] === 'node scripts/check-autocut-smart-slice-task-evidence.mjs',
+  'root package exposes the standardized AutoCut smart slice task evidence validation command',
+);
+assertRule(
+  rootPackage.scripts?.['release:smart-slice-fixture'] === 'node scripts/check-autocut-smart-slice-release-fixture.mjs',
+  'root package exposes the standardized AutoCut smart slice release fixture smoke command',
+);
+assertRule(
+  rootPackage.scripts?.['release:smart-slice-sample'] === 'node scripts/write-autocut-smart-slice-sample-evidence.mjs',
+  'root package exposes the standardized AutoCut smart slice sample evidence command',
+);
+for (const marker of [
+  '2026-05-06.autocut-smart-slice-sample-evidence.v1',
+  'source-smart-slice-sample.mp4',
+  'autocut-smart-slice-sample-evidence.json',
+  'autocut-smart-slice-quality-evidence.json',
+  'autocut-smart-slice-media-artifacts-evidence.json',
+  'writeAutoCutSmartSliceQualityEvidence',
+  'writeAutoCutSmartSliceMediaArtifactsEvidence',
+  'createAutoCutSmartSliceTaskEvidenceValidationReport',
+  'sentenceBoundaryIntegrityGrade',
+  'speechContinuityGrade',
+]) {
+  assertRule(smartSliceSampleEvidenceSource.includes(marker), `smart slice sample evidence writer contains ${marker}`);
+}
+for (const marker of [
+  '2026-05-06.autocut-smart-slice-release-fixture.v1',
+  'createAutoCutSmartSliceReleaseFixtureReport',
+  'createSmartSliceTaskFixture',
+  'writeAutoCutSmartSliceQualityEvidence',
+  'writeAutoCutSmartSliceMediaArtifactsEvidence',
+  'writeSmartSliceMediaFiles',
+  'mediaArtifactsEvidence',
+  'writeAutoCutReleaseEvidence',
+  'createAutoCutCommercialReleaseReadinessReport',
+  'blocked-transcript',
+  'SMART_SLICE_RELEASE_EVIDENCE_NOT_READY',
+  'SMART_SLICE_COMMERCIAL_READINESS_NOT_READY',
+]) {
+  assertRule(smartSliceReleaseFixtureCheckSource.includes(marker), `smart slice release fixture check contains ${marker}`);
+}
+for (const marker of [
+  '2026-05-06.autocut-smart-slice-task-evidence-validation.v1',
+  '2026-05-06.autocut-smart-slice-task-evidence.v1',
+  'SMART_SLICE_TASK_NOT_COMPLETED',
+  'SMART_SLICE_TASK_TRANSCRIPT_MISSING',
+  'SMART_SLICE_TASK_CONTINUITY_INCOMPLETE',
+  'SMART_SLICE_TASK_SOURCE_RANGE_INVALID',
+  'SMART_SLICE_TASK_RENDER_ARTIFACT_MISSING',
+  'SMART_SLICE_TASK_RENDER_DURATION_MISMATCH',
+  'minimumContinuityScore',
+  'minimumTranscriptCoverageScore',
+  'formatAutoCutSmartSliceTaskEvidenceValidationMessage',
+]) {
+  assertRule(smartSliceTaskEvidenceCheckSource.includes(marker), `smart slice task evidence validation check contains ${marker}`);
+}
+for (const marker of [
+  '2026-05-06.autocut-smart-slice-quality-evidence.v1',
+  '2026-05-06.autocut-smart-slice-task-evidence.v1',
+  'QUALITY_THRESHOLDS',
+  'minAveragePublishabilityScore',
+  'minAverageContinuityScore',
+  'minAverageTranscriptCoverageScore',
+  'SMART_SLICE_TRANSCRIPT_CONTINUITY_TOO_LOW',
+  'platformReadyOrReviewRatio',
+  'validateSmartSliceTaskEvidence',
+  'evidenceKind',
+  'smart-slice-task',
+  "task.status !== 'completed'",
+]) {
+  assertRule(smartSliceQualityEvidenceSource.includes(marker), `smart slice quality evidence writer contains ${marker}`);
+}
+for (const marker of [
+  '2026-05-06.autocut-smart-slice-media-artifacts-evidence.v1',
+  '2026-05-06.autocut-smart-slice-task-evidence.v1',
+  'SMART_SLICE_MEDIA_ARTIFACT_MISSING',
+  'SMART_SLICE_MEDIA_ARTIFACT_PATH_ESCAPE',
+  'smartSliceMediaArtifactsReady',
+  'createAutoCutSmartSliceMediaArtifactsEvidence',
+  'writeAutoCutSmartSliceMediaArtifactsEvidence',
+  'sha256',
+  'asset://',
+]) {
+  assertRule(smartSliceMediaArtifactsEvidenceSource.includes(marker), `smart slice media artifacts evidence writer contains ${marker}`);
+}
+assertRule(
+  releaseEvidenceSource.includes('readSmartSliceQualityEvidence') &&
+    releaseEvidenceSource.includes('smartSliceQualityReady') &&
+    releaseEvidenceSource.includes('smartSliceQuality') &&
+    releaseEvidenceSource.includes('readSmartSliceMediaArtifactsEvidence') &&
+    releaseEvidenceSource.includes('smartSliceMediaArtifactsReady') &&
+    releaseEvidenceSource.includes('smartSliceMediaArtifacts'),
+  'release evidence writer aggregates smart slice quality and media artifact evidence',
+);
+assertRule(
+  commercialReleaseReadinessSource.includes('SMART_SLICE_QUALITY_NOT_READY') &&
+    commercialReleaseReadinessSource.includes('SMART_SLICE_MEDIA_ARTIFACTS_NOT_READY') &&
+    commercialReleaseReadinessSource.includes('smartSliceQualityReady') &&
+    commercialReleaseReadinessSource.includes('smartSliceMediaArtifactsReady') &&
+    commercialReleaseReadinessSource.includes('release:smart-slice-quality') &&
+    commercialReleaseReadinessSource.includes('release:smart-slice-media-artifacts'),
+  'commercial release readiness gate blocks releases without smart slice quality or media artifact evidence',
 );
 assertRule(
   rootPackage.scripts?.['release:evidence'] === 'node scripts/write-autocut-release-evidence.mjs',
   'root package exposes the standardized AutoCut release evidence writer command',
 );
 assertRule(
+  rootPackage.scripts?.['release:preview-ready'] === 'node scripts/check-autocut-preview-release-readiness.mjs',
+  'root package exposes the standardized AutoCut unsigned preview release readiness gate command',
+);
+assertRule(
+  previewReleaseReadinessSource.includes('UNSIGNED_INSTALLERS_ACCEPTED_FOR_PREVIEW') &&
+    previewReleaseReadinessSource.includes('installerArtifactsReady') &&
+    previewReleaseReadinessSource.includes('ffmpegExecutionPreviewReady') &&
+    previewReleaseReadinessSource.includes('INSTALLER_ARTIFACTS_NOT_READY') &&
+    previewReleaseReadinessSource.includes('release:commercial-ready'),
+  'preview release readiness gate allows unsigned installers only with explicit warning and keeps all runtime evidence gates',
+);
+assertRule(
   rootPackage.scripts?.['release:commercial-ready'] === 'node scripts/check-autocut-commercial-release-readiness.mjs',
   'root package exposes the standardized AutoCut commercial release readiness gate command',
 );
 assertRule(
-  rootPackage.scripts?.test?.includes('scripts/prepare-autocut-ffmpeg-sidecar.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/prepare-autocut-ffmpeg-sidecar.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/autocut-cli-args.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/check-autocut-release-smoke-preflight.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/write-autocut-native-release-smoke.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/sign-autocut-release-installers.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/write-autocut-installer-signature-evidence.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/write-autocut-smart-slice-sample-evidence.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/check-autocut-smart-slice-task-evidence.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/write-autocut-smart-slice-quality-evidence.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/write-autocut-smart-slice-media-artifacts-evidence.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/check-autocut-smart-slice-release-fixture.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/write-autocut-release-evidence.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/check-autocut-preview-release-readiness.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/check-autocut-commercial-release-readiness.test.mjs'),
-  'root package test script covers FFmpeg sidecar preparation, release smoke preflight, native release smoke, installer signature, release evidence, and commercial readiness contracts',
+  'root package test script covers FFmpeg sidecar preparation, release smoke preflight, native release smoke, installer signing, installer signature, smart slice sample, smart slice task validation, smart slice quality, smart slice media artifacts, smart slice fixture, release evidence, preview readiness, and commercial readiness contracts',
 );
 assertRule(
   tauriConfig.bundle?.resources?.['binaries/ffmpeg.toolchain.json'] === 'binaries/ffmpeg.toolchain.json',
@@ -1815,7 +2163,11 @@ assertRule(
 );
 for (const scriptFile of listFiles(path.join(rootDir, 'scripts'), (file) => /\.(mjs|cjs|js|ts)$/.test(file))) {
   const relative = path.relative(rootDir, scriptFile).replaceAll(path.sep, '/');
+  const content = fs.readFileSync(scriptFile, 'utf8');
   assertRule(allowedScriptFiles.has(relative), `${relative} is an allowed AutoCut desktop governance script`);
+  if (relative !== 'scripts/check-autocut-architecture.mjs') {
+    assertRule(!content.includes('args[index + 1]'), `${relative} uses the shared AutoCut CLI option value validator`);
+  }
 }
 if (exists('docs')) {
   for (const docFile of listFiles(path.join(rootDir, 'docs'), (file) => /\.(md|yaml|yml|json)$/.test(file))) {
@@ -1873,6 +2225,14 @@ for (const file of rootTextFiles) {
   assertRule(!content.includes('GEMINI_API_KEY'), `${relative} does not expose AI Studio GEMINI_API_KEY wiring`);
   assertRule(!content.includes('@google/genai'), `${relative} does not import Google GenAI directly`);
   assertRule(!content.includes('AI Studio'), `${relative} does not contain AI Studio scaffolding copy`);
+}
+for (const file of listFiles(rootDir, isSecretGovernanceTextFile, shouldSkipSecretGovernanceDirectory)) {
+  const content = fs.readFileSync(file, 'utf8');
+  const relative = path.relative(rootDir, file).replaceAll(path.sep, '/');
+  assertRule(
+    !forbiddenHighEntropyApiKeyPattern.test(content),
+    `${relative} does not commit high-entropy OpenAI-compatible API keys`,
+  );
 }
 for (const rootEntry of fs.readdirSync(rootDir, { withFileTypes: true })) {
   assertRule(allowedRootEntries.has(rootEntry.name), `root entry ${rootEntry.name} is allowed by the AutoCut desktop app standard`);
@@ -2048,6 +2408,13 @@ assertRule(
   !/readAutoCutStorage<[^>]*AppTask[^>]*>\(\s*['"]tasks['"]\s*,\s*INITIAL_TASKS/u.test(tasksServiceSource),
   'tasks.service.ts defaults browser task storage to an empty collection instead of mock tasks',
 );
+assertRule(
+  tasksServiceSource.includes('mergeNativeTaskWithLocalSliceMetadata') &&
+    tasksServiceSource.includes('isSameSliceSourceWindow') &&
+    !tasksServiceSource.includes('localTask.sliceResults?.[index]') &&
+    serviceBehaviorCheckSource.includes('does not merge stale smart slice metadata by index'),
+  'tasks.service.ts merges native smart-slice metadata only by artifact id or matching source window',
+);
 assertRule(exists(requiredAssetsServicePath), '@sdkwork/autocut-services defines canonical assets.service.ts');
 assertRule(
   !/\bassets\.mock\b/u.test(assetsServiceSource) && !/\bINITIAL_ASSETS\b/u.test(assetsServiceSource),
@@ -2061,6 +2428,138 @@ assertRule(
 assertRule(exists(requiredToolsRegistryPath), '@sdkwork/autocut-services defines canonical tools.registry.ts');
 assertRule(!exists('packages/sdkwork-autocut-services/src/service/tools.mock.ts'), 'tool catalog uses registry naming instead of mock naming');
 assertRule(exists(requiredSlicerServicePath), '@sdkwork/autocut-slicer defines canonical slicerService.ts');
+assertRule(
+  exists('packages/sdkwork-autocut-slicer/src/service/slicePlanner.ts'),
+  '@sdkwork/autocut-slicer defines a pure slicePlanner.ts planning kernel',
+);
+assertRule(
+  slicerServiceSource.includes("from './slicePlanner'") &&
+    slicerServiceSource.includes('buildTranscriptSliceCandidates') &&
+    slicerServiceSource.includes('getVideoSlicePlanningPolicy') &&
+    slicerServiceSource.includes('parseLlmSlicePlan') &&
+    slicerServiceSource.includes('validateVideoSliceParams'),
+  'slicerService.ts delegates intelligent slice planning to slicePlanner.ts',
+);
+assertRule(
+  slicePlannerSource.includes('export function getVideoSlicePlanningPolicy') &&
+    slicePlannerSource.includes('MIN_TARGET_SLICE_COUNT') &&
+    slicePlannerSource.includes('MAX_TARGET_SLICE_COUNT') &&
+    slicePlannerSource.includes('SLICE_PLATFORM_PROFILES') &&
+    slicePlannerSource.includes('sliceCountMode') &&
+    slicePlannerSource.includes('targetSliceCount') &&
+    slicePlannerSource.includes('idealDurationMs') &&
+    slicePlannerSource.includes('sourceDurationMs') &&
+    slicePlannerSource.includes('continuityJoinGapMs') &&
+    slicePlannerSource.includes('customKeywords') &&
+    slicePlannerSource.includes("params.targetAspectRatio && params.targetAspectRatio !== 'auto'"),
+  'slicePlanner.ts centralizes smart slicing strategy policy instead of scattering fixed defaults',
+);
+assertRule(
+    slicerServiceSource.includes('requestedClipCount: planningPolicy.targetSliceCount') &&
+    slicerServiceSource.includes('sliceCountMode: planningPolicy.sliceCountMode') &&
+    slicerServiceSource.includes('idealDurationMs: planningPolicy.idealDurationMs') &&
+    slicerServiceSource.includes('resolveTrustedVideoSliceSourceDurationMs') &&
+    slicerServiceSource.includes('sourceDurationMs: importedMedia.durationMs') &&
+    slicerServiceSource.includes('continuityJoinGapMs: planningPolicy.continuityJoinGapMs') &&
+    slicerServiceSource.includes('customKeywords: planningPolicy.customKeywords') &&
+    slicerServiceSource.includes('continuityScore: candidate.continuityScore') &&
+    slicerServiceSource.includes('risks: candidate.risks') &&
+    slicerServiceSource.includes('summary: candidate.summary'),
+  'slicerService.ts prompts AI planning with canonical strategy policy fields',
+);
+assertRule(
+  slicerServiceSource.includes('Do not end clips at trailing connector words') &&
+    slicerServiceSource.includes('If transcript candidateWindows are present, choose candidateId'),
+  'slicerService.ts prompts the LLM to preserve speech-to-text continuity instead of selecting partial utterances',
+);
+assertRule(
+  slicerServiceSource.includes('function createVideoSliceRenderProfile') &&
+    slicerServiceSource.includes('const renderProfile = createVideoSliceRenderProfile(planningPolicy)') &&
+    slicerServiceSource.includes('renderProfile }'),
+  'slicerService.ts projects the canonical publishing strategy into native renderProfile requests',
+);
+assertRule(
+  nativeHostClientServiceSource.includes('AutoCutVideoSliceRenderProfile') &&
+    nativeHostClientServiceSource.includes('renderProfile?: AutoCutVideoSliceRenderProfile'),
+  'native host client exposes a typed video slice renderProfile contract',
+);
+assertRule(
+  nativeHostClientServiceSource.includes('durationMs?: number') &&
+    nativeMediaRuntimeSource.includes('pub duration_ms: Option<i64>') &&
+    nativeMediaRuntimeSource.includes('"durationMs": duration_ms') &&
+    nativeMediaRuntimeSource.includes('read_ffmpeg_media_duration_millis(toolchain, &sandbox_path).ok()'),
+  'native host media import and describe contracts expose source duration for source-bounded smart slicing',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('AutoCutVideoSliceRenderProfile') &&
+    nativeMediaRuntimeSource.includes('normalize_video_slice_render_profile') &&
+    nativeMediaRuntimeSource.includes('video_slice_render_filter_chain') &&
+    nativeMediaRuntimeSource.includes('render_profile') &&
+    nativeMediaRuntimeSource.includes('target_aspect_ratio') &&
+    nativeMediaRuntimeSource.includes('object_fit'),
+  'native media runtime standardizes target aspect ratio rendering for smart slices',
+);
+assertRule(
+  !slicerServiceSource.includes('requestedClipCount: DEFAULT_SLICE_COUNT'),
+  'slicerService.ts does not hard-code the requested smart slice count in LLM prompts',
+);
+assertRule(
+  slicePlannerSource.includes('qualityScore') &&
+    slicePlannerSource.includes('continuityScore') &&
+    slicePlannerSource.includes('sourceStartMs') &&
+    slicePlannerSource.includes('sourceEndMs') &&
+    slicePlannerSource.includes('storyShape') &&
+    slicePlannerSource.includes('inferTranscriptStoryShape') &&
+    slicePlannerSource.includes('missing-payoff') &&
+    slicePlannerSource.includes('createNormalizedSliceTimingMetadata') &&
+    slicePlannerSource.includes('timing-metadata-repaired') &&
+    slicePlannerSource.includes('createDeterministicSliceMetadata') &&
+    slicePlannerSource.includes('createTranscriptSliceMetadata'),
+  'slicePlanner.ts preserves explainable smart slicing metadata through deterministic normalization',
+);
+assertRule(
+    slicePlannerSource.includes('endsWithWeakConnector') &&
+    slicePlannerSource.includes('endsWithTerminalPunctuation') &&
+    slicePlannerSource.includes('canTreatAsOpenSentence') &&
+    slicePlannerSource.includes('trailing-connector-extended') &&
+    slicePlannerSource.includes('open-sentence-extended') &&
+    slicePlannerSource.includes('connector-repaired') &&
+    slicePlannerSource.includes('findBestOverlappingTranscriptCandidate') &&
+    slicePlannerSource.includes('calculateClipOverlapRatio') &&
+    slicePlannerSource.includes('source-duration-tail') &&
+    slicePlannerSource.includes('llm-timing-snapped-to-transcript'),
+  'slicePlanner.ts owns speech-to-text continuity repair instead of trusting partial LLM timings',
+);
+assertRule(
+  slicePlannerSource.includes('MAX_LLM_PLAN_ITEMS_TO_INSPECT') &&
+    slicePlannerSource.includes('Number(durationMs) <= 0') &&
+    slicerPlannerCheckSource.includes('LLM parsing skips invalid timing candidates before applying the target slice limit'),
+  'slicePlanner.ts rejects invalid LLM timing candidates before applying the target slice limit',
+);
+assertRule(
+  /clip\.durationMs\s*>\s*0/u.test(slicePlannerSource) &&
+    slicerPlannerCheckSource.includes('candidate normalization rejects non-positive durations'),
+  'slicePlanner.ts rejects non-positive candidate durations at the shared normalization boundary',
+);
+assertRule(
+  !slicerServiceSource.includes('llm-timing-snapped-to-transcript') &&
+    !slicerServiceSource.includes('trailing-connector-extended') &&
+    !slicerServiceSource.includes('endsWithWeakConnector'),
+  'slicerService.ts does not duplicate speech-to-text continuity repair outside the planner kernel',
+);
+assertRule(
+  slicerServiceSource.includes('function toNativeSliceClipRequest') &&
+    slicerServiceSource.includes('clips: nativeClips') &&
+    slicerServiceSource.includes('plannedClips[index]') &&
+    slicerServiceSource.includes('storyShape: plannedClip.storyShape'),
+  'slicerService.ts separates explainable planning metadata from native slice rendering requests',
+);
+assertRule(
+  !slicerServiceSource.includes('function normalizeCandidateSlicePlan') &&
+    !slicerServiceSource.includes('function buildTranscriptSliceCandidates') &&
+    !slicerServiceSource.includes('function parseLlmSlicePlan'),
+  'slicerService.ts does not own the slice planning kernel',
+);
 assertRule(!slicerServiceSource.includes('createSampleSliceResults'), 'slicerService.ts does not generate fake slice result lists');
 assertRule(!slicerServiceSource.includes('getAutoCutSampleSliceThumbnailUrl'), 'slicerService.ts does not assign sample thumbnails to generated slices');
 assertRule(!slicerServiceSource.includes('simulateTaskProgress'), 'slicerService.ts does not simulate automatic video slicing completion');
@@ -2068,6 +2567,16 @@ assertRule(
   slicerServiceSource.includes('failAutoCutUnsupportedNativeProcessingTask(newTask,') &&
     slicerServiceSource.includes("'automatic slicing'"),
   'slicerService.ts fails closed when native trusted local slicing is unavailable',
+);
+assertRule(
+  slicerServiceSource.includes('plannedClips.length === 0') &&
+    slicerServiceSource.includes('trustedSourceDurationMs !== undefined && trustedSourceDurationMs < 5_000') &&
+    !slicerServiceSource.includes('resolveTranscriptPlanningDurationMs') &&
+    slicerServiceSource.includes('source video is too short') &&
+    serviceBehaviorCheckSource.includes('source media that is shorter than the minimum renderable slice') &&
+    serviceBehaviorCheckSource.includes('does not treat a short transcript as a short source when imported media duration is unknown') &&
+    serviceBehaviorCheckSource.includes('does not call the LLM planner when the source media is too short'),
+  'slicerService.ts fails closed before LLM planning and native rendering when no valid clip can be produced',
 );
 for (const relativePath of realProcessingServicePaths) {
   const source = exists(relativePath) ? fs.readFileSync(path.join(rootDir, relativePath), 'utf8') : '';
@@ -2149,6 +2658,11 @@ assertRule(
   'desktop native-host.ts bridges Tauri webview drag-drop paths into the trusted file source service',
 );
 for (const marker of [
+  "import ts from 'typescript'",
+  'transpileLocalModule',
+  'rewriteLocalModuleSpecifiers',
+  'collectLocalModuleGraph',
+  'resolveExternalModuleSpecifier',
   'resetAutoCutNativeHostClient',
   'native host fallback reports browser host kind',
   'native host fallback task recovery',
@@ -2198,6 +2712,14 @@ for (const marker of [
     `service behavior check covers native host client marker ${marker}`,
   );
 }
+assertRule(
+  !serviceBehaviorCheckSource.includes("from 'vite'") &&
+    !serviceBehaviorCheckSource.includes('createServer') &&
+    !serviceBehaviorCheckSource.includes('ssrLoadModule') &&
+    !serviceBehaviorCheckSource.includes("from 'node:child_process'") &&
+    !serviceBehaviorCheckSource.includes('childProcess.exec'),
+  'service behavior check loads TypeScript contracts without Vite, esbuild, or child_process spawn dependencies',
+);
 assertRule(
   !serviceIndexSource.includes("from '@sdkwork/autocut-commons'"),
   '@sdkwork/autocut-services does not re-export commons UI/source bridge APIs',

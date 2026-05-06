@@ -67,11 +67,46 @@ const processingWorkflows = [
       'executablePath: speechRuntimeConfig.executablePath',
       'modelPath: speechRuntimeConfig.modelPath',
       'sliceVideo',
+      'renderProfile',
       'createAssetUrl',
       'thumbnailArtifactPath',
       'createTranscriptAssistedSlicePlan',
+      'buildTranscriptSliceCandidates',
+      'parseLlmSlicePlan',
+      'toNativeSliceClipRequest',
+      'plannedClips[index]',
+    ],
+    planningKernel: 'packages/sdkwork-autocut-slicer/src/service/slicePlanner.ts',
+    planningMarkers: [
+      'createTranscriptAssistedSlicePlan',
+      'getVideoSlicePlanningPolicy',
+      'sliceCountMode',
+      'targetSliceCount',
+      'idealDurationMs',
+      'continuityJoinGapMs',
+      'customKeywords',
+      'sourceDurationMs',
       'normalizeCandidateSlicePlan',
+      'normalizeCandidateSlicePlanWithQualityStandards',
+      'calculateClipOverlapRatio',
+      'inferTranscriptStoryShape',
+      'source-duration-tail',
+      'missing-payoff',
       'fallbackDurationMs',
+      'qualityScore',
+      'continuityScore',
+      'storyShape',
+      'sourceStartMs',
+      'sourceEndMs',
+      'createDeterministicSliceMetadata',
+      'createTranscriptSliceMetadata',
+      'endsWithWeakConnector',
+      'endsWithTerminalPunctuation',
+      'canTreatAsOpenSentence',
+      'trailing-connector-extended',
+      'open-sentence-extended',
+      'llm-timing-snapped-to-transcript',
+      'findBestOverlappingTranscriptCandidate',
     ],
   },
   {
@@ -249,6 +284,12 @@ for (const workflow of processingWorkflows) {
   for (const marker of workflow.serviceMarkers) {
     assertIncludes(serviceSource, marker, `${workflow.name} service contains workflow marker ${marker}`);
   }
+  if (workflow.planningKernel) {
+    const planningSource = read(workflow.planningKernel);
+    for (const marker of workflow.planningMarkers) {
+      assertIncludes(planningSource, marker, `${workflow.name} planning kernel contains workflow marker ${marker}`);
+    }
+  }
   assertIncludes(pageSource, 'TaskFailureState', `${workflow.name} page renders a standard failed task state`);
   assertRule(
     !/className="[^"]*\bhidden\b[^"]*"[\s\S]{0,160}<TaskFailureState/u.test(pageSource),
@@ -302,6 +343,72 @@ assertIncludes(slicerPage, 'useSearchParams', 'Slicer reads router search params
 assertIncludes(slicerPage, "searchParams.get('url')", 'Slicer reads the external source URL query parameter');
 assertIncludes(slicerPage, 'useState(initialSourceUrl)', 'Slicer stores the external source URL from navigation state');
 assertIncludes(slicerPage, 'sliceParams.url = sourceUrl', 'Slicer passes the external source URL into the slicing workflow');
+assertIncludes(slicerPage, "const [targetPlatform, setTargetPlatform]", 'Slicer stores a target publishing platform for smart slicing');
+assertIncludes(slicerPage, "const [sliceCountMode, setSliceCountMode]", 'Slicer stores a smart slice count strategy mode');
+assertIncludes(slicerPage, "const [targetSliceCount, setTargetSliceCount]", 'Slicer stores the requested smart slice count');
+assertIncludes(slicerPage, "const [idealDuration, setIdealDuration]", 'Slicer stores the ideal smart slice duration');
+assertIncludes(slicerPage, "const [continuityLevel, setContinuityLevel]", 'Slicer stores the transcript continuity level');
+assertIncludes(slicerPage, "const [customKeywordsInput, setCustomKeywordsInput]", 'Slicer stores custom smart slice keywords');
+assertIncludes(slicerPage, "if (targetPlatform === 'bilibili')", 'Slicer applies Bilibili horizontal publishing defaults');
+assertIncludes(slicerPage, "if (targetPlatform === 'xiaohongshu')", 'Slicer applies Xiaohongshu vertical publishing defaults');
+assertIncludes(slicerPage, "if (targetPlatform !== 'generic')", 'Slicer applies vertical short-video defaults for short-video platforms');
+assertIncludes(slicerPage, 'targetPlatform,', 'Slicer passes targetPlatform into VideoSliceParams');
+assertIncludes(slicerPage, 'targetAspectRatio: aspectRatio', 'Slicer passes the target aspect ratio into VideoSliceParams');
+assertIncludes(slicerPage, 'videoObjectFit,', 'Slicer passes target object-fit into VideoSliceParams');
+assertIncludes(slicerPage, 'sliceCountMode,', 'Slicer passes sliceCountMode into VideoSliceParams');
+assertIncludes(slicerPage, 'targetSliceCount,', 'Slicer passes targetSliceCount into VideoSliceParams');
+assertIncludes(slicerPage, 'idealDuration,', 'Slicer passes idealDuration into VideoSliceParams');
+assertIncludes(slicerPage, 'continuityLevel,', 'Slicer passes continuityLevel into VideoSliceParams');
+assertIncludes(slicerPage, 'customKeywords: customKeywordsInput', 'Slicer passes custom keywords into VideoSliceParams');
+assertIncludes(slicerPage, 'subtitleMode', 'Slicer exposes a standardized subtitle publishing mode');
+assertIncludes(slicerPage, 'setSubtitleMode', 'Slicer lets the operator choose the subtitle publishing mode');
+assertIncludes(slicerPage, 'subtitleMode,', 'Slicer passes subtitleMode into VideoSliceParams');
+
+const slicerService = read('packages/sdkwork-autocut-slicer/src/service/slicerService.ts');
+const slicerPlanningKernel = read('packages/sdkwork-autocut-slicer/src/service/slicePlanner.ts');
+assertIncludes(slicerService, 'getVideoSlicePlanningPolicy', 'Slicer service consumes the canonical smart slice planning policy');
+assertIncludes(slicerService, 'planningPolicy', 'Slicer service includes planning policy in the LLM prompt payload');
+assertIncludes(slicerService, 'requestedClipCount: planningPolicy.targetSliceCount', 'Slicer service prompts the LLM with the policy target slice count');
+assertIncludes(slicerService, 'sliceCountMode: planningPolicy.sliceCountMode', 'Slicer service prompts the LLM with the slice count mode');
+assertIncludes(slicerService, 'idealDurationMs: planningPolicy.idealDurationMs', 'Slicer service prompts the LLM with the ideal duration');
+assertIncludes(slicerService, 'continuityJoinGapMs: planningPolicy.continuityJoinGapMs', 'Slicer service prompts the LLM with the continuity join gap');
+assertIncludes(slicerService, 'customKeywords: planningPolicy.customKeywords', 'Slicer service prompts the LLM with custom keywords');
+assertIncludes(slicerService, 'continuityScore: candidate.continuityScore', 'Slicer service sends transcript continuity scores to the LLM planner');
+assertIncludes(slicerService, 'boundaryQualityScore: candidate.boundaryQualityScore', 'Slicer service sends transcript boundary quality scores to the LLM planner');
+assertIncludes(slicerService, 'hookStrength: candidate.hookStrength', 'Slicer service sends transcript hook strength grades to the LLM planner');
+assertIncludes(slicerService, 'endingCompleteness: candidate.endingCompleteness', 'Slicer service sends transcript ending completeness grades to the LLM planner');
+assertIncludes(slicerService, 'contentArcScore: candidate.contentArcScore', 'Slicer service sends transcript content-arc scores to the LLM planner');
+assertIncludes(slicerService, 'contentArcGrade: candidate.contentArcGrade', 'Slicer service sends transcript content-arc grades to the LLM planner');
+assertIncludes(slicerService, 'contentArcStages: candidate.contentArcStages', 'Slicer service sends transcript detected content-arc stages to the LLM planner');
+assertIncludes(slicerService, 'contentArcMissingStages: candidate.contentArcMissingStages', 'Slicer service sends transcript missing content-arc stages to the LLM planner');
+assertIncludes(slicerService, 'topicCoherenceScore: candidate.topicCoherenceScore', 'Slicer service sends transcript topic coherence scores to the LLM planner');
+assertIncludes(slicerService, 'topicCoherenceGrade: candidate.topicCoherenceGrade', 'Slicer service sends transcript topic coherence grades to the LLM planner');
+assertIncludes(slicerService, 'topicShiftCount: candidate.topicShiftCount', 'Slicer service sends transcript topic shift counts to the LLM planner');
+assertIncludes(slicerService, 'topicKeywords: candidate.topicKeywords', 'Slicer service sends transcript topic keywords to the LLM planner');
+assertIncludes(slicerService, 'platformReadinessScore: candidate.platformReadinessScore', 'Slicer service sends platform readiness scores to the LLM planner');
+assertIncludes(slicerService, 'platformReadinessGrade: candidate.platformReadinessGrade', 'Slicer service sends platform readiness grades to the LLM planner');
+assertIncludes(slicerService, 'platformReadinessIssues: candidate.platformReadinessIssues', 'Slicer service sends platform readiness issues to the LLM planner');
+assertIncludes(slicerService, 'sentenceBoundaryIntegrityScore: candidate.sentenceBoundaryIntegrityScore', 'Slicer service sends sentence boundary integrity scores to the LLM planner');
+assertIncludes(slicerService, 'sentenceBoundaryIntegrityGrade: candidate.sentenceBoundaryIntegrityGrade', 'Slicer service sends sentence boundary integrity grades to the LLM planner');
+assertIncludes(slicerService, 'sentenceBoundaryIssues: candidate.sentenceBoundaryIssues', 'Slicer service sends sentence boundary issue tags to the LLM planner');
+assertIncludes(slicerService, 'risks: candidate.risks', 'Slicer service sends transcript continuity repair risks to the LLM planner');
+assertIncludes(slicerService, 'summary: candidate.summary', 'Slicer service sends transcript candidate summaries to the LLM planner');
+assertIncludes(slicerService, 'resolveTrustedVideoSliceSourceDurationMs', 'Slicer service uses only trusted imported media duration for source-bounded planning');
+assertRule(
+  !slicerService.includes('resolveTranscriptPlanningDurationMs'),
+  'Slicer service does not treat transcript end time as authoritative source media duration',
+);
+assertIncludes(slicerService, 'sourceDurationMs: importedMedia.durationMs', 'Slicer service passes imported media duration into smart slice planning');
+assertIncludes(slicerService, 'storyShape: plannedClip.storyShape', 'Slicer service preserves hook-context-payoff story-shape metadata on slice results');
+assertIncludes(slicerService, 'Do not end clips at trailing connector words', 'Slicer service tells the LLM not to end clips on incomplete speech connectors');
+assertIncludes(slicerService, 'If transcript candidateWindows are present, choose candidateId', 'Slicer service tells the LLM to select repaired speech-to-text windows instead of raw midpoint timings');
+assertIncludes(slicerPlanningKernel, 'createNormalizedSliceTimingMetadata', 'Slicer planner centralizes source and speech timing metadata repair');
+assertIncludes(slicerPlanningKernel, 'timing-metadata-repaired', 'Slicer planner records repaired dirty timing metadata for quality review');
+assertIncludes(slicerService, 'const renderProfile = createVideoSliceRenderProfile(planningPolicy)', 'Slicer service creates the smart publishing render profile from planning policy');
+assertIncludes(slicerService, 'renderProfile }', 'Slicer service passes the smart publishing render profile into native slicing');
+assertIncludes(slicerService, 'createVideoSliceSubtitleRequest', 'Slicer service centralizes subtitle-mode projection into native slicing');
+assertIncludes(slicerService, "subtitleMode: params.subtitleMode ?? 'both'", 'Slicer service defaults enabled subtitles to burned plus SRT sidecar mode');
+assertIncludes(slicerService, "subtitleMode: 'none'", 'Slicer service omits subtitle generation when subtitles are disabled or transcript is unavailable');
 
 const homePage = read('packages/sdkwork-autocut-home/src/pages/HomePage.tsx');
 assertIncludes(homePage, 'sourceUrlInput', 'HomePage stores the external source URL input value');
@@ -342,16 +449,90 @@ assertIncludes(taskDetailPage, 'downloadTaskExecutionResultFile', 'TaskDetailPag
 assertIncludes(taskDetailPage, 'TaskFailureState', 'TaskDetailPage renders the standard failed task state');
 assertIncludes(taskDetailPage, 'task.status === AUTOCUT_TASK_STATUS.failed', 'TaskDetailPage branches failed tasks before pending or processing views');
 assertIncludes(taskDetailPage, 'errorMessage={task.errorMessage}', 'TaskDetailPage passes task error messages into the failed task state');
+assertIncludes(taskDetailPage, 'downloadSmartSliceTaskEvidenceFile', 'TaskDetailPage exports completed smart slice task evidence for release quality gates');
+assertIncludes(taskDetailPage, 'handleDownloadSmartSliceTaskEvidence', 'TaskDetailPage owns a dedicated smart slice quality evidence export workflow');
+assertIncludes(taskDetailPage, '_smart-slice-task.json', 'TaskDetailPage downloads smart slice task evidence with the release gate filename suffix');
 assertIncludes(taskDetailPage, 'handleSlicePreviewSelect', 'TaskDetailPage routes slice preview clicks through a dedicated selection handler');
 assertIncludes(taskDetailPage, 'onClick={() => handleSlicePreviewSelect(slice.id)}', 'TaskDetailPage lets each generated slice select its own preview video');
 assertIncludes(taskDetailPage, 'const selectedSlice = sliceResults.find((slice) => slice.id === activePreviewUrl) ?? sliceResults[0] ?? null', 'TaskDetailPage resolves the selected slice result before rendering the player');
 assertIncludes(taskDetailPage, 'key={selectedSlice.id}', 'TaskDetailPage remounts the video player when a different slice is selected');
 assertIncludes(taskDetailPage, 'src={selectedSlice.url}', 'TaskDetailPage plays the selected slice artifact URL instead of a shared placeholder');
+assertIncludes(taskDetailPage, 'formatSliceScore(selectedSlice.qualityScore)', 'TaskDetailPage displays AI quality score for the selected smart slice');
+assertIncludes(taskDetailPage, 'formatSliceScore(selectedSlice.continuityScore)', 'TaskDetailPage displays AI continuity score for the selected smart slice');
+assertIncludes(taskDetailPage, 'formatSliceStoryShape(selectedSlice.storyShape)', 'TaskDetailPage displays AI story-shape completeness for the selected smart slice');
+assertIncludes(taskDetailPage, 'formatPublishabilityGrade(selectedSlice.publishabilityGrade)', 'TaskDetailPage displays AI publishability grades for selected smart slices');
+assertIncludes(taskDetailPage, 'formatSliceBoundaryGrade(selectedSlice.hookStrength)', 'TaskDetailPage displays smart slice hook strength grades');
+assertIncludes(taskDetailPage, 'formatSliceBoundaryGrade(selectedSlice.endingCompleteness)', 'TaskDetailPage displays smart slice ending completeness grades');
+assertIncludes(taskDetailPage, 'formatSliceScore(selectedSlice.contentArcScore)', 'TaskDetailPage displays smart slice content-arc scores');
+assertIncludes(taskDetailPage, 'formatSliceContentArcGrade(selectedSlice.contentArcGrade)', 'TaskDetailPage displays smart slice content-arc grades');
+assertIncludes(taskDetailPage, 'selectedSlice.contentArcMissingStages.map', 'TaskDetailPage displays missing smart slice content-arc stages');
+assertIncludes(taskDetailPage, 'formatSliceScore(selectedSlice.topicCoherenceScore)', 'TaskDetailPage displays smart slice topic coherence scores');
+assertIncludes(taskDetailPage, 'formatSliceTopicCoherenceGrade(selectedSlice.topicCoherenceGrade)', 'TaskDetailPage displays smart slice topic coherence grades');
+assertIncludes(taskDetailPage, 'selectedSlice.topicKeywords.map', 'TaskDetailPage displays smart slice topic keywords');
+assertIncludes(taskDetailPage, 'formatPlatformReadinessGrade(selectedSlice.platformReadinessGrade)', 'TaskDetailPage displays platform readiness grades');
+assertIncludes(taskDetailPage, 'selectedSlice.platformReadinessIssues.map', 'TaskDetailPage displays platform readiness issue tags');
+assertIncludes(taskDetailPage, 'formatSentenceBoundaryIntegrityGrade(selectedSlice.sentenceBoundaryIntegrityGrade)', 'TaskDetailPage displays sentence boundary integrity grades');
+assertIncludes(taskDetailPage, 'selectedSlice.sentenceBoundaryIssues.map', 'TaskDetailPage displays sentence boundary issue tags');
+assertIncludes(taskDetailPage, 'selectedSlice.publishabilityIssues.map', 'TaskDetailPage displays normalized AI publishability issue tags');
+assertIncludes(taskDetailPage, 'selectedSlice.summary', 'TaskDetailPage displays AI smart slice summaries');
+assertIncludes(taskDetailPage, 'selectedSlice.reason', 'TaskDetailPage displays AI smart slice selection reasons');
+assertIncludes(taskDetailPage, 'selectedSlice.risks.map', 'TaskDetailPage displays AI publishing risk tags');
+assertIncludes(taskDetailPage, 'formatSliceSourceRange(selectedSlice.sourceStartMs, selectedSlice.sourceEndMs)', 'TaskDetailPage displays repaired source ranges for smart slices');
+assertIncludes(autocutTypes, 'qualityScore?: number', 'TaskSliceResult records AI smart slice quality scores');
+assertIncludes(autocutTypes, 'continuityScore?: number', 'TaskSliceResult records AI smart slice continuity scores');
+assertIncludes(autocutTypes, 'storyShape?:', 'TaskSliceResult records AI smart slice story-shape completeness');
+assertIncludes(autocutTypes, 'publishabilityScore?: number', 'TaskSliceResult records composite AI smart slice publishability scores');
+assertIncludes(autocutTypes, "publishabilityGrade?: 'excellent' | 'good' | 'review' | 'reject'", 'TaskSliceResult records AI smart slice publishability grades');
+assertIncludes(autocutTypes, 'publishabilityIssues?: string[]', 'TaskSliceResult records normalized AI smart slice publishability issue tags');
+assertIncludes(autocutTypes, 'boundaryQualityScore?: number', 'TaskSliceResult records AI smart slice boundary quality scores');
+assertIncludes(autocutTypes, "hookStrength?: 'strong' | 'contextual' | 'weak'", 'TaskSliceResult records AI smart slice hook strength grades');
+assertIncludes(autocutTypes, "endingCompleteness?: 'complete' | 'soft' | 'open'", 'TaskSliceResult records AI smart slice ending completeness grades');
+assertIncludes(autocutTypes, 'contentArcScore?: number', 'TaskSliceResult records AI smart slice content-arc scores');
+assertIncludes(autocutTypes, "contentArcGrade?: 'complete' | 'partial' | 'thin'", 'TaskSliceResult records AI smart slice content-arc grades');
+assertIncludes(autocutTypes, "contentArcStages?: Array<'hook' | 'setup' | 'conflict' | 'payoff'>", 'TaskSliceResult records detected smart slice content-arc stages');
+assertIncludes(autocutTypes, "contentArcMissingStages?: Array<'hook' | 'setup' | 'conflict' | 'payoff'>", 'TaskSliceResult records missing smart slice content-arc stages');
+assertIncludes(autocutTypes, 'topicCoherenceScore?: number', 'TaskSliceResult records AI smart slice topic coherence scores');
+assertIncludes(autocutTypes, "topicCoherenceGrade?: 'strong' | 'mixed' | 'weak'", 'TaskSliceResult records AI smart slice topic coherence grades');
+assertIncludes(autocutTypes, 'topicShiftCount?: number', 'TaskSliceResult records AI smart slice topic shift counts');
+assertIncludes(autocutTypes, 'topicKeywords?: string[]', 'TaskSliceResult records AI smart slice topic keywords');
+assertIncludes(autocutTypes, 'platformReadinessScore?: number', 'TaskSliceResult records platform-specific readiness scores');
+assertIncludes(autocutTypes, "platformReadinessGrade?: 'ready' | 'review' | 'reject'", 'TaskSliceResult records platform-specific readiness grades');
+assertIncludes(autocutTypes, 'platformReadinessIssues?: string[]', 'TaskSliceResult records platform-specific readiness issue tags');
+assertIncludes(autocutTypes, 'sentenceBoundaryIntegrityScore?: number', 'TaskSliceResult records sentence boundary integrity scores');
+assertIncludes(autocutTypes, "sentenceBoundaryIntegrityGrade?: 'clean' | 'repaired' | 'broken'", 'TaskSliceResult records sentence boundary integrity grades');
+assertIncludes(autocutTypes, 'sentenceBoundaryIssues?: string[]', 'TaskSliceResult records sentence boundary issue tags');
+assertIncludes(autocutTypes, 'sourceStartMs?: number', 'TaskSliceResult records repaired source start metadata');
+assertIncludes(autocutTypes, 'sourceEndMs?: number', 'TaskSliceResult records repaired source end metadata');
+assertIncludes(autocutTypes, 'speechStartMs?: number', 'TaskSliceResult records unpadded speech start metadata');
+assertIncludes(autocutTypes, 'speechEndMs?: number', 'TaskSliceResult records unpadded speech end metadata');
+assertIncludes(autocutTypes, 'boundaryPaddingBeforeMs?: number', 'TaskSliceResult records leading speech boundary padding');
+assertIncludes(autocutTypes, 'boundaryPaddingAfterMs?: number', 'TaskSliceResult records trailing speech boundary padding');
+assertIncludes(taskDetailPage, 'formatSliceSourceRange(selectedSlice.speechStartMs, selectedSlice.speechEndMs)', 'TaskDetailPage displays unpadded speech ranges for smart slices');
 assertMatches(
   taskDetailPage,
   /<Button className="mt-4" variant="outline" onClick=\{\(\) => downloadTaskExecutionResultFile\(task\)\}/u,
   'TaskDetailPage fallback result download button is wired to a real export workflow',
 );
+const downloadService = read('packages/sdkwork-autocut-services/src/service/download.service.ts');
+assertIncludes(downloadService, 'createSmartSliceTaskEvidenceJson', 'download.service creates standardized smart slice task evidence JSON');
+assertIncludes(downloadService, 'downloadSmartSliceTaskEvidenceFile', 'download.service exposes a smart slice task evidence download workflow');
+assertIncludes(downloadService, '2026-05-06.autocut-smart-slice-task-evidence.v1', 'smart slice task evidence JSON has a versioned schema marker');
+assertIncludes(downloadService, 'sliceResults: task.sliceResults ?? []', 'smart slice task evidence preserves the exact completed slice results');
+assertIncludes(downloadService, "application/json", 'smart slice task evidence is exported as JSON instead of plain text');
+const releaseChangelog = read('docs/release/CHANGELOG.md');
+assertIncludes(releaseChangelog, 'pnpm release:smart-slice-sample', 'release notes document the smart slice sample evidence command');
+assertIncludes(releaseChangelog, 'pnpm release:smart-slice-quality -- --task artifacts/smart-slice/smart-slice-task.json', 'release notes document the smart slice quality evidence command');
+assertIncludes(releaseChangelog, 'pnpm release:smart-slice-media-artifacts -- --task artifacts/smart-slice/smart-slice-task.json', 'release notes document the smart slice media artifacts evidence command');
+assertIncludes(releaseChangelog, 'pnpm release:smart-slice-task -- --task artifacts/smart-slice/smart-slice-task.json', 'release notes document the smart slice task evidence validation command');
+assertIncludes(releaseChangelog, 'pnpm release:smart-slice-fixture', 'release notes document the smart slice release fixture smoke command');
+assertIncludes(releaseChangelog, 'pnpm release:sign-installers', 'release notes document the installer signing execution command');
+assertIncludes(releaseChangelog, 'pnpm release:preview-ready', 'release notes document the unsigned preview release readiness gate');
+assertIncludes(releaseChangelog, 'unsigned preview', 'release notes document the unsigned preview release boundary');
+assertIncludes(releaseChangelog, 'smart-slice-task.json', 'release notes document the smart slice task JSON evidence input');
+assertIncludes(releaseChangelog, 'autocut-smart-slice-quality-evidence.json', 'release notes document the generated smart slice quality evidence file');
+assertIncludes(releaseChangelog, 'autocut-smart-slice-media-artifacts-evidence.json', 'release notes document the generated smart slice media artifacts evidence file');
+assertIncludes(releaseChangelog, 'autocut-smart-slice-sample-evidence.json', 'release notes document the generated smart slice sample evidence file');
+assertIncludes(releaseChangelog, 'autocut-smart-slice-release-fixture.json', 'release notes document the generated smart slice release fixture report file');
 
 for (const workflow of processingWorkflows) {
   const serviceSource = read(workflow.service);
@@ -413,6 +594,7 @@ if (exists(settingsServicePath)) {
     'saveAutoCutWorkspaceSettings',
     'saveAutoCutNotificationSettings',
     'saveAutoCutLlmSettings',
+    'initializeAutoCutDefaultLlmSettingsFromEnvironment',
     'saveAutoCutSpeechTranscriptionSettings',
     'resolveAutoCutLlmRuntimeConfig',
     'resolveAutoCutSpeechTranscriptionRuntimeConfig',
@@ -505,6 +687,8 @@ if (exists('packages/sdkwork-autocut-services/src/service/vercel-ai-sdk-bridge.s
 assertIncludes(servicesIndex, "export * from './service/vercel-ai-sdk-bridge.service'", 'services index exports vercel-ai-sdk-bridge.service.ts');
 const desktopMain = read('packages/sdkwork-autocut-desktop/src/main.tsx');
 assertIncludes(desktopMain, 'configureAutoCutVercelAiSdkBridge', 'desktop startup configures the Vercel AI SDK bridge');
+assertIncludes(desktopMain, 'initializeAutoCutDefaultLlmSettingsFromEnvironment', 'desktop startup initializes default LLM settings from native environment secrets');
+assertIncludes(desktopMain, '.catch(() => undefined)', 'desktop startup ignores missing optional environment LLM defaults without blocking the app');
 assertIncludes(storageService, 'settings:', 'storage.service.ts declares the settings storage key');
 assertIncludes(eventsService, 'settingsUpdated:', 'events.service.ts emits settingsUpdated events');
 assertIncludes(settingsPage, 'getAutoCutSettings', 'SettingsPage loads settings from the settings service');
@@ -559,7 +743,13 @@ assertIncludes(typesSource, "defaultModel: 'gpt-5.5'", 'OpenAI ModelVendor defau
 assertIncludes(typesSource, "defaultModel: 'gemini-3.1-pro-preview'", 'Gemini ModelVendor defaults to the latest 3.1 Pro model');
 assertIncludes(typesSource, 'AUTOCUT_SLICE_LLM_MODEL_OPTIONS', 'AutoCut types export one centralized slicer LLM option list');
 assertIncludes(slicerPage, 'AUTOCUT_SLICE_LLM_MODEL_OPTIONS', 'Slicer LLM selector consumes the centralized LLM option list');
-assertIncludes(slicerPage, 'AUTOCUT_SLICE_LLM_MODEL_OPTIONS.map', 'Slicer LLM selector renders model options from centralized config');
+assertIncludes(slicerPage, 'activeLlmRuntimeModelVendor', 'Slicer tracks the active Settings Center LLM ModelVendor');
+assertIncludes(slicerPage, 'activeLlmModelOptions', 'Slicer filters LLM model options to the active Settings Center ModelVendor');
+assertIncludes(slicerPage, 'model.vendor === activeLlmRuntimeModelVendor', 'Slicer prevents cross-provider model selection from mismatching baseUrl and API key');
+assertIncludes(slicerPage, 'visibleLlmModelOptions.map', 'Slicer LLM selector renders only active-provider model options from centralized config');
+const slicerLlmService = read('packages/sdkwork-autocut-services/src/service/llm.service.ts');
+assertIncludes(slicerLlmService, 'getAutoCutModelVendorForModel', 'llm.service resolves model ownership before allowing model overrides');
+assertIncludes(slicerLlmService, 'requestedModelVendor !== runtime.modelVendor', 'llm.service rejects model overrides from a different configured provider');
 assertIncludes(homePage, 'startSmartSliceInputRef', 'HomePage owns the smart slice hidden file chooser');
 assertIncludes(homePage, 'handleStartSmartSlice', 'HomePage starts smart slicing through the video file chooser');
 assertIncludes(homePage, 'handleSmartSliceFileSelected', 'HomePage forwards the selected video file to the slicer route');
@@ -679,6 +869,16 @@ assertIncludes(nativeMediaRuntime, 'probe_autocut_speech_transcription', 'media 
 assertIncludes(nativeMediaRuntime, 'select_autocut_speech_transcription_file', 'media runtime implements trusted local speech tool file selection');
 assertIncludes(nativeMediaRuntime, 'speech_toolchain_explicit_settings_override_env_fallback', 'media runtime tests that saved speech tool settings override environment fallback');
 assertIncludes(nativeMediaRuntime, 'speech_transcription_probe_validates_model_path_without_fake_readiness', 'media runtime tests local speech-to-text probe validation');
+assertIncludes(nativeMediaRuntime, 'pub duration_ms: Option<i64>', 'media runtime exposes source media duration for smart slice planning');
+assertIncludes(nativeMediaRuntime, '"durationMs": duration_ms', 'media runtime stores imported media duration in asset metadata for audits');
+assertIncludes(nativeMediaRuntime, 'read_ffmpeg_media_duration_millis(toolchain, &sandbox_path).ok()', 'media runtime probes imported video duration without blocking import on probe failure');
+assertIncludes(nativeMediaRuntime, 'video_slice_render_dimensions', 'media runtime defines canonical smart slice render dimensions');
+assertIncludes(nativeMediaRuntime, '"9:16" => Some((1080, 1920))', 'media runtime maps 9:16 smart slices to 1080x1920 output');
+assertIncludes(nativeMediaRuntime, 'force_original_aspect_ratio=increase', 'media runtime uses cover scaling for smart slice renderProfile cover mode');
+assertIncludes(nativeMediaRuntime, 'crop={target_width}:{target_height}', 'media runtime crops cover smart slice renders to the target frame');
+assertIncludes(nativeMediaRuntime, 'force_original_aspect_ratio=decrease', 'media runtime uses contain scaling for smart slice renderProfile contain mode');
+assertIncludes(nativeMediaRuntime, 'pad={target_width}:{target_height}', 'media runtime pads contain smart slice renders to the target frame');
+assertIncludes(nativeMediaRuntime, 'setsar=1', 'media runtime normalizes sample aspect ratio after smart slice rendering');
 const nativeCargoToml = read('packages/sdkwork-autocut-desktop/src-tauri/Cargo.toml');
 assertIncludes(nativeCargoToml, 'rfd = { version = "0.16.0"', 'desktop Tauri crate declares rfd for the contracted trusted local file chooser');
 

@@ -99,12 +99,48 @@ AutoCut application.
 - Adds pinned Rust `1.90.0` desktop toolchain validation.
 - Adds FFmpeg sidecar preparation and release preflight scripts.
 - Adds native release smoke evidence generation.
+- Requires native release smoke evidence to run the exact
+  `autocut_slice_video` FFmpeg slicing artifact test and record
+  `autocut-video-slice-smoke=passed` before aggregate release evidence can mark
+  `nativeVideoSliceSmokeReady=true`.
+- Adds installer signing execution through `pnpm release:sign-installers`, with
+  real Authenticode certificate input from a PFX file or Windows certificate
+  store thumbprint before signature evidence can pass.
 - Adds installer signature evidence generation.
+- Adds smart slice task evidence validation for completed transcript-assisted
+  task exports before quality scoring.
+- Adds repeatable smart slice sample release evidence through
+  `pnpm release:smart-slice-sample`, which generates local FFmpeg sample media,
+  `artifacts/smart-slice/smart-slice-task.json`,
+  `artifacts/release/autocut-smart-slice-sample-evidence.json`,
+  `artifacts/release/autocut-smart-slice-quality-evidence.json`, and
+  `artifacts/release/autocut-smart-slice-media-artifacts-evidence.json`.
+- Adds smart slice quality evidence generation from an exported completed
+  `smart-slice-task.json`, producing
+  `artifacts/release/autocut-smart-slice-quality-evidence.json`.
+- Adds smart slice media artifact evidence generation from the same completed
+  task export, producing
+  `artifacts/release/autocut-smart-slice-media-artifacts-evidence.json`
+  with file existence, byte-size, hash, and root-boundary validation for
+  rendered videos, thumbnails, and subtitles.
+- Adds a stable workspace TypeScript API runner so release validation can run
+  every package typecheck without depending on recursive package-manager
+  lifecycle spawning on Windows hosts.
+- Adds a smart slice release fixture smoke that validates the task JSON,
+  smart slice quality evidence, aggregate release evidence, and commercial
+  readiness chain without requiring private media, and writes
+  `artifacts/release/autocut-smart-slice-release-fixture.json` as the
+  fixture smoke report for CI and release review archives.
 - Adds aggregate release evidence generation.
+- Adds `pnpm release:preview-ready` as the GitHub/internal unsigned preview
+  release gate. It keeps FFmpeg execution, native video slicing, smart slice
+  quality/media, installer artifact, and aggregate release evidence checks, but
+  records unsigned installers as an explicit preview warning instead of a hard
+  blocker.
 - Adds commercial release readiness gating.
 - Adds cleanup automation for generated build output and runtime artifacts.
 
-### Verification For This Release
+### Verification For This Unsigned Preview Release
 
 The release must pass the current Windows host validation flow before the
 GitHub Release is created:
@@ -116,6 +152,25 @@ GitHub Release is created:
 - `pnpm tauri:build`
 - `pnpm release:smoke-preflight -- --platform windows-x86_64`
 - `pnpm release:native-smoke -- --run-real-llm-secret-smoke`
+- `pnpm release:smart-slice-sample`
+- `pnpm release:installer-signature`
+- `pnpm release:smart-slice-task -- --task artifacts/smart-slice/smart-slice-task.json`
+- `pnpm release:smart-slice-quality -- --task artifacts/smart-slice/smart-slice-task.json`
+- `pnpm release:smart-slice-media-artifacts -- --task artifacts/smart-slice/smart-slice-task.json`
+- `pnpm release:smart-slice-fixture`
+- `pnpm release:evidence -- --platform windows-x86_64`
+- `pnpm release:preview-ready`
+
+This `v0.1.0` is published as an unsigned preview release. `pnpm
+release:preview-ready` must pass, and the GitHub Release notes must state that
+the MSI/NSIS installers are unsigned.
+
+### Formal Commercial Verification
+
+A formal commercial public release must additionally pass the installer signing
+flow:
+
+- `pnpm release:sign-installers`
 - `pnpm release:installer-signature`
 - `pnpm release:evidence -- --platform windows-x86_64`
 - `pnpm release:commercial-ready`
@@ -141,4 +196,3 @@ initial commit through:
 - `325f9a6 feat: harden video cut release governance`
 - `fc023d5 feat: deliver autocut desktop release baseline`
 - `d920070 feat(autocut): replace mock workflows with native task logic`
-

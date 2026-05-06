@@ -5,6 +5,11 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import {
+  normalizeAutoCutCliArgs,
+  readAutoCutCliOptionValue,
+} from './autocut-cli-args.mjs';
+
 const __filename = fileURLToPath(import.meta.url);
 const readinessSchemaVersion = '2026-05-05.autocut-commercial-release-readiness.v1';
 const defaultEvidenceRelativePath = 'artifacts/release/autocut-release-evidence.json';
@@ -39,6 +44,9 @@ export function createAutoCutCommercialReleaseReadinessReport({
       ffmpegBundledReady: Boolean(evidence.readiness?.ffmpegBundledReady),
       ffmpegExecutionReady: Boolean(evidence.readiness?.ffmpegExecutionReady),
       nativeReleaseSmokeReady: Boolean(evidence.readiness?.nativeReleaseSmokeReady),
+      nativeVideoSliceSmokeReady: Boolean(evidence.readiness?.nativeVideoSliceSmokeReady),
+      smartSliceQualityReady: Boolean(evidence.readiness?.smartSliceQualityReady),
+      smartSliceMediaArtifactsReady: Boolean(evidence.readiness?.smartSliceMediaArtifactsReady),
       installerSignatureReady: Boolean(evidence.readiness?.installerSignatureReady),
       releaseSmokeReady: Boolean(evidence.readiness?.releaseSmokeReady),
     },
@@ -80,7 +88,9 @@ function createCommercialReleaseBlockers(evidence) {
       preflight.sidecarPresent === true &&
       preflight.integrityReady === true &&
       readiness.nativeReleaseSmokeReady &&
+      readiness.nativeVideoSliceSmokeReady &&
       evidence.nativeReleaseSmoke?.ready === true &&
+      evidence.nativeReleaseSmoke?.videoSliceReady === true &&
       readiness.releaseSmokeReady
   );
 
@@ -97,6 +107,30 @@ function createCommercialReleaseBlockers(evidence) {
       code: 'NATIVE_RELEASE_SMOKE_NOT_READY',
       message: 'Native release smoke evidence is missing or not ready.',
       remediation: 'Run release:native-smoke and regenerate release:evidence.',
+    });
+  }
+
+  if (!readiness.nativeVideoSliceSmokeReady || evidence.nativeReleaseSmoke?.videoSliceReady !== true) {
+    blockers.push({
+      code: 'NATIVE_VIDEO_SLICE_SMOKE_NOT_READY',
+      message: 'Native video slice smoke evidence is missing or not ready.',
+      remediation: 'Run release:native-smoke so media_runtime::tests::video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir emits autocut-video-slice-smoke=passed, then regenerate release:evidence.',
+    });
+  }
+
+  if (!readiness.smartSliceQualityReady || evidence.smartSliceQuality?.ready !== true) {
+    blockers.push({
+      code: 'SMART_SLICE_QUALITY_NOT_READY',
+      message: 'Smart slicing quality evidence is missing or below the commercial publishing threshold.',
+      remediation: 'Run release:smart-slice-quality with a completed transcript-assisted smart slicing task, then regenerate release:evidence.',
+    });
+  }
+
+  if (!readiness.smartSliceMediaArtifactsReady || evidence.smartSliceMediaArtifacts?.ready !== true) {
+    blockers.push({
+      code: 'SMART_SLICE_MEDIA_ARTIFACTS_NOT_READY',
+      message: 'Smart slicing media artifact evidence is missing or not ready.',
+      remediation: 'Run release:smart-slice-media-artifacts with the completed smart slice task export and regenerate release:evidence.',
     });
   }
 
@@ -125,11 +159,16 @@ function toPosixRelative(rootDir, targetPath) {
 
 function parseArgs(argv) {
   const options = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
+  const args = normalizeAutoCutCliArgs(argv);
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
     if (arg === '--evidence') {
-      options.evidencePath = argv[index + 1];
-      index += 1;
+      const option = readAutoCutCliOptionValue(args, index, {
+        optionName: arg,
+        commandName: 'AutoCut commercial release readiness',
+      });
+      options.evidencePath = option.value;
+      index = option.nextIndex;
     } else {
       throw new Error(`Unknown AutoCut commercial release readiness argument: ${arg}`);
     }

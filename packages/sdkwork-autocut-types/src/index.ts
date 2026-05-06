@@ -614,6 +614,43 @@ export interface TaskSliceResult {
   url: string;
   subtitleUrl?: string;
   subtitleFormat?: 'srt' | string;
+  title?: string;
+  summary?: string;
+  reason?: string;
+  qualityScore?: number;
+  continuityScore?: number;
+  storyShape?: 'complete' | 'setupOnly' | 'payoffOnly' | 'contextOnly' | 'thin';
+  publishabilityScore?: number;
+  publishabilityGrade?: 'excellent' | 'good' | 'review' | 'reject';
+  publishabilityIssues?: string[];
+  boundaryQualityScore?: number;
+  hookStrength?: 'strong' | 'contextual' | 'weak';
+  endingCompleteness?: 'complete' | 'soft' | 'open';
+  contentArcScore?: number;
+  contentArcGrade?: 'complete' | 'partial' | 'thin';
+  contentArcStages?: Array<'hook' | 'setup' | 'conflict' | 'payoff'>;
+  contentArcMissingStages?: Array<'hook' | 'setup' | 'conflict' | 'payoff'>;
+  topicCoherenceScore?: number;
+  topicCoherenceGrade?: 'strong' | 'mixed' | 'weak';
+  topicShiftCount?: number;
+  topicKeywords?: string[];
+  platformReadinessScore?: number;
+  platformReadinessGrade?: 'ready' | 'review' | 'reject';
+  platformReadinessIssues?: string[];
+  sentenceBoundaryIntegrityScore?: number;
+  sentenceBoundaryIntegrityGrade?: 'clean' | 'repaired' | 'broken';
+  sentenceBoundaryIssues?: string[];
+  risks?: string[];
+  sourceStartMs?: number;
+  sourceEndMs?: number;
+  speechStartMs?: number;
+  speechEndMs?: number;
+  boundaryPaddingBeforeMs?: number;
+  boundaryPaddingAfterMs?: number;
+  transcriptText?: string;
+  transcriptCoverageScore?: number;
+  subtitleSegmentCount?: number;
+  speechContinuityGrade?: 'strong' | 'repaired' | 'weak';
 }
 
 export interface AppTask {
@@ -652,6 +689,12 @@ export type SliceMode =
 
 export type SliceAlgorithm = 'nlp' | 'pause' | 'scene';
 export type SliceHighlightEngine = 'emotion' | 'keyword' | 'motion';
+export type SliceTargetPlatform = 'douyin' | 'kuaishou' | 'shipinhao' | 'xiaohongshu' | 'bilibili' | 'generic';
+export type SliceTargetAspectRatio = 'auto' | '16:9' | '9:16' | '1:1' | '4:3';
+export type SliceVideoObjectFit = 'contain' | 'cover';
+export type SliceCountMode = 'auto' | 'fixed' | 'qualityFirst' | 'coverageFirst';
+export type SliceContinuityLevel = 'standard' | 'strict';
+export type SliceSubtitleMode = 'none' | 'srt' | 'burned' | 'both';
 export type SliceLLM =
   | 'deepseek-chat'
   | 'deepseek-v4-flash'
@@ -749,6 +792,15 @@ export interface VideoSliceParams {
 
   // Advanced Settings
   llmModel: SliceLLM;
+  targetPlatform?: SliceTargetPlatform;
+  targetAspectRatio?: SliceTargetAspectRatio;
+  videoObjectFit?: SliceVideoObjectFit;
+  sliceCountMode?: SliceCountMode;
+  targetSliceCount?: number;
+  idealDuration?: number;
+  sourceDurationMs?: number;
+  continuityLevel?: SliceContinuityLevel;
+  customKeywords?: string[];
   minDuration: number;
   maxDuration: number;
   baseAlgorithm: SliceAlgorithm;
@@ -757,5 +809,6 @@ export interface VideoSliceParams {
   enableCoughFilter: boolean;
   enableRepeatFilter: boolean;
   enableSubtitles?: boolean;
+  subtitleMode?: SliceSubtitleMode;
   subtitleStyleId?: string;
 }

@@ -6,6 +6,10 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import {
+  normalizeAutoCutCliArgs,
+  readAutoCutCliOptionValue,
+} from './autocut-cli-args.mjs';
 import { createAutoCutReleaseSmokePreflightReport } from './check-autocut-release-smoke-preflight.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -16,6 +20,8 @@ const bundleRelativeRoot = `${desktopPackageRelativePath}/src-tauri/target/relea
 const defaultOutputRelativePath = 'artifacts/release/autocut-release-evidence.json';
 const nativeReleaseSmokeRelativePath = 'artifacts/release/autocut-native-release-smoke.json';
 const installerSignatureEvidenceRelativePath = 'artifacts/release/autocut-installer-signature-evidence.json';
+const smartSliceQualityEvidenceRelativePath = 'artifacts/release/autocut-smart-slice-quality-evidence.json';
+const smartSliceMediaArtifactsEvidenceRelativePath = 'artifacts/release/autocut-smart-slice-media-artifacts-evidence.json';
 
 export function createAutoCutReleaseEvidence({
   rootDir = process.cwd(),
@@ -35,6 +41,8 @@ export function createAutoCutReleaseEvidence({
     ...(runPreflightCommand ? { runCommand: runPreflightCommand } : {}),
   });
   const nativeReleaseSmoke = readNativeReleaseSmokeEvidence(resolvedRootDir);
+  const smartSliceQuality = readSmartSliceQualityEvidence(resolvedRootDir);
+  const smartSliceMediaArtifacts = readSmartSliceMediaArtifactsEvidence(resolvedRootDir);
   const installerSignature = readInstallerSignatureEvidence(resolvedRootDir);
   const installers = readReleaseInstallers(resolvedRootDir);
   const ffmpegExecutionReady = Boolean(
@@ -42,6 +50,8 @@ export function createAutoCutReleaseEvidence({
       preflight.bundledReady &&
       preflight.executableSmokeReady === true &&
       nativeReleaseSmoke.ready &&
+      smartSliceQuality.ready &&
+      smartSliceMediaArtifacts.ready &&
       installerSignature.ready &&
       preflight.releaseSmokeReady
   );
@@ -60,6 +70,9 @@ export function createAutoCutReleaseEvidence({
       ffmpegBundledReady: preflight.bundledReady,
       releaseSmokeReady: preflight.releaseSmokeReady,
       nativeReleaseSmokeReady: nativeReleaseSmoke.ready,
+      nativeVideoSliceSmokeReady: nativeReleaseSmoke.videoSliceReady,
+      smartSliceQualityReady: smartSliceQuality.ready,
+      smartSliceMediaArtifactsReady: smartSliceMediaArtifacts.ready,
       installerSignatureReady: installerSignature.ready,
     },
     preflight: {
@@ -85,6 +98,8 @@ export function createAutoCutReleaseEvidence({
       },
     },
     nativeReleaseSmoke,
+    smartSliceQuality,
+    smartSliceMediaArtifacts,
     installerSignature,
     installers,
   };
@@ -154,9 +169,21 @@ function readNativeReleaseSmokeEvidence(rootDir) {
   if (evidence.readiness?.ffmpegExecutionReady === true) {
     throw new Error('AutoCut native release smoke evidence must not claim ffmpegExecutionReady.');
   }
+  const videoSliceMatrixEntry = Array.isArray(evidence.commandMatrix)
+    ? evidence.commandMatrix.find((command) => command?.command === 'autocut_slice_video')
+    : undefined;
+  const videoSliceReady = Boolean(
+    evidence.readiness?.videoSliceSmokeReady &&
+      evidence.videoSliceSmoke?.skipped === false &&
+      evidence.videoSliceSmoke?.success === true &&
+      typeof evidence.videoSliceSmoke?.stdout === 'string' &&
+      evidence.videoSliceSmoke.stdout.includes('autocut-video-slice-smoke=passed') &&
+      videoSliceMatrixEntry?.evidenceReady === true,
+  );
   return {
     path: toPosixRelative(rootDir, evidencePath),
-    ready: Boolean(evidence.readiness?.nativeReleaseSmokeReady),
+    ready: Boolean(evidence.readiness?.nativeReleaseSmokeReady) && videoSliceReady,
+    videoSliceReady,
     evidence,
   };
 }
@@ -177,20 +204,61 @@ function readInstallerSignatureEvidence(rootDir) {
   };
 }
 
+function readSmartSliceQualityEvidence(rootDir) {
+  const evidencePath = path.join(rootDir, smartSliceQualityEvidenceRelativePath);
+  if (!fs.existsSync(evidencePath) || !fs.statSync(evidencePath).isFile()) {
+    throw new Error(`missing AutoCut smart slice quality evidence: ${evidencePath}`);
+  }
+  const evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
+  if (evidence.schemaVersion !== '2026-05-06.autocut-smart-slice-quality-evidence.v1') {
+    throw new Error(`unsupported AutoCut smart slice quality evidence schema: ${evidence.schemaVersion}`);
+  }
+  return {
+    path: toPosixRelative(rootDir, evidencePath),
+    ready: Boolean(evidence.readiness?.smartSliceQualityReady),
+    evidence,
+  };
+}
+
+function readSmartSliceMediaArtifactsEvidence(rootDir) {
+  const evidencePath = path.join(rootDir, smartSliceMediaArtifactsEvidenceRelativePath);
+  if (!fs.existsSync(evidencePath) || !fs.statSync(evidencePath).isFile()) {
+    throw new Error(`missing AutoCut smart slice media artifacts evidence: ${evidencePath}`);
+  }
+  const evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
+  if (evidence.schemaVersion !== '2026-05-06.autocut-smart-slice-media-artifacts-evidence.v1') {
+    throw new Error(`unsupported AutoCut smart slice media artifacts evidence schema: ${evidence.schemaVersion}`);
+  }
+  return {
+    path: toPosixRelative(rootDir, evidencePath),
+    ready: Boolean(evidence.readiness?.smartSliceMediaArtifactsReady),
+    evidence,
+  };
+}
+
 function toPosixRelative(rootDir, targetPath) {
   return path.relative(rootDir, targetPath).replaceAll(path.sep, '/');
 }
 
 function parseArgs(argv) {
   const options = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
+  const args = normalizeAutoCutCliArgs(argv);
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
     if (arg === '--platform') {
-      options.platform = argv[index + 1];
-      index += 1;
+      const option = readAutoCutCliOptionValue(args, index, {
+        optionName: arg,
+        commandName: 'AutoCut release evidence',
+      });
+      options.platform = option.value;
+      index = option.nextIndex;
     } else if (arg === '--output') {
-      options.outputPath = argv[index + 1];
-      index += 1;
+      const option = readAutoCutCliOptionValue(args, index, {
+        optionName: arg,
+        commandName: 'AutoCut release evidence',
+      });
+      options.outputPath = option.value;
+      index = option.nextIndex;
     } else if (arg === '--skip-executable-smoke') {
       options.skipExecutableSmoke = true;
     } else {

@@ -84,14 +84,27 @@ The command copies the binary into
 LFS by `.gitattributes`; keep the manifest and `.gitkeep` placeholders as
 normal text Git objects.
 
-Release preflight:
+Unsigned preview release preflight:
 
 ```bash
 pnpm release:smoke-preflight -- --platform windows-x86_64 --skip-executable-smoke
 pnpm release:smoke-preflight -- --platform windows-x86_64 --require-bundled
 pnpm release:native-smoke -- --run-real-llm-secret-smoke
+pnpm release:smart-slice-sample
+pnpm release:smart-slice-task -- --task artifacts/smart-slice/smart-slice-task.json
+pnpm release:smart-slice-quality -- --task artifacts/smart-slice/smart-slice-task.json
+pnpm release:smart-slice-media-artifacts -- --task artifacts/smart-slice/smart-slice-task.json
 pnpm release:installer-signature
-pnpm release:evidence -- --platform windows-x86_64 --skip-executable-smoke
+pnpm release:evidence -- --platform windows-x86_64
+pnpm release:preview-ready
+```
+
+Formal commercial release adds installer signing:
+
+```bash
+pnpm release:sign-installers -- --cert-pfx D:/secure/sdkwork-autocut-release.pfx --cert-password <password>
+pnpm release:installer-signature
+pnpm release:evidence -- --platform windows-x86_64
 pnpm release:commercial-ready
 ```
 
@@ -99,23 +112,52 @@ Use `--require-bundled` only when the release is expected to ship an approved
 sidecar. Without a sidecar, the preflight remains useful and reports the honest
 non-bundled state. `pnpm release:native-smoke` writes the ignored native command
 smoke evidence for `autocut_host_capabilities`, `autocut_ffmpeg_probe`,
-`autocut_audio_smoke`, and `autocut_recover_native_tasks` by running the pinned
-Rust smoke suite. The LLM secret command evidence requires the real Windows
+`autocut_audio_smoke`, `autocut_slice_video`, and
+`autocut_recover_native_tasks` by running the pinned Rust smoke suite plus the
+exact
+`media_runtime::tests::video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir`
+test. The video slice smoke must emit `autocut-video-slice-smoke=passed`, which
+proves real FFmpeg slicing, task-scoped video artifacts, thumbnails, task output
+JSON, and database stage completion before release evidence can mark native
+video slicing ready. The LLM secret command evidence requires the real Windows
 Credential Manager smoke: run
 `pnpm release:native-smoke -- --run-real-llm-secret-smoke`, or set
 `SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE=true`, before commercial release
 evidence. Native smoke uses isolated temporary `CARGO_TARGET_DIR` values named
 `sdkwork-autocut-native-smoke-target-rust-*` and
+`sdkwork-autocut-native-smoke-target-video-slice-*`, plus
 `sdkwork-autocut-native-smoke-target-llm-secret-*`, so it can run beside normal
 Cargo tests or Tauri packaging without locking package-local `src-tauri/target`
 or reusing the same Windows test executable path.
+`pnpm release:smart-slice-sample` generates a real FFmpeg-backed local sample
+under ignored `artifacts/smart-slice-media/`, writes
+`artifacts/smart-slice/smart-slice-task.json`, then produces the smart slice
+quality, media artifact, and sample evidence files used by the aggregate release
+gate. It is the repeatable release evidence path when no private exported task
+JSON is being attached to the release review.
+`pnpm release:sign-installers` runs Authenticode signing for the MSI and NSIS
+installer with a real signing source. Use either
+`SDKWORK_AUTOCUT_WINDOWS_SIGNING_PFX` plus
+`SDKWORK_AUTOCUT_WINDOWS_SIGNING_PASSWORD`, or
+`SDKWORK_AUTOCUT_WINDOWS_SIGNING_THUMBPRINT` for a certificate already installed
+in the Windows certificate store. `SDKWORK_AUTOCUT_SIGNTOOL_PATH` can point to a
+specific `signtool.exe`, and `SDKWORK_AUTOCUT_WINDOWS_SIGNING_TIMESTAMP_URL`
+overrides the default timestamp authority. The command fails closed when the
+certificate or signing tool is absent.
 `pnpm release:installer-signature` writes the ignored MSI/NSIS code-signing
 evidence. `pnpm release:evidence` writes structured JSON under
 `artifacts/release/` with installer digests, FFmpeg manifest state, preflight
-state, native smoke evidence, installer signature evidence, and the explicit
-`ffmpegExecutionReady=false` boundary. `pnpm release:commercial-ready` is the
-final hard gate: it must stay blocked until bundled FFmpeg integrity, executable
-smoke, native smoke, installer signature, and execution readiness are all true.
+state, native smoke evidence, smart slice quality/media evidence, installer
+signature evidence, and the explicit `ffmpegExecutionReady` boundary.
+`pnpm release:preview-ready` is the GitHub/internal unsigned preview gate: it
+requires bundled FFmpeg execution, real native video slicing smoke, smart slice
+quality/media evidence, aggregate release smoke, and MSI/NSIS installer
+artifacts, but it allows unsigned installers with an explicit warning. Use this
+only when the release notes call the build an unsigned preview.
+`pnpm release:commercial-ready` is the final hard gate: it must stay blocked
+until bundled FFmpeg integrity, executable smoke, native smoke, smart slice
+quality/media evidence, installer signature, and execution readiness are all
+true.
 
 ## Cleanup
 
@@ -134,12 +176,22 @@ node scripts/ensure-autocut-tauri-rust-toolchain.test.mjs
 node scripts/prepare-autocut-ffmpeg-sidecar.test.mjs
 node scripts/check-autocut-release-smoke-preflight.test.mjs
 node scripts/write-autocut-native-release-smoke.test.mjs
+node scripts/sign-autocut-release-installers.test.mjs
 node scripts/write-autocut-installer-signature-evidence.test.mjs
+node scripts/write-autocut-smart-slice-sample-evidence.test.mjs
 node scripts/write-autocut-release-evidence.test.mjs
+node scripts/check-autocut-preview-release-readiness.test.mjs
 node scripts/check-autocut-commercial-release-readiness.test.mjs
 pnpm release:smoke-preflight -- --platform windows-x86_64 --skip-executable-smoke
 pnpm release:native-smoke -- --run-real-llm-secret-smoke
+pnpm release:smart-slice-sample
 pnpm release:installer-signature
+pnpm release:evidence -- --platform windows-x86_64
+pnpm release:preview-ready
+pnpm release:sign-installers -- --cert-thumbprint <thumbprint>
+pnpm release:installer-signature
+pnpm release:evidence -- --platform windows-x86_64
+pnpm release:commercial-ready
 pnpm typecheck
 pnpm test
 pnpm build

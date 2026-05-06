@@ -437,6 +437,30 @@ export async function saveAutoCutLlmSettings(llm: AutoCutLlmSettings): Promise<A
   }));
 }
 
+export async function initializeAutoCutDefaultLlmSettingsFromEnvironment(): Promise<AppSettings | null> {
+  await randomDelay(20, 50);
+  const settings = readSettings();
+  if (settings.llm.apiKeyConfigured) {
+    if (settings.llm.modelVendor === 'deepseek') {
+      await resolveAutoCutNativeLlmApiKey();
+    }
+    return null;
+  }
+
+  const apiKey = await resolveAutoCutNativeLlmApiKey();
+  if (!apiKey) {
+    return null;
+  }
+
+  return saveAutoCutLlmSettings({
+    ...settings.llm,
+    modelVendor: 'deepseek',
+    baseUrl: AUTOCUT_MODEL_VENDOR_PRESETS.deepseek.baseUrl,
+    model: AUTOCUT_MODEL_VENDOR_PRESETS.deepseek.defaultModel,
+    apiKey,
+  });
+}
+
 export async function resolveAutoCutLlmRuntimeConfig(): Promise<AutoCutLlmRuntimeConfig> {
   await randomDelay(20, 50);
   const settings = readSettings();

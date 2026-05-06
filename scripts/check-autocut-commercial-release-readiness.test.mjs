@@ -26,6 +26,9 @@ function writeEvidence(root, overrides = {}) {
       ffmpegBundledReady: false,
       releaseSmokeReady: true,
       nativeReleaseSmokeReady: true,
+      nativeVideoSliceSmokeReady: true,
+      smartSliceQualityReady: true,
+      smartSliceMediaArtifactsReady: true,
       installerSignatureReady: false,
       ...overrides.readiness,
     },
@@ -40,7 +43,28 @@ function writeEvidence(root, overrides = {}) {
     },
     nativeReleaseSmoke: {
       ready: true,
+      videoSliceReady: true,
       ...overrides.nativeReleaseSmoke,
+    },
+    smartSliceQuality: {
+      ready: true,
+      evidence: {
+        readiness: {
+          smartSliceQualityReady: true,
+        },
+        blockers: [],
+      },
+      ...overrides.smartSliceQuality,
+    },
+    smartSliceMediaArtifacts: {
+      ready: true,
+      evidence: {
+        readiness: {
+          smartSliceMediaArtifactsReady: true,
+        },
+        blockers: [],
+      },
+      ...overrides.smartSliceMediaArtifacts,
     },
     installerSignature: {
       ready: false,
@@ -100,6 +124,8 @@ writeEvidence(readyRoot, {
     ffmpegBundledReady: true,
     releaseSmokeReady: true,
     nativeReleaseSmokeReady: true,
+    nativeVideoSliceSmokeReady: true,
+    smartSliceMediaArtifactsReady: true,
     installerSignatureReady: true,
   },
   preflight: {
@@ -133,6 +159,7 @@ writeEvidence(unsignedInstallerOnlyRoot, {
     ffmpegBundledReady: true,
     releaseSmokeReady: true,
     nativeReleaseSmokeReady: true,
+    nativeVideoSliceSmokeReady: true,
     installerSignatureReady: false,
   },
   preflight: {
@@ -165,6 +192,143 @@ const unsignedInstallerOnlyReport = createAutoCutCommercialReleaseReadinessRepor
 assert.deepEqual(
   unsignedInstallerOnlyReport.blockers.map((blocker) => blocker.code),
   ['INSTALLER_SIGNATURE_NOT_READY'],
+);
+
+const blockedSmartSliceRoot = tempRoot('autocut-commercial-release-smart-slice-blocked');
+writeEvidence(blockedSmartSliceRoot, {
+  readiness: {
+    ffmpegExecutionReady: true,
+    ffmpegBundledReady: true,
+    releaseSmokeReady: true,
+    nativeReleaseSmokeReady: true,
+    nativeVideoSliceSmokeReady: true,
+    smartSliceQualityReady: false,
+    installerSignatureReady: true,
+  },
+  preflight: {
+    sidecarPresent: true,
+    integrityReady: true,
+    bundledReady: true,
+    executableSmokeReady: true,
+    releaseSmokeReady: true,
+    ffmpegExecutionReady: true,
+  },
+  installerSignature: {
+    ready: true,
+    evidence: {
+      blockers: [],
+    },
+  },
+  smartSliceQuality: {
+    ready: false,
+    evidence: {
+      readiness: {
+        smartSliceQualityReady: false,
+      },
+      blockers: [
+        {
+          code: 'SMART_SLICE_TRANSCRIPT_CONTINUITY_TOO_LOW',
+        },
+      ],
+    },
+  },
+});
+const blockedSmartSliceReport = createAutoCutCommercialReleaseReadinessReport({
+  rootDir: blockedSmartSliceRoot,
+});
+
+assert.deepEqual(
+  blockedSmartSliceReport.blockers.map((blocker) => blocker.code),
+  ['SMART_SLICE_QUALITY_NOT_READY'],
+);
+
+const blockedSmartSliceMediaRoot = tempRoot('autocut-commercial-release-smart-slice-media-blocked');
+writeEvidence(blockedSmartSliceMediaRoot, {
+  readiness: {
+    ffmpegExecutionReady: true,
+    ffmpegBundledReady: true,
+    releaseSmokeReady: true,
+    nativeReleaseSmokeReady: true,
+    nativeVideoSliceSmokeReady: true,
+    smartSliceQualityReady: true,
+    smartSliceMediaArtifactsReady: false,
+    installerSignatureReady: true,
+  },
+  preflight: {
+    sidecarPresent: true,
+    integrityReady: true,
+    bundledReady: true,
+    executableSmokeReady: true,
+    releaseSmokeReady: true,
+    ffmpegExecutionReady: true,
+  },
+  installerSignature: {
+    ready: true,
+    evidence: {
+      blockers: [],
+    },
+  },
+  smartSliceMediaArtifacts: {
+    ready: false,
+    evidence: {
+      readiness: {
+        smartSliceMediaArtifactsReady: false,
+      },
+      blockers: [
+        {
+          code: 'SMART_SLICE_MEDIA_ARTIFACT_MISSING',
+        },
+      ],
+    },
+  },
+});
+const blockedSmartSliceMediaReport = createAutoCutCommercialReleaseReadinessReport({
+  rootDir: blockedSmartSliceMediaRoot,
+});
+
+assert.deepEqual(
+  blockedSmartSliceMediaReport.blockers.map((blocker) => blocker.code),
+  ['SMART_SLICE_MEDIA_ARTIFACTS_NOT_READY'],
+);
+
+const blockedNativeVideoSliceRoot = tempRoot('autocut-commercial-release-native-video-slice-blocked');
+writeEvidence(blockedNativeVideoSliceRoot, {
+  readiness: {
+    ffmpegExecutionReady: true,
+    ffmpegBundledReady: true,
+    releaseSmokeReady: true,
+    nativeReleaseSmokeReady: true,
+    nativeVideoSliceSmokeReady: false,
+    smartSliceQualityReady: true,
+    smartSliceMediaArtifactsReady: true,
+    installerSignatureReady: true,
+  },
+  preflight: {
+    sidecarPresent: true,
+    integrityReady: true,
+    bundledReady: true,
+    executableSmokeReady: true,
+    releaseSmokeReady: true,
+    ffmpegExecutionReady: true,
+  },
+  nativeReleaseSmoke: {
+    ready: true,
+    videoSliceReady: false,
+  },
+  installerSignature: {
+    ready: true,
+    evidence: {
+      blockers: [],
+    },
+  },
+});
+const blockedNativeVideoSliceReport = createAutoCutCommercialReleaseReadinessReport({
+  rootDir: blockedNativeVideoSliceRoot,
+});
+
+assert.deepEqual(
+  blockedNativeVideoSliceReport.blockers.map((blocker) => blocker.code),
+  ['NATIVE_VIDEO_SLICE_SMOKE_NOT_READY'],
 );
 
 console.log('ok - autocut commercial release readiness contract');

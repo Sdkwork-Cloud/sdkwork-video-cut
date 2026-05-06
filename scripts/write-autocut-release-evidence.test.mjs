@@ -23,11 +23,15 @@ function writeFixture(root) {
   const nsisPath = path.join(bundleRoot, 'nsis', 'SDKWork Video Cut_0.1.0_x64-setup.exe');
   const nativeSmokePath = path.join(root, 'artifacts', 'release', 'autocut-native-release-smoke.json');
   const signatureEvidencePath = path.join(root, 'artifacts', 'release', 'autocut-installer-signature-evidence.json');
+  const smartSliceQualityEvidencePath = path.join(root, 'artifacts', 'release', 'autocut-smart-slice-quality-evidence.json');
+  const smartSliceMediaArtifactsEvidencePath = path.join(root, 'artifacts', 'release', 'autocut-smart-slice-media-artifacts-evidence.json');
   fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
   fs.mkdirSync(path.dirname(msiPath), { recursive: true });
   fs.mkdirSync(path.dirname(nsisPath), { recursive: true });
   fs.mkdirSync(path.dirname(nativeSmokePath), { recursive: true });
   fs.mkdirSync(path.dirname(signatureEvidencePath), { recursive: true });
+  fs.mkdirSync(path.dirname(smartSliceQualityEvidencePath), { recursive: true });
+  fs.mkdirSync(path.dirname(smartSliceMediaArtifactsEvidencePath), { recursive: true });
   fs.writeFileSync(
     manifestPath,
     JSON.stringify({
@@ -57,6 +61,7 @@ function writeFixture(root) {
         generatedAt: '2026-05-05T00:00:00.000Z',
         readiness: {
           nativeReleaseSmokeReady: true,
+          videoSliceSmokeReady: true,
           ffmpegExecutionReady: false,
         },
         commandMatrix: [
@@ -64,7 +69,16 @@ function writeFixture(root) {
             command: 'autocut_ffmpeg_probe',
             evidenceReady: true,
           },
+          {
+            command: 'autocut_slice_video',
+            evidenceReady: true,
+          },
         ],
+        videoSliceSmoke: {
+          skipped: false,
+          success: true,
+          stdout: 'autocut-video-slice-smoke=passed',
+        },
       },
       null,
       2,
@@ -90,7 +104,60 @@ function writeFixture(root) {
       2,
     ),
   );
-  return { manifestPath, msiPath, nsisPath, nativeSmokePath, signatureEvidencePath };
+  fs.writeFileSync(
+    smartSliceQualityEvidencePath,
+    JSON.stringify(
+      {
+        schemaVersion: '2026-05-06.autocut-smart-slice-quality-evidence.v1',
+        generatedAt: '2026-05-06T00:00:00.000Z',
+        readiness: {
+          smartSliceQualityReady: true,
+        },
+        summary: {
+          totalSlices: 2,
+          readyOrReviewRatio: 1,
+          averagePublishabilityScore: 0.81,
+          averageContinuityScore: 0.89,
+          averageTranscriptCoverageScore: 0.93,
+          platformReadyOrReviewRatio: 1,
+        },
+        blockers: [],
+      },
+      null,
+      2,
+    ),
+  );
+  fs.writeFileSync(
+    smartSliceMediaArtifactsEvidencePath,
+    JSON.stringify(
+      {
+        schemaVersion: '2026-05-06.autocut-smart-slice-media-artifacts-evidence.v1',
+        generatedAt: '2026-05-06T00:00:00.000Z',
+        readiness: {
+          smartSliceMediaArtifactsReady: true,
+        },
+        summary: {
+          totalSlices: 2,
+          readySlices: 2,
+          totalArtifacts: 5,
+          readyArtifacts: 5,
+          totalByteSize: 24000000,
+        },
+        blockers: [],
+      },
+      null,
+      2,
+    ),
+  );
+  return {
+    manifestPath,
+    msiPath,
+    nsisPath,
+    nativeSmokePath,
+    signatureEvidencePath,
+    smartSliceQualityEvidencePath,
+    smartSliceMediaArtifactsEvidencePath,
+  };
 }
 
 function writeReleaseReadyFixture(root) {
@@ -160,9 +227,19 @@ assert.equal(evidence.preflight.bundledReady, false);
 assert.equal(evidence.preflight.releaseSmokeReady, true);
 assert.equal(evidence.preflight.ffmpegExecutionReady, false);
 assert.equal(evidence.readiness.nativeReleaseSmokeReady, true);
+assert.equal(evidence.readiness.nativeVideoSliceSmokeReady, true);
 assert.equal(evidence.nativeReleaseSmoke.path, 'artifacts/release/autocut-native-release-smoke.json');
 assert.equal(evidence.nativeReleaseSmoke.ready, true);
+assert.equal(evidence.nativeReleaseSmoke.videoSliceReady, true);
 assert.equal(evidence.nativeReleaseSmoke.evidence.schemaVersion, '2026-05-05.autocut-native-release-smoke.v1');
+assert.equal(evidence.readiness.smartSliceQualityReady, true);
+assert.equal(evidence.smartSliceQuality.path, 'artifacts/release/autocut-smart-slice-quality-evidence.json');
+assert.equal(evidence.smartSliceQuality.ready, true);
+assert.equal(evidence.smartSliceQuality.evidence.schemaVersion, '2026-05-06.autocut-smart-slice-quality-evidence.v1');
+assert.equal(evidence.readiness.smartSliceMediaArtifactsReady, true);
+assert.equal(evidence.smartSliceMediaArtifacts.path, 'artifacts/release/autocut-smart-slice-media-artifacts-evidence.json');
+assert.equal(evidence.smartSliceMediaArtifacts.ready, true);
+assert.equal(evidence.smartSliceMediaArtifacts.evidence.schemaVersion, '2026-05-06.autocut-smart-slice-media-artifacts-evidence.v1');
 assert.equal(evidence.readiness.installerSignatureReady, false);
 assert.equal(evidence.installerSignature.path, 'artifacts/release/autocut-installer-signature-evidence.json');
 assert.equal(evidence.installerSignature.ready, false);
@@ -194,7 +271,10 @@ assert.equal(readyEvidence.preflight.ffmpegExecutionReady, true);
 assert.equal(readyEvidence.readiness.ffmpegExecutionReady, true);
 assert.equal(readyEvidence.readiness.releaseSmokeReady, true);
 assert.equal(readyEvidence.readiness.nativeReleaseSmokeReady, true);
+assert.equal(readyEvidence.readiness.nativeVideoSliceSmokeReady, true);
 assert.equal(readyEvidence.readiness.installerSignatureReady, true);
+assert.equal(readyEvidence.readiness.smartSliceQualityReady, true);
+assert.equal(readyEvidence.readiness.smartSliceMediaArtifactsReady, true);
 
 const outputPath = path.join(root, 'artifacts', 'release', 'autocut-release-evidence.json');
 const written = writeAutoCutReleaseEvidence({
@@ -219,5 +299,106 @@ assert.throws(
   }),
   /missing AutoCut release installer/u,
 );
+
+const blockedSmartSliceRoot = tempRoot('autocut-release-evidence-blocked-smart-slice');
+const blockedSmartSliceFixture = writeFixture(blockedSmartSliceRoot);
+fs.writeFileSync(
+  blockedSmartSliceFixture.smartSliceQualityEvidencePath,
+  JSON.stringify(
+    {
+      schemaVersion: '2026-05-06.autocut-smart-slice-quality-evidence.v1',
+      readiness: {
+        smartSliceQualityReady: false,
+      },
+      blockers: [
+        {
+          code: 'SMART_SLICE_PUBLISHABILITY_TOO_LOW',
+        },
+      ],
+    },
+    null,
+    2,
+  ),
+);
+assert.equal(
+  createAutoCutReleaseEvidence({
+    rootDir: blockedSmartSliceRoot,
+    platform: 'windows-x86_64',
+    skipExecutableSmoke: true,
+  }).readiness.smartSliceQualityReady,
+  false,
+);
+
+const blockedSmartSliceMediaRoot = tempRoot('autocut-release-evidence-blocked-smart-slice-media');
+const blockedSmartSliceMediaFixture = writeFixture(blockedSmartSliceMediaRoot);
+fs.writeFileSync(
+  blockedSmartSliceMediaFixture.smartSliceMediaArtifactsEvidencePath,
+  JSON.stringify(
+    {
+      schemaVersion: '2026-05-06.autocut-smart-slice-media-artifacts-evidence.v1',
+      readiness: {
+        smartSliceMediaArtifactsReady: false,
+      },
+      blockers: [
+        {
+          code: 'SMART_SLICE_MEDIA_ARTIFACT_MISSING',
+        },
+      ],
+    },
+    null,
+    2,
+  ),
+);
+assert.equal(
+  createAutoCutReleaseEvidence({
+    rootDir: blockedSmartSliceMediaRoot,
+    platform: 'windows-x86_64',
+    skipExecutableSmoke: true,
+  }).readiness.smartSliceMediaArtifactsReady,
+  false,
+);
+
+const blockedNativeVideoSliceRoot = tempRoot('autocut-release-evidence-blocked-native-video-slice');
+const blockedNativeVideoSliceFixture = writeFixture(blockedNativeVideoSliceRoot);
+fs.writeFileSync(
+  blockedNativeVideoSliceFixture.nativeSmokePath,
+  JSON.stringify(
+    {
+      schemaVersion: '2026-05-05.autocut-native-release-smoke.v1',
+      generatedAt: '2026-05-05T00:00:00.000Z',
+      readiness: {
+        nativeReleaseSmokeReady: true,
+        videoSliceSmokeReady: false,
+        ffmpegExecutionReady: false,
+      },
+      commandMatrix: [
+        {
+          command: 'autocut_ffmpeg_probe',
+          evidenceReady: true,
+        },
+        {
+          command: 'autocut_slice_video',
+          evidenceReady: false,
+        },
+      ],
+      videoSliceSmoke: {
+        skipped: false,
+        success: false,
+        stdout: '',
+      },
+    },
+    null,
+    2,
+  ),
+);
+const blockedNativeVideoSliceEvidence = createAutoCutReleaseEvidence({
+  rootDir: blockedNativeVideoSliceRoot,
+  platform: 'windows-x86_64',
+  skipExecutableSmoke: true,
+});
+assert.equal(blockedNativeVideoSliceEvidence.readiness.nativeReleaseSmokeReady, false);
+assert.equal(blockedNativeVideoSliceEvidence.readiness.nativeVideoSliceSmokeReady, false);
+assert.equal(blockedNativeVideoSliceEvidence.nativeReleaseSmoke.ready, false);
+assert.equal(blockedNativeVideoSliceEvidence.nativeReleaseSmoke.videoSliceReady, false);
 
 console.log('ok - autocut release evidence writer contract');

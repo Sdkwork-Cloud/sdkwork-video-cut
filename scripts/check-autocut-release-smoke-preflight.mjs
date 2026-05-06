@@ -7,6 +7,11 @@ import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import {
+  normalizeAutoCutCliArgs,
+  readAutoCutCliOptionValue,
+} from './autocut-cli-args.mjs';
+
 const __filename = fileURLToPath(import.meta.url);
 const defaultManifestRelativePath =
   'packages/sdkwork-autocut-desktop/src-tauri/binaries/ffmpeg.toolchain.json';
@@ -146,11 +151,16 @@ function assertInsideDirectory(candidatePath, rootPath) {
 
 function parseArgs(argv) {
   const options = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
+  const args = normalizeAutoCutCliArgs(argv);
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
     if (arg === '--platform') {
-      options.platform = argv[index + 1];
-      index += 1;
+      const option = readAutoCutCliOptionValue(args, index, {
+        optionName: arg,
+        commandName: 'AutoCut release smoke preflight',
+      });
+      options.platform = option.value;
+      index = option.nextIndex;
     } else if (arg === '--require-bundled') {
       options.requireBundled = true;
     } else if (arg === '--skip-executable-smoke') {

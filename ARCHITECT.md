@@ -425,9 +425,15 @@ Required invariants:
   `scripts/write-autocut-native-release-smoke.mjs` writes the structured native
   command smoke evidence under `artifacts/release/` by running the pinned Rust
   smoke suite. The evidence matrix currently covers `autocut_host_capabilities`,
-  `autocut_ffmpeg_probe`, `autocut_audio_smoke`, and
+  `autocut_ffmpeg_probe`, `autocut_audio_smoke`, `autocut_slice_video`, and
   `autocut_recover_native_tasks`, including the durable worker lease recovery
-  behavior. The LLM secret commands are not considered release-ready from the
+  behavior. The `autocut_slice_video` entry is backed by the exact
+  `media_runtime::tests::video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir`
+  smoke and must record `videoSliceSmokeReady=true` plus
+  `autocut-video-slice-smoke=passed`, proving real FFmpeg slicing, task-scoped
+  video artifacts, thumbnails, task output JSON, and database stage completion
+  before aggregate release evidence can mark `nativeVideoSliceSmokeReady=true`.
+  The LLM secret commands are not considered release-ready from the
   default mock keyring tests. Release evidence must run
   `pnpm release:native-smoke -- --run-real-llm-secret-smoke` on Windows, or set
   `SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE=true`, so the ignored
@@ -435,7 +441,8 @@ Required invariants:
   reads, and deletes a real Windows Credential Manager entry. The evidence must
   record `realLlmSecretStoreSmokeReady=true` before the LLM secret command
   matrix entries may be ready. The script sets isolated temporary
-  `CARGO_TARGET_DIR` values named `sdkwork-autocut-native-smoke-target-rust-*`
+  `CARGO_TARGET_DIR` values named `sdkwork-autocut-native-smoke-target-rust-*`,
+  `sdkwork-autocut-native-smoke-target-video-slice-*`,
   and `sdkwork-autocut-native-smoke-target-llm-secret-*` for the full native
   smoke and the serialized real secret-store smoke. This keeps release smoke
   from contending with developer `cargo test`, Tauri packaging, package-local
@@ -444,7 +451,23 @@ Required invariants:
   bridge between Rust/Tauri command tests and the release evidence bundle, and
   it must not claim `ffmpegExecutionReady` by itself; aggregate release evidence
   derives that flag only after sidecar integrity, executable smoke, native
-  smoke, installer signature, and release smoke are all ready.
+  smoke, smart slice quality/media evidence, installer signature, and release
+  smoke are all ready.
+  `scripts/write-autocut-smart-slice-sample-evidence.mjs` is the repeatable
+  local release-evidence path when no private exported task JSON is attached to
+  the release review. It generates FFmpeg-backed sample source/slice media
+  under ignored `artifacts/smart-slice-media/`, writes
+  `artifacts/smart-slice/smart-slice-task.json`, then writes the sample report,
+  smart slice quality evidence, and media artifact evidence under
+  `artifacts/release/`.
+  `scripts/sign-autocut-release-installers.mjs` is the installer signing
+  execution boundary. It accepts a real Authenticode source through
+  `SDKWORK_AUTOCUT_WINDOWS_SIGNING_PFX` plus
+  `SDKWORK_AUTOCUT_WINDOWS_SIGNING_PASSWORD`, or through
+  `SDKWORK_AUTOCUT_WINDOWS_SIGNING_THUMBPRINT` for a Windows certificate-store
+  certificate. It may use `SDKWORK_AUTOCUT_SIGNTOOL_PATH` for a specific
+  `signtool.exe`, and it must fail closed when the signing certificate or tool
+  is absent.
   `scripts/write-autocut-installer-signature-evidence.mjs` writes the structured
   MSI/NSIS code-signing evidence under `artifacts/release/`. Unsigned or
   unverifiable installers must produce `installerSignatureReady=false` with
@@ -453,12 +476,18 @@ Required invariants:
   `scripts/write-autocut-release-evidence.mjs` writes the structured release
   evidence JSON under `artifacts/release/`, including installer paths, byte
   sizes, SHA-256 digests, FFmpeg manifest state, release smoke preflight state,
-  native command smoke evidence, installer signature evidence, and the derived
-  `ffmpegExecutionReady` readiness boundary.
+  native command smoke evidence, smart slice quality/media evidence, installer
+  signature evidence, and the derived `ffmpegExecutionReady` readiness boundary.
+  `scripts/check-autocut-preview-release-readiness.mjs` is the unsigned preview
+  release gate for GitHub/internal test releases. It keeps FFmpeg execution,
+  native video slice, smart slice quality/media, installer artifact, and
+  aggregate release smoke checks, but unsigned installers are reported as
+  `UNSIGNED_INSTALLERS_ACCEPTED_FOR_PREVIEW` warnings instead of commercial
+  release blockers.
   `scripts/check-autocut-commercial-release-readiness.mjs` is the final
   commercial-release hard gate. It must fail until bundled FFmpeg integrity,
-  executable smoke, native smoke, installer signature, aggregate release smoke,
-  and `ffmpegExecutionReady` are all ready.
+  executable smoke, native smoke, smart slice quality/media evidence, installer
+  signature, aggregate release smoke, and `ffmpegExecutionReady` are all ready.
 - `rusqlite` is allowed only with bundled SQLite after the database contract is
   present. `tauri-plugin-*`, `tokio`, `reqwest`, and SQLx remain forbidden until
   a matching architecture contract is written.

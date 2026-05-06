@@ -7,6 +7,11 @@ import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import {
+  normalizeAutoCutCliArgs,
+  readAutoCutCliOptionValue,
+} from './autocut-cli-args.mjs';
+
 const __filename = fileURLToPath(import.meta.url);
 const evidenceSchemaVersion = '2026-05-05.autocut-installer-signature-evidence.v1';
 const bundleRelativeRoot = 'packages/sdkwork-autocut-desktop/src-tauri/target/release/bundle';
@@ -208,11 +213,16 @@ function toPosixRelative(rootDir, targetPath) {
 
 function parseArgs(argv) {
   const options = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
+  const args = normalizeAutoCutCliArgs(argv);
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
     if (arg === '--output') {
-      options.outputPath = argv[index + 1];
-      index += 1;
+      const option = readAutoCutCliOptionValue(args, index, {
+        optionName: arg,
+        commandName: 'AutoCut installer signature evidence',
+      });
+      options.outputPath = option.value;
+      index = option.nextIndex;
     } else {
       throw new Error(`Unknown AutoCut installer signature evidence argument: ${arg}`);
     }

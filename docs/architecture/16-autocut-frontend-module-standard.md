@@ -417,13 +417,21 @@ bundled FFmpeg must run it with `--require-bundled`. Frontend modules must use
 only the typed capability and probe flags returned by `native-host-client.service.ts`.
 Release evidence is standardized through `scripts/write-autocut-release-evidence.mjs`.
 It writes an ignored JSON artifact under `artifacts/release/` with installer
-digests, FFmpeg manifest state, preflight state, native smoke evidence,
-installer signature evidence, and the derived `ffmpegExecutionReady` boundary.
+digests, FFmpeg manifest state, preflight state, native smoke evidence, smart
+slice quality/media evidence, installer signature evidence, and the derived
+`ffmpegExecutionReady` boundary.
 Native smoke evidence is standardized through
 `scripts/write-autocut-native-release-smoke.mjs`; it records the Rust-backed
 evidence matrix for `autocut_host_capabilities`, `autocut_ffmpeg_probe`,
-`autocut_audio_smoke`, and `autocut_recover_native_tasks`. LLM secret command
-readiness must come from the real Windows Credential Manager smoke, not from the
+`autocut_audio_smoke`, `autocut_slice_video`, and
+`autocut_recover_native_tasks`. The `autocut_slice_video` evidence must run the
+exact
+`media_runtime::tests::video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir`
+smoke and capture `autocut-video-slice-smoke=passed`, so aggregate release
+evidence can derive `nativeVideoSliceSmokeReady=true` only after real FFmpeg
+slicing, task-scoped videos, thumbnails, task output JSON, and database stage
+completion are verified. LLM secret command readiness must come from the real
+Windows Credential Manager smoke, not from the
 default mock keyring unit test. Run
 `pnpm release:native-smoke -- --run-real-llm-secret-smoke`, or set
 `SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE=true`, before aggregate release
@@ -431,14 +439,32 @@ evidence is written so `realLlmSecretStoreSmokeReady` and the three LLM secret
 command matrix entries are honestly ready. The native smoke writer must set
 isolated temporary `CARGO_TARGET_DIR` values named
 `sdkwork-autocut-native-smoke-target-rust-*` and
+`sdkwork-autocut-native-smoke-target-video-slice-*` and
 `sdkwork-autocut-native-smoke-target-llm-secret-*`, so release evidence
 generation does not lock package-local `src-tauri/target` or reuse a Windows
 test executable path during parallel test or packaging runs.
+Smart slice sample release evidence is standardized through
+`scripts/write-autocut-smart-slice-sample-evidence.mjs`. It generates local
+FFmpeg sample media under ignored `artifacts/smart-slice-media/`, writes
+`artifacts/smart-slice/smart-slice-task.json`, and produces the sample, quality,
+and media artifact evidence JSON files under `artifacts/release/` so the release
+chain can be verified without private media.
+Installer signing execution is standardized through
+`scripts/sign-autocut-release-installers.mjs`. It must use a real Authenticode
+certificate from a PFX file or Windows certificate-store thumbprint plus
+`signtool.exe`, and it must fail closed instead of marking unsigned installers
+ready.
 Installer signing evidence is standardized through
-`scripts/write-autocut-installer-signature-evidence.mjs`, and the final hard
-gate is `scripts/check-autocut-commercial-release-readiness.mjs`. This gate must
-stay blocked until sidecar integrity, executable smoke, native smoke, installer
-signature, aggregate release smoke, and `ffmpegExecutionReady` are all true.
+`scripts/write-autocut-installer-signature-evidence.mjs`.
+Unsigned preview readiness is standardized through
+`scripts/check-autocut-preview-release-readiness.mjs`; it may allow unsigned
+installers only with an explicit `UNSIGNED_INSTALLERS_ACCEPTED_FOR_PREVIEW`
+warning after FFmpeg execution, native video slicing, smart slice quality/media,
+installer artifacts, and aggregate release smoke are ready. The final commercial
+hard gate is `scripts/check-autocut-commercial-release-readiness.mjs`. This gate
+must stay blocked until sidecar integrity, executable smoke, native smoke, smart
+slice quality/media evidence, installer signature, aggregate release smoke, and
+`ffmpegExecutionReady` are all true.
 This evidence is a release artifact, not frontend runtime state, and packages
 must not read it directly.
 

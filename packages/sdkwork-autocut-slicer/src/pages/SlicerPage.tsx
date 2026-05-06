@@ -1,9 +1,9 @@
 import { processVideoSlice } from '../service/slicerService';
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowLeft, Play, Pause, Settings2, Scissors, CheckCircle2, MicOff, Waves, Video, RefreshCcw, XCircle, ChevronRight, Type } from "lucide-react";
 import { Button, useToast, TaskFailureState, createAutoCutTrustedLocalFile, resolveAutoCutTrustedSourcePath } from "@sdkwork/autocut-commons";
-import { AUTOCUT_SLICE_LLM_MODEL_OPTIONS, AUTOCUT_TASK_STATUS, type SliceMode, type SliceAlgorithm, type SliceHighlightEngine, type SliceLLM, type AppTask, type VideoSliceParams } from "@sdkwork/autocut-types";
+import { AUTOCUT_MODEL_VENDOR_PRESETS, AUTOCUT_SLICE_LLM_MODEL_OPTIONS, AUTOCUT_TASK_STATUS, type ModelVendor, type SliceMode, type SliceAlgorithm, type SliceHighlightEngine, type SliceLLM, type SliceTargetPlatform, type SliceTargetAspectRatio, type SliceVideoObjectFit, type SliceCountMode, type SliceContinuityLevel, type SliceSubtitleMode, type AppTask, type VideoSliceParams } from "@sdkwork/autocut-types";
 import { createAutoCutObjectUrl, getAutoCutNativeHostClient, getAutoCutProcessingTaskErrorTaskId, getAutoCutSampleVideoUrl, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic, resolveAutoCutLlmRuntimeConfig, revokeAutoCutObjectUrl, selectAutoCutTrustedLocalVideoFile } from "@sdkwork/autocut-services";
 import { WebGLPlayer, WebGLPlayerRef, WebGLPlayerDragState } from "../components/WebGLPlayer";
 import type { TextEffectStyle } from "../components/WebGLPlayer";
@@ -13,6 +13,12 @@ interface TextEffectPreset {
   name: string;
   text: string;
   styleConfig: TextEffectStyle;
+}
+
+interface VisibleLlmModelOption {
+  vendor: ModelVendor;
+  id: string;
+  label: string;
 }
 
 const MODES: SliceMode[] = [
@@ -41,11 +47,12 @@ export function SlicerPage() {
   const [file, setFile] = useState<File | null>(initialFile);
   const [sourceUrl] = useState(initialSourceUrl);
   const [videoSrc, setVideoSrc] = useState<string>(getAutoCutSampleVideoUrl());
-  const [aspectRatio, setAspectRatio] = useState<string>("auto");
-  const [videoObjectFit, setVideoObjectFit] = useState<'contain' | 'cover'>('contain');
+  const [aspectRatio, setAspectRatio] = useState<SliceTargetAspectRatio>("auto");
+  const [videoObjectFit, setVideoObjectFit] = useState<SliceVideoObjectFit>('contain');
   const [detectedRatio, setDetectedRatio] = useState<string>("16:9");
 
   const [generateSubtitles, setGenerateSubtitles] = useState(false);
+  const [subtitleMode, setSubtitleMode] = useState<SliceSubtitleMode>('both');
   const [selectedSubtitleStyle, setSelectedSubtitleStyle] = useState('tiktok');
 
   const [slicerTasks, setSlicerTasks] = useState<AppTask[]>([]);
@@ -226,8 +233,15 @@ export function SlicerPage() {
   }, []);
 
   // Slicing Advanced Parameters
+  const [targetPlatform, setTargetPlatform] = useState<SliceTargetPlatform>('douyin');
+  const [sliceCountMode, setSliceCountMode] = useState<SliceCountMode>('qualityFirst');
+  const [targetSliceCount, setTargetSliceCount] = useState<number>(5);
+  const [idealDuration, setIdealDuration] = useState<number>(45);
+  const [continuityLevel, setContinuityLevel] = useState<SliceContinuityLevel>('standard');
+  const [customKeywordsInput, setCustomKeywordsInput] = useState<string>('');
   const [minDuration, setMinDuration] = useState<number>(15);
   const [maxDuration, setMaxDuration] = useState<number>(90);
+  const [activeLlmRuntimeModelVendor, setActiveLlmRuntimeModelVendor] = useState<ModelVendor>('deepseek');
   const [llmModel, setLlmModel] = useState<SliceLLM>('deepseek-v4-flash');
   const [baseAlgorithm, setBaseAlgorithm] = useState<SliceAlgorithm>('nlp');
   const [highlightEngine, setHighlightEngine] = useState<SliceHighlightEngine>('emotion');
@@ -236,10 +250,59 @@ export function SlicerPage() {
   const [repeatFilter, setRepeatFilter] = useState<boolean>(false);
 
   useEffect(() => {
+    if (targetPlatform === 'bilibili') {
+      setAspectRatio('16:9');
+      setVideoObjectFit('contain');
+      setTargetSliceCount(3);
+      setIdealDuration(90);
+      return;
+    }
+
+    if (targetPlatform === 'xiaohongshu') {
+      setAspectRatio('9:16');
+      setVideoObjectFit('cover');
+      setTargetSliceCount(5);
+      setIdealDuration(35);
+      return;
+    }
+
+    if (targetPlatform !== 'generic') {
+      setAspectRatio('9:16');
+      setVideoObjectFit('cover');
+      setTargetSliceCount(5);
+      setIdealDuration(45);
+    }
+  }, [targetPlatform]);
+
+  useEffect(() => {
     resolveAutoCutLlmRuntimeConfig()
-      .then((config) => setLlmModel(config.model as SliceLLM))
+      .then((config) => {
+        setActiveLlmRuntimeModelVendor(config.modelVendor);
+        setLlmModel(config.model as SliceLLM);
+      })
       .catch((error) => reportAutoCutDiagnostic('warning', 'slicer', 'Load default LLM model failed', error));
   }, []);
+
+  const activeLlmModelOptions = useMemo(
+    () => AUTOCUT_SLICE_LLM_MODEL_OPTIONS.filter((model) => model.vendor === activeLlmRuntimeModelVendor),
+    [activeLlmRuntimeModelVendor],
+  );
+  const visibleLlmModelOptions = useMemo<VisibleLlmModelOption[]>(() => {
+    if (activeLlmRuntimeModelVendor === 'custom') {
+      return [{ vendor: 'custom', id: llmModel, label: llmModel || 'Custom model' }];
+    }
+
+    return activeLlmModelOptions.length > 0
+      ? activeLlmModelOptions
+      : AUTOCUT_SLICE_LLM_MODEL_OPTIONS.filter((model) => model.vendor === 'deepseek');
+  }, [activeLlmModelOptions, activeLlmRuntimeModelVendor, llmModel]);
+
+  useEffect(() => {
+    const currentModelIsVisible = visibleLlmModelOptions.some((model) => model.id === llmModel);
+    if (!currentModelIsVisible) {
+      setLlmModel(AUTOCUT_MODEL_VENDOR_PRESETS[activeLlmRuntimeModelVendor].defaultModel as SliceLLM);
+    }
+  }, [activeLlmRuntimeModelVendor, llmModel, visibleLlmModelOptions]);
 
   // Video Player state
   const [currentTime, setCurrentTime] = useState<number>(0);
@@ -310,6 +373,17 @@ export function SlicerPage() {
         mode: selectedMode,
         file,
         llmModel,
+        targetPlatform,
+        targetAspectRatio: aspectRatio,
+        videoObjectFit,
+        sliceCountMode,
+        targetSliceCount,
+        idealDuration,
+        continuityLevel,
+        customKeywords: customKeywordsInput
+          .split(/[,，\n]/u)
+          .map((keyword) => keyword.trim())
+          .filter(Boolean),
         minDuration,
         maxDuration,
         baseAlgorithm,
@@ -317,7 +391,8 @@ export function SlicerPage() {
         enableNoiseReduction: noiseReduction,
         enableCoughFilter: coughFilter,
         enableRepeatFilter: repeatFilter,
-        enableSubtitles: generateSubtitles
+        enableSubtitles: generateSubtitles,
+        subtitleMode,
       };
       if (sourceUrl) {
         sliceParams.url = sourceUrl;
@@ -575,7 +650,7 @@ export function SlicerPage() {
                 <div className="flex items-center gap-2 text-gray-400">
                      <select
                         value={aspectRatio}
-                        onChange={e => setAspectRatio(e.target.value)}
+                         onChange={e => setAspectRatio(e.target.value as SliceTargetAspectRatio)}
                         className="bg-[#222] border border-[#333] text-gray-300 text-[11px] rounded px-2 py-1 outline-none focus:border-blue-500 transition-colors"
                      >
                        <option value="auto">自动比例 ({detectedRatio})</option>
@@ -587,7 +662,7 @@ export function SlicerPage() {
 
                      <select
                         value={videoObjectFit}
-                        onChange={e => setVideoObjectFit(e.target.value as 'contain' | 'cover')}
+                         onChange={e => setVideoObjectFit(e.target.value as SliceVideoObjectFit)}
                         className="bg-[#222] border border-[#333] text-gray-300 text-[11px] rounded px-2 py-1 outline-none focus:border-blue-500 transition-colors"
                      >
                        <option value="contain">适应 (留黑边)</option>
@@ -773,6 +848,100 @@ export function SlicerPage() {
 
               <div className="w-full h-px bg-[#222]"></div>
 
+              {/* Publishing Strategy */}
+              <div>
+                <label className="block text-[11px] font-bold text-gray-500 mb-3 uppercase tracking-wider">Publishing Strategy</label>
+                <div className="space-y-3">
+                  <div>
+                    <div className="flex justify-between items-end mb-1.5">
+                       <span className="text-[11px] font-medium text-gray-300">Target Platform</span>
+                    </div>
+                    <div className="relative">
+                      <select
+                         value={targetPlatform}
+                         onChange={e => setTargetPlatform(e.target.value as SliceTargetPlatform)}
+                         className="w-full bg-[#141414] border border-[#222] hover:border-[#333] rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500 appearance-none transition-all cursor-pointer shadow-sm">
+                        <option value="douyin">Douyin / TikTok CN</option>
+                        <option value="kuaishou">Kuaishou</option>
+                        <option value="shipinhao">WeChat Channels</option>
+                        <option value="xiaohongshu">Xiaohongshu</option>
+                        <option value="bilibili">Bilibili</option>
+                        <option value="generic">Generic</option>
+                      </select>
+                      <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500">
+                        <svg width="8" height="5" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
+                          <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <div className="flex justify-between items-end mb-1.5">
+                         <span className="text-[11px] font-medium text-gray-300">Count Mode</span>
+                      </div>
+                      <select
+                         value={sliceCountMode}
+                         onChange={e => setSliceCountMode(e.target.value as SliceCountMode)}
+                         className="w-full bg-[#141414] border border-[#222] hover:border-[#333] rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500 appearance-none transition-all cursor-pointer shadow-sm">
+                        <option value="qualityFirst">Quality First</option>
+                        <option value="coverageFirst">Coverage First</option>
+                        <option value="fixed">Fixed Count</option>
+                        <option value="auto">Auto</option>
+                      </select>
+                    </div>
+                    <div>
+                      <div className="flex justify-between items-end mb-1.5">
+                         <span className="text-[11px] font-medium text-gray-300">Continuity</span>
+                      </div>
+                      <select
+                         value={continuityLevel}
+                         onChange={e => setContinuityLevel(e.target.value as SliceContinuityLevel)}
+                         className="w-full bg-[#141414] border border-[#222] hover:border-[#333] rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500 appearance-none transition-all cursor-pointer shadow-sm">
+                        <option value="standard">Standard</option>
+                        <option value="strict">Strict</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="relative">
+                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-500 font-medium">Clips</span>
+                      <input
+                        type="number"
+                        value={targetSliceCount}
+                        onChange={e => setTargetSliceCount(Number(e.target.value))}
+                        className="w-full bg-[#141414] border border-[#222] rounded-lg pl-11 pr-2 py-1.5 text-xs text-white focus:border-blue-500 focus:bg-[#1A1A1A] outline-none transition-all"
+                        min={1}
+                        max={20}
+                      />
+                    </div>
+                    <div className="relative">
+                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-500 font-medium">Ideal</span>
+                      <input
+                        type="number"
+                        value={idealDuration}
+                        onChange={e => setIdealDuration(Number(e.target.value))}
+                        className="w-full bg-[#141414] border border-[#222] rounded-lg pl-11 pr-2 py-1.5 text-xs text-white focus:border-blue-500 focus:bg-[#1A1A1A] outline-none transition-all"
+                        min={5}
+                        max={600}
+                      />
+                    </div>
+                  </div>
+
+                  <input
+                    type="text"
+                    value={customKeywordsInput}
+                    onChange={e => setCustomKeywordsInput(e.target.value)}
+                    placeholder="Keywords: hook, result, pain point"
+                    className="w-full bg-[#141414] border border-[#222] rounded-lg px-3 py-2 text-xs text-gray-200 placeholder:text-gray-600 focus:border-blue-500 focus:bg-[#1A1A1A] outline-none transition-all"
+                  />
+                </div>
+              </div>
+
+              <div className="w-full h-px bg-[#222]"></div>
+
               {/* Duration Config */}
               <div>
                 <label className="block text-[11px] font-bold text-gray-500 mb-2.5 uppercase tracking-wider flex justify-between items-center">
@@ -811,6 +980,27 @@ export function SlicerPage() {
                 </label>
                 {generateSubtitles && (
                   <div className="mt-3 bg-[#141414] border border-[#222] rounded-lg p-3 relative animate-in fade-in slide-in-from-top-2">
+                     <span className="text-[10px] font-bold text-gray-500 mb-2 block uppercase tracking-wider">Subtitle publishing</span>
+                     <div className="grid grid-cols-3 gap-1 mb-3">
+                       {[
+                         { value: 'both', label: 'Burn + SRT' },
+                         { value: 'burned', label: 'Burned' },
+                         { value: 'srt', label: 'SRT' },
+                       ].map((option) => (
+                         <button
+                           key={option.value}
+                           type="button"
+                           onClick={() => setSubtitleMode(option.value as SliceSubtitleMode)}
+                           className={`rounded border px-2 py-1.5 text-[10px] font-medium transition-colors ${
+                             subtitleMode === option.value
+                               ? 'border-blue-500/60 bg-blue-500/15 text-blue-200'
+                               : 'border-[#333] bg-[#0A0A0A] text-gray-400 hover:border-[#444] hover:text-gray-200'
+                           }`}
+                         >
+                           {option.label}
+                         </button>
+                       ))}
+                     </div>
                      <span className="text-[10px] font-bold text-gray-500 mb-2 block uppercase tracking-wider">选择自动字幕样式</span>
                      <div className="relative">
                        <select
@@ -846,7 +1036,7 @@ export function SlicerPage() {
                          value={llmModel}
                          onChange={(e) => setLlmModel(e.target.value as SliceLLM)}
                          className="w-full bg-[#141414] border border-[#222] hover:border-[#333] rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500 appearance-none transition-all cursor-pointer shadow-sm">
-                        {AUTOCUT_SLICE_LLM_MODEL_OPTIONS.map((model) => (
+                        {visibleLlmModelOptions.map((model) => (
                           <option key={`${model.vendor}:${model.id}`} value={model.id}>{model.label}</option>
                         ))}
                       </select>
