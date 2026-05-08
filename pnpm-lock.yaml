@@ -186,6 +186,9 @@ importers:
       '@sdkwork/autocut-tools':
         specifier: workspace:*
         version: link:../sdkwork-autocut-tools
+      '@sdkwork/autocut-types':
+        specifier: workspace:*
+        version: link:../sdkwork-autocut-types
       '@sdkwork/autocut-video-compress':
         specifier: workspace:*
         version: link:../sdkwork-autocut-video-compress
