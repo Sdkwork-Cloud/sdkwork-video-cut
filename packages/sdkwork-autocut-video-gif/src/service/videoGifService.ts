@@ -1,9 +1,12 @@
-import { AUTOCUT_TASK_STATUS, type AppTask, type VideoGifParams } from '@sdkwork/autocut-types';
+import { resolveAutoCutTrustedSourcePath } from '@sdkwork/autocut-commons';
+import { AUTOCUT_TASK_STATUS, AUTOCUT_TASK_TYPE, type AppTask, type VideoGifParams } from '@sdkwork/autocut-types';
 import {
   addAsset,
   addMessage,
   addTask,
+  assertAutoCutNativeArtifactInsideTaskOutputDir,
   createAutoCutId,
+  createAutoCutTaskName,
   createAutoCutTimestamp,
   failAutoCutProcessingTask,
   failAutoCutUnsupportedNativeProcessingTask,
@@ -12,25 +15,21 @@ import {
   updateTask,
   validateAutoCutProcessingSource,
 } from '@sdkwork/autocut-services';
-import { resolveAutoCutTrustedSourcePath } from '@sdkwork/autocut-commons';
 
 function resolveDesktopSourcePath(file: File | null | undefined) {
   return resolveAutoCutTrustedSourcePath(file);
 }
 
 function createVideoGifTask(params: VideoGifParams): AppTask {
-  const nameParts = (params.file?.name || '鍘熸枃浠禵杞姩鍥?mp4').split('.');
-  nameParts.pop();
-  const outName = `${nameParts.join('.')}.gif`;
-
+  const createdAt = createAutoCutTimestamp();
   return {
     id: createAutoCutId('newTask'),
-    name: outName,
-    type: '视频转gif',
+    name: createAutoCutTaskName({ file: params.file, fallbackSourceName: 'source-video.mp4', createdAt }),
+    type: AUTOCUT_TASK_TYPE.videoGif,
     status: AUTOCUT_TASK_STATUS.pending,
     progress: 0,
-    progressMessage: '鍔犺浇鎶藉彇閫夊尯鑼冨洿...',
-    createdAt: createAutoCutTimestamp(),
+    progressMessage: 'Preparing video GIF task...',
+    createdAt,
     ...(params.fileId ? { sourceFileId: params.fileId } : {}),
   };
 }
@@ -54,12 +53,12 @@ async function finishVideoGifTask(newTask: AppTask, gifUrl: string, size: number
   await addMessage({
     id: createAutoCutId('msg'),
     type: 'success',
-    title: '杞?GIF 鍔ㄥ浘瀹屾垚',
-    description: `楂樺搧璐?GIF 鍔ㄥ浘宸茶嚜鍔ㄤ繚瀛樸€俙`,
+    title: 'Video GIF completed',
+    description: `GIF generated from "${newTask.name}".`,
     createdAt: createAutoCutTimestamp(),
     read: false,
     actionUrl: '/tasks/' + newTask.id,
-    actionLabel: '鍓嶅線鏌ョ湅',
+    actionLabel: 'View task',
   });
 
   return {
@@ -86,7 +85,7 @@ export async function processVideoGif(params: VideoGifParams) {
     await updateTask(newTask.id, {
       status: AUTOCUT_TASK_STATUS.processing,
       progress: 20,
-      progressMessage: '鍒嗘瀽鏈湴濯掍綋骞跺啓鍏ユ闈㈡矙绠?..',
+      progressMessage: 'Importing local media into the desktop media sandbox...',
     });
 
     try {
@@ -98,7 +97,7 @@ export async function processVideoGif(params: VideoGifParams) {
       await updateTask(newTask.id, {
         status: AUTOCUT_TASK_STATUS.processing,
         progress: 60,
-        progressMessage: '浠庡凡瀵煎叆璧勪骇鐢熸垚 GIF 鍔ㄥ浘...',
+        progressMessage: 'Generating GIF from the source video...',
       });
       const generatedGif = await nativeHostClient.generateGif({
         assetUuid: importedMedia.assetUuid,
@@ -107,13 +106,14 @@ export async function processVideoGif(params: VideoGifParams) {
         dither: params.dither,
         ...(outputRootDir ? { outputRootDir } : {}),
       });
+      assertAutoCutNativeArtifactInsideTaskOutputDir(generatedGif, 'video GIF output');
       const gifUrl = nativeHostClient.createAssetUrl(generatedGif.artifactPath);
       const completedData = await finishVideoGifTask(newTask, gifUrl, generatedGif.byteSize);
 
       await updateTask(newTask.id, {
         status: AUTOCUT_TASK_STATUS.completed,
         progress: 100,
-        progressMessage: '浠诲姟瀹屾垚',
+        progressMessage: 'Video GIF completed.',
         completedAt: createAutoCutTimestamp(),
         ...completedData,
       });

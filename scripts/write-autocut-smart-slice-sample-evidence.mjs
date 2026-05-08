@@ -277,15 +277,25 @@ function createSampleTaskEvidence(plan) {
         sentenceBoundaryIssues: [],
         risks: [],
         sourceStartMs: 0,
-        sourceEndMs: 42000,
+        sourceEndMs: 41950,
         speechStartMs: 200,
         speechEndMs: 41700,
         boundaryPaddingBeforeMs: 200,
-        boundaryPaddingAfterMs: 300,
-        transcriptText:
-          'Why short videos fail is simple. The opening hides the result, so viewers leave before the payoff.',
+        boundaryPaddingAfterMs: 250,
+        transcriptText: [
+          'Why short videos fail is simple.',
+          'The opening hides the result.',
+          'Viewers leave before the payoff.',
+          'Show the result first.',
+        ].join(' '),
         transcriptCoverageScore: 0.96,
-        subtitleSegmentCount: 4,
+        transcriptSegments: createSampleTranscriptSegments(0, [
+          ['Why short videos fail is simple.', 200, 10_000],
+          ['The opening hides the result.', 10_000, 22_000],
+          ['Viewers leave before the payoff.', 22_000, 34_000],
+          ['Show the result first.', 34_000, 41_700],
+        ]),
+        transcriptSegmentCount: 4,
         speechContinuityGrade: 'strong',
       },
       {
@@ -328,14 +338,30 @@ function createSampleTaskEvidence(plan) {
         speechEndMs: 79750,
         boundaryPaddingBeforeMs: 200,
         boundaryPaddingAfterMs: 250,
-        transcriptText:
-          'The practical fix is to show the outcome first, then use one clear example to prove the point.',
+        transcriptText: [
+          'The practical fix is to show the outcome first.',
+          'Use one clear example to prove the point.',
+          'Keep the setup and ending together.',
+        ].join(' '),
         transcriptCoverageScore: 0.9,
-        subtitleSegmentCount: 3,
+        transcriptSegments: createSampleTranscriptSegments(44_000, [
+          ['The practical fix is to show the outcome first.', 200, 12_000],
+          ['Use one clear example to prove the point.', 12_000, 25_000],
+          ['Keep the setup and ending together.', 25_000, 35_750],
+        ]),
+        transcriptSegmentCount: 3,
         speechContinuityGrade: 'repaired',
       },
     ],
   };
+}
+
+function createSampleTranscriptSegments(sourceStartMs, lines) {
+  return lines.map(([text, relativeStartMs, relativeEndMs]) => ({
+    startMs: sourceStartMs + relativeStartMs,
+    endMs: sourceStartMs + relativeEndMs,
+    text,
+  }));
 }
 
 function writeSampleSubtitles(plan) {

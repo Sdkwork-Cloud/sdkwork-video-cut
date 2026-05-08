@@ -1,4 +1,7 @@
-import type { VideoSliceParams } from '@sdkwork/autocut-types';
+import {
+  AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD,
+  type VideoSliceParams,
+} from '@sdkwork/autocut-types';
 import type {
   AutoCutSpeechTranscriptionSegment,
   AutoCutVideoSliceClipRequest,
@@ -8,15 +11,50 @@ export const DEFAULT_SLICE_COUNT = 5;
 export const MIN_TARGET_SLICE_COUNT = 1;
 export const MAX_TARGET_SLICE_COUNT = 20;
 export const MIN_SLICE_DURATION_MS = 5_000;
+export const MIN_TRANSCRIPT_ALIGNED_SLICE_DURATION_MS = 1_000;
 export const MAX_SLICE_DURATION_MS = 10 * 60 * 1_000;
 const DEFAULT_IDEAL_SLICE_DURATION_MS = 45_000;
 const STANDARD_TRANSCRIPT_SEGMENT_JOIN_GAP_MS = 2_500;
 const STRICT_TRANSCRIPT_SEGMENT_JOIN_GAP_MS = 800;
+const STANDARD_TRANSCRIPT_SEGMENT_OVERLAP_TOLERANCE_MS = 250;
+const STRICT_TRANSCRIPT_SEGMENT_OVERLAP_TOLERANCE_MS = 80;
 const MAX_PLAN_RISK_TAGS = 12;
 const MAX_LLM_PLAN_ITEMS_TO_INSPECT = MAX_TARGET_SLICE_COUNT * 4;
-const TRANSCRIPT_BOUNDARY_PADDING_BEFORE_MS = 200;
-const TRANSCRIPT_BOUNDARY_PADDING_AFTER_MS = 250;
+const {
+  maxLeadingSilenceMs: TRANSCRIPT_BOUNDARY_PADDING_BEFORE_MS,
+  maxTrailingSilenceMs: TRANSCRIPT_BOUNDARY_PADDING_AFTER_MS,
+  minTranscriptCoverageScore: MIN_TRANSCRIPT_RENDER_SPEECH_COVERAGE_SCORE,
+} = AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD;
+const MAX_RENDER_LEADING_SILENCE_MS = TRANSCRIPT_BOUNDARY_PADDING_BEFORE_MS;
+const MAX_RENDER_TRAILING_SILENCE_MS = TRANSCRIPT_BOUNDARY_PADDING_AFTER_MS;
+const SLICE_CANDIDATE_DP_BEAM_WIDTH = 8;
+const MAX_TRANSCRIPT_SLICE_CANDIDATE_POOL_SIZE = 160;
 const CONTENT_ARC_STAGES = ['hook', 'setup', 'conflict', 'payoff'] as const;
+const TRANSCRIPT_PLANNING_FILLER_SEPARATOR_CLASS = String.raw`[\s,.;:!?\u3001\u3002\uff0c\uff1b\uff1a\uff01\uff1f\u2026]`;
+const TRANSCRIPT_PLANNING_AUDIBLE_ENGLISH_FILLER_PATTERN = String.raw`(?:um+|uh+|er+|erm|ah+|hmm+|mm+)`;
+const TRANSCRIPT_PLANNING_SAFE_ENGLISH_FILLER_PHRASE_PATTERN = String.raw`(?:${TRANSCRIPT_PLANNING_AUDIBLE_ENGLISH_FILLER_PATTERN}|well|you know|i mean|okay|ok)`;
+const TRANSCRIPT_PLANNING_CHINESE_AUDIBLE_FILLER_PATTERN = String.raw`[\u55ef\u5443\u989d\u554a\u54ce\u5514\u5594\u54e6]+`;
+const TRANSCRIPT_PLANNING_SAFE_CHINESE_FILLER_PHRASE_PATTERN = String.raw`(?:\u90a3\u4e2a|\u8fd9\u4e2a|\u5c31\u662f)`;
+const TRANSCRIPT_PLANNING_FILLER_PREFIX_PATTERN = new RegExp(
+  String.raw`^(?:(?:${TRANSCRIPT_PLANNING_SAFE_ENGLISH_FILLER_PHRASE_PATTERN})(?=$|${TRANSCRIPT_PLANNING_FILLER_SEPARATOR_CLASS})|${TRANSCRIPT_PLANNING_CHINESE_AUDIBLE_FILLER_PATTERN}|(?:${TRANSCRIPT_PLANNING_SAFE_CHINESE_FILLER_PHRASE_PATTERN})(?=$|${TRANSCRIPT_PLANNING_FILLER_SEPARATOR_CLASS}))${TRANSCRIPT_PLANNING_FILLER_SEPARATOR_CLASS}*`,
+  'iu',
+);
+const TRANSCRIPT_PLANNING_FILLER_SUFFIX_PATTERN = new RegExp(
+  String.raw`(?:${TRANSCRIPT_PLANNING_FILLER_SEPARATOR_CLASS}+(?:${TRANSCRIPT_PLANNING_SAFE_ENGLISH_FILLER_PHRASE_PATTERN})(?=$|${TRANSCRIPT_PLANNING_FILLER_SEPARATOR_CLASS})|${TRANSCRIPT_PLANNING_CHINESE_AUDIBLE_FILLER_PATTERN}|(?:${TRANSCRIPT_PLANNING_SAFE_CHINESE_FILLER_PHRASE_PATTERN})(?=$|${TRANSCRIPT_PLANNING_FILLER_SEPARATOR_CLASS}))${TRANSCRIPT_PLANNING_FILLER_SEPARATOR_CLASS}*$`,
+  'iu',
+);
+const TRANSCRIPT_PLANNING_FILLER_TOKEN_PATTERN = new RegExp(
+  String.raw`\b${TRANSCRIPT_PLANNING_SAFE_ENGLISH_FILLER_PHRASE_PATTERN}\b|${TRANSCRIPT_PLANNING_CHINESE_AUDIBLE_FILLER_PATTERN}|${TRANSCRIPT_PLANNING_SAFE_CHINESE_FILLER_PHRASE_PATTERN}`,
+  'giu',
+);
+const TRANSCRIPT_PLANNING_DANGLING_SEPARATOR_PATTERN = new RegExp(
+  String.raw`^[\s,;:\u3001\uff0c\uff1b\uff1a]+|[\s,;:\u3001\uff0c\uff1b\uff1a]+$`,
+  'gu',
+);
+const TRANSCRIPT_PLANNING_FILLER_ONLY_EDGE_PATTERN = new RegExp(
+  String.raw`^${TRANSCRIPT_PLANNING_FILLER_SEPARATOR_CLASS}+|${TRANSCRIPT_PLANNING_FILLER_SEPARATOR_CLASS}+$`,
+  'gu',
+);
 
 export type SliceContentArcStage = typeof CONTENT_ARC_STAGES[number];
 export type SliceContentArcGrade = 'complete' | 'partial' | 'thin';
@@ -48,6 +86,7 @@ export interface VideoSlicePlanningPolicy {
   sourceDurationMs?: number;
   continuityLevel: NonNullable<VideoSliceParams['continuityLevel']>;
   continuityJoinGapMs: number;
+  continuityOverlapToleranceMs: number;
   customKeywords: string[];
 }
 
@@ -88,7 +127,7 @@ export interface NormalizedSlicePlanClip extends AutoCutVideoSliceClipRequest {
   boundaryPaddingAfterMs?: number;
   transcriptText?: string;
   transcriptCoverageScore?: number;
-  subtitleSegmentCount?: number;
+  transcriptSegmentCount?: number;
   speechContinuityGrade?: 'strong' | 'repaired' | 'weak';
 }
 
@@ -222,54 +261,30 @@ const SLICE_PLAN_METADATA_KEYS = [
   'boundaryPaddingAfterMs',
   'transcriptText',
   'transcriptCoverageScore',
-  'subtitleSegmentCount',
+  'transcriptSegmentCount',
   'speechContinuityGrade',
 ] as const;
 
 function sortSliceClipsByStartMs(clips: NormalizedSlicePlanClip[]) {
-  const sorted: NormalizedSlicePlanClip[] = [];
-  for (const clip of clips) {
-    const insertIndex = sorted.findIndex((existingClip) => clip.startMs < existingClip.startMs);
-    if (insertIndex < 0) {
-      sorted.push(clip);
-    } else {
-      sorted.splice(insertIndex, 0, clip);
-    }
-  }
+  return clips.slice().sort((firstClip, secondClip) => firstClip.startMs - secondClip.startMs);
+}
 
-  return sorted;
+function sortSliceClipsByEndMs(clips: NormalizedSlicePlanClip[]) {
+  return clips.slice().sort((firstClip, secondClip) =>
+    firstClip.startMs + firstClip.durationMs - (secondClip.startMs + secondClip.durationMs) ||
+      firstClip.startMs - secondClip.startMs,
+  );
 }
 
 function sortTranscriptSegmentsByStartMs(segments: AutoCutSpeechTranscriptionSegment[]) {
-  const sorted: AutoCutSpeechTranscriptionSegment[] = [];
-  for (const segment of segments) {
-    const insertIndex = sorted.findIndex((existingSegment) => segment.startMs < existingSegment.startMs);
-    if (insertIndex < 0) {
-      sorted.push(segment);
-    } else {
-      sorted.splice(insertIndex, 0, segment);
-    }
-  }
-
-  return sorted;
+  return segments.slice().sort((firstSegment, secondSegment) => firstSegment.startMs - secondSegment.startMs);
 }
 
 function sortTranscriptSliceCandidatesByScore(candidates: TranscriptSliceCandidate[]) {
-  const sorted: TranscriptSliceCandidate[] = [];
-  for (const candidate of candidates) {
-    const insertIndex = sorted.findIndex(
-      (existingCandidate) =>
-        candidate.score > existingCandidate.score ||
-        (candidate.score === existingCandidate.score && candidate.startMs < existingCandidate.startMs),
-    );
-    if (insertIndex < 0) {
-      sorted.push(candidate);
-    } else {
-      sorted.splice(insertIndex, 0, candidate);
-    }
-  }
-
-  return sorted;
+  return candidates.slice().sort((firstCandidate, secondCandidate) =>
+    secondCandidate.score - firstCandidate.score ||
+      firstCandidate.startMs - secondCandidate.startMs,
+  );
 }
 
 function clampScore(value: unknown) {
@@ -387,6 +402,93 @@ function createNormalizedSliceTimingMetadata(
   };
 }
 
+function normalizeKnownSpeechBoundaryMs(value: unknown, minMs: number, maxMs: number) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined;
+  }
+
+  return Math.max(minMs, Math.min(Math.round(value), maxMs));
+}
+
+function createSilenceGuardedSliceTiming(
+  startMs: number,
+  durationMs: number,
+  metadata: Partial<NormalizedSlicePlanClip>,
+  policy: VideoSlicePlanningPolicy,
+  minimumDurationMs = MIN_SLICE_DURATION_MS,
+): { startMs: number; durationMs: number; risks: string[] } | undefined {
+  const renderStartMs = Math.max(0, Math.round(startMs));
+  const requestedRenderEndMs = renderStartMs + Math.max(0, Math.round(durationMs));
+  const renderEndMs = policy.sourceDurationMs !== undefined
+    ? Math.min(requestedRenderEndMs, policy.sourceDurationMs)
+    : requestedRenderEndMs;
+  if (renderEndMs - renderStartMs < minimumDurationMs) {
+    return undefined;
+  }
+
+  const speechStartMs = normalizeKnownSpeechBoundaryMs(metadata.speechStartMs, renderStartMs, renderEndMs);
+  const speechEndMs = normalizeKnownSpeechBoundaryMs(metadata.speechEndMs, renderStartMs, renderEndMs);
+  const hasValidSpeechRange =
+    speechStartMs !== undefined &&
+    speechEndMs !== undefined &&
+    speechEndMs > speechStartMs;
+  if (
+    (speechStartMs === undefined && speechEndMs === undefined) ||
+    (speechStartMs !== undefined && speechEndMs !== undefined && !hasValidSpeechRange)
+  ) {
+    return { startMs: renderStartMs, durationMs: renderEndMs - renderStartMs, risks: [] };
+  }
+
+  let guardedStartMs = renderStartMs;
+  let guardedEndMs = renderEndMs;
+  if (speechStartMs !== undefined && (speechEndMs === undefined || speechEndMs > speechStartMs)) {
+    guardedStartMs = Math.max(renderStartMs, speechStartMs - MAX_RENDER_LEADING_SILENCE_MS);
+  }
+  if (speechEndMs !== undefined && (speechStartMs === undefined || speechEndMs > speechStartMs)) {
+    guardedEndMs = Math.min(renderEndMs, speechEndMs + MAX_RENDER_TRAILING_SILENCE_MS);
+  }
+
+  if (guardedEndMs <= guardedStartMs) {
+    return { startMs: renderStartMs, durationMs: renderEndMs - renderStartMs, risks: [] };
+  }
+
+  if (guardedEndMs - guardedStartMs < minimumDurationMs) {
+    if (hasValidSpeechRange) {
+      const renderDurationMs = renderEndMs - renderStartMs;
+      const speechDurationMs = speechEndMs - speechStartMs;
+      if (
+        renderDurationMs <= minimumDurationMs &&
+        speechDurationMs / renderDurationMs >= MIN_TRANSCRIPT_RENDER_SPEECH_COVERAGE_SCORE
+      ) {
+        return { startMs: renderStartMs, durationMs: renderDurationMs, risks: [] };
+      }
+
+      return undefined;
+    }
+
+    if (guardedStartMs > renderStartMs) {
+      guardedStartMs = Math.max(renderStartMs, guardedEndMs - minimumDurationMs);
+    }
+    if (guardedEndMs < renderEndMs) {
+      guardedEndMs = Math.min(renderEndMs, guardedStartMs + minimumDurationMs);
+    }
+    if (guardedEndMs - guardedStartMs < minimumDurationMs) {
+      return undefined;
+    }
+  }
+
+  const risks = [
+    ...(guardedStartMs > renderStartMs ? ['excess-leading-silence-trimmed'] : []),
+    ...(guardedEndMs < renderEndMs ? ['excess-trailing-silence-trimmed'] : []),
+  ];
+
+  return {
+    startMs: guardedStartMs,
+    durationMs: guardedEndMs - guardedStartMs,
+    risks,
+  };
+}
+
 function normalizeStoryShape(value: unknown): NormalizedSlicePlanClip['storyShape'] {
   return value === 'complete' ||
     value === 'setupOnly' ||
@@ -490,7 +592,7 @@ function normalizeTopicKeywords(value: unknown) {
   return keywords.length > 0 ? keywords : undefined;
 }
 
-function normalizeSubtitleSegmentCount(value: unknown) {
+function normalizeTranscriptSegmentCount(value: unknown) {
   const numericValue = typeof value === 'number'
     ? value
     : typeof value === 'string' && value.trim()
@@ -554,12 +656,12 @@ function pickPlanMetadata(clip: NormalizedSlicePlanClip): Partial<NormalizedSlic
     }
   }
 
-  if (metadata.subtitleSegmentCount !== undefined) {
-    const subtitleSegmentCount = normalizeSubtitleSegmentCount(metadata.subtitleSegmentCount);
-    if (subtitleSegmentCount !== undefined) {
-      metadata.subtitleSegmentCount = subtitleSegmentCount;
+  if (metadata.transcriptSegmentCount !== undefined) {
+    const transcriptSegmentCount = normalizeTranscriptSegmentCount(metadata.transcriptSegmentCount);
+    if (transcriptSegmentCount !== undefined) {
+      metadata.transcriptSegmentCount = transcriptSegmentCount;
     } else {
-      delete metadata.subtitleSegmentCount;
+      delete metadata.transcriptSegmentCount;
     }
   }
 
@@ -798,6 +900,290 @@ function calculateClipOverlapRatio(
   return overlapMs / shorterDurationMs;
 }
 
+function isTranscriptAlignedSliceClip(clip: Partial<NormalizedSlicePlanClip>) {
+  return Boolean(
+    clip.transcriptText ||
+      clip.transcriptSegmentCount !== undefined ||
+      clip.speechStartMs !== undefined ||
+      clip.speechEndMs !== undefined ||
+      clip.speechContinuityGrade,
+  );
+}
+
+function normalizeTranscriptTextForRepeatDetection(text: string | undefined) {
+  return typeof text === 'string'
+    ? text
+        .trim()
+        .toLowerCase()
+        .replace(/[\p{P}\p{S}]+/gu, ' ')
+        .replace(/\s+/gu, ' ')
+        .trim()
+    : '';
+}
+
+const TRANSCRIPT_REPEAT_TOKEN_STOPWORDS = new Set([
+  'about',
+  'again',
+  'also',
+  'and',
+  'because',
+  'but',
+  'can',
+  'case',
+  'complete',
+  'does',
+  'final',
+  'first',
+  'for',
+  'from',
+  'how',
+  'into',
+  'next',
+  'now',
+  'payoff',
+  'only',
+  'second',
+  'that',
+  'the',
+  'then',
+  'this',
+  'through',
+  'viewer',
+  'viewers',
+  'watch',
+  'when',
+  'why',
+  'with',
+  'you',
+  'your',
+]);
+
+function normalizeTranscriptRepeatToken(token: string) {
+  const lowerToken = token.toLowerCase().replace(/'s$/u, '');
+  const normalizedToken = lowerToken
+    .replace(/ies$/u, 'y')
+    .replace(/(?:ing|ed|es|s)$/u, '');
+  return normalizedToken.length >= 3 && !TRANSCRIPT_REPEAT_TOKEN_STOPWORDS.has(normalizedToken)
+    ? normalizedToken
+    : '';
+}
+
+function createChineseRepeatShingles(text: string) {
+  return Array.from(text.matchAll(/[\u4e00-\u9fff]{2,}/gu))
+    .flatMap((match) => {
+      const value = match[0];
+      if (value.length <= 4) {
+        return [value];
+      }
+
+      const shingles: string[] = [];
+      for (let index = 0; index <= value.length - 2; index += 1) {
+        shingles.push(value.slice(index, index + 2));
+      }
+      return shingles;
+    });
+}
+
+function extractTranscriptRepeatTokens(text: string) {
+  const normalizedText = normalizeTranscriptTextForRepeatDetection(text);
+  const englishTokens = Array.from(normalizedText.matchAll(/\b[a-z][a-z0-9']{2,}\b/gu))
+    .map((match) => normalizeTranscriptRepeatToken(match[0]))
+    .filter(Boolean);
+  const chineseTokens = createChineseRepeatShingles(normalizedText);
+  return [...new Set([...englishTokens, ...chineseTokens])];
+}
+
+function calculateTranscriptTokenOverlapScore(firstText: string, secondText: string) {
+  const firstTokens = extractTranscriptRepeatTokens(firstText);
+  const secondTokens = extractTranscriptRepeatTokens(secondText);
+  if (firstTokens.length < 2 || secondTokens.length < 2) {
+    return 0;
+  }
+
+  const firstTokenSet = new Set(firstTokens);
+  const secondTokenSet = new Set(secondTokens);
+  let intersectionCount = 0;
+  for (const token of firstTokenSet) {
+    if (secondTokenSet.has(token)) {
+      intersectionCount += 1;
+    }
+  }
+
+  const unionCount = new Set([...firstTokenSet, ...secondTokenSet]).size;
+  const shorterTokenCount = Math.min(firstTokenSet.size, secondTokenSet.size);
+  const jaccardScore = unionCount > 0 ? intersectionCount / unionCount : 0;
+  const containmentScore = shorterTokenCount > 0 ? intersectionCount / shorterTokenCount : 0;
+  if (
+    (shorterTokenCount < 5 && intersectionCount >= 2 && containmentScore >= 0.9 && jaccardScore >= 0.65) ||
+    jaccardScore >= 0.72 ||
+    (intersectionCount >= 6 && containmentScore >= 0.86)
+  ) {
+    return Math.max(jaccardScore, containmentScore);
+  }
+
+  return 0;
+}
+
+function areTranscriptSliceClipsRepeated(
+  firstClip: Partial<NormalizedSlicePlanClip>,
+  secondClip: Partial<NormalizedSlicePlanClip>,
+) {
+  const firstText = normalizeTranscriptTextForRepeatDetection(firstClip.transcriptText);
+  const secondText = normalizeTranscriptTextForRepeatDetection(secondClip.transcriptText);
+  if (!firstText || !secondText) {
+    return false;
+  }
+
+  if (firstText === secondText) {
+    return true;
+  }
+
+  const shorterLength = Math.min(firstText.length, secondText.length);
+  if (shorterLength < 18) {
+    return false;
+  }
+
+  if (firstText.includes(secondText) || secondText.includes(firstText)) {
+    return true;
+  }
+
+  return calculateTranscriptTokenOverlapScore(firstText, secondText) > 0;
+}
+
+function filterRepeatedTranscriptCandidates(
+  candidates: TranscriptSliceCandidate[],
+  enableRepeatFilter: boolean,
+) {
+  if (!enableRepeatFilter) {
+    return candidates;
+  }
+
+  const selectedCandidates: TranscriptSliceCandidate[] = [];
+  for (const candidate of candidates) {
+    const repeatedCandidateIndex = selectedCandidates.findIndex((existingCandidate) =>
+      areTranscriptSliceClipsRepeated(existingCandidate, candidate),
+    );
+    const repeatedCandidate = repeatedCandidateIndex >= 0 ? selectedCandidates[repeatedCandidateIndex] : undefined;
+    if (repeatedCandidate) {
+      if (shouldPreferRepeatedTranscriptCandidate(candidate, repeatedCandidate)) {
+        const mergedRisks = mergePlanRisks(candidate.risks, ['transcript-repeat-filtered']);
+        selectedCandidates[repeatedCandidateIndex] = {
+          ...candidate,
+          ...(mergedRisks ? { risks: mergedRisks } : {}),
+        };
+      } else {
+        const mergedRisks = mergePlanRisks(repeatedCandidate.risks, ['transcript-repeat-filtered']);
+        if (mergedRisks) {
+          repeatedCandidate.risks = mergedRisks;
+        } else {
+          delete repeatedCandidate.risks;
+        }
+      }
+      continue;
+    }
+
+    selectedCandidates.push(candidate);
+  }
+
+  return selectedCandidates;
+}
+
+function shouldPreferRepeatedTranscriptCandidate(
+  candidate: TranscriptSliceCandidate,
+  existingCandidate: TranscriptSliceCandidate,
+) {
+  const repairRiskScore = (value: TranscriptSliceCandidate) =>
+    (value.risks?.includes('connector-repaired') ? 2 : 0) +
+    (value.risks?.includes('trailing-connector-extended') ? 1 : 0) +
+    (value.risks?.includes('open-sentence-extended') ? 1 : 0);
+  const candidateRepairScore = repairRiskScore(candidate);
+  const existingRepairScore = repairRiskScore(existingCandidate);
+  if (candidateRepairScore !== existingRepairScore) {
+    return candidateRepairScore > existingRepairScore;
+  }
+
+  if (candidate.score !== existingCandidate.score) {
+    return candidate.score > existingCandidate.score;
+  }
+
+  return candidate.anchorSegmentIndex < existingCandidate.anchorSegmentIndex;
+}
+
+function getTranscriptSliceCandidatePoolLimit(policy: VideoSlicePlanningPolicy) {
+  return Math.min(
+    MAX_TRANSCRIPT_SLICE_CANDIDATE_POOL_SIZE,
+    Math.max(policy.targetSliceCount * 12, policy.targetSliceCount * 2, 24),
+  );
+}
+
+function pruneTranscriptSliceCandidatePool(
+  candidates: TranscriptSliceCandidate[],
+  policy: VideoSlicePlanningPolicy,
+  candidatePoolLimit: number,
+) {
+  if (candidates.length <= candidatePoolLimit) {
+    return candidates;
+  }
+
+  const topQualityCount = Math.ceil(candidatePoolLimit * 0.75);
+  const topQualityCandidates = sortTranscriptSliceCandidatesByScore(candidates).slice(0, topQualityCount);
+  const selectedById = new Map(topQualityCandidates.map((candidate) => [candidate.candidateId, candidate]));
+  const remainingCandidates = candidates
+    .filter((candidate) => !selectedById.has(candidate.candidateId))
+    .sort((first, second) =>
+      first.startMs - second.startMs ||
+      first.endMs - second.endMs ||
+      second.score - first.score ||
+      first.anchorSegmentIndex - second.anchorSegmentIndex
+    );
+
+  const distributionSlots = Math.max(0, candidatePoolLimit - selectedById.size);
+  if (distributionSlots > 0 && remainingCandidates.length > 0) {
+    const sourceDurationMs = policy.sourceDurationMs
+      ?? Math.max(...candidates.map((candidate) => candidate.endMs));
+    const bucketDurationMs = Math.max(1, Math.ceil(sourceDurationMs / distributionSlots));
+    const bestByBucket = new Map<number, TranscriptSliceCandidate>();
+    for (const candidate of remainingCandidates) {
+      const bucketIndex = Math.min(distributionSlots - 1, Math.floor(candidate.startMs / bucketDurationMs));
+      const existingCandidate = bestByBucket.get(bucketIndex);
+      if (!existingCandidate || shouldPreferTranscriptCandidateForPool(candidate, existingCandidate, policy)) {
+        bestByBucket.set(bucketIndex, candidate);
+      }
+    }
+
+    for (const candidate of [...bestByBucket.values()].sort((first, second) =>
+      first.startMs - second.startMs ||
+      second.score - first.score ||
+      first.anchorSegmentIndex - second.anchorSegmentIndex
+    )) {
+      if (selectedById.size >= candidatePoolLimit) {
+        break;
+      }
+      selectedById.set(candidate.candidateId, candidate);
+    }
+  }
+
+  return sortTranscriptSliceCandidatesByScore([...selectedById.values()]).slice(0, candidatePoolLimit);
+}
+
+function shouldPreferTranscriptCandidateForPool(
+  candidate: TranscriptSliceCandidate,
+  existingCandidate: TranscriptSliceCandidate,
+  policy: VideoSlicePlanningPolicy,
+) {
+  const candidateSelectionScore = getClipSelectionScore(candidate, policy);
+  const existingSelectionScore = getClipSelectionScore(existingCandidate, policy);
+  if (candidateSelectionScore !== existingSelectionScore) {
+    return candidateSelectionScore > existingSelectionScore;
+  }
+
+  if (candidate.score !== existingCandidate.score) {
+    return candidate.score > existingCandidate.score;
+  }
+
+  return candidate.durationMs > existingCandidate.durationMs;
+}
+
 function getClipSelectionScore(clip: NormalizedSlicePlanClip, policy: VideoSlicePlanningPolicy) {
   const qualityScore = typeof clip.qualityScore === 'number' ? clip.qualityScore : 0.5;
   const continuityScore = typeof clip.continuityScore === 'number' ? clip.continuityScore : 0.7;
@@ -860,26 +1246,218 @@ function getClipSelectionScore(clip: NormalizedSlicePlanClip, policy: VideoSlice
     sentenceBoundaryModifier;
 }
 
-function sortSliceClipsBySelectionScore(
-  candidates: NormalizedSlicePlanClip[],
+function isSliceCandidateCompatibleWithPlan(
+  plan: readonly NormalizedSlicePlanClip[],
+  candidate: NormalizedSlicePlanClip,
+  enableRepeatFilter: boolean,
+) {
+  return !plan.some((existingCandidate) =>
+    doSliceCandidatesOverlap(existingCandidate, candidate) ||
+      (enableRepeatFilter && areTranscriptSliceClipsRepeated(existingCandidate, candidate))
+  );
+}
+
+function doSliceCandidatesOverlap(
+  firstClip: Pick<NormalizedSlicePlanClip, 'startMs' | 'durationMs'>,
+  secondClip: Pick<NormalizedSlicePlanClip, 'startMs' | 'durationMs'>,
+) {
+  return calculateClipOverlapRatio(firstClip, secondClip) > 0;
+}
+
+function calculateSliceCandidateSetScore(
+  candidates: readonly NormalizedSlicePlanClip[],
   policy: VideoSlicePlanningPolicy,
 ) {
-  const sorted: NormalizedSlicePlanClip[] = [];
-  for (const candidate of candidates) {
-    const candidateScore = getClipSelectionScore(candidate, policy);
-    const insertIndex = sorted.findIndex((existingCandidate) =>
-      candidateScore > getClipSelectionScore(existingCandidate, policy) ||
-      (candidateScore === getClipSelectionScore(existingCandidate, policy) &&
-        candidate.startMs < existingCandidate.startMs),
-    );
-    if (insertIndex < 0) {
-      sorted.push(candidate);
-    } else {
-      sorted.splice(insertIndex, 0, candidate);
-    }
+  const selectionScore = candidates.reduce(
+    (score, candidate) => score + getClipSelectionScore(candidate, policy),
+    0,
+  );
+  const completeArcCount = candidates.filter((candidate) => candidate.contentArcGrade === 'complete').length;
+  const transcriptAlignedCount = candidates.filter((candidate) => isTranscriptAlignedSliceClip(candidate)).length;
+  const transcriptSegmentScore = candidates.reduce(
+    (score, candidate) => score + Math.min(3, candidate.transcriptSegmentCount ?? 0) * 0.11,
+    0,
+  );
+  const singleSegmentPenalty = candidates.filter((candidate) =>
+    isTranscriptAlignedSliceClip(candidate) && (candidate.transcriptSegmentCount ?? 0) <= 1
+  ).length * 0.22;
+  const repeatedAuditCount = candidates.filter((candidate) =>
+    candidate.risks?.includes('transcript-repeat-filtered')
+  ).length;
+  const repairedBoundaryCount = candidates.filter((candidate) =>
+    candidate.risks?.includes('connector-repaired') ||
+      candidate.risks?.includes('trailing-connector-extended') ||
+      candidate.risks?.includes('open-sentence-extended')
+  ).length;
+
+  return selectionScore +
+    candidates.length * 0.24 +
+    completeArcCount * 0.2 +
+    transcriptAlignedCount * 0.08 +
+    transcriptSegmentScore +
+    repeatedAuditCount * 0.03 +
+    repairedBoundaryCount * 0.02 -
+    singleSegmentPenalty;
+}
+
+function compareSliceCandidateSets(
+  firstCandidates: readonly NormalizedSlicePlanClip[],
+  secondCandidates: readonly NormalizedSlicePlanClip[],
+  policy: VideoSlicePlanningPolicy,
+) {
+  const firstScore = calculateSliceCandidateSetScore(firstCandidates, policy);
+  const secondScore = calculateSliceCandidateSetScore(secondCandidates, policy);
+  if (firstScore !== secondScore) {
+    return firstScore - secondScore;
   }
 
-  return sorted;
+  if (firstCandidates.length !== secondCandidates.length) {
+    return firstCandidates.length - secondCandidates.length;
+  }
+
+  const firstCompleteArcCount = firstCandidates.filter((candidate) => candidate.contentArcGrade === 'complete').length;
+  const secondCompleteArcCount = secondCandidates.filter((candidate) => candidate.contentArcGrade === 'complete').length;
+  if (firstCompleteArcCount !== secondCompleteArcCount) {
+    return firstCompleteArcCount - secondCompleteArcCount;
+  }
+
+  const firstDurationMs = firstCandidates.reduce((durationMs, candidate) => durationMs + candidate.durationMs, 0);
+  const secondDurationMs = secondCandidates.reduce((durationMs, candidate) => durationMs + candidate.durationMs, 0);
+  if (firstDurationMs !== secondDurationMs) {
+    return secondDurationMs - firstDurationMs;
+  }
+
+  const firstStartMs = firstCandidates[0]?.startMs ?? Number.POSITIVE_INFINITY;
+  const secondStartMs = secondCandidates[0]?.startMs ?? Number.POSITIVE_INFINITY;
+  return secondStartMs - firstStartMs;
+}
+
+function selectOptimalSliceCandidateSet(
+  candidates: NormalizedSlicePlanClip[],
+  policy: VideoSlicePlanningPolicy,
+  enableRepeatFilter: boolean,
+) {
+  return selectOptimalSliceCandidateSetByDynamicProgramming(candidates, policy, enableRepeatFilter);
+}
+
+function selectOptimalSliceCandidateSetByDynamicProgramming(
+  candidates: NormalizedSlicePlanClip[],
+  policy: VideoSlicePlanningPolicy,
+  enableRepeatFilter: boolean,
+) {
+  const orderedCandidates = sortSliceClipsByEndMs(candidates);
+  const previousCompatibleIndexes = findPreviousCompatibleSliceCandidateIndexes(
+    orderedCandidates,
+    enableRepeatFilter,
+  );
+  const emptyPlanBuckets = createEmptySliceCandidatePlanBuckets(policy.targetSliceCount);
+  const planBucketsByCandidateIndex: NormalizedSlicePlanClip[][][][] = [
+    emptyPlanBuckets,
+  ];
+
+  for (let candidateIndex = 0; candidateIndex < orderedCandidates.length; candidateIndex += 1) {
+    const candidate = orderedCandidates[candidateIndex];
+    const previousBuckets = planBucketsByCandidateIndex[candidateIndex] ?? emptyPlanBuckets;
+    const nextBuckets = cloneSliceCandidatePlanBuckets(previousBuckets);
+    if (!candidate) {
+      planBucketsByCandidateIndex.push(nextBuckets);
+      continue;
+    }
+
+    const compatibleCandidateIndex = previousCompatibleIndexes[candidateIndex] ?? -1;
+    const compatibleBuckets = planBucketsByCandidateIndex[compatibleCandidateIndex + 1] ?? emptyPlanBuckets;
+    for (let count = 1; count <= policy.targetSliceCount; count += 1) {
+      for (const compatiblePlan of compatibleBuckets[count - 1] ?? []) {
+        const nextPlan = sortSliceClipsByStartMs([...compatiblePlan, candidate]);
+        if (
+          nextPlan.length === count &&
+          isSliceCandidatePlanInternallyCompatible(nextPlan, enableRepeatFilter)
+        ) {
+          nextBuckets[count] = addSliceCandidatePlanToBucket(nextBuckets[count] ?? [], nextPlan, policy);
+        }
+      }
+    }
+
+    planBucketsByCandidateIndex.push(nextBuckets);
+  }
+
+  return (planBucketsByCandidateIndex.at(-1) ?? emptyPlanBuckets).flat().reduce(
+    (bestPlan, plan) => compareSliceCandidateSets(plan, bestPlan, policy) > 0 ? plan : bestPlan,
+    [] as NormalizedSlicePlanClip[],
+  );
+}
+
+function createEmptySliceCandidatePlanBuckets(targetSliceCount: number) {
+  return Array.from(
+    { length: targetSliceCount + 1 },
+    (_, count) => count === 0 ? [[] as NormalizedSlicePlanClip[]] : [],
+  );
+}
+
+function cloneSliceCandidatePlanBuckets(planBuckets: readonly NormalizedSlicePlanClip[][][]) {
+  return planBuckets.map((bucket) => bucket.map((plan) => plan.slice()));
+}
+
+function addSliceCandidatePlanToBucket(
+  bucket: NormalizedSlicePlanClip[][],
+  nextPlan: NormalizedSlicePlanClip[],
+  policy: VideoSlicePlanningPolicy,
+) {
+  const mergedBucket = bucket.filter((plan) => !areSliceCandidateSetsEquivalent(plan, nextPlan));
+  mergedBucket.push(nextPlan);
+  return mergedBucket
+    .sort((firstPlan, secondPlan) => compareSliceCandidateSets(secondPlan, firstPlan, policy))
+    .slice(0, SLICE_CANDIDATE_DP_BEAM_WIDTH);
+}
+
+function areSliceCandidateSetsEquivalent(
+  firstPlan: readonly NormalizedSlicePlanClip[],
+  secondPlan: readonly NormalizedSlicePlanClip[],
+) {
+  if (firstPlan.length !== secondPlan.length) {
+    return false;
+  }
+
+  return firstPlan.every((firstClip, index) => {
+    const secondClip = secondPlan[index];
+    if (!secondClip) {
+      return false;
+    }
+
+    return (
+      firstClip.startMs === secondClip.startMs &&
+      firstClip.durationMs === secondClip.durationMs &&
+      firstClip.label === secondClip.label
+    );
+  });
+}
+
+function isSliceCandidatePlanInternallyCompatible(
+  plan: readonly NormalizedSlicePlanClip[],
+  enableRepeatFilter: boolean,
+) {
+  return plan.every((candidate, candidateIndex) =>
+    isSliceCandidateCompatibleWithPlan(plan.slice(0, candidateIndex), candidate, enableRepeatFilter)
+  );
+}
+
+function findPreviousCompatibleSliceCandidateIndexes(
+  candidates: readonly NormalizedSlicePlanClip[],
+  enableRepeatFilter: boolean,
+) {
+  return candidates.map((candidate, candidateIndex) => {
+    for (let previousIndex = candidateIndex - 1; previousIndex >= 0; previousIndex -= 1) {
+      const previousCandidate = candidates[previousIndex];
+      if (
+        previousCandidate &&
+        isSliceCandidateCompatibleWithPlan([previousCandidate], candidate, enableRepeatFilter)
+      ) {
+        return previousIndex;
+      }
+    }
+
+    return -1;
+  });
 }
 
 export function normalizeSliceDurationMs(durationSeconds: number) {
@@ -972,6 +1550,9 @@ export function getVideoSlicePlanningPolicy(params: VideoSliceParams): VideoSlic
     continuityJoinGapMs: continuityLevel === 'strict'
       ? STRICT_TRANSCRIPT_SEGMENT_JOIN_GAP_MS
       : STANDARD_TRANSCRIPT_SEGMENT_JOIN_GAP_MS,
+    continuityOverlapToleranceMs: continuityLevel === 'strict'
+      ? STRICT_TRANSCRIPT_SEGMENT_OVERLAP_TOLERANCE_MS
+      : STANDARD_TRANSCRIPT_SEGMENT_OVERLAP_TOLERANCE_MS,
     customKeywords: normalizeCustomKeywords(params.customKeywords),
   };
 }
@@ -987,6 +1568,15 @@ export function getVideoSliceDurationBounds(params: VideoSliceParams) {
 }
 
 export function validateVideoSliceParams(params: VideoSliceParams) {
+  assertFiniteSliceDurationSeconds(params.minDuration, 'minimum slice duration');
+  assertFiniteSliceDurationSeconds(params.maxDuration, 'maximum slice duration');
+  if (params.idealDuration !== undefined) {
+    assertFiniteSliceDurationSeconds(params.idealDuration, 'ideal slice duration');
+  }
+  if (params.sourceDurationMs !== undefined) {
+    assertFinitePositiveSliceMilliseconds(params.sourceDurationMs, 'source media duration');
+  }
+
   const minDurationMs = normalizeSliceDurationMs(params.minDuration);
   const maxDurationMs = normalizeSliceDurationMs(params.maxDuration);
 
@@ -996,22 +1586,89 @@ export function validateVideoSliceParams(params: VideoSliceParams) {
 
   const platformProfile = SLICE_PLATFORM_PROFILES[params.targetPlatform ?? 'generic'] ?? SLICE_PLATFORM_PROFILES.generic;
   const targetSliceCount = normalizeTargetSliceCount(params.targetSliceCount, platformProfile.targetSliceCount);
+  if (params.targetSliceCount !== undefined && !Number.isInteger(params.targetSliceCount)) {
+    throw new Error(`AutoCut target slice count must be an integer between ${MIN_TARGET_SLICE_COUNT} and ${MAX_TARGET_SLICE_COUNT}.`);
+  }
   if (targetSliceCount < MIN_TARGET_SLICE_COUNT || targetSliceCount > MAX_TARGET_SLICE_COUNT) {
     throw new Error(`AutoCut target slice count must be between ${MIN_TARGET_SLICE_COUNT} and ${MAX_TARGET_SLICE_COUNT}.`);
   }
+}
+
+function assertFiniteSliceDurationSeconds(value: unknown, fieldName: string) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`AutoCut ${fieldName} must be a finite number of seconds.`);
+  }
+  const durationMs = Math.round(value * 1_000);
+  if (durationMs < MIN_SLICE_DURATION_MS || durationMs > MAX_SLICE_DURATION_MS) {
+    throw new Error(
+      `AutoCut ${fieldName} must be between ${MIN_SLICE_DURATION_MS / 1_000} and ${MAX_SLICE_DURATION_MS / 1_000} seconds.`,
+    );
+  }
+}
+
+function assertFinitePositiveSliceMilliseconds(value: unknown, fieldName: string) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`AutoCut ${fieldName} must be a finite positive number of milliseconds.`);
+  }
+  if (value < MIN_SLICE_DURATION_MS) {
+    throw new Error(`AutoCut ${fieldName} must be at least ${MIN_SLICE_DURATION_MS} milliseconds.`);
+  }
+}
+
+function trimTranscriptPlanningEdgePunctuation(text: string) {
+  return text.replace(TRANSCRIPT_PLANNING_DANGLING_SEPARATOR_PATTERN, '').trim();
+}
+
+function trimTranscriptPlanningFillerOnlyPunctuation(text: string) {
+  return text.replace(TRANSCRIPT_PLANNING_FILLER_ONLY_EDGE_PATTERN, '').trim();
+}
+
+function normalizeTranscriptSegmentTextForPlanning(text: string) {
+  let normalizedText = text.trim().replace(/\s+/gu, ' ');
+  if (!normalizedText) {
+    return '';
+  }
+
+  let previousText = '';
+  while (normalizedText && normalizedText !== previousText) {
+    previousText = normalizedText;
+    normalizedText = normalizedText
+      .replace(TRANSCRIPT_PLANNING_FILLER_PREFIX_PATTERN, '')
+      .replace(TRANSCRIPT_PLANNING_FILLER_SUFFIX_PATTERN, '');
+    normalizedText = trimTranscriptPlanningEdgePunctuation(normalizedText).replace(/\s+/gu, ' ');
+  }
+
+  return normalizedText;
+}
+
+function isLowInformationTranscriptFillerSegment(text: string) {
+  const normalizedText = text.trim().replace(/\s+/gu, ' ');
+  if (!normalizedText) {
+    return true;
+  }
+
+  const withoutFiller = trimTranscriptPlanningEdgePunctuation(
+    normalizedText.replace(TRANSCRIPT_PLANNING_FILLER_TOKEN_PATTERN, ' '),
+  ).replace(/\s+/gu, ' ');
+
+  return withoutFiller.length === 0 || trimTranscriptPlanningFillerOnlyPunctuation(withoutFiller).length === 0;
 }
 
 function normalizeTranscriptSegments(
   transcriptSegments: readonly AutoCutSpeechTranscriptionSegment[],
 ): AutoCutSpeechTranscriptionSegment[] {
   return sortTranscriptSegmentsByStartMs(transcriptSegments
-    .filter((segment) => segment.text.trim())
+    .map((segment) => ({
+      ...segment,
+      text: normalizeTranscriptSegmentTextForPlanning(segment.text),
+    }))
+    .filter((segment) => segment.text && !isLowInformationTranscriptFillerSegment(segment.text))
     .filter((segment) => Number.isFinite(segment.startMs) && Number.isFinite(segment.endMs))
     .map((segment) => ({
       ...segment,
       startMs: Math.max(0, Math.round(segment.startMs)),
       endMs: Math.max(0, Math.round(segment.endMs)),
-      text: segment.text.trim().replace(/\s+/g, ' '),
+      text: segment.text,
     }))
     .filter((segment) => segment.endMs > segment.startMs));
 }
@@ -1021,7 +1678,8 @@ function canJoinTranscriptSegments(
   next: AutoCutSpeechTranscriptionSegment,
   policy: VideoSlicePlanningPolicy,
 ) {
-  return next.startMs >= current.endMs && next.startMs - current.endMs <= policy.continuityJoinGapMs;
+  const gapMs = next.startMs - current.endMs;
+  return gapMs >= -policy.continuityOverlapToleranceMs && gapMs <= policy.continuityJoinGapMs;
 }
 
 function clampTranscriptBoundaryPaddingToMaxDuration(
@@ -1052,7 +1710,6 @@ function createTranscriptBoundaryTiming(
   startIndex: number,
   endIndex: number,
   policy: VideoSlicePlanningPolicy,
-  minDurationMs: number,
   maxDurationMs: number,
 ) {
   const startSegment = segments[startIndex];
@@ -1102,21 +1759,7 @@ function createTranscriptBoundaryTiming(
 
   let startMs = Math.max(0, speechStartMs - boundaryPaddingBeforeMs);
   let endMs = speechEndMs + boundaryPaddingAfterMs;
-  const paddedDurationMs = endMs - startMs;
-  if (paddedDurationMs < minDurationMs) {
-    const minDurationEndMs = startMs + minDurationMs;
-    const nextSpeechBoundaryMs = nextSegment ? nextSegment.startMs : Number.POSITIVE_INFINITY;
-    const sourceBoundedEndMs = policy.sourceDurationMs !== undefined
-      ? Math.min(minDurationEndMs, policy.sourceDurationMs, nextSpeechBoundaryMs)
-      : Math.min(minDurationEndMs, nextSpeechBoundaryMs);
-    if (sourceBoundedEndMs < minDurationEndMs) {
-      return undefined;
-    }
-
-    endMs = Math.max(endMs, sourceBoundedEndMs);
-  }
-
-  if (endMs - startMs < minDurationMs) {
+  if (endMs - startMs < MIN_TRANSCRIPT_ALIGNED_SLICE_DURATION_MS) {
     return undefined;
   }
 
@@ -1126,7 +1769,10 @@ function createTranscriptBoundaryTiming(
   }
   if (policy.sourceDurationMs !== undefined && endMs > policy.sourceDurationMs) {
     endMs = policy.sourceDurationMs;
-    const sourceBoundedStartMs = Math.max(0, Math.min(startMs, endMs - MIN_SLICE_DURATION_MS));
+    const sourceBoundedStartMs = Math.max(
+      0,
+      Math.min(startMs, endMs - MIN_TRANSCRIPT_ALIGNED_SLICE_DURATION_MS),
+    );
     const previousSpeechBoundaryMs = previousSegment ? previousSegment.endMs : 0;
     if (sourceBoundedStartMs < previousSpeechBoundaryMs) {
       return undefined;
@@ -1134,7 +1780,12 @@ function createTranscriptBoundaryTiming(
     startMs = sourceBoundedStartMs;
   }
 
-  if (endMs - startMs < MIN_SLICE_DURATION_MS) {
+  if (endMs - startMs < MIN_TRANSCRIPT_ALIGNED_SLICE_DURATION_MS) {
+    return undefined;
+  }
+
+  const renderDurationMs = endMs - startMs;
+  if (speechDurationMs / renderDurationMs < MIN_TRANSCRIPT_RENDER_SPEECH_COVERAGE_SCORE) {
     return undefined;
   }
 
@@ -1263,6 +1914,16 @@ function stripLeadingWeakConnector(text: string) {
   );
 }
 
+function normalizeTranscriptSliceLabelText(text: string, fallback: string) {
+  const normalizedText = text
+    .trim()
+    .replace(/\s+/gu, ' ')
+    .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
+    .trim();
+
+  return /[\p{L}\p{N}]/u.test(normalizedText) ? normalizedText.slice(0, 48) : fallback;
+}
+
 function looksLikeCorruptedTranscriptEncoding(text: string) {
   return /[\u00c0-\u00ff\ufffd]/u.test(text) ||
     /[閹鐒鍏鎵绋娑灞偓儴绻柌倸鎮庡灇崇暚佸鐓憴鍡涱暥]/u.test(text);
@@ -1313,9 +1974,10 @@ function canTreatAsOpenSentence(text: string) {
 
 function createTranscriptSliceLabel(segments: readonly AutoCutSpeechTranscriptionSegment[], anchorIndex: number) {
   const anchorText = segments[anchorIndex]?.text.trim() ?? '';
+  const fallbackLabel = createPlannerSliceLabel(anchorIndex);
   const strippedAnchorText = stripLeadingWeakConnector(anchorText);
   if (strippedAnchorText !== anchorText) {
-    return (strippedAnchorText || anchorText || `Smart slice ${anchorIndex + 1}`).slice(0, 48);
+    return normalizeTranscriptSliceLabelText(strippedAnchorText || anchorText, fallbackLabel);
   }
 
   const cleanedAnchorText = anchorText.replace(
@@ -1604,6 +2266,7 @@ const TOPIC_STOPWORDS = new Set([
 
 const TOPIC_KEYWORD_GROUPS = [
   ['opening', 'viewer', 'viewers', 'pain', 'retention', 'scroll', 'hook', 'result', 'fix', 'lead'],
+  ['case', 'background', 'spike', 'user', 'pain', 'payoff', 'complete', 'short-video', 'watch'],
   ['pricing', 'price', 'invoice', 'invoices', 'refund', 'terms', 'annual', 'model'],
   ['launch', 'implementation', 'details', 'tradeoff', 'tradeoffs'],
   ['背景', '案例', '原因', '用户', '痛点', '爆发', '适合', '完整', '短视频', '完播', '开头', '问题', '场景', '结果', '例子', '解决', '办法'],
@@ -1631,6 +2294,33 @@ const CHINESE_TOPIC_KEYWORDS = [
   '结论',
   '建议',
 ] as const;
+
+const NON_PUBLISHABILITY_PENALTY_RISKS = new Set([
+  'connector-repaired',
+  'trailing-connector-extended',
+  'open-sentence-extended',
+  'transcript-repeat-filtered',
+  'transcript-overlap-repaired',
+  'sparse-transcript-speech',
+  'short-transcript-window',
+  'llm-timing-snapped-to-transcript',
+  'timing-metadata-repaired',
+]);
+
+function hasTranscriptSegmentOverlapRepair(
+  segments: readonly AutoCutSpeechTranscriptionSegment[],
+  policy: VideoSlicePlanningPolicy,
+) {
+  return segments.some((segment, index) => {
+    const previousSegment = segments[index - 1];
+    if (!previousSegment) {
+      return false;
+    }
+
+    const gapMs = segment.startMs - previousSegment.endMs;
+    return gapMs < 0 && gapMs >= -policy.continuityOverlapToleranceMs;
+  });
+}
 
 function extractTopicKeywords(text: string) {
   const englishKeywords = Array.from(text.toLowerCase().matchAll(/\b[a-z][a-z0-9-]{3,}\b/g))
@@ -1771,7 +2461,7 @@ function createPublishabilityMetadata(clip: Partial<NormalizedSlicePlanClip>) {
     : clip.sentenceBoundaryIntegrityGrade === 'repaired'
       ? 0.03
       : 0;
-  const subtitleScore = typeof clip.subtitleSegmentCount === 'number' && clip.subtitleSegmentCount > 0
+  const transcriptSegmentScore = typeof clip.transcriptSegmentCount === 'number' && clip.transcriptSegmentCount > 0
     ? 1
     : 0.2;
   const boundaryQualityScore = typeof clip.boundaryQualityScore === 'number'
@@ -1789,7 +2479,9 @@ function createPublishabilityMetadata(clip: Partial<NormalizedSlicePlanClip>) {
   const topicCoherenceScore = typeof clip.topicCoherenceScore === 'number'
     ? clip.topicCoherenceScore
     : 0.6;
-  const riskCount = Array.isArray(clip.risks) ? clip.risks.length : 0;
+  const riskCount = Array.isArray(clip.risks)
+    ? clip.risks.filter((risk) => !NON_PUBLISHABILITY_PENALTY_RISKS.has(risk)).length
+    : 0;
   const riskPenalty = Math.min(0.2, riskCount * 0.04);
   const publishabilityScore = clampSlicePlannerScore(
     qualityScore * 0.19 +
@@ -1797,7 +2489,7 @@ function createPublishabilityMetadata(clip: Partial<NormalizedSlicePlanClip>) {
       storyShapeScore * 0.13 +
       transcriptCoverageScore * 0.12 +
       speechScore * 0.12 +
-      subtitleScore * 0.04 +
+      transcriptSegmentScore * 0.04 +
       boundaryQualityScore * 0.09 +
       contentArcScore * 0.08 +
       topicCoherenceScore * 0.05 +
@@ -1828,7 +2520,7 @@ function createPublishabilityMetadata(clip: Partial<NormalizedSlicePlanClip>) {
       ? ['unrepaired-sentence-boundary']
       : undefined,
     transcriptCoverageScore < 0.65 ? ['low-transcript-coverage'] : undefined,
-    typeof clip.subtitleSegmentCount === 'number' && clip.subtitleSegmentCount <= 0 ? ['no-subtitle-segments'] : undefined,
+    typeof clip.transcriptSegmentCount === 'number' && clip.transcriptSegmentCount <= 0 ? ['no-transcript-segments'] : undefined,
   ) ?? [];
 
   return {
@@ -1935,7 +2627,10 @@ function createPlatformReadinessMetadata(
       endingScore * 0.03 -
       issuePenalty,
   );
-  const platformReadinessGrade: SlicePlatformReadinessGrade =
+  const hasSparseTranscriptReviewEvidence =
+    isSparseTranscriptReviewClip(clip) &&
+    !normalizedIssues.includes('platform-duration-reject');
+  const rawPlatformReadinessGrade: SlicePlatformReadinessGrade =
     normalizedIssues.includes('platform-duration-reject') ||
     platformReadinessScore < platformProfile.rejectScoreThreshold ||
     clip.endingCompleteness === 'open' ||
@@ -1945,6 +2640,10 @@ function createPlatformReadinessMetadata(
       : platformReadinessScore >= platformProfile.readyScoreThreshold && normalizedIssues.length === 0
         ? 'ready'
         : 'review';
+  const platformReadinessGrade: SlicePlatformReadinessGrade =
+    rawPlatformReadinessGrade === 'reject' && hasSparseTranscriptReviewEvidence
+      ? 'review'
+      : rawPlatformReadinessGrade;
 
   return {
     platformReadinessScore,
@@ -1954,6 +2653,30 @@ function createPlatformReadinessMetadata(
     NormalizedSlicePlanClip,
     'platformReadinessScore' | 'platformReadinessGrade' | 'platformReadinessIssues'
   >;
+}
+
+function isSparseTranscriptReviewClip(clip: Partial<NormalizedSlicePlanClip>) {
+  const risks = Array.isArray(clip.risks) ? clip.risks : [];
+  const speechDurationMs =
+    typeof clip.speechStartMs === 'number' &&
+    typeof clip.speechEndMs === 'number' &&
+    clip.speechEndMs > clip.speechStartMs
+      ? clip.speechEndMs - clip.speechStartMs
+      : 0;
+
+  return (
+    risks.includes('sparse-transcript-speech') &&
+    typeof clip.transcriptText === 'string' &&
+    clip.transcriptText.trim().length > 0 &&
+    typeof clip.transcriptCoverageScore === 'number' &&
+    clip.transcriptCoverageScore >= MIN_TRANSCRIPT_RENDER_SPEECH_COVERAGE_SCORE &&
+    typeof clip.transcriptSegmentCount === 'number' &&
+    clip.transcriptSegmentCount > 0 &&
+    (clip.speechContinuityGrade === 'strong' || clip.speechContinuityGrade === 'repaired') &&
+    speechDurationMs >= MIN_TRANSCRIPT_ALIGNED_SLICE_DURATION_MS &&
+    (clip.boundaryPaddingBeforeMs ?? 0) <= TRANSCRIPT_BOUNDARY_PADDING_BEFORE_MS &&
+    (clip.boundaryPaddingAfterMs ?? 0) <= TRANSCRIPT_BOUNDARY_PADDING_AFTER_MS
+  );
 }
 
 function summarizeTranscriptText(text: string) {
@@ -1986,7 +2709,7 @@ function createDeterministicSliceMetadata(
     boundaryPaddingBeforeMs: 0,
     boundaryPaddingAfterMs: 0,
     transcriptCoverageScore: 0,
-    subtitleSegmentCount: 0,
+    transcriptSegmentCount: 0,
     speechContinuityGrade: 'weak',
     boundaryQualityScore: 0.25,
     hookStrength: 'weak',
@@ -2096,7 +2819,7 @@ function createTranscriptSliceMetadata(
   boundaryPaddingBeforeMs: number,
   boundaryPaddingAfterMs: number,
   risks: readonly string[],
-  subtitleSegmentCount: number,
+  transcriptSegmentCount: number,
   transcriptSpeechDurationMs: number,
   transcriptTexts: readonly string[] = [text],
 ) {
@@ -2132,7 +2855,7 @@ function createTranscriptSliceMetadata(
     speechEndMs > speechStartMs ? transcriptSpeechDurationMs / (speechEndMs - speechStartMs) : 0,
   );
   const speechContinuityGrade: NonNullable<NormalizedSlicePlanClip['speechContinuityGrade']> =
-    subtitleSegmentCount <= 0 || transcriptCoverageScore < 0.5
+    transcriptSegmentCount <= 0 || transcriptCoverageScore < 0.5
       ? 'weak'
       : hasConnectorRepair || hasTrailingExtension || hasOpenSentenceExtension || transcriptCoverageScore < 0.85
         ? 'repaired'
@@ -2154,7 +2877,7 @@ function createTranscriptSliceMetadata(
     boundaryPaddingAfterMs,
     transcriptText: text,
     transcriptCoverageScore,
-    subtitleSegmentCount,
+    transcriptSegmentCount,
     speechContinuityGrade,
     ...boundaryMetadata,
     ...sentenceBoundaryMetadata,
@@ -2198,6 +2921,7 @@ function createLlmTimingRisks(
 ) {
   return mergePlanRisks(
     existingRisks,
+    matchedCandidate?.risks,
     snappedToTranscript ? ['llm-timing-snapped-to-transcript'] : undefined,
     matchedCandidate ? undefined : ['llm-timing-without-transcript'],
   );
@@ -2261,6 +2985,7 @@ export function buildTranscriptSliceCandidates(
   const { minDurationMs, maxDurationMs } = getVideoSliceDurationBounds(params);
   const policy = getVideoSlicePlanningPolicy(params);
   const segments = normalizeTranscriptSegments(transcriptSegments);
+  const candidatePoolLimit = getTranscriptSliceCandidatePoolLimit(policy);
   const candidates: TranscriptSliceCandidate[] = [];
 
   for (let anchorIndex = 0; anchorIndex < segments.length; anchorIndex += 1) {
@@ -2278,6 +3003,21 @@ export function buildTranscriptSliceCandidates(
       anchorSegment.endMs - previousAnchorSegment.startMs <= maxDurationMs
     ) {
       startIndex = anchorIndex - 1;
+      while (startIndex > 0) {
+        const currentStartSegment = segments[startIndex];
+        const previousStartSegment = segments[startIndex - 1];
+        if (
+          !currentStartSegment ||
+          !previousStartSegment ||
+          !startsWithWeakConnector(currentStartSegment.text) ||
+          !canJoinTranscriptSegments(previousStartSegment, currentStartSegment, policy) ||
+          anchorSegment.endMs - previousStartSegment.startMs > maxDurationMs
+        ) {
+          break;
+        }
+
+        startIndex -= 1;
+      }
     }
     const repairedConnectorStart = startIndex !== anchorIndex;
 
@@ -2363,10 +3103,9 @@ export function buildTranscriptSliceCandidates(
       startIndex,
       endIndex,
       policy,
-      minDurationMs,
       maxDurationMs,
     );
-    if (!timing || timing.durationMs < MIN_SLICE_DURATION_MS) {
+    if (!timing || timing.durationMs < MIN_TRANSCRIPT_ALIGNED_SLICE_DURATION_MS) {
       continue;
     }
 
@@ -2392,6 +3131,9 @@ export function buildTranscriptSliceCandidates(
       ...(repairedConnectorStart || joinsConnectorInsideWindow ? ['connector-repaired'] : []),
       ...(extendedTrailingConnector ? ['trailing-connector-extended'] : []),
       ...(extendedOpenSentence ? ['open-sentence-extended'] : []),
+      ...(hasTranscriptSegmentOverlapRepair(candidateSegments, policy) ? ['transcript-overlap-repaired'] : []),
+      ...(candidateSegments.length <= 1 || durationMs < minDurationMs ? ['sparse-transcript-speech'] : []),
+      ...(durationMs < minDurationMs ? ['short-transcript-window'] : []),
     ];
 
     candidates.push({
@@ -2420,15 +3162,21 @@ export function buildTranscriptSliceCandidates(
         candidateSegments.map((segment) => segment.text),
       ),
     });
+    if (candidates.length > candidatePoolLimit * 2) {
+      candidates.splice(
+        0,
+        candidates.length,
+        ...pruneTranscriptSliceCandidatePool(candidates, policy, candidatePoolLimit),
+      );
+    }
   }
 
-  return sortTranscriptSliceCandidatesByScore(candidates.map((candidate) => ({
+  const prunedCandidates = pruneTranscriptSliceCandidatePool(candidates, policy, candidatePoolLimit);
+  const finalCandidateLimit = Math.max(policy.targetSliceCount * 2, policy.targetSliceCount);
+  return pruneTranscriptSliceCandidatePool(filterRepeatedTranscriptCandidates(prunedCandidates.map((candidate) => ({
     ...candidate,
     ...createPlatformReadinessMetadata(candidate, policy),
-  }))).slice(
-    0,
-    Math.max(policy.targetSliceCount * 2, policy.targetSliceCount),
-  );
+  })), params.enableRepeatFilter), policy, finalCandidateLimit);
 }
 
 export function createDeterministicSlicePlan(params: VideoSliceParams): NormalizedSlicePlanClip[] {
@@ -2469,16 +3217,15 @@ export function createTranscriptAssistedSlicePlan(
   params: VideoSliceParams,
   transcriptSegments: readonly AutoCutSpeechTranscriptionSegment[],
 ): NormalizedSlicePlanClip[] {
-  const policy = getVideoSlicePlanningPolicy(params);
   const candidates = buildTranscriptSliceCandidates(params, transcriptSegments);
 
   if (candidates.length === 0) {
-    return createDeterministicSlicePlan(params);
+    return transcriptSegments.length === 0 ? createDeterministicSlicePlan(params) : [];
   }
 
   return normalizeCandidateSlicePlan(candidates, params, {
-    fillPrecedingGaps: policy.sliceCountMode === 'coverageFirst' || policy.sliceCountMode === 'fixed',
-    fillTrailingClips: policy.sliceCountMode === 'coverageFirst' || policy.sliceCountMode === 'fixed',
+    fillPrecedingGaps: false,
+    fillTrailingClips: false,
   });
 }
 
@@ -2503,22 +3250,41 @@ function normalizeCandidateSlicePlanWithQualityStandards(
         return null;
       }
 
+      const metadata = pickPlanMetadata(clip);
+      const minimumDurationMs = isTranscriptAlignedSliceClip(clip)
+        ? MIN_TRANSCRIPT_ALIGNED_SLICE_DURATION_MS
+        : minDurationMs;
       const maxCandidateDurationMs = policy.sourceDurationMs !== undefined
         ? Math.min(maxDurationMs, policy.sourceDurationMs - startMs)
         : maxDurationMs;
-      if (maxCandidateDurationMs < MIN_SLICE_DURATION_MS) {
+      if (maxCandidateDurationMs < minimumDurationMs) {
         return null;
       }
 
-      const requestedDurationMs = Math.max(minDurationMs, Math.min(Math.round(clip.durationMs), maxDurationMs));
-      const durationMs = Math.min(requestedDurationMs, maxCandidateDurationMs);
-      if (durationMs < MIN_SLICE_DURATION_MS) {
+      const requestedDurationMs = Math.max(minimumDurationMs, Math.min(Math.round(clip.durationMs), maxDurationMs));
+      const requestedSourceBoundedDurationMs = Math.min(requestedDurationMs, maxCandidateDurationMs);
+      if (requestedSourceBoundedDurationMs < minimumDurationMs) {
         return null;
       }
 
-      const metadata = pickPlanMetadata(clip);
-      const timingRisks = durationMs < requestedDurationMs ? ['source-duration-tail'] : [];
-      const timingMetadata = createNormalizedSliceTimingMetadata(metadata, startMs, durationMs);
+      const guardedTiming = createSilenceGuardedSliceTiming(
+        startMs,
+        requestedSourceBoundedDurationMs,
+        metadata,
+        policy,
+        minimumDurationMs,
+      );
+      if (!guardedTiming) {
+        return null;
+      }
+
+      const durationMs = guardedTiming.durationMs;
+      const normalizedStartMs = guardedTiming.startMs;
+      const timingRisks = [
+        ...(requestedSourceBoundedDurationMs < requestedDurationMs ? ['source-duration-tail'] : []),
+        ...guardedTiming.risks,
+      ];
+      const timingMetadata = createNormalizedSliceTimingMetadata(metadata, normalizedStartMs, durationMs);
       const risks = mergePlanRisks(
         metadata.risks,
         timingRisks,
@@ -2545,7 +3311,7 @@ function normalizeCandidateSlicePlanWithQualityStandards(
       const platformReadinessMetadata = createPlatformReadinessMetadata({
         ...metadataWithSentenceBoundary,
         ...publishabilityMetadata,
-        startMs,
+        startMs: normalizedStartMs,
         durationMs,
       }, policy);
 
@@ -2554,7 +3320,7 @@ function normalizeCandidateSlicePlanWithQualityStandards(
         ...publishabilityMetadata,
         ...platformReadinessMetadata,
         index,
-        startMs,
+        startMs: normalizedStartMs,
         durationMs,
         label: clip.label?.trim() || `Smart slice ${index + 1}`,
         sourceStartMs: timingMetadata.sourceStartMs,
@@ -2567,21 +3333,24 @@ function normalizeCandidateSlicePlanWithQualityStandards(
     })
     .filter((clip): clip is NormalizedSlicePlanClip => Boolean(clip));
 
-  const selectedCandidates: NormalizedSlicePlanClip[] = [];
-  for (const candidate of sortSliceClipsBySelectionScore(rawCandidates, policy)) {
-    if (selectedCandidates.some((existingCandidate) => calculateClipOverlapRatio(existingCandidate, candidate) >= 0.65)) {
-      continue;
-    }
-
-    selectedCandidates.push(candidate);
-  }
+  const releaseGradeCandidates = rawCandidates.filter((candidate) =>
+    candidate.publishabilityGrade !== 'reject' &&
+    candidate.platformReadinessGrade !== 'reject'
+  );
+  const sparseTranscriptReviewCandidates = rawCandidates.filter((candidate) =>
+    isSparseTranscriptReviewClip(candidate) &&
+    candidate.publishabilityGrade !== 'reject' &&
+    candidate.platformReadinessGrade !== 'reject'
+  );
+  const selectableCandidates = releaseGradeCandidates.length > 0
+    ? releaseGradeCandidates
+    : sparseTranscriptReviewCandidates;
+  const selectedCandidates = selectOptimalSliceCandidateSet(selectableCandidates, policy, params.enableRepeatFilter);
   const normalizedCandidates = sortSliceClipsByStartMs(selectedCandidates);
   const clips: NormalizedSlicePlanClip[] = [];
 
   if (policy.sliceCountMode === 'qualityFirst' && options.fillPrecedingGaps !== true && options.fillTrailingClips !== true) {
-    return sortSliceClipsByStartMs(
-      sortSliceClipsBySelectionScore(selectedCandidates, policy).slice(0, policy.targetSliceCount),
-    ).map((candidate, index) => ({
+    return normalizedCandidates.map((candidate, index) => ({
       ...candidate,
       index,
     }));
@@ -2604,7 +3373,10 @@ function normalizeCandidateSlicePlanWithQualityStandards(
       ? policy.sourceDurationMs - startMs
       : durationMs;
     const safeDurationMs = Math.min(durationMs, remainingDurationMs);
-    if (safeDurationMs < MIN_SLICE_DURATION_MS) {
+    const minimumDurationMs = isTranscriptAlignedSliceClip(metadata)
+      ? MIN_TRANSCRIPT_ALIGNED_SLICE_DURATION_MS
+      : MIN_SLICE_DURATION_MS;
+    if (safeDurationMs < minimumDurationMs) {
       return false;
     }
 
@@ -2698,7 +3470,10 @@ function normalizeCandidateSlicePlanWithQualityStandards(
     }
   }
 
-  if (options.fillTrailingClips === true || (clips.length === 0 && policy.sliceCountMode !== 'qualityFirst')) {
+  if (
+    options.fillTrailingClips === true ||
+    (options.fillTrailingClips !== false && clips.length === 0 && policy.sliceCountMode !== 'qualityFirst')
+  ) {
     while (clips.length < policy.targetSliceCount) {
       const startMs = clips.reduce((maxEnd, clip) => Math.max(maxEnd, clip.startMs + clip.durationMs), 0);
       if (!appendClip(startMs, fallbackDurationMs, `Smart slice ${clips.length + 1}`)) {
@@ -2775,7 +3550,8 @@ export function parseLlmSlicePlan(
               ? clip.label
               : matchedCandidate?.label ?? '';
 
-        const label = rawLabel.trim().slice(0, 48) || `楂樺厜鐗囨 ${index + 1}`;
+        const fallbackLabel = createPlannerSliceLabel(index);
+        const label = normalizeTranscriptSliceLabelText(rawLabel, fallbackLabel);
 
         if (
           !Number.isFinite(startMs) ||
@@ -2788,8 +3564,9 @@ export function parseLlmSlicePlan(
 
         const safeDurationMs = Number(durationMs);
         const normalizedStartMs = Math.round(Number(startMs));
-        const normalizedDurationMs = Math.max(minDurationMs, Math.min(Math.round(safeDurationMs), maxDurationMs));
-        const title = normalizePlanText(clip?.title, 48) ?? label;
+        const minimumDurationMs = matchedCandidate ? MIN_TRANSCRIPT_ALIGNED_SLICE_DURATION_MS : minDurationMs;
+        const normalizedDurationMs = Math.max(minimumDurationMs, Math.min(Math.round(safeDurationMs), maxDurationMs));
+        const title = normalizeTranscriptSliceLabelText(normalizePlanText(clip?.title, 48) ?? label, label);
         const summary = normalizePlanText(clip?.summary, 160);
         const reason = normalizePlanText(clip?.reason, 180);
         const qualityScore = clampScore(clip?.qualityScore);
@@ -2798,7 +3575,7 @@ export function parseLlmSlicePlan(
         const risks = createLlmTimingRisks(normalizePlanRisks(clip?.risks), matchedCandidate, snappedToTranscript);
         const transcriptText = matchedCandidate?.transcriptText ?? normalizePlanText(clip?.transcriptText, 4_000);
         const transcriptCoverageScore = matchedCandidate?.transcriptCoverageScore ?? clampScore(clip?.transcriptCoverageScore);
-        const subtitleSegmentCount = matchedCandidate?.subtitleSegmentCount ?? normalizeSubtitleSegmentCount(clip?.subtitleSegmentCount);
+        const transcriptSegmentCount = matchedCandidate?.transcriptSegmentCount ?? normalizeTranscriptSegmentCount(clip?.transcriptSegmentCount);
         const speechContinuityGrade =
           matchedCandidate?.speechContinuityGrade ?? normalizeSpeechContinuityGrade(clip?.speechContinuityGrade);
         const boundaryQualityScore = matchedCandidate?.boundaryQualityScore ?? clampScore(clip?.boundaryQualityScore);
@@ -2857,7 +3634,7 @@ export function parseLlmSlicePlan(
           ...(storyShape ? { storyShape } : {}),
           ...(risks ? { risks } : {}),
           ...(transcriptCoverageScore !== undefined ? { transcriptCoverageScore } : {}),
-          ...(subtitleSegmentCount !== undefined ? { subtitleSegmentCount } : {}),
+          ...(transcriptSegmentCount !== undefined ? { transcriptSegmentCount } : {}),
           ...(speechContinuityGrade ? { speechContinuityGrade } : {}),
           ...(boundaryQualityScore !== undefined ? { boundaryQualityScore } : {}),
           ...(hookStrength ? { hookStrength } : {}),
@@ -2919,7 +3696,7 @@ export function parseLlmSlicePlan(
           boundaryPaddingAfterMs: boundaryPaddingAfterMs ?? 0,
           ...(transcriptText ? { transcriptText } : {}),
           ...(transcriptCoverageScore !== undefined ? { transcriptCoverageScore } : {}),
-          ...(subtitleSegmentCount !== undefined ? { subtitleSegmentCount } : {}),
+          ...(transcriptSegmentCount !== undefined ? { transcriptSegmentCount } : {}),
           ...(speechContinuityGrade ? { speechContinuityGrade } : {}),
           ...(boundaryQualityScore !== undefined ? { boundaryQualityScore } : {}),
           ...(hookStrength ? { hookStrength } : {}),

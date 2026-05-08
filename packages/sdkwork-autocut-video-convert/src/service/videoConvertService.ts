@@ -1,9 +1,12 @@
-import { AUTOCUT_TASK_STATUS, type AppTask, type VideoConvertParams } from '@sdkwork/autocut-types';
+import { resolveAutoCutTrustedSourcePath } from '@sdkwork/autocut-commons';
+import { AUTOCUT_TASK_STATUS, AUTOCUT_TASK_TYPE, type AppTask, type VideoConvertParams } from '@sdkwork/autocut-types';
 import {
   addAsset,
   addMessage,
   addTask,
+  assertAutoCutNativeArtifactInsideTaskOutputDir,
   createAutoCutId,
+  createAutoCutTaskName,
   createAutoCutTimestamp,
   failAutoCutProcessingTask,
   failAutoCutUnsupportedNativeProcessingTask,
@@ -12,7 +15,6 @@ import {
   updateTask,
   validateAutoCutProcessingSource,
 } from '@sdkwork/autocut-services';
-import { resolveAutoCutTrustedSourcePath } from '@sdkwork/autocut-commons';
 
 function normalizeTargetFormat(targetFormat: string) {
   return targetFormat.trim().toLowerCase();
@@ -23,30 +25,26 @@ function resolveDesktopSourcePath(file: File | null | undefined) {
 }
 
 function createVideoConvertTask(params: VideoConvertParams): AppTask {
-  const targetExt = normalizeTargetFormat(params.targetFormat);
-  const nameParts = (params.file?.name || 'original_convert.mp4').split('.');
-  nameParts.pop();
-  const baseName = nameParts.join('.') || 'converted-video';
-
+  const createdAt = createAutoCutTimestamp();
   return {
     id: createAutoCutId('newTask'),
-    name: `${baseName}.${targetExt}`,
-    type: '视频格式转换',
+    name: createAutoCutTaskName({ file: params.file, fallbackSourceName: 'source-video.mp4', createdAt }),
+    type: AUTOCUT_TASK_TYPE.videoConvert,
     status: AUTOCUT_TASK_STATUS.pending,
     progress: 0,
-    progressMessage: '解析封装格式...',
-    createdAt: createAutoCutTimestamp(),
+    progressMessage: 'Preparing video conversion task...',
+    createdAt,
     ...(params.fileId ? { sourceFileId: params.fileId } : {}),
   };
 }
 
-async function finishVideoConvertTask(newTask: AppTask, videoUrl: string, size: number) {
+async function finishVideoConvertTask(newTask: AppTask, videoUrl: string, size: number, targetFormat: string) {
   const generatedAssetId = createAutoCutId('asset-conv');
   const timestamp = createAutoCutTimestamp();
 
   await addAsset({
     id: generatedAssetId,
-    name: `已转换_${newTask.name}`,
+    name: `converted-${newTask.name}.${targetFormat}`,
     type: 'video',
     size,
     url: videoUrl,
@@ -59,12 +57,12 @@ async function finishVideoConvertTask(newTask: AppTask, videoUrl: string, size: 
   await addMessage({
     id: createAutoCutId('msg'),
     type: 'success',
-    title: '格式转换完成',
-    description: `文件格式已成功转换为 ${newTask.name.split('.').at(-1) || 'video'}。`,
+    title: 'Video conversion completed',
+    description: `Converted "${newTask.name}" to ${targetFormat}.`,
     createdAt: createAutoCutTimestamp(),
     read: false,
     actionUrl: '/tasks/' + newTask.id,
-    actionLabel: '前往查看',
+    actionLabel: 'View task',
   });
 
   return {
@@ -76,6 +74,7 @@ async function finishVideoConvertTask(newTask: AppTask, videoUrl: string, size: 
 export async function processVideoConvert(params: VideoConvertParams) {
   validateAutoCutProcessingSource(params);
 
+  const targetFormat = normalizeTargetFormat(params.targetFormat);
   const newTask = createVideoConvertTask(params);
   await addTask(newTask);
 
@@ -91,7 +90,7 @@ export async function processVideoConvert(params: VideoConvertParams) {
     await updateTask(newTask.id, {
       status: AUTOCUT_TASK_STATUS.processing,
       progress: 20,
-      progressMessage: '导入本地视频到桌面媒体沙箱...',
+      progressMessage: 'Importing local video into the desktop media sandbox...',
     });
 
     try {
@@ -103,23 +102,24 @@ export async function processVideoConvert(params: VideoConvertParams) {
       await updateTask(newTask.id, {
         status: AUTOCUT_TASK_STATUS.processing,
         progress: 60,
-        progressMessage: '执行视频封装与编码转换...',
+        progressMessage: 'Running video container and codec conversion...',
       });
       const convertedVideo = await nativeHostClient.convertVideo({
         assetUuid: importedMedia.assetUuid,
-        targetFormat: normalizeTargetFormat(params.targetFormat),
+        targetFormat,
         videoCodec: params.videoCodec,
         audioCodec: params.audioCodec,
         resolution: params.resolution,
         ...(outputRootDir ? { outputRootDir } : {}),
       });
+      assertAutoCutNativeArtifactInsideTaskOutputDir(convertedVideo, 'video conversion output');
       const videoUrl = nativeHostClient.createAssetUrl(convertedVideo.artifactPath);
-      const completedData = await finishVideoConvertTask(newTask, videoUrl, convertedVideo.byteSize);
+      const completedData = await finishVideoConvertTask(newTask, videoUrl, convertedVideo.byteSize, targetFormat);
 
       await updateTask(newTask.id, {
         status: AUTOCUT_TASK_STATUS.completed,
         progress: 100,
-        progressMessage: '视频格式转换完成',
+        progressMessage: 'Video conversion completed.',
         completedAt: createAutoCutTimestamp(),
         ...completedData,
       });

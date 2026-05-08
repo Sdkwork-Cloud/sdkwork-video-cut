@@ -1,10 +1,17 @@
 import { resolveAutoCutTrustedSourcePath } from '@sdkwork/autocut-commons';
-import { AUTOCUT_TASK_STATUS, type AppTask, type ExtractorTextParams } from '@sdkwork/autocut-types';
+import {
+  AUTOCUT_TASK_STATUS,
+  AUTOCUT_TASK_TYPE,
+  type AppTask,
+  type AutoCutTranscriptSegment,
+  type ExtractorTextParams,
+} from '@sdkwork/autocut-types';
 import {
   addAsset,
   addMessage,
   addTask,
   createAutoCutId,
+  createAutoCutTaskName,
   createAutoCutTextObjectUrl,
   createAutoCutTimestamp,
   failAutoCutProcessingTask,
@@ -12,23 +19,35 @@ import {
   getAutoCutNativeHostClient,
   reportAutoCutDiagnostic,
   resolveAutoCutOutputRootDir,
-  resolveAutoCutSpeechTranscriptionRuntimeConfig,
+  transcribeAutoCutMediaWithConfiguredProvider,
   updateTask,
   validateAutoCutProcessingSource,
-  type AutoCutSpeechTranscriptionSegment,
+  type AutoCutSpeechTranscriptionResult,
 } from '@sdkwork/autocut-services';
 
 type ExtractedTextSegment = NonNullable<AppTask['extractedText']>[number];
+type CompletedExtractorTextTaskData = Pick<
+  AppTask,
+  | 'resultCount'
+  | 'generatedAssetIds'
+  | 'extractedText'
+  | 'transcriptText'
+  | 'transcriptSegments'
+  | 'transcriptSegmentCount'
+  | 'transcriptProviderId'
+  | 'transcriptSourceAssetId'
+>;
 
 function createExtractorTextTask(params: ExtractorTextParams): AppTask {
+  const createdAt = createAutoCutTimestamp();
   return {
     id: createAutoCutId('newTask'),
-    name: params.file ? params.file.name : 'source-transcript.txt',
-    type: '文案提取',
+    name: createAutoCutTaskName({ file: params.file, fallbackSourceName: 'source-transcript.txt', createdAt }),
+    type: AUTOCUT_TASK_TYPE.textExtraction,
     status: AUTOCUT_TASK_STATUS.pending,
     progress: 0,
     progressMessage: 'Transcription task queued...',
-    createdAt: createAutoCutTimestamp(),
+    createdAt,
     ...(params.fileId ? { sourceFileId: params.fileId } : {}),
   };
 }
@@ -46,19 +65,82 @@ function formatTranscriptTimestamp(milliseconds: number) {
 }
 
 function createNativeExtractedTextSegments(
-  segments: readonly AutoCutSpeechTranscriptionSegment[],
+  segments: readonly AutoCutTranscriptSegment[],
   separateSpeakers: boolean,
+  format: ExtractorTextParams['format'],
 ): ExtractedTextSegment[] {
   return segments
-    .filter((segment) => segment.text.trim())
-    .map((segment, index) => ({
-      time: formatTranscriptTimestamp(segment.startMs),
-      speaker: separateSpeakers ? segment.speaker?.trim() || `Speaker ${index + 1}` : 'Speaker 1',
-      text: segment.text.trim(),
-    }));
+    .map((segment, index) => {
+      const text = normalizeExtractedTranscriptText(segment.text, format);
+      if (!text) {
+        return null;
+      }
+
+      return {
+        time: formatTranscriptTimestamp(segment.startMs),
+        speaker: separateSpeakers ? segment.speaker?.trim() || `Speaker ${index + 1}` : 'Speaker 1',
+        text,
+      } satisfies ExtractedTextSegment;
+    })
+    .filter((segment): segment is ExtractedTextSegment => Boolean(segment));
 }
 
-async function finishExtractorTextTask(newTask: AppTask, extractedText: ExtractedTextSegment[]) {
+function createNativeTaskTranscriptSegments(
+  segments: ReadonlyArray<AutoCutSpeechTranscriptionResult['segments'][number]>,
+  format: ExtractorTextParams['format'],
+): AutoCutTranscriptSegment[] {
+  return segments
+    .map((segment) => {
+      const text = normalizeExtractedTranscriptText(segment.text, format);
+      if (!text) {
+        return null;
+      }
+
+      return {
+        startMs: segment.startMs,
+        endMs: segment.endMs,
+        text,
+        ...(segment.speaker?.trim() ? { speaker: segment.speaker.trim() } : {}),
+      } satisfies AutoCutTranscriptSegment;
+    })
+    .filter((segment): segment is AutoCutTranscriptSegment => Boolean(segment));
+}
+
+function createNativeTaskTranscriptText(transcriptSegments: readonly AutoCutTranscriptSegment[]) {
+  return transcriptSegments
+    .map((segment) => segment.text.trim())
+    .filter(Boolean)
+    .join(' ');
+}
+
+function normalizeExtractedTranscriptText(text: string, format: ExtractorTextParams['format']) {
+  const normalizedText = text.trim().replace(/\s+/gu, ' ');
+  if (format !== 'filtered') {
+    return normalizedText;
+  }
+
+  const filteredText = normalizedText
+    .replace(/^(?:um|uh|er|ah|well|like|you know|i mean|so|okay)(?:[\s,，、.。!！?？]+|$)/iu, '')
+    .replace(/(?:[\s,，、.。!！?？]+|^)(?:um|uh|er|ah|well|like|you know|i mean|okay)[.。!！?？]*$/iu, '')
+    .replace(/^(?:嗯|啊|呃|额|那个|这个|就是|然后|所以|好)(?:[\s,，、.。!！?？]+|$)/u, '')
+    .replace(/(?:[\s,，、.。!！?？]+|^)(?:嗯|啊|呃|额|那个|这个|就是|然后|所以|好)[.。!！?？]*$/u, '')
+    .trim();
+
+  const strippedText = filteredText.replace(/^[,，、\s]+|[,，、\s]+$/gu, '').trim();
+  const trailingPunctuation = normalizedText.match(/[.。!！?？]$/u)?.[0];
+  if (strippedText && trailingPunctuation && !/[.。!！?？]$/u.test(strippedText)) {
+    return `${strippedText}${trailingPunctuation}`;
+  }
+
+  return strippedText;
+}
+
+async function finishExtractorTextTask(
+  newTask: AppTask,
+  extractedText: ExtractedTextSegment[],
+  transcription: AutoCutSpeechTranscriptionResult & { providerId?: string },
+  transcriptSegments: AutoCutTranscriptSegment[],
+): Promise<CompletedExtractorTextTaskData> {
   const textContent = extractedText.map((item) => `[${item.time}] ${item.speaker}: ${item.text}`).join('\n');
   const { size, url } = createAutoCutTextObjectUrl(textContent);
   const generatedAssetId = createAutoCutId('asset-text');
@@ -91,6 +173,11 @@ async function finishExtractorTextTask(newTask: AppTask, extractedText: Extracte
     resultCount: 1,
     generatedAssetIds: [generatedAssetId],
     extractedText,
+    transcriptText: createNativeTaskTranscriptText(transcriptSegments),
+    transcriptSegments,
+    transcriptSegmentCount: transcriptSegments.length,
+    ...(transcription.providerId ? { transcriptProviderId: transcription.providerId } : {}),
+    ...(transcription.sourceAssetUuid ? { transcriptSourceAssetId: transcription.sourceAssetUuid } : {}),
   };
 }
 
@@ -103,12 +190,10 @@ export async function processExtractorText(params: ExtractorTextParams) {
   const nativeHostClient = getAutoCutNativeHostClient();
   const desktopSourcePath = resolveAutoCutTrustedSourcePath(params.file);
   const capabilities = await nativeHostClient.getCapabilities();
-  const speechRuntimeConfig = await resolveAutoCutSpeechTranscriptionRuntimeConfig();
   const canTranscribeWithNativeHost =
     Boolean(desktopSourcePath) &&
     capabilities.mediaImportCommandReady &&
-    capabilities.speechTranscriptionCommandReady &&
-    (capabilities.speechTranscriptionToolchainReady || speechRuntimeConfig.configured);
+    capabilities.speechTranscriptionCommandReady;
 
   if (canTranscribeWithNativeHost && desktopSourcePath) {
     await updateTask(newTask.id, {
@@ -128,18 +213,21 @@ export async function processExtractorText(params: ExtractorTextParams) {
         progress: 45,
         progressMessage: 'Running local speech-to-text...',
       });
-      const transcription = await nativeHostClient.transcribeMedia({
+      const transcription = await transcribeAutoCutMediaWithConfiguredProvider({
         assetUuid: importedMedia.assetUuid,
         language: params.language,
-        executablePath: speechRuntimeConfig.executablePath,
-        modelPath: speechRuntimeConfig.modelPath,
         ...(outputRootDir ? { outputRootDir } : {}),
       });
+      const transcriptSegments = createNativeTaskTranscriptSegments(transcription.segments, params.format);
       const extractedText = createNativeExtractedTextSegments(
-        transcription.segments,
+        transcriptSegments,
         params.separateSpeakers,
+        params.format,
       );
-      const completedData = await finishExtractorTextTask(newTask, extractedText);
+      if (extractedText.length === 0) {
+        throw new Error('AutoCut local speech-to-text returned no speech text.');
+      }
+      const completedData = await finishExtractorTextTask(newTask, extractedText, transcription, transcriptSegments);
 
       await updateTask(newTask.id, {
         status: AUTOCUT_TASK_STATUS.completed,

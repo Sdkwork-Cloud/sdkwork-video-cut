@@ -417,6 +417,29 @@ Required invariants:
   `.gitattributes` policy because approved platform binaries can exceed normal
   Git host single-file limits; the JSON toolchain manifest and platform
   `.gitkeep` files remain normal text Git objects.
+  The package-local speech transcription toolchain contract is
+  `packages/sdkwork-autocut-desktop/src-tauri/binaries/speech-transcription.toolchain.json`.
+  The Whisper CLI sidecar uses the same platform directories and integrity
+  contract as FFmpeg. `scripts/prepare-autocut-speech-sidecar.mjs` is the only
+  standard way to register a real `whisper-cli` sidecar; it requires
+  `--platform`, `--source`, and `--accept-license`, then writes the real
+  `sha256`, `byteSize`, `companionFiles`, and `bundledReady` values. The speech
+  sidecar manifest must include required sibling runtime libraries from the
+  same source directory as verified companion files, including Windows `*.dll`,
+  Linux `*.so`, and macOS `*.dylib` files, and the native resolver must reject
+  missing or checksum-mismatched companions before declaring a bundled
+  executable ready. A manifest with placeholder zero integrity must keep
+  `bundledReady=false`; release preflight with `--require-bundled` requires both
+  FFmpeg and speech-to-text sidecars before an installer can claim Smart Slice
+  local STT readiness. The desktop
+  `tauri:build` script must also run
+  `prepare-autocut-speech-sidecar.mjs --check --require-bundled`, so local
+  installer builds cannot accidentally omit the packaged Whisper CLI sidecar.
+  Whisper model files are acquired on demand instead of bundled into installers.
+  Model presets may declare the official Hugging Face URL plus vetted Hugging
+  Face mirror URLs; native validation must reject HTTP, unknown hosts, wrong
+  file names, paths outside `ggerganov/whisper.cpp/resolve/main/`, and any
+  downloaded model whose SHA-256 digest differs from the pinned preset digest.
   `scripts/check-autocut-release-smoke-preflight.mjs` verifies the manifest,
   sidecar presence, integrity, and optional executable smoke before release.
   `--require-bundled` is the release gate once an approved sidecar is supplied;
@@ -469,25 +492,120 @@ Required invariants:
   `signtool.exe`, and it must fail closed when the signing certificate or tool
   is absent.
   `scripts/write-autocut-installer-signature-evidence.mjs` writes the structured
-  MSI/NSIS code-signing evidence under `artifacts/release/`. Unsigned or
-  unverifiable installers must produce `installerSignatureReady=false` with
-  `INSTALLER_SIGNATURE_MISSING` blockers instead of being treated as commercial
-  release artifacts.
+  platform installer trust evidence under `artifacts/release/`. Windows
+  MSI/NSIS installers use Authenticode verification. Linux DEB/AppImage and
+  macOS DMG/app archive preview releases record artifact digests and explicit
+  unsigned preview blockers instead of running Windows-only signature checks.
+  Unsigned or unverifiable installers must produce `installerSignatureReady=false`
+  with platform-specific blockers instead of being treated as commercial release
+  artifacts.
   `scripts/write-autocut-release-evidence.mjs` writes the structured release
   evidence JSON under `artifacts/release/`, including installer paths, byte
   sizes, SHA-256 digests, FFmpeg manifest state, release smoke preflight state,
   native command smoke evidence, smart slice quality/media evidence, installer
   signature evidence, and the derived `ffmpegExecutionReady` readiness boundary.
+  Installer discovery is centralized in `scripts/autocut-release-platforms.mjs`
+  so Windows maps to MSI/NSIS, Linux maps to DEB/AppImage, and macOS maps to
+  DMG/app archive for both `x86_64-apple-darwin` and `aarch64-apple-darwin`.
+  `scripts/write-autocut-package-sbom-files.mjs` is the deterministic local
+  package SBOM file writer. It generates CycloneDX 1.6 JSON under
+  `artifacts/release/sbom/` from workspace `package.json` files,
+  `pnpm-lock.yaml`, desktop `Cargo.toml`, and desktop `Cargo.lock`; it must
+  fail closed when a runtime npm dependency cannot be resolved from the lockfile
+  and must scope Windows-only Cargo dependencies to Windows packages. Native
+  release jobs may use `--platform` to write only the SBOM files for the
+  packages they built.
+  `scripts/write-autocut-sbom-evidence.mjs` is the SBOM evidence aggregation
+  boundary. It reads exactly one real CycloneDX JSON or SPDX JSON file per
+  desktop release package from `artifacts/release/sbom/`, computes byte size and
+  SHA-256 from the file contents, binds the artifact URL to the release tag, and
+  writes `artifacts/release/autocut-sbom-evidence.json`. Missing, empty,
+  malformed, unsupported, unknown-package, or duplicate SBOM files must produce
+  blockers. The script may support `--allow-blocked` for preview evidence
+  publication, but it must not generate synthetic SBOM content or accept
+  caller-provided checksums.
+  `scripts/sync-autocut-app-manifest-release-evidence.mjs` is the only
+  supported bridge from release evidence into `sdkwork.app.config.json`. It
+  reads the four `autocut-release-evidence-<platform>.json` files plus
+  `artifacts/release/autocut-sbom-evidence.json`, maps installer kind to package
+  id, and writes package checksum, byte size, platform trust evidence, and SBOM
+  metadata only when every package has complete real evidence. It must support
+  `--dry-run --allow-blocked` for CI preview verification that records
+  commercial activation blockers without failing unsigned preview releases, and
+  `--activate-commercial` for the explicit post-asset step that changes
+  `publish.status` to `ACTIVE`; it must not fabricate checksums, signatures,
+  notarization, Linux trust, or SBOM data.
+  `scripts/check-autocut-app-manifest-release-readiness.mjs` is the app
+  manifest release gate. It deliberately separates inactive preview metadata
+  from active commercial metadata: inactive preview packages may stay disabled
+  without checksums only when each package records `commercialActivationRequired`;
+  active commercial manifests must enable at least one package and every enabled
+  package must carry a real SHA-256 checksum, verified platform trust evidence,
+  and CycloneDX or SPDX SBOM metadata. Placeholder checksums and generated
+  placeholder packages are hard blockers.
+  `scripts/check-autocut-release-evidence-status.mjs` is the aggregate evidence
+  status boundary. It must not generate or mutate release evidence. It composes
+  the release environment probe, four-platform release evidence readiness,
+  SBOM evidence readiness, app manifest sync dry run, app manifest readiness,
+  multiplatform preview readiness, and commercial release readiness into one
+  domain-indexed blocker report. CI may use `--allow-blocked --json` to publish
+  preview blocker evidence, but commercial release operations must run it
+  without `--allow-blocked` before tag push or GitHub Release upload.
   `scripts/check-autocut-preview-release-readiness.mjs` is the unsigned preview
   release gate for GitHub/internal test releases. It keeps FFmpeg execution,
   native video slice, smart slice quality/media, installer artifact, and
   aggregate release smoke checks, but unsigned installers are reported as
   `UNSIGNED_INSTALLERS_ACCEPTED_FOR_PREVIEW` warnings instead of commercial
   release blockers.
+  Phase 1 multiplatform preview distribution is standardized by
+  `.github/workflows/autocut-desktop-release.yml` and
+  `scripts/check-autocut-multiplatform-release-readiness.mjs`. The workflow must
+  build on native runners for Windows x86_64, Ubuntu/Linux x86_64, macOS Intel,
+  and macOS Apple Silicon. Before invoking Tauri packaging, each runner must
+  prepare platform-native sidecars with the same manifest contract:
+  Windows re-verifies the approved Git LFS FFmpeg and `whisper-cli` resources,
+  while Linux and macOS use `scripts/prepare-autocut-release-sidecars.mjs` to
+  fetch or build the approved runner-native FFmpeg and Whisper CLI tools and
+  then rewrite the FFmpeg and speech toolchain manifests with exact byte-size
+  and SHA-256 integrity values. The workflow then uploads
+  `autocut-release-evidence-windows-x86_64.json`,
+  `autocut-release-evidence-linux-x86_64.json`,
+  `autocut-release-evidence-macos-x86_64.json`, and
+  `autocut-release-evidence-macos-aarch64.json`. The aggregate gate requires all
+  four evidence files, sidecar integrity/executable smoke, native video slicing,
+  smart slice quality/media evidence, and installer artifact digests. Unsigned
+  installers remain preview warnings only.
   `scripts/check-autocut-commercial-release-readiness.mjs` is the final
-  commercial-release hard gate. It must fail until bundled FFmpeg integrity,
-  executable smoke, native smoke, smart slice quality/media evidence, installer
-  signature, aggregate release smoke, and `ffmpegExecutionReady` are all ready.
+  commercial-release hard gate. By default it must aggregate
+  `autocut-release-evidence-windows-x86_64.json`,
+  `autocut-release-evidence-linux-x86_64.json`,
+  `autocut-release-evidence-macos-x86_64.json`, and
+  `autocut-release-evidence-macos-aarch64.json`; a single `--evidence` path is
+  allowed only as an explicit platform diagnostic. The default gate must fail
+  until every platform has bundled FFmpeg integrity, executable smoke, native
+  smoke, smart slice quality/media evidence, installer artifacts with real byte
+  sizes and SHA-256 digests, installer signature, aggregate release smoke, and
+  `ffmpegExecutionReady` all ready. Phase 2 commercial distribution must extend
+  the platform trust evidence before this gate can
+  pass for public desktop releases: Windows Authenticode signing, macOS
+  Developer ID signing plus Gatekeeper assessment and notarization, and Linux
+  package signing/install smoke for `.deb` and `.AppImage`.
+- `sdkwork.app.config.json` is part of the release contract, not a placeholder
+  catalog. Its release version, latest channel, package URLs, and media asset
+  version must match the current package version. Production security flags
+  must require checksums, installer signatures, and SBOM evidence. Install
+  packages that point to planned GitHub Release assets must remain disabled
+  until their real SHA-256 digest, platform trust evidence, and SBOM metadata
+  are recorded; placeholder CDN packages must never be marked installable.
+  The upstream SDKWork v3 validator requires checksums for all binary packages
+  when `checksumRequired=true`; AutoCut keeps that validator as a final
+  post-asset gate and uses `pnpm release:app-manifest-ready` for the current
+  preview-vs-commercial distinction before real GitHub Release assets exist.
+- Runtime media samples must be local/user-supplied only. The desktop CSP must
+  not allow third-party fixture media domains, and service code must not expose
+  SoundHelix, Giphy, Picsum, BigBuckBunny, or similar public demo URLs as app
+  resources. This keeps packaged desktop behavior private, deterministic, and
+  offline-capable.
 - `rusqlite` is allowed only with bundled SQLite after the database contract is
   present. `tauri-plugin-*`, `tokio`, `reqwest`, and SQLx remain forbidden until
   a matching architecture contract is written.
@@ -566,9 +684,11 @@ Required invariants:
   browser/mock workflow and must not guess paths, construct raw local paths, or
   use `file://` URLs.
 - Homepage smart slicing must prefer `autocut_select_local_video_file` through
-  the typed native host client, convert the returned descriptor with
-  `createAutoCutTrustedLocalFile`, and pass that trusted File-compatible value
-  to `/slicer`. The HTML file chooser remains only a non-desktop fallback.
+  the typed native host client and pass the returned serializable trusted source
+  descriptor to `/slicer`. The slicer route then rebuilds the File-compatible
+  value with `createAutoCutTrustedLocalFile`, because browser history state
+  cloning can drop custom `File` metadata such as `sourcePath`. The HTML file
+  chooser remains only a non-desktop fallback.
 - `@sdkwork/autocut-commons` owns `trusted-file-source.service.ts`, which turns
   trusted Tauri dropped paths into File-compatible values with `sourcePath`,
   `path`, `name`, `type`, `size`, `byteSize`, and `mediaType` while preserving

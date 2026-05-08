@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "autocut-main-window",
+  "description": "Allows the main AutoCut window to invoke the native host bridge, listen for trusted desktop drag-drop events, and load trusted local media previews through the Tauri asset protocol.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:webview:default",
+    "core:window:default"
+  ]
+}

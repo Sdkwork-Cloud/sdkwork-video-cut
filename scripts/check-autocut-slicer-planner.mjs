@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import {
   buildTranscriptSliceCandidates,
   createDeterministicSlicePlan,
@@ -10,6 +11,7 @@ import {
 
 const failures = [];
 const pass = [];
+const plannerSource = readFileSync('packages/sdkwork-autocut-slicer/src/service/slicePlanner.ts', 'utf8');
 
 function assertRule(condition, message) {
   if (condition) {
@@ -81,6 +83,514 @@ assertRejects(
   () => validateVideoSliceParams({ ...baseParams, targetSliceCount: 21 }),
   'target slice count',
   'planner rejects target slice counts above the publishing standard range',
+);
+assertRejects(
+  () => validateVideoSliceParams({ ...baseParams, minDuration: Number.NaN }),
+  'minimum slice duration',
+  'planner rejects NaN minimum durations instead of silently defaulting them',
+);
+assertRejects(
+  () => validateVideoSliceParams({ ...baseParams, minDuration: 4 }),
+  'minimum slice duration',
+  'planner rejects minimum durations below the renderable slicing floor',
+);
+assertRejects(
+  () => validateVideoSliceParams({ ...baseParams, maxDuration: Number.POSITIVE_INFINITY }),
+  'maximum slice duration',
+  'planner rejects infinite maximum durations before native rendering',
+);
+assertRejects(
+  () => validateVideoSliceParams({ ...baseParams, maxDuration: 601 }),
+  'maximum slice duration',
+  'planner rejects maximum durations above the standard slicing ceiling',
+);
+assertRejects(
+  () => validateVideoSliceParams({ ...baseParams, idealDuration: Number.NaN }),
+  'ideal slice duration',
+  'planner rejects NaN ideal durations instead of passing unstable planning policy',
+);
+assertRejects(
+  () => validateVideoSliceParams({ ...baseParams, idealDuration: 4 }),
+  'ideal slice duration',
+  'planner rejects ideal durations below the renderable slicing floor',
+);
+assertRejects(
+  () => validateVideoSliceParams({ ...baseParams, idealDuration: 601 }),
+  'ideal slice duration',
+  'planner rejects ideal durations above the standard slicing ceiling',
+);
+assertRejects(
+  () => validateVideoSliceParams({ ...baseParams, targetSliceCount: 2.5 }),
+  'target slice count',
+  'planner rejects fractional target slice counts',
+);
+assertRejects(
+  () => validateVideoSliceParams({ ...baseParams, sourceDurationMs: Number.NaN }),
+  'source media duration',
+  'planner rejects NaN source media duration metadata',
+);
+assertRejects(
+  () => validateVideoSliceParams({ ...baseParams, sourceDurationMs: 4_000 }),
+  'source media duration',
+  'planner rejects source media duration metadata below the minimum renderable slice',
+);
+assertRule(
+  !plannerSource.includes('const insertIndex = sorted.findIndex') &&
+    !plannerSource.includes('sorted.splice(insertIndex, 0'),
+  'planner uses native stable sort instead of quadratic insertion-sort helpers for large transcript workloads',
+);
+assertRule(
+  !plannerSource.includes('const frontier: NormalizedSlicePlanClip[][]') &&
+    plannerSource.includes('selectOptimalSliceCandidateSetByDynamicProgramming') &&
+    plannerSource.includes('findPreviousCompatibleSliceCandidateIndexes'),
+  'planner selects transcript-aligned slice candidates with bounded dynamic programming instead of exponential frontier enumeration',
+);
+assertRule(
+  plannerSource.includes('sortSliceClipsByEndMs') &&
+    plannerSource.includes('SLICE_CANDIDATE_DP_BEAM_WIDTH') &&
+    plannerSource.includes('isSliceCandidatePlanInternallyCompatible'),
+  'planner dynamic programming is ordered by candidate end time, keeps a bounded beam, and revalidates whole-plan repeat compatibility',
+);
+assertRule(
+  plannerSource.includes('MAX_TRANSCRIPT_SLICE_CANDIDATE_POOL_SIZE') &&
+    plannerSource.includes('pruneTranscriptSliceCandidatePool') &&
+    plannerSource.includes('getTranscriptSliceCandidatePoolLimit') &&
+    plannerSource.includes('candidatePoolLimit'),
+  'planner prunes speech-to-text candidate pools during generation for long transcript performance',
+);
+
+const sparseSpeechSegments = [
+  {
+    startMs: 10_000,
+    endMs: 15_600,
+    text: 'How to remove silent intros from short video clips.',
+    speaker: 'Speaker 1',
+  },
+  {
+    startMs: 31_000,
+    endMs: 36_600,
+    text: 'How to remove silent intros from short video clips.',
+    speaker: 'Speaker 1',
+  },
+  {
+    startMs: 55_000,
+    endMs: 60_700,
+    text: 'Then keep only the complete spoken payoff.',
+    speaker: 'Speaker 1',
+  },
+];
+const sparseSpeechPlan = createTranscriptAssistedSlicePlan(
+  {
+    ...baseParams,
+    minDuration: 15,
+    maxDuration: 60,
+    targetSliceCount: 3,
+    sourceDurationMs: 90_000,
+    sliceCountMode: 'qualityFirst',
+    enableRepeatFilter: true,
+  },
+  sparseSpeechSegments,
+);
+assertRule(
+  sparseSpeechPlan.length >= 1,
+  'transcript-assisted planner can create clips from short speech-to-text segments without relying on fixed silent filler windows',
+);
+assertRule(
+  sparseSpeechPlan.every((clip) => (clip.boundaryPaddingBeforeMs ?? 0) <= 500),
+  'transcript-assisted planner clamps leading silence around speech-to-text starts',
+);
+assertRule(
+  sparseSpeechPlan.every((clip) => (clip.boundaryPaddingAfterMs ?? 0) <= 500),
+  'transcript-assisted planner clamps trailing silence around speech-to-text ends',
+);
+assertRule(
+  sparseSpeechPlan.every((clip) => (clip.speechEndMs ?? clip.startMs + clip.durationMs) - (clip.speechStartMs ?? clip.startMs) >= clip.durationMs - 1_000),
+  'transcript-assisted planner does not stretch sparse speech windows with long silent padding just to satisfy requested minimum duration',
+);
+assertEqual(
+  sparseSpeechPlan.filter((clip) => clip.transcriptText === sparseSpeechSegments[0].text).length,
+  1,
+  'transcript-assisted planner deduplicates repeated speech-to-text content across different time ranges',
+);
+assertRule(
+  sparseSpeechPlan.some((clip) => clip.risks?.includes('transcript-repeat-filtered')),
+  'transcript-assisted planner records when repeated speech-to-text windows are filtered',
+);
+const fillerHeavyTranscriptCandidates = buildTranscriptSliceCandidates({
+  ...baseParams,
+  minDuration: 22,
+  maxDuration: 45,
+  continuityLevel: 'standard',
+  highlightEngine: 'keyword',
+  customKeywords: ['retention', 'refund'],
+}, [
+  { startMs: 0, endMs: 12_000, text: 'um um uh', speaker: 'Speaker 1' },
+  { startMs: 12_100, endMs: 21_000, text: 'Well, watch the retention setup and pricing pain.', speaker: 'Speaker 1' },
+  { startMs: 21_100, endMs: 30_000, text: 'So the complete payoff is the refund fix.', speaker: 'Speaker 1' },
+]);
+const fillerHeavyTranscriptCandidate = fillerHeavyTranscriptCandidates.find((candidate) =>
+  candidate.transcriptText?.includes('retention setup') &&
+  candidate.transcriptText.includes('refund fix'),
+);
+assertRule(
+  Boolean(fillerHeavyTranscriptCandidate),
+  'speech-to-text filler cleanup still keeps the meaningful retention-to-payoff candidate window',
+);
+assertRule(
+  !/\b(?:um|uh)\b/iu.test(fillerHeavyTranscriptCandidate?.transcriptText ?? ''),
+  'speech-to-text filler cleanup removes pure filler words from transcript candidate text',
+);
+assertRule(
+  !/^(?:um|uh|well|like|you know|i mean|okay|so)\b/iu.test(fillerHeavyTranscriptCandidate?.label ?? ''),
+  'speech-to-text filler cleanup prevents filler words from becoming task clip titles',
+);
+assertEqual(
+  fillerHeavyTranscriptCandidate?.transcriptSegmentCount,
+  2,
+  'speech-to-text filler cleanup excludes pure filler segments from transcript segment counts',
+);
+const punctuationOnlyTitleCandidates = buildTranscriptSliceCandidates({
+  ...baseParams,
+  minDuration: 5,
+  maxDuration: 25,
+  continuityLevel: 'strict',
+}, [
+  { startMs: 0, endMs: 6_000, text: 'And?', speaker: 'Speaker 1' },
+  { startMs: 12_000, endMs: 21_000, text: 'Then retention payoff fixes refund churn.', speaker: 'Speaker 1' },
+]);
+assertRule(
+  !punctuationOnlyTitleCandidates.some((candidate) => /^[^\p{L}\p{N}]+$/u.test(candidate.label)),
+  'speech-to-text title extraction never emits punctuation-only candidate labels',
+);
+assertRule(
+  punctuationOnlyTitleCandidates.some((candidate) => candidate.label === 'Smart slice 1'),
+  'speech-to-text title extraction falls back to a stable slice label when weak connectors strip all words',
+);
+const isolatedMicroSpeechPlan = createTranscriptAssistedSlicePlan(
+  {
+    ...baseParams,
+    minDuration: 15,
+    maxDuration: 60,
+    targetSliceCount: 3,
+    sourceDurationMs: 90_000,
+    sliceCountMode: 'qualityFirst',
+    enableRepeatFilter: true,
+  },
+  [
+    {
+      startMs: 10_000,
+      endMs: 12_000,
+      text: 'Tiny isolated speech.',
+      speaker: 'Speaker 1',
+    },
+    {
+      startMs: 40_000,
+      endMs: 42_000,
+      text: 'Another tiny isolated speech.',
+      speaker: 'Speaker 1',
+    },
+  ],
+);
+assertRule(
+  isolatedMicroSpeechPlan.length >= 1,
+  'transcript-assisted planner creates reviewable speech-backed clips from isolated micro speech instead of failing the whole smart slice task',
+);
+assertRule(
+  isolatedMicroSpeechPlan.every((clip) => clip.transcriptText?.trim()),
+  'transcript-assisted planner keeps visible transcript text on isolated micro speech fallback clips',
+);
+assertRule(
+  isolatedMicroSpeechPlan.every((clip) => (clip.transcriptSegmentCount ?? 0) > 0),
+  'transcript-assisted planner keeps structured transcript segment evidence on isolated micro speech fallback clips',
+);
+assertRule(
+  isolatedMicroSpeechPlan.every((clip) => (clip.transcriptCoverageScore ?? 0) >= 0.8),
+  'transcript-assisted planner keeps professional transcript coverage on isolated micro speech fallback clips',
+);
+assertRule(
+  isolatedMicroSpeechPlan.every((clip) => clip.durationMs < 3_000),
+  'transcript-assisted planner does not pad isolated micro speech up to long requested minimum durations',
+);
+assertRule(
+  isolatedMicroSpeechPlan.every((clip) => (clip.boundaryPaddingBeforeMs ?? 0) <= 500 && (clip.boundaryPaddingAfterMs ?? 0) <= 500),
+  'transcript-assisted planner bounds silence padding on isolated micro speech fallback clips',
+);
+assertRule(
+  isolatedMicroSpeechPlan.every((clip) => clip.risks?.includes('sparse-transcript-speech')),
+  'transcript-assisted planner marks isolated micro speech fallback clips for review instead of hiding sparse transcript risk',
+);
+const sparseSpeechCandidates = buildTranscriptSliceCandidates(
+  {
+    ...baseParams,
+    minDuration: 15,
+    maxDuration: 60,
+    targetSliceCount: 3,
+    sourceDurationMs: 90_000,
+    sliceCountMode: 'qualityFirst',
+    enableRepeatFilter: true,
+  },
+  sparseSpeechSegments,
+);
+const llmSparseSpeechPlan = parseLlmSlicePlan(
+  JSON.stringify([
+    {
+      candidateId: sparseSpeechCandidates[0]?.candidateId,
+      title: 'Trimmed speech candidate',
+      qualityScore: 0.9,
+      continuityScore: 0.9,
+    },
+  ]),
+  {
+    ...baseParams,
+    minDuration: 15,
+    maxDuration: 60,
+    targetSliceCount: 3,
+    sourceDurationMs: 90_000,
+    sliceCountMode: 'qualityFirst',
+    enableRepeatFilter: true,
+  },
+  sparseSpeechPlan,
+  sparseSpeechCandidates,
+);
+assertRule(
+  (llmSparseSpeechPlan[0]?.boundaryPaddingAfterMs ?? Number.POSITIVE_INFINITY) <= 500,
+  'LLM candidate-id planning preserves trimmed speech-to-text trailing boundaries instead of re-expanding sparse speech to the requested minimum',
+);
+assertRule(
+  (llmSparseSpeechPlan[0]?.speechEndMs ?? 0) - (llmSparseSpeechPlan[0]?.speechStartMs ?? 0) >=
+    (llmSparseSpeechPlan[0]?.durationMs ?? 0) - 1_000,
+  'LLM candidate-id planning keeps sparse speech render windows aligned to speech duration',
+);
+assertArrayIncludes(
+  llmSparseSpeechPlan[0]?.risks,
+  'transcript-repeat-filtered',
+  'LLM candidate-id planning preserves transcript repeat-filtering risks from matched speech-to-text candidates',
+);
+
+const partialDuplicateCandidates = buildTranscriptSliceCandidates(
+  {
+    ...baseParams,
+    minDuration: 10,
+    maxDuration: 40,
+    targetSliceCount: 4,
+    sourceDurationMs: 90_000,
+    sliceCountMode: 'qualityFirst',
+    enableRepeatFilter: true,
+  },
+  [
+    {
+      startMs: 0,
+      endMs: 12_000,
+      text: 'Watch the retention hook, pricing pain, and final refund fix for this launch.',
+      speaker: 'Speaker 1',
+    },
+    {
+      startMs: 24_000,
+      endMs: 36_000,
+      text: 'This launch refund fix repeats the pricing pain and retention hook.',
+      speaker: 'Speaker 1',
+    },
+    {
+      startMs: 55_000,
+      endMs: 68_000,
+      text: 'A different onboarding example explains setup, user confusion, and the final payoff.',
+      speaker: 'Speaker 1',
+    },
+  ],
+);
+assertEqual(
+  partialDuplicateCandidates.filter((candidate) => candidate.transcriptText?.includes('retention hook')).length,
+  1,
+  'transcript repeat filter removes high-overlap paraphrased speech windows that are not strict text substrings',
+);
+assertRule(
+  partialDuplicateCandidates.some((candidate) => candidate.risks?.includes('transcript-repeat-filtered')),
+  'transcript repeat filter records filtered high-overlap paraphrased speech windows for review',
+);
+const shortPhraseDuplicateCandidates = buildTranscriptSliceCandidates(
+  {
+    ...baseParams,
+    minDuration: 5,
+    maxDuration: 20,
+    targetSliceCount: 3,
+    sliceCountMode: 'qualityFirst',
+    enableRepeatFilter: true,
+    continuityLevel: 'strict',
+  },
+  [
+    { startMs: 0, endMs: 9_000, text: 'Refund fix improves retention.', speaker: 'Speaker 1' },
+    { startMs: 16_000, endMs: 25_000, text: 'Refund fix improved retention.', speaker: 'Speaker 1' },
+    { startMs: 36_000, endMs: 45_000, text: 'Pricing setup explains invoice pain.', speaker: 'Speaker 1' },
+  ],
+);
+assertEqual(
+  shortPhraseDuplicateCandidates.filter((candidate) => candidate.transcriptText?.includes('Refund fix')).length,
+  1,
+  'transcript repeat filter removes short one-sentence paraphrases that differ only by inflection',
+);
+assertRule(
+  shortPhraseDuplicateCandidates.some((candidate) => candidate.risks?.includes('transcript-repeat-filtered')),
+  'transcript repeat filter records filtered short one-sentence paraphrases for review',
+);
+
+const englishConnectorChainCandidates = buildTranscriptSliceCandidates(
+  {
+    ...baseParams,
+    minDuration: 15,
+    maxDuration: 60,
+    targetSliceCount: 3,
+    sourceDurationMs: 62_000,
+    sliceCountMode: 'qualityFirst',
+    enableRepeatFilter: true,
+  },
+  [
+    { startMs: 0, endMs: 12_000, text: 'Watch this case background.', speaker: 'Speaker 1' },
+    { startMs: 12_000, endMs: 26_000, text: 'Then the real spike comes from concentrated user pain.', speaker: 'Speaker 1' },
+    { startMs: 26_000, endMs: 41_000, text: 'So this is the complete short-video payoff.', speaker: 'Speaker 1' },
+  ],
+);
+const englishConnectorChainCandidate = englishConnectorChainCandidates.find(
+  (candidate) => candidate.transcriptSegmentCount === 3,
+);
+assertEqual(
+  englishConnectorChainCandidate?.startMs,
+  0,
+  'English connector-chain speech-to-text planning repairs repeated Then/So starts back to the full context boundary',
+);
+assertEqual(
+  englishConnectorChainCandidate?.speechEndMs,
+  41_000,
+  'English connector-chain speech-to-text planning keeps the repaired payoff segment in the final candidate',
+);
+assertEqual(
+  englishConnectorChainCandidate?.contentArcGrade,
+  'complete',
+  'English connector-chain speech-to-text planning scores hook-context-payoff windows as complete arcs',
+);
+assertNumberBetween(
+  englishConnectorChainCandidate?.topicCoherenceScore,
+  0.65,
+  1,
+  'English connector-chain speech-to-text planning treats background, spike, user pain, and payoff as one topic',
+);
+
+const lightlyOverlappingTranscriptCandidates = buildTranscriptSliceCandidates(
+  {
+    ...baseParams,
+    minDuration: 15,
+    maxDuration: 45,
+    sourceDurationMs: 50_000,
+    continuityLevel: 'standard',
+    enableRepeatFilter: true,
+  },
+  [
+    { startMs: 0, endMs: 12_000, text: 'Watch the retention case background and pricing pain.', speaker: 'Speaker 1' },
+    { startMs: 11_850, endMs: 26_000, text: 'Then the refund fix becomes the complete payoff.', speaker: 'Speaker 1' },
+  ],
+);
+const lightlyOverlappingTranscriptCandidate = lightlyOverlappingTranscriptCandidates.find((candidate) =>
+  candidate.startMs === 0 && candidate.transcriptSegmentCount === 2
+);
+assertEqual(
+  lightlyOverlappingTranscriptCandidate?.speechStartMs,
+  0,
+  'speech-to-text planning repairs connector starts across tiny STT segment overlaps',
+);
+assertEqual(
+  lightlyOverlappingTranscriptCandidate?.speechEndMs,
+  26_000,
+  'speech-to-text planning preserves the full spoken payoff when STT segments slightly overlap',
+);
+assertArrayIncludes(
+  lightlyOverlappingTranscriptCandidate?.risks,
+  'connector-repaired',
+  'speech-to-text planning records connector repair across tiny STT segment overlaps',
+);
+assertArrayIncludes(
+  lightlyOverlappingTranscriptCandidate?.risks,
+  'transcript-overlap-repaired',
+  'speech-to-text planning records tiny STT segment overlap repair for quality review',
+);
+
+const dynamicPlanningSegments = [
+  { startMs: 0, endMs: 12_000, text: 'Watch the first case background and key pain.', speaker: 'Speaker 1' },
+  { startMs: 12_000, endMs: 28_000, text: 'So the first payoff is a complete fix viewers can apply.', speaker: 'Speaker 1' },
+  { startMs: 36_000, endMs: 48_000, text: 'Watch the second case background and retention pain.', speaker: 'Speaker 1' },
+  { startMs: 48_000, endMs: 64_000, text: 'So the second payoff is another complete fix viewers can apply.', speaker: 'Speaker 1' },
+  {
+    startMs: 72_000,
+    endMs: 90_000,
+    text: 'This long recap repeats the same first case background and key pain, then repeats the second case background and retention pain without adding a new payoff.',
+    speaker: 'Speaker 1',
+  },
+];
+const dynamicPlanningPlan = createTranscriptAssistedSlicePlan(
+  {
+    ...baseParams,
+    minDuration: 15,
+    maxDuration: 120,
+    targetSliceCount: 2,
+    sourceDurationMs: 100_000,
+    sliceCountMode: 'qualityFirst',
+    enableRepeatFilter: true,
+  },
+  dynamicPlanningSegments,
+);
+assertEqual(
+  dynamicPlanningPlan.length,
+  2,
+  'transcript-assisted dynamic planning selects the requested number of non-overlapping high-value speech windows',
+);
+assertRule(
+  dynamicPlanningPlan.some((clip) => (clip.speechStartMs ?? clip.startMs) === 0 && (clip.speechEndMs ?? 0) >= 28_000),
+  'transcript-assisted dynamic planning keeps the first complete speech-to-text case window',
+);
+assertRule(
+  dynamicPlanningPlan.some((clip) => (clip.speechStartMs ?? clip.startMs) === 36_000 && (clip.speechEndMs ?? 0) >= 64_000),
+  'transcript-assisted dynamic planning keeps the second complete speech-to-text case window',
+);
+assertRule(
+  !dynamicPlanningPlan.some((clip) => (clip.speechStartMs ?? clip.startMs) === 0 && (clip.speechEndMs ?? 0) >= 64_000),
+  'transcript-assisted dynamic planning does not let one broad overlapping candidate crowd out multiple complete clips',
+);
+
+const longTranscriptSegments = Array.from({ length: 260 }, (_, index) => {
+  const startMs = index * 8_000;
+  const keyWindowTextByIndex = {
+    12: 'Watch the onboarding funnel setup, signup pain, pricing conflict, and complete activation payoff.',
+    130: 'Watch the refund workflow setup, support queue pain, escalation conflict, and complete retention payoff.',
+    238: 'Watch the creator analytics setup, audience dropoff pain, packaging conflict, and complete publishing payoff.',
+  };
+  return {
+    startMs,
+    endMs: startMs + 6_000,
+    text: keyWindowTextByIndex[index]
+      ? keyWindowTextByIndex[index]
+      : `Routine context segment ${index} with background notes and normal discussion.`,
+    speaker: 'Speaker 1',
+  };
+});
+const longTranscriptCandidates = buildTranscriptSliceCandidates(
+  {
+    ...baseParams,
+    minDuration: 5,
+    maxDuration: 15,
+    targetSliceCount: 5,
+    sourceDurationMs: 2_100_000,
+    sliceCountMode: 'qualityFirst',
+    enableRepeatFilter: true,
+  },
+  longTranscriptSegments,
+);
+assertRule(
+  longTranscriptCandidates.length <= 10,
+  'speech-to-text candidate generation returns a bounded review set after pruning large transcript workloads',
+);
+assertRule(
+  longTranscriptCandidates.some((candidate) => (candidate.speechStartMs ?? candidate.startMs) < 160_000) &&
+    longTranscriptCandidates.some((candidate) => (candidate.speechStartMs ?? candidate.startMs) > 900_000 && (candidate.speechStartMs ?? candidate.startMs) < 1_200_000) &&
+    longTranscriptCandidates.some((candidate) => (candidate.speechStartMs ?? candidate.startMs) > 1_800_000),
+  'speech-to-text candidate pruning preserves high-value windows across early, middle, and late transcript ranges',
 );
 
 const transcriptSegments = [
@@ -189,9 +699,9 @@ assertEqual(
   'transcript-assisted fallback clips expose the exact repaired speech-to-text text for review',
 );
 assertEqual(
-  transcriptPlan[0]?.subtitleSegmentCount,
+  transcriptPlan[0]?.transcriptSegmentCount,
   3,
-  'transcript-assisted fallback clips expose the number of subtitle segments included in the slice',
+  'transcript-assisted fallback clips expose the number of transcript segments included in the slice',
 );
 assertEqual(
   transcriptPlan[0]?.transcriptCoverageScore,
@@ -341,9 +851,9 @@ assertEqual(
   'LLM candidate-id plans preserve deterministic transcript text metadata',
 );
 assertEqual(
-  llmCandidatePlan[0]?.subtitleSegmentCount,
+  llmCandidatePlan[0]?.transcriptSegmentCount,
   3,
-  'LLM candidate-id plans preserve deterministic subtitle segment counts',
+  'LLM candidate-id plans preserve deterministic transcript segment counts',
 );
 assertEqual(
   llmCandidatePlan[0]?.transcriptCoverageScore,
@@ -457,9 +967,9 @@ assertEqual(
   'deterministic fallback clips expose zero transcript coverage when no speech-to-text boundary is available',
 );
 assertEqual(
-  deterministicPlan[0]?.subtitleSegmentCount,
+  deterministicPlan[0]?.transcriptSegmentCount,
   0,
-  'deterministic fallback clips expose zero subtitle segments when no transcript is available',
+  'deterministic fallback clips expose zero transcript segments when no transcript is available',
 );
 assertEqual(
   deterministicPlan[0]?.speechContinuityGrade,
@@ -564,8 +1074,12 @@ const coverageFirstPlan = createTranscriptAssistedSlicePlan({
 }, transcriptSegments);
 assertEqual(
   coverageFirstPlan.length,
-  5,
-  'coverage-first transcript planning fills repaired continuous clips up to the target count',
+  qualityFirstPlan.length,
+  'coverage-first transcript planning only emits clips with structured speech-to-text coverage instead of padding silent fixed windows',
+);
+assertRule(
+  coverageFirstPlan.every((clip) => clip.publishabilityGrade !== 'reject' && clip.platformReadinessGrade !== 'reject'),
+  'transcript-assisted planning filters unpublishable reject-grade speech windows before rendering',
 );
 
 const standardContinuityCandidates = buildTranscriptSliceCandidates({
@@ -575,18 +1089,21 @@ const standardContinuityCandidates = buildTranscriptSliceCandidates({
   { startMs: 0, endMs: 10000, text: 'Opening setup with important context.', speaker: 'Speaker 1' },
   { startMs: 11200, endMs: 24000, text: 'then payoff should attach across standard gap.', speaker: 'Speaker 1' },
 ]);
+const standardConnectorCandidate = standardContinuityCandidates.find((candidate) =>
+  candidate.startMs === 0 && candidate.risks?.includes('connector-repaired')
+);
 assertEqual(
-  standardContinuityCandidates.find((candidate) => candidate.candidateId === 'transcript-2')?.startMs,
+  standardConnectorCandidate?.startMs,
   0,
   'standard continuity repairs connector starts across short transcript gaps',
 );
 assertArrayIncludes(
-  standardContinuityCandidates.find((candidate) => candidate.candidateId === 'transcript-2')?.risks,
+  standardConnectorCandidate?.risks,
   'connector-repaired',
   'standard continuity candidates flag repaired connector-led starts',
 );
 assertNumberBetween(
-  standardContinuityCandidates.find((candidate) => candidate.candidateId === 'transcript-2')?.continuityScore,
+  standardConnectorCandidate?.continuityScore,
   0.8,
   1,
   'standard continuity candidates score repaired speech-to-text windows as continuous',
@@ -662,18 +1179,21 @@ const chineseConnectorCandidates = buildTranscriptSliceCandidates({
   { startMs: 0, endMs: 12000, text: '\u5f00\u5934\u5148\u8bb2\u5b8c\u8fd9\u4e2a\u6848\u4f8b\u7684\u80cc\u666f\u548c\u95ee\u9898\u3002', speaker: 'Speaker 1' },
   { startMs: 12400, endMs: 30000, text: '\u7136\u540e\u624d\u7ed9\u51fa\u89e3\u51b3\u529e\u6cd5\uff0c\u8fd9\u6837\u526a\u51fa\u6765\u7684\u7247\u6bb5\u624d\u8fde\u8d2f\u3002', speaker: 'Speaker 1' },
 ]);
+const chineseConnectorCandidate = chineseConnectorCandidates.find((candidate) =>
+  candidate.startMs === 0 && candidate.risks?.includes('connector-repaired')
+);
 assertEqual(
-  chineseConnectorCandidates.find((candidate) => candidate.candidateId === 'transcript-2')?.startMs,
+  chineseConnectorCandidate?.startMs,
   0,
   'Chinese speech-to-text planning repairs clips that start with connector words by including prior context',
 );
 assertArrayIncludes(
-  chineseConnectorCandidates.find((candidate) => candidate.candidateId === 'transcript-2')?.risks,
+  chineseConnectorCandidate?.risks,
   'connector-repaired',
   'Chinese connector-led clips surface the repaired transcript boundary as a review risk',
 );
 assertArrayIncludes(
-  chineseConnectorCandidates.find((candidate) => candidate.candidateId === 'transcript-2')?.sentenceBoundaryIssues,
+  chineseConnectorCandidate?.sentenceBoundaryIssues,
   'sentence-leading-connector-repaired',
   'Chinese connector-led clips expose sentence boundary issue tags for repaired openings',
 );
@@ -859,6 +1379,106 @@ assertEqual(
   'speech boundary padding splits tight previous gaps before the next clip',
 );
 
+const externallyPaddedSpeechPlan = normalizeCandidateSlicePlan([
+  {
+    index: 0,
+    startMs: 0,
+    durationMs: 25_000,
+    label: 'LLM padded intro',
+    qualityScore: 0.91,
+    continuityScore: 0.92,
+    storyShape: 'complete',
+    transcriptText: 'Watch the result first, then the speaker explains the reason and takeaway.',
+    transcriptCoverageScore: 0.95,
+    transcriptSegmentCount: 3,
+    speechContinuityGrade: 'strong',
+    speechStartMs: 4_000,
+    speechEndMs: 20_000,
+    sourceStartMs: 0,
+    sourceEndMs: 25_000,
+  },
+], {
+  ...baseParams,
+  minDuration: 5,
+  maxDuration: 60,
+  sliceCountMode: 'qualityFirst',
+  targetSliceCount: 1,
+  sourceDurationMs: 60_000,
+});
+assertEqual(
+  externallyPaddedSpeechPlan[0]?.startMs,
+  3_800,
+  'candidate normalization trims excessive silent intros around known speech starts',
+);
+assertEqual(
+  externallyPaddedSpeechPlan[0]?.durationMs,
+  16_450,
+  'candidate normalization trims excessive silent outros around known speech ends',
+);
+assertEqual(
+  externallyPaddedSpeechPlan[0]?.boundaryPaddingBeforeMs,
+  200,
+  'candidate normalization keeps only professional leading speech breathing room after silence trimming',
+);
+assertEqual(
+  externallyPaddedSpeechPlan[0]?.boundaryPaddingAfterMs,
+  250,
+  'candidate normalization keeps only professional trailing speech breathing room after silence trimming',
+);
+assertArrayIncludes(
+  externallyPaddedSpeechPlan[0]?.risks,
+  'excess-leading-silence-trimmed',
+  'candidate normalization records excessive leading silence trimming for review',
+);
+assertArrayIncludes(
+  externallyPaddedSpeechPlan[0]?.risks,
+  'excess-trailing-silence-trimmed',
+  'candidate normalization records excessive trailing silence trimming for review',
+);
+
+const llmOverpaddedSpeechPlan = parseLlmSlicePlan(
+  JSON.stringify([
+    {
+      startMs: 0,
+      durationMs: 30_000,
+      title: 'Overpadded LLM clip',
+      transcriptText: 'The hook starts only after silence and finishes before the quiet tail.',
+      transcriptCoverageScore: 0.92,
+      transcriptSegmentCount: 2,
+      speechContinuityGrade: 'strong',
+      speechStartMs: 6_000,
+      speechEndMs: 23_000,
+      qualityScore: 0.9,
+      continuityScore: 0.9,
+      storyShape: 'complete',
+    },
+  ]),
+  {
+    ...baseParams,
+    minDuration: 5,
+    maxDuration: 60,
+    sliceCountMode: 'qualityFirst',
+    targetSliceCount: 1,
+    sourceDurationMs: 60_000,
+  },
+  deterministicPlan,
+);
+assertEqual(
+  llmOverpaddedSpeechPlan[0]?.startMs,
+  5_800,
+  'LLM raw timing is trimmed to the first real speech boundary instead of preserving a long silent intro',
+);
+assertEqual(
+  llmOverpaddedSpeechPlan[0]?.durationMs,
+  17_450,
+  'LLM raw timing is trimmed to the final real speech boundary instead of preserving a long silent outro',
+);
+assertArrayIncludes(
+  llmOverpaddedSpeechPlan[0]?.risks,
+  'excess-leading-silence-trimmed',
+  'LLM raw timing records leading silence trimming in the final plan',
+);
+
 const shortUnjoinedSpeechCandidates = buildTranscriptSliceCandidates({
   ...baseParams,
   minDuration: 10,
@@ -901,13 +1521,14 @@ const keywordCandidates = buildTranscriptSliceCandidates({
   { startMs: 0, endMs: 16000, text: 'Plain setup without the configured term.', speaker: 'Speaker 1' },
   { startMs: 17000, endMs: 33000, text: 'Retention spike explains why viewers stay.', speaker: 'Speaker 1' },
 ]);
+const keywordCandidate = keywordCandidates.find((candidate) => candidate.transcriptText?.includes('Retention spike'));
 assertEqual(
-  keywordCandidates[0]?.startMs,
+  keywordCandidate?.startMs,
   16800,
   'custom keywords boost matching transcript windows in candidate ranking while preserving render breathing room',
 );
 assertEqual(
-  keywordCandidates[0]?.speechStartMs,
+  keywordCandidate?.speechStartMs,
   17000,
   'custom keyword candidates preserve the original speech start despite leading render padding',
 );
@@ -922,69 +1543,70 @@ const storyShapeCandidates = buildTranscriptSliceCandidates({
   { startMs: 12200, endMs: 24000, text: 'Because the opening does not name the pain, viewers never know why they should care.', speaker: 'Speaker 1' },
   { startMs: 24200, endMs: 36000, text: 'So the fix is to lead with the result, then prove it with one concrete example.', speaker: 'Speaker 1' },
 ]);
+const completeStoryCandidate = storyShapeCandidates.find((candidate) => candidate.storyShape === 'complete');
 assertEqual(
-  storyShapeCandidates[0]?.storyShape,
+  completeStoryCandidate?.storyShape,
   'complete',
   'speech-to-text candidate scoring detects complete hook-context-payoff short-video windows',
 );
 assertRule(
-  !storyShapeCandidates[0]?.risks?.includes('missing-payoff'),
+  !completeStoryCandidate?.risks?.includes('missing-payoff'),
   'complete hook-context-payoff windows are not flagged as missing a payoff',
 );
 assertNumberBetween(
-  storyShapeCandidates[0]?.contentArcScore,
+  completeStoryCandidate?.contentArcScore,
   0.8,
   1,
   'speech-to-text candidate scoring exposes complete content-arc scores for publishable short videos',
 );
 assertEqual(
-  storyShapeCandidates[0]?.contentArcGrade,
+  completeStoryCandidate?.contentArcGrade,
   'complete',
   'speech-to-text candidate scoring grades complete hook-setup-conflict-payoff arcs as complete',
 );
 assertArrayIncludes(
-  storyShapeCandidates[0]?.contentArcStages,
+  completeStoryCandidate?.contentArcStages,
   'hook',
   'speech-to-text content arcs detect short-video hooks',
 );
 assertArrayIncludes(
-  storyShapeCandidates[0]?.contentArcStages,
+  completeStoryCandidate?.contentArcStages,
   'setup',
   'speech-to-text content arcs detect setup context',
 );
 assertArrayIncludes(
-  storyShapeCandidates[0]?.contentArcStages,
+  completeStoryCandidate?.contentArcStages,
   'conflict',
   'speech-to-text content arcs detect audience pain or conflict',
 );
 assertArrayIncludes(
-  storyShapeCandidates[0]?.contentArcStages,
+  completeStoryCandidate?.contentArcStages,
   'payoff',
   'speech-to-text content arcs detect payoff or solution endings',
 );
 assertRule(
-  Array.isArray(storyShapeCandidates[0]?.contentArcMissingStages) &&
-    storyShapeCandidates[0].contentArcMissingStages.length === 0,
+  Array.isArray(completeStoryCandidate?.contentArcMissingStages) &&
+    completeStoryCandidate.contentArcMissingStages.length === 0,
   'complete content arcs do not report missing short-video stages',
 );
 assertNumberBetween(
-  storyShapeCandidates[0]?.topicCoherenceScore,
+  completeStoryCandidate?.topicCoherenceScore,
   0.75,
   1,
   'speech-to-text candidate scoring exposes high topic coherence for single-topic short videos',
 );
 assertEqual(
-  storyShapeCandidates[0]?.topicCoherenceGrade,
+  completeStoryCandidate?.topicCoherenceGrade,
   'strong',
   'speech-to-text candidate scoring grades single-topic transcript windows as strong topic coherence',
 );
 assertEqual(
-  storyShapeCandidates[0]?.topicShiftCount,
+  completeStoryCandidate?.topicShiftCount,
   0,
   'single-topic transcript windows do not report topic shifts',
 );
 assertArrayIncludes(
-  storyShapeCandidates[0]?.topicKeywords,
+  completeStoryCandidate?.topicKeywords,
   'opening',
   'topic coherence metadata exposes representative transcript keywords for review',
 );
@@ -999,22 +1621,23 @@ const chineseStoryShapeCandidates = buildTranscriptSliceCandidates({
   { startMs: 11200, endMs: 23000, text: '\u56e0\u4e3a\u5f00\u5934\u6ca1\u6709\u628a\u95ee\u9898\u548c\u573a\u666f\u4ea4\u4ee3\u6e05\u695a\u3002', speaker: 'Speaker 1' },
   { startMs: 23200, endMs: 35000, text: '\u6240\u4ee5\u89e3\u51b3\u529e\u6cd5\u662f\u5148\u7ed9\u7ed3\u679c\uff0c\u518d\u7528\u4e00\u4e2a\u4f8b\u5b50\u8bc1\u660e\u3002', speaker: 'Speaker 1' },
 ]);
+const completeChineseStoryCandidate = chineseStoryShapeCandidates.find((candidate) => candidate.storyShape === 'complete');
 assertEqual(
-  chineseStoryShapeCandidates[0]?.storyShape,
+  completeChineseStoryCandidate?.storyShape,
   'complete',
   'Chinese speech-to-text candidate scoring detects complete hook-context-payoff windows',
 );
 assertRule(
-  !chineseStoryShapeCandidates[0]?.risks?.includes('missing-payoff'),
+  !completeChineseStoryCandidate?.risks?.includes('missing-payoff'),
   'complete Chinese hook-context-payoff windows are not flagged as missing a payoff',
 );
 assertEqual(
-  chineseStoryShapeCandidates[0]?.contentArcGrade,
+  completeChineseStoryCandidate?.contentArcGrade,
   'complete',
   'Chinese speech-to-text candidate scoring grades complete hook-setup-conflict-payoff arcs as complete',
 );
 assertArrayIncludes(
-  chineseStoryShapeCandidates[0]?.contentArcStages,
+  completeChineseStoryCandidate?.contentArcStages,
   'conflict',
   'Chinese speech-to-text content arcs detect problem or pain stages',
 );
@@ -1116,6 +1739,96 @@ assertEqual(
   'candidate normalization removes near-duplicate windows instead of producing repetitive short videos',
 );
 
+const partialOverlapCandidatePlan = normalizeCandidateSlicePlan([
+  {
+    index: 0,
+    startMs: 0,
+    durationMs: 30000,
+    label: 'First complete speech window',
+    qualityScore: 0.86,
+    continuityScore: 0.9,
+    storyShape: 'complete',
+    transcriptText: 'The first window explains one complete answer.',
+    transcriptSegmentCount: 3,
+    speechContinuityGrade: 'strong',
+  },
+  {
+    index: 1,
+    startMs: 25000,
+    durationMs: 30000,
+    label: 'Partially repeated overlap',
+    qualityScore: 0.85,
+    continuityScore: 0.9,
+    storyShape: 'complete',
+    transcriptText: 'The second window repeats the previous ending before a new answer.',
+    transcriptSegmentCount: 3,
+    speechContinuityGrade: 'strong',
+  },
+], {
+  ...baseParams,
+  sliceCountMode: 'qualityFirst',
+  targetSliceCount: 2,
+});
+assertEqual(
+  partialOverlapCandidatePlan.length,
+  1,
+  'candidate normalization rejects partially overlapping speech windows so slice outputs do not repeat source content',
+);
+const shortPhraseDuplicateCandidatePlan = normalizeCandidateSlicePlan([
+  {
+    index: 0,
+    startMs: 0,
+    durationMs: 12_000,
+    label: 'Refund fix A',
+    qualityScore: 0.9,
+    continuityScore: 0.9,
+    storyShape: 'complete',
+    transcriptText: 'Refund fix improves retention.',
+    transcriptSegmentCount: 1,
+    speechContinuityGrade: 'strong',
+  },
+  {
+    index: 1,
+    startMs: 16_000,
+    durationMs: 12_000,
+    label: 'Refund fix B',
+    qualityScore: 0.89,
+    continuityScore: 0.9,
+    storyShape: 'complete',
+    transcriptText: 'Refund fix improved retention.',
+    transcriptSegmentCount: 1,
+    speechContinuityGrade: 'strong',
+  },
+  {
+    index: 2,
+    startMs: 36_000,
+    durationMs: 12_000,
+    label: 'Pricing setup',
+    qualityScore: 0.8,
+    continuityScore: 0.9,
+    storyShape: 'complete',
+    transcriptText: 'Pricing setup explains invoice pain.',
+    transcriptSegmentCount: 1,
+    speechContinuityGrade: 'strong',
+  },
+], {
+  ...baseParams,
+  minDuration: 5,
+  maxDuration: 60,
+  sliceCountMode: 'qualityFirst',
+  targetSliceCount: 3,
+  enableRepeatFilter: true,
+});
+assertEqual(
+  shortPhraseDuplicateCandidatePlan.filter((candidate) => candidate.transcriptText?.includes('Refund fix')).length,
+  1,
+  'candidate normalization removes short one-sentence near-duplicates from external or LLM candidate inputs',
+);
+assertRule(
+  shortPhraseDuplicateCandidatePlan.some((candidate) => candidate.transcriptText?.includes('Pricing setup')),
+  'candidate normalization keeps distinct short transcript candidates while removing short near-duplicates',
+);
+
 const invalidCandidateTimingPlan = normalizeCandidateSlicePlan([
   {
     index: 0,
@@ -1169,7 +1882,7 @@ const dirtyTimingMetadataPlan = normalizeCandidateSlicePlan([
     speechEndMs: 50000,
     transcriptText: 'Start with the result, explain the reason, and finish with the takeaway.',
     transcriptCoverageScore: 0.95,
-    subtitleSegmentCount: 3,
+    transcriptSegmentCount: 3,
     speechContinuityGrade: 'strong',
   },
 ], {
@@ -1224,7 +1937,7 @@ const publishabilityRankedPlan = normalizeCandidateSlicePlan([
     storyShape: 'thin',
     risks: ['missing-payoff'],
     transcriptCoverageScore: 0.2,
-    subtitleSegmentCount: 1,
+    transcriptSegmentCount: 1,
     speechContinuityGrade: 'weak',
   },
   {
@@ -1237,7 +1950,7 @@ const publishabilityRankedPlan = normalizeCandidateSlicePlan([
     storyShape: 'complete',
     risks: [],
     transcriptCoverageScore: 0.96,
-    subtitleSegmentCount: 4,
+    transcriptSegmentCount: 4,
     speechContinuityGrade: 'strong',
   },
 ], {
@@ -1280,7 +1993,7 @@ const platformRankedPlan = normalizeCandidateSlicePlan([
     topicCoherenceScore: 0.9,
     topicCoherenceGrade: 'strong',
     transcriptCoverageScore: 0.95,
-    subtitleSegmentCount: 6,
+    transcriptSegmentCount: 6,
     speechContinuityGrade: 'strong',
   },
   {
@@ -1300,7 +2013,7 @@ const platformRankedPlan = normalizeCandidateSlicePlan([
     topicCoherenceScore: 0.88,
     topicCoherenceGrade: 'strong',
     transcriptCoverageScore: 0.94,
-    subtitleSegmentCount: 4,
+    transcriptSegmentCount: 4,
     speechContinuityGrade: 'strong',
   },
 ], {
@@ -1339,7 +2052,7 @@ const bilibiliLongContextPlan = normalizeCandidateSlicePlan([
     topicCoherenceScore: 0.9,
     topicCoherenceGrade: 'strong',
     transcriptCoverageScore: 0.95,
-    subtitleSegmentCount: 6,
+    transcriptSegmentCount: 6,
     speechContinuityGrade: 'strong',
   },
 ], {
@@ -1378,7 +2091,7 @@ const xiaohongshuWeakHookPlan = normalizeCandidateSlicePlan([
     topicCoherenceScore: 0.9,
     topicCoherenceGrade: 'strong',
     transcriptCoverageScore: 0.94,
-    subtitleSegmentCount: 4,
+    transcriptSegmentCount: 4,
     speechContinuityGrade: 'strong',
   },
 ], {
@@ -1516,6 +2229,31 @@ assertArrayIncludes(
   noTranscriptLlmPlan[3]?.risks,
   'no-transcript-boundary',
   'no-transcript LLM filler clips retain deterministic fallback boundary warnings',
+);
+
+const punctuationOnlyLlmTitlePlan = parseLlmSlicePlan(
+  JSON.stringify([
+    { startMs: 0, durationMs: 15000, title: '???', label: '...' },
+  ]),
+  {
+    ...baseParams,
+    sliceCountMode: 'qualityFirst',
+    targetSliceCount: 1,
+  },
+  deterministicPlan,
+);
+assertRule(
+  !/^[^\p{L}\p{N}]+$/u.test(punctuationOnlyLlmTitlePlan[0]?.label ?? ''),
+  'LLM parsing never emits punctuation-only clip labels for task display or native output naming',
+);
+assertRule(
+  !/^[^\p{L}\p{N}]+$/u.test(punctuationOnlyLlmTitlePlan[0]?.title ?? ''),
+  'LLM parsing never emits punctuation-only clip titles for generated file names',
+);
+assertEqual(
+  punctuationOnlyLlmTitlePlan[0]?.label,
+  'Smart slice 1',
+  'LLM parsing falls back to stable semantic labels when model titles contain no words',
 );
 
 const dirtyLlmPlan = parseLlmSlicePlan(

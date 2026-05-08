@@ -1,0 +1,331 @@
+name: AutoCut Desktop Multiplatform Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: GitHub Release tag to upload assets to
+        required: true
+        default: v0.1.1
+      upload_assets:
+        description: Upload built assets to the GitHub Release
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  PNPM_HOME: ~/.local/share/pnpm
+
+jobs:
+  build-windows:
+    name: Build Windows x86_64
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE: "true"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify workspace
+        run: pnpm test
+
+      - name: Prepare release sidecars
+        shell: pwsh
+        run: |
+          $sidecarSource = Join-Path $env:RUNNER_TEMP "autocut-windows-x86_64-sidecars"
+          New-Item -ItemType Directory -Force -Path $sidecarSource | Out-Null
+          Copy-Item -LiteralPath packages/sdkwork-autocut-desktop/src-tauri/binaries/windows-x86_64/* -Destination $sidecarSource -Recurse -Force
+          pnpm prepare:ffmpeg-sidecar -- --platform windows-x86_64 --source "$sidecarSource/ffmpeg.exe" --accept-license
+          pnpm prepare:speech-sidecar -- --platform windows-x86_64 --source "$sidecarSource/whisper-cli.exe" --accept-license
+
+      - name: Build desktop bundle
+        run: pnpm tauri:build
+
+      - name: Write Windows release evidence
+        shell: pwsh
+        run: |
+          pnpm release:smoke-preflight -- --platform windows-x86_64 --require-bundled
+          pnpm release:native-smoke -- --run-real-llm-secret-smoke
+          pnpm release:smart-slice-sample
+          pnpm release:installer-signature -- --platform windows-x86_64
+          pnpm release:evidence -- --platform windows-x86_64 --output artifacts/release/autocut-release-evidence-windows-x86_64.json
+          pnpm release:package-sbom -- --platform windows-x86_64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: autocut-windows-x86_64-release-assets
+          if-no-files-found: error
+          path: |
+            packages/sdkwork-autocut-desktop/src-tauri/target/release/bundle/msi/*.msi
+            packages/sdkwork-autocut-desktop/src-tauri/target/release/bundle/nsis/*.exe
+            artifacts/release/*.json
+            artifacts/release/sbom/*.cdx.json
+
+      - name: Upload Windows assets to release
+        if: ${{ inputs.upload_assets }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ inputs.release_tag }}" --clobber `
+            packages/sdkwork-autocut-desktop/src-tauri/target/release/bundle/msi/*.msi `
+            packages/sdkwork-autocut-desktop/src-tauri/target/release/bundle/nsis/*.exe `
+            artifacts/release/sbom/desktop-windows-msi.cdx.json `
+            artifacts/release/sbom/desktop-windows-nsis.cdx.json `
+            artifacts/release/autocut-release-evidence-windows-x86_64.json
+
+  build-linux:
+    name: Build Ubuntu/Linux x86_64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Install Linux Tauri dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            cmake \
+            patchelf \
+            wget \
+            xdg-utils
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify workspace
+        run: pnpm test
+
+      - name: Prepare release sidecars
+        run: |
+          pnpm prepare:release-sidecars -- --platform linux-x86_64 --accept-license
+
+      - name: Build desktop bundle
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          projectPath: packages/sdkwork-autocut-desktop
+          args: --target x86_64-unknown-linux-gnu
+
+      - name: Write Linux release evidence
+        run: |
+          pnpm release:smoke-preflight -- --platform linux-x86_64 --require-bundled
+          pnpm release:native-smoke
+          pnpm release:smart-slice-sample
+          pnpm release:installer-signature -- --platform linux-x86_64
+          pnpm release:evidence -- --platform linux-x86_64 --output artifacts/release/autocut-release-evidence-linux-x86_64.json
+          pnpm release:package-sbom -- --platform linux-x86_64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: autocut-linux-x86_64-release-assets
+          if-no-files-found: error
+          path: |
+            packages/sdkwork-autocut-desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+            packages/sdkwork-autocut-desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+            artifacts/release/*.json
+            artifacts/release/sbom/*.cdx.json
+
+      - name: Upload Linux assets to release
+        if: ${{ inputs.upload_assets }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ inputs.release_tag }}" --clobber \
+            packages/sdkwork-autocut-desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb \
+            packages/sdkwork-autocut-desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage \
+            artifacts/release/sbom/desktop-linux-deb.cdx.json \
+            artifacts/release/sbom/desktop-linux-appimage.cdx.json \
+            artifacts/release/autocut-release-evidence-linux-x86_64.json
+
+  build-macos:
+    name: Build macOS ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-x86_64
+            rust_target: x86_64-apple-darwin
+            runner: macos-15-intel
+          - platform: macos-aarch64
+            rust_target: aarch64-apple-darwin
+            runner: macos-latest
+    env:
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      MACOS_SIGNING_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE }}
+      MACOS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
+      SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify workspace
+        run: pnpm test
+
+      - name: Prepare release sidecars
+        run: |
+          pnpm prepare:release-sidecars -- --platform ${{ matrix.platform }} --accept-license
+
+      - name: Build desktop bundle
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          projectPath: packages/sdkwork-autocut-desktop
+          args: --target ${{ matrix.rust_target }}
+
+      - name: Write macOS release evidence
+        run: |
+          pnpm release:smoke-preflight -- --platform ${{ matrix.platform }} --require-bundled
+          pnpm release:native-smoke
+          pnpm release:smart-slice-sample
+          pnpm release:installer-signature -- --platform ${{ matrix.platform }}
+          pnpm release:evidence -- --platform ${{ matrix.platform }} --output artifacts/release/autocut-release-evidence-${{ matrix.platform }}.json
+          pnpm release:package-sbom -- --platform ${{ matrix.platform }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: autocut-${{ matrix.platform }}-release-assets
+          if-no-files-found: error
+          path: |
+            packages/sdkwork-autocut-desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle/dmg/*.dmg
+            packages/sdkwork-autocut-desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos/*.app.tar.gz
+            artifacts/release/*.json
+            artifacts/release/sbom/*.cdx.json
+
+      - name: Upload macOS assets to release
+        if: ${{ inputs.upload_assets }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ inputs.release_tag }}" --clobber \
+            packages/sdkwork-autocut-desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle/dmg/*.dmg \
+            packages/sdkwork-autocut-desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos/*.app.tar.gz \
+            artifacts/release/sbom/*.cdx.json \
+            artifacts/release/autocut-release-evidence-${{ matrix.platform }}.json
+
+  verify-multiplatform-release:
+    name: Verify multiplatform release evidence
+    runs-on: ubuntu-22.04
+    needs:
+      - build-windows
+      - build-linux
+      - build-macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/downloaded-release
+
+      - name: Collect release evidence
+        run: |
+          mkdir -p artifacts/release
+          mkdir -p artifacts/release/sbom
+          find artifacts/downloaded-release -name 'autocut-release-evidence-*.json' -exec cp {} artifacts/release/ \;
+          find artifacts/downloaded-release \( -name '*.cdx.json' -o -name '*.cyclonedx.json' -o -name '*.spdx.json' -o -name '*.sbom.json' \) -exec cp {} artifacts/release/sbom/ \;
+
+      - name: Verify aggregate multiplatform preview readiness
+        run: |
+          pnpm release:sbom-evidence -- --release-tag "${{ inputs.release_tag }}" --allow-blocked
+          pnpm release:sync-app-manifest -- --dry-run --allow-blocked
+          pnpm release:app-manifest-ready
+          pnpm release:multiplatform-ready
+          pnpm release:evidence-status -- --release-tag "${{ inputs.release_tag }}" --allow-dirty --skip-windows-installer-service --allow-blocked
+
+      - name: Upload aggregate release evidence
+        if: ${{ inputs.upload_assets }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pnpm release:sbom-evidence -- --release-tag "${{ inputs.release_tag }}" --allow-blocked
+          pnpm release:sync-app-manifest -- --dry-run --allow-blocked > artifacts/release/autocut-app-manifest-release-evidence-sync.txt
+          node scripts/check-autocut-app-manifest-release-readiness.mjs > artifacts/release/autocut-app-manifest-release-readiness.txt
+          node scripts/check-autocut-multiplatform-release-readiness.mjs > artifacts/release/autocut-multiplatform-release-readiness.txt
+          pnpm release:evidence-status -- --release-tag "${{ inputs.release_tag }}" --allow-dirty --skip-windows-installer-service --allow-blocked --json > artifacts/release/autocut-release-evidence-status.json
+          gh release upload "${{ inputs.release_tag }}" --clobber \
+            artifacts/release/autocut-sbom-evidence.json \
+            artifacts/release/autocut-app-manifest-release-evidence-sync.txt \
+            artifacts/release/autocut-app-manifest-release-readiness.txt \
+            artifacts/release/autocut-multiplatform-release-readiness.txt \
+            artifacts/release/autocut-release-evidence-status.json

@@ -1,7 +1,7 @@
 {
   "tool": "ffmpeg",
   "contractVersion": "2026-05-05.ffmpeg-toolchain.v1",
-  "bundledReady": true,
+  "bundledReady": false,
   "requiredBinary": "ffmpeg",
   "license": {
     "name": "FFmpeg",

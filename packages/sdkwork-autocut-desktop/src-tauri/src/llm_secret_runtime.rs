@@ -8,14 +8,9 @@ const AUTOCUT_LLM_SECRET_SERVICE: &str = "com.sdkwork.video-cut.llm";
 const AUTOCUT_LLM_SECRET_USER_PREFIX: &str = "autocut-llm";
 const MAX_AUTOCUT_LLM_SECRET_NAME_BYTES: usize = 96;
 const MAX_AUTOCUT_LLM_SECRET_VALUE_BYTES: usize = 16 * 1024;
-const AUTOCUT_LLM_ENV_DEFAULT_SECRET_NAMES: &[&str] = &[
-    "dev-default",
-    "release-default",
-];
-const DEEPSEEK_ENV_API_KEY_NAMES: &[&str] = &[
-    "SDKWORK_AUTOCUT_DEEPSEEK_API_KEY",
-    "DEEPSEEK_API_KEY",
-];
+const AUTOCUT_LLM_ENV_DEFAULT_SECRET_NAMES: &[&str] = &["dev-default", "release-default"];
+const DEEPSEEK_ENV_API_KEY_NAMES: &[&str] =
+    &["SDKWORK_AUTOCUT_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"];
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -119,8 +114,9 @@ fn ensure_autocut_keyring_store() -> Result<(), String> {
         static KEYRING_STORE_INIT: OnceLock<Result<(), String>> = OnceLock::new();
         KEYRING_STORE_INIT
             .get_or_init(|| {
-                let store = windows_native_keyring_store::Store::new()
-                    .map_err(|error| format!("Failed to initialize AutoCut Windows keyring store: {error}"))?;
+                let store = windows_native_keyring_store::Store::new().map_err(|error| {
+                    format!("Failed to initialize AutoCut Windows keyring store: {error}")
+                })?;
                 keyring_core::set_default_store(store);
                 Ok(())
             })
@@ -153,7 +149,10 @@ fn normalize_autocut_secret_name(secret_name: &str) -> Result<String, String> {
         .chars()
         .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_')
     {
-        return Err("AutoCut LLM secret name may only contain ASCII letters, numbers, '-' and '_'.".to_string());
+        return Err(
+            "AutoCut LLM secret name may only contain ASCII letters, numbers, '-' and '_'."
+                .to_string(),
+        );
     }
 
     Ok(normalized.to_string())
@@ -201,7 +200,9 @@ mod tests {
 
     fn ensure_test_keyring_store() {
         TEST_KEYRING_STORE_INIT.get_or_init(|| {
-            keyring_core::set_default_store(mock::Store::new().expect("mock keyring store should initialize"));
+            keyring_core::set_default_store(
+                mock::Store::new().expect("mock keyring store should initialize"),
+            );
         });
     }
 
@@ -270,14 +271,19 @@ mod tests {
 
     #[test]
     fn reads_default_deepseek_api_key_from_environment_when_secret_is_missing() {
-        let _env_guard = TEST_ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _env_guard = TEST_ENV_LOCK
+            .lock()
+            .expect("env lock should not be poisoned");
         ensure_test_keyring_store();
         let secret_name = "release-default".to_string();
         let _ = delete_autocut_llm_secret(AutoCutLlmSecretRequest {
             secret_name: secret_name.clone(),
         });
         unsafe {
-            std::env::set_var("SDKWORK_AUTOCUT_DEEPSEEK_API_KEY", " sk-env-default-secret ");
+            std::env::set_var(
+                "SDKWORK_AUTOCUT_DEEPSEEK_API_KEY",
+                " sk-env-default-secret ",
+            );
             std::env::remove_var("DEEPSEEK_API_KEY");
         }
 
@@ -292,12 +298,17 @@ mod tests {
 
         assert!(loaded.configured);
         assert_eq!(loaded.secret_name, secret_name);
-        assert_eq!(loaded.secret_value.as_deref(), Some("sk-env-default-secret"));
+        assert_eq!(
+            loaded.secret_value.as_deref(),
+            Some("sk-env-default-secret")
+        );
     }
 
     #[test]
     fn ignores_deepseek_environment_key_for_non_default_secret_names() {
-        let _env_guard = TEST_ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _env_guard = TEST_ENV_LOCK
+            .lock()
+            .expect("env lock should not be poisoned");
         ensure_test_keyring_store();
         let secret_name = format!("test-env-{}-manual", std::process::id());
         let _ = delete_autocut_llm_secret(AutoCutLlmSecretRequest {
@@ -320,7 +331,9 @@ mod tests {
 
     #[test]
     fn ignores_deepseek_environment_key_for_unrecognized_default_secret_names() {
-        let _env_guard = TEST_ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _env_guard = TEST_ENV_LOCK
+            .lock()
+            .expect("env lock should not be poisoned");
         ensure_test_keyring_store();
         let secret_name = format!("test-env-{}-default", std::process::id());
         let _ = delete_autocut_llm_secret(AutoCutLlmSecretRequest {
@@ -346,7 +359,9 @@ mod tests {
     #[ignore = "writes to the real Windows Credential Manager; run through scripts/write-autocut-native-release-smoke.mjs --run-real-llm-secret-smoke"]
     fn real_windows_keyring_store_saves_reads_and_deletes_llm_secret() {
         if std::env::var("SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE").as_deref() != Ok("true") {
-            panic!("set SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE=true to run the real Windows LLM secret store smoke");
+            panic!(
+                "set SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE=true to run the real Windows LLM secret store smoke"
+            );
         }
 
         let previous_store = keyring_core::unset_default_store();
@@ -354,10 +369,7 @@ mod tests {
             .expect("real Windows keyring store should initialize for release smoke");
         keyring_core::set_default_store(real_store);
 
-        let secret_name = format!(
-            "real_smoke_{}",
-            std::process::id()
-        );
+        let secret_name = format!("real_smoke_{}", std::process::id());
         let secret_value = format!("sk-autocut-real-smoke-{}", std::process::id());
         let cleanup_request = AutoCutLlmSecretRequest {
             secret_name: secret_name.clone(),

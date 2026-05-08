@@ -24,6 +24,7 @@ function writeEvidence(root, overrides = {}) {
     readiness: {
       ffmpegExecutionReady: false,
       ffmpegBundledReady: false,
+      speechBundledReady: false,
       releaseSmokeReady: true,
       nativeReleaseSmokeReady: true,
       nativeVideoSliceSmokeReady: true,
@@ -36,6 +37,11 @@ function writeEvidence(root, overrides = {}) {
       sidecarPresent: false,
       integrityReady: false,
       bundledReady: false,
+      speechSidecar: {
+        sidecarPresent: false,
+        integrityReady: false,
+        bundledReady: false,
+      },
       executableSmokeReady: 'skipped',
       releaseSmokeReady: true,
       ffmpegExecutionReady: false,
@@ -107,13 +113,14 @@ assert.deepEqual(
   blockedReport.blockers.map((blocker) => blocker.code),
   [
     'FFMPEG_SIDECAR_NOT_BUNDLED',
+    'SPEECH_SIDECAR_NOT_BUNDLED',
     'FFMPEG_EXECUTABLE_SMOKE_NOT_VERIFIED',
     'FFMPEG_EXECUTION_NOT_READY',
   ],
 );
 assert.equal(
   formatAutoCutPreviewReleaseReadinessMessage(blockedReport),
-  'blocked - autocut preview release readiness blockers=3 warnings=1',
+  'blocked - autocut preview release readiness blockers=4 warnings=1',
 );
 
 const readyUnsignedRoot = tempRoot('autocut-preview-release-ready-unsigned');
@@ -121,6 +128,7 @@ writeEvidence(readyUnsignedRoot, {
   readiness: {
     ffmpegExecutionReady: false,
     ffmpegBundledReady: true,
+    speechBundledReady: true,
     releaseSmokeReady: true,
     nativeReleaseSmokeReady: true,
     nativeVideoSliceSmokeReady: true,
@@ -132,6 +140,11 @@ writeEvidence(readyUnsignedRoot, {
     sidecarPresent: true,
     integrityReady: true,
     bundledReady: true,
+    speechSidecar: {
+      sidecarPresent: true,
+      integrityReady: true,
+      bundledReady: true,
+    },
     executableSmokeReady: true,
     releaseSmokeReady: true,
     ffmpegExecutionReady: true,
@@ -157,6 +170,7 @@ writeEvidence(readySignedRoot, {
   readiness: {
     ffmpegExecutionReady: true,
     ffmpegBundledReady: true,
+    speechBundledReady: true,
     releaseSmokeReady: true,
     nativeReleaseSmokeReady: true,
     nativeVideoSliceSmokeReady: true,
@@ -168,6 +182,11 @@ writeEvidence(readySignedRoot, {
     sidecarPresent: true,
     integrityReady: true,
     bundledReady: true,
+    speechSidecar: {
+      sidecarPresent: true,
+      integrityReady: true,
+      bundledReady: true,
+    },
     executableSmokeReady: true,
     releaseSmokeReady: true,
     ffmpegExecutionReady: true,
@@ -189,6 +208,7 @@ const missingInstallerRoot = tempRoot('autocut-preview-release-missing-installer
 writeEvidence(missingInstallerRoot, {
   readiness: {
     ffmpegBundledReady: true,
+    speechBundledReady: true,
     releaseSmokeReady: true,
     nativeReleaseSmokeReady: true,
     nativeVideoSliceSmokeReady: true,
@@ -199,6 +219,11 @@ writeEvidence(missingInstallerRoot, {
     sidecarPresent: true,
     integrityReady: true,
     bundledReady: true,
+    speechSidecar: {
+      sidecarPresent: true,
+      integrityReady: true,
+      bundledReady: true,
+    },
     executableSmokeReady: true,
     releaseSmokeReady: true,
     ffmpegExecutionReady: true,

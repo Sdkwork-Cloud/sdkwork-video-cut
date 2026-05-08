@@ -29,6 +29,7 @@ export function createAutoCutNativeReleaseSmokeEvidence({
   generatedAt = new Date().toISOString(),
   outputPath,
   skipRustSmoke = false,
+  hostPlatform = process.platform,
   runRealLlmSecretSmoke = isAutoCutTruthyFlag(process.env.SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE),
   runCommand = runAutoCutNativeReleaseSmokeCommand,
 } = {}) {
@@ -73,13 +74,14 @@ export function createAutoCutNativeReleaseSmokeEvidence({
     rootDir: resolvedRootDir,
     cargoManifestPath,
     cargoTargetDir: llmSecretCargoTargetDir,
+    hostPlatform,
     runRealLlmSecretSmoke,
     runCommand,
   });
   const commandMatrix = createNativeCommandMatrix({
     rustSmokeReady: !rustSmoke.skipped && rustSmoke.success,
     videoSliceSmokeReady: !videoSliceSmoke.skipped && videoSliceSmoke.success,
-    llmSecretStoreSmokeReady: !llmSecretStoreSmoke.skipped && llmSecretStoreSmoke.success,
+    llmSecretStoreSmokeReady: isLlmSecretStoreSmokeReady(llmSecretStoreSmoke),
   });
   const nativeReleaseSmokeReady =
     commandMatrix.every((command) => command.evidenceReady);
@@ -102,7 +104,7 @@ export function createAutoCutNativeReleaseSmokeEvidence({
     readiness: {
       nativeReleaseSmokeReady,
       videoSliceSmokeReady: !videoSliceSmoke.skipped && videoSliceSmoke.success,
-      realLlmSecretStoreSmokeReady: !llmSecretStoreSmoke.skipped && llmSecretStoreSmoke.success,
+      realLlmSecretStoreSmokeReady: isLlmSecretStoreSmokeReady(llmSecretStoreSmoke),
       ffmpegExecutionReady: false,
     },
     commandMatrix,
@@ -169,6 +171,7 @@ function createRealLlmSecretStoreSmokeEvidence({
   rootDir,
   cargoManifestPath,
   cargoTargetDir,
+  hostPlatform,
   runRealLlmSecretSmoke,
   runCommand,
 }) {
@@ -187,11 +190,26 @@ function createRealLlmSecretStoreSmokeEvidence({
     '--nocapture',
   ];
   const commandLine = [command, ...args].join(' ');
+  if (hostPlatform !== 'win32') {
+    return {
+      requested: false,
+      skipped: true,
+      success: true,
+      platformApplicable: false,
+      status: null,
+      command: commandLine,
+      stdout: '',
+      stderr: '',
+      reason: 'The real LLM secret store release smoke is only required on Windows because this build stores desktop LLM secrets in Windows Credential Manager.',
+    };
+  }
+
   if (!runRealLlmSecretSmoke) {
     return {
       requested: false,
       skipped: true,
       success: false,
+      platformApplicable: true,
       status: null,
       command: commandLine,
       stdout: '',
@@ -227,11 +245,19 @@ function createRealLlmSecretStoreSmokeEvidence({
     requested: true,
     skipped: false,
     success: true,
+    platformApplicable: true,
     status,
     command: commandLine,
     stdout: trimReleaseSmokeOutput(stdout),
     stderr: trimReleaseSmokeOutput(stderr),
   };
+}
+
+function isLlmSecretStoreSmokeReady(smoke) {
+  if (smoke?.platformApplicable === false) {
+    return smoke.success === true;
+  }
+  return smoke?.skipped === false && smoke.success === true;
 }
 
 function createRustSmokeEvidence({ rootDir, cargoManifestPath, cargoTargetDir, skipRustSmoke, runCommand }) {

@@ -59,7 +59,19 @@ function createTaskEvidence(root) {
         speechStartMs: 100,
         speechEndMs: 17600,
         transcriptText: 'Start with the result and finish with a clear takeaway.',
-        subtitleSegmentCount: 2,
+        transcriptSegments: [
+          {
+            startMs: 100,
+            endMs: 8_000,
+            text: 'Start with the result.',
+          },
+          {
+            startMs: 8_000,
+            endMs: 17_600,
+            text: 'Finish with a clear takeaway.',
+          },
+        ],
+        transcriptSegmentCount: 2,
         continuityScore: 0.9,
         transcriptCoverageScore: 0.94,
         publishabilityScore: 0.84,

@@ -11,11 +11,19 @@ interface FileUploadProps {
   file: File | null;
   onChange: (file: File | null) => void;
   onValidationError?: (message: string) => void;
+  trustedFileSourceSelector?: () => Promise<AutoCutTrustedFileSourceDescriptor | null>;
   accept?: string;
   maxSizeMB?: number;
 }
 
-export function FileUpload({ file, onChange, onValidationError, accept = "video/*,audio/*", maxSizeMB = 2000 }: FileUploadProps) {
+export function FileUpload({
+  file,
+  onChange,
+  onValidationError,
+  trustedFileSourceSelector,
+  accept = "video/*,audio/*",
+  maxSizeMB = 2000,
+}: FileUploadProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const resolveAcceptedTrustedFile = (descriptors: AutoCutTrustedFileSourceDescriptor[]) => {
@@ -54,10 +62,7 @@ export function FileUpload({ file, onChange, onValidationError, accept = "video/
 
     const trustedSourcePath = resolveAutoCutTrustedSourcePath(nextFile);
     if (trustedSourcePath) {
-      Object.defineProperty(nextFile, 'sourcePath', {
-        configurable: true,
-        value: trustedSourcePath,
-      });
+      return nextFile;
     }
 
     return nextFile;
@@ -105,6 +110,28 @@ export function FileUpload({ file, onChange, onValidationError, accept = "video/
     }
   };
 
+  const handleBrowseClick = () => {
+    if (!trustedFileSourceSelector) {
+      inputRef.current?.click();
+      return;
+    }
+
+    void trustedFileSourceSelector()
+      .then((descriptor) => {
+        if (!descriptor) {
+          return;
+        }
+        const trustedFile = createAutoCutTrustedLocalFile(descriptor);
+        const nextFile = getValidatedFile(trustedFile);
+        if (nextFile) {
+          onChange(nextFile);
+        }
+      })
+      .catch(() => {
+        inputRef.current?.click();
+      });
+  };
+
   const clearFile = (e: React.MouseEvent) => {
     e.stopPropagation();
     onChange(null);
@@ -145,7 +172,7 @@ export function FileUpload({ file, onChange, onValidationError, accept = "video/
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      onClick={() => inputRef.current?.click()}
+      onClick={handleBrowseClick}
       className={`border-2 border-dashed rounded-2xl p-10 flex flex-col items-center justify-center text-center transition-all cursor-pointer relative overflow-hidden group ${
         isDragging
           ? 'border-blue-500 bg-blue-500/10 scale-[1.02] shadow-[0_0_30px_rgba(59,130,246,0.15)]'

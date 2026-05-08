@@ -11,41 +11,49 @@ import {
   normalizeAutoCutCliArgs,
   readAutoCutCliOptionValue,
 } from './autocut-cli-args.mjs';
+import {
+  createAutoCutReleaseInstallerSpecs,
+  normalizeAutoCutReleasePlatform,
+} from './autocut-release-platforms.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const evidenceSchemaVersion = '2026-05-05.autocut-installer-signature-evidence.v1';
-const bundleRelativeRoot = 'packages/sdkwork-autocut-desktop/src-tauri/target/release/bundle';
 const defaultOutputRelativePath = 'artifacts/release/autocut-installer-signature-evidence.json';
 
 export function createAutoCutInstallerSignatureEvidence({
   rootDir = process.cwd(),
+  platform = 'windows-x86_64',
   generatedAt = new Date().toISOString(),
   runCommand = runAutoCutInstallerSignatureCommand,
 } = {}) {
   const resolvedRootDir = path.resolve(rootDir);
-  const installers = installerSpecs(resolvedRootDir).map((spec) =>
+  const normalizedPlatform = normalizeAutoCutReleasePlatform(platform);
+  const installers = createAutoCutReleaseInstallerSpecs({
+    rootDir: resolvedRootDir,
+    platform: normalizedPlatform,
+  }).map((spec) =>
     createInstallerSignatureSnapshot({ rootDir: resolvedRootDir, spec, runCommand }),
   );
   const blockers = installers
     .filter((installer) => !installer.signatureReady)
     .map((installer) => ({
-      code: installer.exists ? 'INSTALLER_SIGNATURE_MISSING' : 'INSTALLER_MISSING',
+      code: createInstallerSignatureBlockerCode(normalizedPlatform, installer),
       installerKind: installer.kind,
       path: installer.path,
-      message: installer.exists
-        ? `AutoCut ${installer.kind} installer is not signed or the signature cannot be verified.`
-        : `AutoCut ${installer.kind} installer is missing.`,
+      message: createInstallerSignatureBlockerMessage(normalizedPlatform, installer),
     }));
 
   return {
     schemaVersion: evidenceSchemaVersion,
     generatedAt,
+    platform: normalizedPlatform,
     readiness: {
       installerSignatureReady: blockers.length === 0,
     },
     verification: {
-      platform: process.platform,
-      method: process.platform === 'win32' ? 'powershell-Get-AuthenticodeSignature' : 'unsupported-host-signed-evidence-required',
+      platform: normalizedPlatform,
+      hostPlatform: process.platform,
+      method: installerSignatureMethod(normalizedPlatform),
     },
     installers,
     blockers,
@@ -122,7 +130,7 @@ function createInstallerSignatureSnapshot({ rootDir, spec, runCommand }) {
   }
 
   const bytes = fs.readFileSync(spec.absolutePath);
-  const signature = inspectInstallerSignature(spec.absolutePath, runCommand);
+  const signature = inspectInstallerSignature(spec, runCommand);
   return {
     kind: spec.kind,
     path: pathRelative,
@@ -131,14 +139,38 @@ function createInstallerSignatureSnapshot({ rootDir, spec, runCommand }) {
     sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
     signatureReady: signature.ready,
     signatureStatus: signature.status,
+    notarizationStatus: signature.notarizationStatus,
     signer: signature.signer,
     diagnostics: signature.diagnostics,
   };
 }
 
-function inspectInstallerSignature(installerPath, runCommand) {
+function inspectInstallerSignature(spec, runCommand) {
+  if (spec.platform === 'linux-x86_64') {
+    return {
+      ready: false,
+      status: 'unsigned-preview',
+      notarizationStatus: 'not-applicable',
+      signer: '',
+      diagnostics: [
+        'Linux preview installer evidence records artifact digest only. Commercial release requires a signed package/repository policy and install smoke.',
+      ],
+    };
+  }
+  if (spec.platform.startsWith('macos-')) {
+    return {
+      ready: false,
+      status: 'unsigned-preview',
+      notarizationStatus: 'not-notarized',
+      signer: '',
+      diagnostics: [
+        'macOS preview installer evidence records artifact digest only. Commercial release requires Developer ID signing, Gatekeeper assessment, and notarization.',
+      ],
+    };
+  }
+
   const command = 'powershell';
-  const literalInstallerPath = toPowerShellSingleQuotedString(installerPath);
+  const literalInstallerPath = toPowerShellSingleQuotedString(spec.absolutePath);
   const args = [
     '-NoProfile',
     '-NonInteractive',
@@ -157,6 +189,7 @@ function inspectInstallerSignature(installerPath, runCommand) {
   return {
     ready: result.status === 0 && status === 'Valid',
     status,
+    notarizationStatus: 'not-applicable',
     signer,
     diagnostics: output ? [trimDiagnostics(output)] : [],
   };
@@ -185,18 +218,40 @@ function toPowerShellSingleQuotedString(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
-function installerSpecs(rootDir) {
-  const bundleRoot = path.join(rootDir, bundleRelativeRoot);
-  return [
-    {
-      kind: 'msi',
-      absolutePath: path.join(bundleRoot, 'msi', 'SDKWork Video Cut_0.1.0_x64_en-US.msi'),
-    },
-    {
-      kind: 'nsis',
-      absolutePath: path.join(bundleRoot, 'nsis', 'SDKWork Video Cut_0.1.0_x64-setup.exe'),
-    },
-  ];
+function installerSignatureMethod(platform) {
+  if (platform === 'windows-x86_64') {
+    return 'powershell-Get-AuthenticodeSignature';
+  }
+  if (platform === 'linux-x86_64') {
+    return 'unsigned-linux-preview-artifact-digest';
+  }
+  return 'unsigned-macos-preview-codesign-notarytool-required';
+}
+
+function createInstallerSignatureBlockerCode(platform, installer) {
+  if (!installer.exists) {
+    return 'INSTALLER_MISSING';
+  }
+  if (platform === 'linux-x86_64') {
+    return 'LINUX_INSTALLER_SIGNATURE_NOT_CONFIGURED';
+  }
+  if (platform.startsWith('macos-')) {
+    return 'MACOS_INSTALLER_NOT_SIGNED_OR_NOTARIZED';
+  }
+  return 'INSTALLER_SIGNATURE_MISSING';
+}
+
+function createInstallerSignatureBlockerMessage(platform, installer) {
+  if (!installer.exists) {
+    return `AutoCut ${installer.kind} installer is missing.`;
+  }
+  if (platform === 'linux-x86_64') {
+    return `AutoCut ${installer.kind} installer has no commercial Linux package signing/install-smoke evidence.`;
+  }
+  if (platform.startsWith('macos-')) {
+    return `AutoCut ${installer.kind} installer is not Developer ID signed and notarized.`;
+  }
+  return `AutoCut ${installer.kind} installer is not signed or the signature cannot be verified.`;
 }
 
 function trimDiagnostics(value) {
@@ -222,6 +277,13 @@ function parseArgs(argv) {
         commandName: 'AutoCut installer signature evidence',
       });
       options.outputPath = option.value;
+      index = option.nextIndex;
+    } else if (arg === '--platform') {
+      const option = readAutoCutCliOptionValue(args, index, {
+        optionName: arg,
+        commandName: 'AutoCut installer signature evidence',
+      });
+      options.platform = option.value;
       index = option.nextIndex;
     } else {
       throw new Error(`Unknown AutoCut installer signature evidence argument: ${arg}`);

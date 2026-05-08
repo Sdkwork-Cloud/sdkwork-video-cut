@@ -1,30 +1,45 @@
 use crate::database_runtime::{self, AutoCutDatabaseHealth};
 use crate::host_contract::{self, AutoCutHostCapabilities};
-use crate::llm_http_runtime::{
-    self, AutoCutLlmHttpRequest, AutoCutLlmHttpResponse,
-};
+use crate::llm_http_runtime::{self, AutoCutLlmHttpRequest, AutoCutLlmHttpResponse};
 use crate::llm_secret_runtime::{
     self, AutoCutDeleteLlmSecretResult, AutoCutGetLlmSecretResult, AutoCutLlmSecretRequest,
     AutoCutSaveLlmSecretRequest, AutoCutSaveLlmSecretResult,
 };
 use crate::media_runtime::{
     self, AutoCutAudioExtractionRequest, AutoCutAudioExtractionResult, AutoCutFfmpegProbe,
-    AutoCutLocalMediaFileDescription, AutoCutMediaImportRequest, AutoCutMediaImportResult,
-    AutoCutNativeTaskCancelRequest, AutoCutNativeTaskCancelResult, AutoCutNativeTaskQueryRequest,
-    AutoCutNativeTaskRecoveryRequest, AutoCutNativeTaskRecoveryResult,
-    AutoCutNativeTaskRetryRequest, AutoCutNativeTaskRetryResult, AutoCutNativeTaskSnapshot,
+    AutoCutLocalMediaFileDescription, AutoCutLocalMediaFileSelectRequest,
+    AutoCutLocalMediaPreviewDirectoryRequest, AutoCutLocalMediaPreviewDirectoryResult,
+    AutoCutMediaImportRequest, AutoCutMediaImportResult, AutoCutNativeArtifactInFolderRequest,
+    AutoCutNativeArtifactInFolderResult, AutoCutNativeTaskCancelRequest,
+    AutoCutNativeTaskCancelResult, AutoCutNativeTaskQueryRequest, AutoCutNativeTaskRecoveryRequest,
+    AutoCutNativeTaskRecoveryResult, AutoCutNativeTaskRetryRequest, AutoCutNativeTaskRetryResult,
+    AutoCutNativeTaskSnapshot, AutoCutSpeechTranscriptionFileSelectRequest,
+    AutoCutSpeechTranscriptionModelDownloadRequest, AutoCutSpeechTranscriptionModelDownloadResult,
+    AutoCutSpeechTranscriptionProbe, AutoCutSpeechTranscriptionProbeRequest,
+    AutoCutSpeechTranscriptionRequest, AutoCutSpeechTranscriptionResult,
     AutoCutVideoCompressRequest, AutoCutVideoCompressResult, AutoCutVideoConvertRequest,
     AutoCutVideoConvertResult, AutoCutVideoEnhanceRequest, AutoCutVideoEnhanceResult,
     AutoCutVideoGifRequest, AutoCutVideoGifResult, AutoCutVideoSliceRequest,
-    AutoCutVideoSliceResult, AutoCutSpeechTranscriptionFileSelectRequest,
-    AutoCutSpeechTranscriptionProbe, AutoCutSpeechTranscriptionProbeRequest,
-    AutoCutSpeechTranscriptionRequest, AutoCutSpeechTranscriptionResult,
+    AutoCutVideoSliceResult,
 };
 use tauri::AppHandle;
 
+async fn run_autocut_blocking_native_command<TResult, TWork>(
+    command_name: &'static str,
+    work: TWork,
+) -> Result<TResult, String>
+where
+    TResult: Send + 'static,
+    TWork: FnOnce() -> Result<TResult, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|error| format!("AutoCut native command {command_name} worker failed: {error}"))?
+}
+
 #[tauri::command]
-pub fn autocut_host_capabilities() -> AutoCutHostCapabilities {
-    host_contract::autocut_host_capabilities()
+pub fn autocut_host_capabilities(app: AppHandle) -> AutoCutHostCapabilities {
+    host_contract::autocut_host_capabilities(Some(&app))
 }
 
 #[tauri::command]
@@ -38,11 +53,14 @@ pub fn autocut_ffmpeg_probe(app: AppHandle) -> AutoCutFfmpegProbe {
 }
 
 #[tauri::command]
-pub fn autocut_import_media_file(
+pub async fn autocut_import_media_file(
     app: AppHandle,
     request: AutoCutMediaImportRequest,
 ) -> Result<AutoCutMediaImportResult, String> {
-    media_runtime::import_autocut_media_file(&app, request)
+    run_autocut_blocking_native_command("autocut_import_media_file", move || {
+        media_runtime::import_autocut_media_file(&app, request)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -54,13 +72,38 @@ pub fn autocut_describe_local_media_file(
 }
 
 #[tauri::command]
-pub fn autocut_select_local_video_file(app: AppHandle) -> Result<Option<AutoCutLocalMediaFileDescription>, String> {
+pub fn autocut_select_local_media_file(
+    app: AppHandle,
+    request: AutoCutLocalMediaFileSelectRequest,
+) -> Result<Option<AutoCutLocalMediaFileDescription>, String> {
+    media_runtime::select_autocut_local_media_file(&app, request)
+}
+
+#[tauri::command]
+pub fn autocut_select_local_video_file(
+    app: AppHandle,
+) -> Result<Option<AutoCutLocalMediaFileDescription>, String> {
     media_runtime::select_autocut_local_video_file(&app)
 }
 
 #[tauri::command]
-pub fn autocut_select_local_directory() -> Result<Option<String>, String> {
-    media_runtime::select_autocut_local_directory()
+pub fn autocut_select_local_directory(app: AppHandle) -> Result<Option<String>, String> {
+    media_runtime::select_autocut_local_directory(&app)
+}
+
+#[tauri::command]
+pub fn autocut_allow_local_media_preview_directory(
+    app: AppHandle,
+    request: AutoCutLocalMediaPreviewDirectoryRequest,
+) -> Result<AutoCutLocalMediaPreviewDirectoryResult, String> {
+    media_runtime::allow_autocut_local_media_preview_directory(&app, request)
+}
+
+#[tauri::command]
+pub fn autocut_open_artifact_in_folder(
+    request: AutoCutNativeArtifactInFolderRequest,
+) -> Result<AutoCutNativeArtifactInFolderResult, String> {
+    media_runtime::open_autocut_artifact_in_folder(request)
 }
 
 #[tauri::command]
@@ -71,10 +114,19 @@ pub fn autocut_select_speech_transcription_file(
 }
 
 #[tauri::command]
+pub fn autocut_download_speech_transcription_model(
+    app: AppHandle,
+    request: AutoCutSpeechTranscriptionModelDownloadRequest,
+) -> Result<AutoCutSpeechTranscriptionModelDownloadResult, String> {
+    media_runtime::download_autocut_speech_transcription_model(&app, request)
+}
+
+#[tauri::command]
 pub fn autocut_probe_speech_transcription(
+    app: AppHandle,
     request: AutoCutSpeechTranscriptionProbeRequest,
 ) -> AutoCutSpeechTranscriptionProbe {
-    media_runtime::probe_autocut_speech_transcription(request)
+    media_runtime::probe_autocut_speech_transcription(&app, request)
 }
 
 #[tauri::command]
@@ -126,19 +178,25 @@ pub fn autocut_generate_gif(
 }
 
 #[tauri::command]
-pub fn autocut_slice_video(
+pub async fn autocut_slice_video(
     app: AppHandle,
     request: AutoCutVideoSliceRequest,
 ) -> Result<AutoCutVideoSliceResult, String> {
-    media_runtime::slice_autocut_video_from_asset(&app, request)
+    run_autocut_blocking_native_command("autocut_slice_video", move || {
+        media_runtime::slice_autocut_video_from_asset(&app, request)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn autocut_transcribe_media(
+pub async fn autocut_transcribe_media(
     app: AppHandle,
     request: AutoCutSpeechTranscriptionRequest,
 ) -> Result<AutoCutSpeechTranscriptionResult, String> {
-    media_runtime::transcribe_autocut_media_from_asset(&app, request)
+    run_autocut_blocking_native_command("autocut_transcribe_media", move || {
+        media_runtime::transcribe_autocut_media_from_asset(&app, request)
+    })
+    .await
 }
 
 #[tauri::command]

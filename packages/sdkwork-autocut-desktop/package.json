@@ -1,6 +1,6 @@
 {
   "name": "@sdkwork/autocut-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,7 +12,7 @@
     "test": "tsc --noEmit",
     "tauri:before-dev": "pnpm dev:tauri-web",
     "tauri:dev": "node ../../scripts/ensure-autocut-tauri-rust-toolchain.mjs && pnpm exec tauri dev",
-    "tauri:build": "node ../../scripts/ensure-autocut-tauri-rust-toolchain.mjs && pnpm exec tauri build"
+    "tauri:build": "node ../../scripts/ensure-autocut-tauri-rust-toolchain.mjs && node ../../scripts/prepare-autocut-speech-sidecar.mjs --check --require-bundled && pnpm exec tauri build"
   },
   "dependencies": {
     "@sdkwork/autocut-assets": "workspace:*",
@@ -28,6 +28,7 @@
     "@sdkwork/autocut-subtitle-translate": "workspace:*",
     "@sdkwork/autocut-tasks": "workspace:*",
     "@sdkwork/autocut-tools": "workspace:*",
+    "@sdkwork/autocut-types": "workspace:*",
     "@sdkwork/autocut-video-compress": "workspace:*",
     "@sdkwork/autocut-video-convert": "workspace:*",
     "@sdkwork/autocut-video-enhance": "workspace:*",
@@ -38,6 +39,7 @@
     "pixi.js": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
+    "react-i18next": "catalog:",
     "react-router-dom": "catalog:"
   },
   "devDependencies": {

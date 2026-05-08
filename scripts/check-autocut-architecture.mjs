@@ -36,6 +36,7 @@ const allowedDesktopTauriEntries = new Set([
   'build.rs',
   'Cargo.lock',
   'Cargo.toml',
+  'capabilities',
   'database',
   'gen',
   'icons',
@@ -46,6 +47,7 @@ const allowedDesktopTauriEntries = new Set([
 const allowedDesktopTauriIconEntries = new Set(['icon.ico']);
 const allowedDesktopTauriBinariesEntries = new Set([
   'ffmpeg.toolchain.json',
+  'speech-transcription.toolchain.json',
   'linux-x86_64',
   'macos-aarch64',
   'macos-x86_64',
@@ -82,12 +84,22 @@ const forbiddenRootRuntimeDirs = [
 ];
 const forbiddenTauriGeneratedDirs = ['packages/sdkwork-autocut-desktop/src-tauri/gen'];
 const allowedScriptFiles = new Set([
+  'scripts/autocut-release-platforms.mjs',
   'scripts/autocut-cli-args.mjs',
   'scripts/autocut-cli-args.test.mjs',
   'scripts/check-autocut-architecture.mjs',
+  'scripts/check-autocut-app-manifest-release-readiness.mjs',
+  'scripts/check-autocut-app-manifest-release-readiness.test.mjs',
   'scripts/check-autocut-feature-workflows.mjs',
+  'scripts/check-autocut-multiplatform-release-readiness.mjs',
+  'scripts/check-autocut-multiplatform-release-readiness.test.mjs',
   'scripts/check-autocut-preview-release-readiness.mjs',
   'scripts/check-autocut-preview-release-readiness.test.mjs',
+  'scripts/check-autocut-release-environment.mjs',
+  'scripts/check-autocut-release-environment.test.mjs',
+  'scripts/check-autocut-release-evidence-status.mjs',
+  'scripts/check-autocut-release-evidence-status.test.mjs',
+  'scripts/check-autocut-release-workflow.test.mjs',
   'scripts/check-autocut-slicer-planner.mjs',
   'scripts/check-autocut-service-behavior.mjs',
   'scripts/check-autocut-workspace-typecheck.mjs',
@@ -97,6 +109,10 @@ const allowedScriptFiles = new Set([
   'scripts/ensure-autocut-tauri-rust-toolchain.test.mjs',
   'scripts/prepare-autocut-ffmpeg-sidecar.mjs',
   'scripts/prepare-autocut-ffmpeg-sidecar.test.mjs',
+  'scripts/prepare-autocut-release-sidecars.mjs',
+  'scripts/prepare-autocut-release-sidecars.test.mjs',
+  'scripts/prepare-autocut-speech-sidecar.mjs',
+  'scripts/prepare-autocut-speech-sidecar.test.mjs',
   'scripts/check-autocut-release-smoke-preflight.mjs',
   'scripts/check-autocut-release-smoke-preflight.test.mjs',
   'scripts/check-autocut-commercial-release-readiness.mjs',
@@ -107,8 +123,14 @@ const allowedScriptFiles = new Set([
   'scripts/check-autocut-smart-slice-task-evidence.test.mjs',
   'scripts/sign-autocut-release-installers.mjs',
   'scripts/sign-autocut-release-installers.test.mjs',
+  'scripts/sync-autocut-app-manifest-release-evidence.mjs',
+  'scripts/sync-autocut-app-manifest-release-evidence.test.mjs',
   'scripts/write-autocut-installer-signature-evidence.mjs',
   'scripts/write-autocut-installer-signature-evidence.test.mjs',
+  'scripts/write-autocut-package-sbom-files.mjs',
+  'scripts/write-autocut-package-sbom-files.test.mjs',
+  'scripts/write-autocut-sbom-evidence.mjs',
+  'scripts/write-autocut-sbom-evidence.test.mjs',
   'scripts/write-autocut-smart-slice-media-artifacts-evidence.mjs',
   'scripts/write-autocut-smart-slice-media-artifacts-evidence.test.mjs',
   'scripts/write-autocut-smart-slice-quality-evidence.mjs',
@@ -134,6 +156,9 @@ const requiredStorageServicePath = 'packages/sdkwork-autocut-services/src/servic
 const legacyStorageServicePath = 'packages/sdkwork-autocut-services/src/service/storage.ts';
 const requiredRuntimeEnvironmentServicePath = 'packages/sdkwork-autocut-services/src/service/runtime-environment.service.ts';
 const requiredSettingsServicePath = 'packages/sdkwork-autocut-services/src/service/settings.service.ts';
+const requiredI18nServicePath = 'packages/sdkwork-autocut-services/src/service/i18n.service.ts';
+const requiredI18nResourcesServicePath = 'packages/sdkwork-autocut-services/src/service/i18n-resources.service.ts';
+const requiredSettingsRegistryPath = 'packages/sdkwork-autocut-settings/src/service/settings.registry.ts';
 const requiredMediaFixturesServicePath = 'packages/sdkwork-autocut-services/src/service/media-fixtures.service.ts';
 const requiredDatetimeServicePath = 'packages/sdkwork-autocut-services/src/service/datetime.service.ts';
 const requiredDownloadServicePath = 'packages/sdkwork-autocut-services/src/service/download.service.ts';
@@ -164,10 +189,13 @@ const requiredNativeMediaRuntimeSourcePath = 'packages/sdkwork-autocut-desktop/s
 const requiredNativeLlmHttpRuntimeSourcePath = 'packages/sdkwork-autocut-desktop/src-tauri/src/llm_http_runtime.rs';
 const requiredNativeLlmSecretRuntimeSourcePath = 'packages/sdkwork-autocut-desktop/src-tauri/src/llm_secret_runtime.rs';
 const requiredNativeFfmpegToolchainManifestPath = 'packages/sdkwork-autocut-desktop/src-tauri/binaries/ffmpeg.toolchain.json';
+const requiredNativeSpeechToolchainManifestPath = 'packages/sdkwork-autocut-desktop/src-tauri/binaries/speech-transcription.toolchain.json';
 const requiredNativeSqliteBaselinePath = 'packages/sdkwork-autocut-desktop/src-tauri/database/schema/sqlite/001_baseline.sql';
 const requiredNativeSchemaRegistryPath = 'packages/sdkwork-autocut-desktop/src-tauri/database/schema-registry/autocut_host_baseline.yaml';
 const allowedRootEntries = new Set([
   '.git',
+  '.claude',
+  '.github',
   '.env.example',
   '.gitattributes',
   '.gitignore',
@@ -182,6 +210,7 @@ const allowedRootEntries = new Set([
   'pnpm-lock.yaml',
   'pnpm-workspace.yaml',
   'scripts',
+  'sdkwork.app.config.json',
   'tsconfig.json',
 ]);
 const requiredRoutePaths = [
@@ -242,6 +271,7 @@ const requiredDesktopDependencies = new Set([
   'pixi.js',
   'react',
   'react-dom',
+  'react-i18next',
   'react-router-dom',
   'vite',
 ]);
@@ -258,10 +288,12 @@ const externalDependencyAllowlist = new Set([
   '@ai-sdk/openai-compatible',
   '@tauri-apps/api',
   'ai',
+  'i18next',
   'lucide-react',
   'pixi.js',
   'react',
   'react-dom',
+  'react-i18next',
   'react-router-dom',
 ]);
 const requiredDatabaseSpecMarkers = [
@@ -313,7 +345,6 @@ const requiredRuntimeEnvironmentServiceMarkers = [
 ];
 const requiredMediaFixturesMarkers = [
   'AUTO_CUT_MEDIA_FIXTURES',
-  'getAutoCutSampleVideoUrl',
   'getAutoCutSampleAudioUrl',
   'getAutoCutSampleGifUrl',
   'getAutoCutSampleThumbnailUrl',
@@ -323,7 +354,10 @@ const requiredDatetimeServiceMarkers = [
   'getAutoCutTimestampMs',
   'compareAutoCutTimestampDesc',
   'sortAutoCutRecordsByCreatedAtDesc',
+  'normalizeAutoCutTimestampForParsing',
   'formatAutoCutDateTime',
+  'formatAutoCutTimeOfDay',
+  'formatAutoCutLocalDateTimeSecondTimestamp',
 ];
 const requiredDownloadServiceMarkers = [
   'createAutoCutObjectUrl',
@@ -375,6 +409,7 @@ const requiredNativeHostClientServiceMarkers = [
   'mediaFileDescribeCommandReady',
   'localVideoFileSelectCommandReady',
   'localDirectorySelectCommandReady',
+  'openArtifactInFolderCommandReady',
   'nativeTaskQueryCommandReady',
   'nativeTaskCancelCommandReady',
   'nativeTaskRecoveryCommandReady',
@@ -392,6 +427,7 @@ const requiredNativeHostClientServiceMarkers = [
   'AutoCutSpeechTranscriptionRequest',
   'AutoCutSpeechTranscriptionResult',
   'AutoCutSpeechTranscriptionSegment',
+  'providerId',
   'transcribeMedia',
   'AutoCutVideoGifRequest',
   'AutoCutVideoGifResult',
@@ -406,6 +442,13 @@ const requiredNativeHostClientServiceMarkers = [
   'subtitleFormat',
   'subtitleStyleId',
   'subtitleSegments',
+  'transcriptText',
+  'transcriptSegments',
+  'transcriptSegmentCount',
+  'speechStartMs',
+  'speechEndMs',
+  'boundaryPaddingBeforeMs',
+  'boundaryPaddingAfterMs',
   'subtitleArtifactUuid',
   'subtitleArtifactPath',
   'subtitleByteSize',
@@ -527,6 +570,7 @@ const requiredNativeMediaRuntimeMarkers = [
   'AutoCutSpeechTranscriptionRequest',
   'AutoCutSpeechTranscriptionResult',
   'AutoCutSpeechTranscriptionSegment',
+  'provider_id',
   'task_output_dir',
   'taskOutputDir',
   'output_root_dir',
@@ -624,11 +668,21 @@ const requiredNativeMediaRuntimeMarkers = [
   'autocut_transcribe_media',
   'AutoCutSpeechToolchain',
   'resolve_autocut_speech_toolchain',
+  'resolve_autocut_speech_toolchain_from_candidate_manifests',
+  'speech-transcription.toolchain.json',
+  'resolve_autocut_bundled_speech_executable_from_candidate_manifests',
+  'speech_toolchain_resolver_uses_bundled_whisper_sidecar_when_executable_is_not_configured',
   'SDKWORK_AUTOCUT_WHISPER_EXECUTABLE',
   'SDKWORK_AUTOCUT_WHISPER_MODEL',
   'run_ffmpeg_speech_audio_extract',
   'run_local_whisper_transcription',
   'parse_whisper_transcript_json',
+  'SUPPORTED_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS',
+  'ensure_supported_speech_executable_file_path',
+  'ensure_supported_speech_model_file_path',
+  'speech_toolchain_rejects_relative_executable_paths',
+  'speech_toolchain_rejects_relative_model_paths',
+  'speech_toolchain_rejects_unsupported_model_extensions',
   'MEDIA_ARTIFACT_TYPE_TRANSCRIPT',
   'MEDIA_ARTIFACT_TYPE_VIDEO_SLICE_SUBTITLE',
   'OPS_TASK_TYPE_SPEECH_TRANSCRIPTION',
@@ -657,6 +711,8 @@ const requiredNativeMediaRuntimeMarkers = [
   'ops_stage_run',
   '.join(AUTOCUT_MEDIA_TASK_DIR)',
   '.join(AUTOCUT_MEDIA_TASK_OUTPUT_DIR)',
+  'AUTOCUT_MEDIA_TASK_COVER_DIR',
+  'autocut_task_cover_dir',
   'Command::new',
   '.args(',
   'fs::copy',
@@ -679,6 +735,12 @@ const requiredNativeMediaRuntimeMarkers = [
   'normalize_video_slice_format',
   'adjust_video_slice_clips_for_source_duration',
   'read_ffmpeg_media_duration_millis',
+  'AutoCutVideoSliceEncoderCandidate',
+  'autocut_video_slice_encoder_candidates',
+  'autocut_video_slice_cpu_encoder_candidate',
+  'run_ffmpeg_video_slice_with_encoder_fallback',
+  'append_ffmpeg_video_slice_encoder_args',
+  'format_video_slice_encoder_attempt_diagnostics',
   'normalize_video_compress_mode',
   'normalize_video_convert_format',
   'normalize_video_convert_codec',
@@ -689,7 +751,13 @@ const requiredNativeMediaRuntimeMarkers = [
   'image/gif',
   'image/jpeg',
   'video/mp4',
+  'h264_nvenc',
+  'h264_qsv',
+  'h264_amf',
+  'h264_videotoolbox',
+  'h264_vaapi',
   'libx264',
+  'yuv420p',
   'libvpx-vp9',
   'unsharp',
   '-movflags',
@@ -699,15 +767,11 @@ const requiredNativeMediaRuntimeMarkers = [
   'lavfi',
 ];
 const forbiddenRemoteFixtureUrlPatterns = [
-  /https:\/\/storage\.googleapis\.com\/gtv-videos-bucket\/sample\/BigBuckBunny\.mp4/u,
-  /https:\/\/commondatastorage\.googleapis\.com\/gtv-videos-bucket\/sample\/BigBuckBunny\.mp4/u,
   /https:\/\/www\.soundhelix\.com\/examples\/mp3\/SoundHelix-Song-1\.mp3/u,
   /https:\/\/media\.giphy\.com\/media\/3o7aD2saalEvW6vWgA\/giphy\.gif/u,
   /https:\/\/picsum\.photos\/seed\//u,
 ];
-const requiredCspRemoteSources = [
-  'https://storage.googleapis.com',
-  'https://commondatastorage.googleapis.com',
+const forbiddenCspRemoteSources = [
   'https://www.soundhelix.com',
   'https://media.giphy.com',
   'https://picsum.photos',
@@ -1004,13 +1068,35 @@ function assertJsonTableHasIdentityColumns(table, relativePath) {
   assertRule(Boolean(uuidColumn), `${relativePath} table ${table.name} declares columns.uuid`);
 }
 
+function assertSetsEqual(actualItems, expectedItems, message) {
+  const actual = new Set(actualItems);
+  const expected = new Set(expectedItems);
+  const missing = [...expected].filter((item) => !actual.has(item)).sort();
+  const extra = [...actual].filter((item) => !expected.has(item)).sort();
+  assertRule(
+    missing.length === 0 && extra.length === 0,
+    `${message}${missing.length > 0 ? ` missing=${missing.join(',')}` : ''}${extra.length > 0 ? ` extra=${extra.join(',')}` : ''}`,
+  );
+}
+
+function toTaskTypeEnumKey(taskType) {
+  return taskType.replace(/-([a-z])/gu, (_, letter) => letter.toUpperCase());
+}
+
 const rootPackage = readJson(path.join(rootDir, 'package.json'));
 const rootTsconfig = readJson(path.join(rootDir, 'tsconfig.json'));
+const sdkworkAppConfig = fs.existsSync(path.join(rootDir, 'sdkwork.app.config.json'))
+  ? readJson(path.join(rootDir, 'sdkwork.app.config.json'))
+  : {};
 const desktopPackage = fs.existsSync(path.join(desktopPackageDir, 'package.json'))
   ? readJson(path.join(desktopPackageDir, 'package.json'))
   : {};
 const tauriConfig = fs.existsSync(path.join(desktopTauriDir, 'tauri.conf.json'))
   ? readJson(path.join(desktopTauriDir, 'tauri.conf.json'))
+  : {};
+const desktopTauriDefaultCapabilityPath = path.join(desktopTauriDir, 'capabilities', 'default.json');
+const desktopTauriDefaultCapability = fs.existsSync(desktopTauriDefaultCapabilityPath)
+  ? readJson(desktopTauriDefaultCapabilityPath)
   : {};
 const rootGitignore = fs.readFileSync(path.join(rootDir, '.gitignore'), 'utf8');
 const rootGitAttributes = fs.existsSync(path.join(rootDir, '.gitattributes'))
@@ -1071,8 +1157,14 @@ const nativeLlmSecretRuntimeSource = fs.existsSync(path.join(rootDir, requiredNa
 const nativeFfmpegToolchainManifestSource = fs.existsSync(path.join(rootDir, requiredNativeFfmpegToolchainManifestPath))
   ? fs.readFileSync(path.join(rootDir, requiredNativeFfmpegToolchainManifestPath), 'utf8')
   : '';
+const nativeSpeechToolchainManifestSource = fs.existsSync(path.join(rootDir, requiredNativeSpeechToolchainManifestPath))
+  ? fs.readFileSync(path.join(rootDir, requiredNativeSpeechToolchainManifestPath), 'utf8')
+  : '';
 const nativeHostClientServiceSource = fs.existsSync(path.join(rootDir, requiredNativeHostClientServicePath))
   ? fs.readFileSync(path.join(rootDir, requiredNativeHostClientServicePath), 'utf8')
+  : '';
+const speechTranscriptionServiceSource = fs.existsSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/speech-transcription.service.ts'))
+  ? fs.readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/speech-transcription.service.ts'), 'utf8')
   : '';
 const tasksServiceSource = fs.existsSync(path.join(rootDir, requiredTasksServicePath))
   ? fs.readFileSync(path.join(rootDir, requiredTasksServicePath), 'utf8')
@@ -1122,11 +1214,35 @@ const smartSliceSampleEvidenceSource = fs.existsSync(path.join(rootDir, 'scripts
 const releaseEvidenceSource = fs.existsSync(path.join(rootDir, 'scripts/write-autocut-release-evidence.mjs'))
   ? fs.readFileSync(path.join(rootDir, 'scripts/write-autocut-release-evidence.mjs'), 'utf8')
   : '';
+const packageSbomSource = fs.existsSync(path.join(rootDir, 'scripts/write-autocut-package-sbom-files.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/write-autocut-package-sbom-files.mjs'), 'utf8')
+  : '';
+const sbomEvidenceSource = fs.existsSync(path.join(rootDir, 'scripts/write-autocut-sbom-evidence.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/write-autocut-sbom-evidence.mjs'), 'utf8')
+  : '';
+const releaseEvidenceStatusSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-release-evidence-status.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-release-evidence-status.mjs'), 'utf8')
+  : '';
+const releasePlatformsSource = fs.existsSync(path.join(rootDir, 'scripts/autocut-release-platforms.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/autocut-release-platforms.mjs'), 'utf8')
+  : '';
+const appManifestReleaseReadinessSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-app-manifest-release-readiness.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-app-manifest-release-readiness.mjs'), 'utf8')
+  : '';
+const appManifestReleaseEvidenceSyncSource = fs.existsSync(path.join(rootDir, 'scripts/sync-autocut-app-manifest-release-evidence.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/sync-autocut-app-manifest-release-evidence.mjs'), 'utf8')
+  : '';
 const previewReleaseReadinessSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-preview-release-readiness.mjs'))
   ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-preview-release-readiness.mjs'), 'utf8')
   : '';
+const multiplatformReleaseReadinessSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-multiplatform-release-readiness.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-multiplatform-release-readiness.mjs'), 'utf8')
+  : '';
 const commercialReleaseReadinessSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-commercial-release-readiness.mjs'))
   ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-commercial-release-readiness.mjs'), 'utf8')
+  : '';
+const desktopReleaseWorkflowSource = fs.existsSync(path.join(rootDir, '.github/workflows/autocut-desktop-release.yml'))
+  ? fs.readFileSync(path.join(rootDir, '.github/workflows/autocut-desktop-release.yml'), 'utf8')
   : '';
 const nativeSqliteBaselineSource = fs.existsSync(path.join(rootDir, requiredNativeSqliteBaselinePath))
   ? fs.readFileSync(path.join(rootDir, requiredNativeSqliteBaselinePath), 'utf8')
@@ -1134,6 +1250,22 @@ const nativeSqliteBaselineSource = fs.existsSync(path.join(rootDir, requiredNati
 const nativeSchemaRegistrySource = fs.existsSync(path.join(rootDir, requiredNativeSchemaRegistryPath))
   ? fs.readFileSync(path.join(rootDir, requiredNativeSchemaRegistryPath), 'utf8')
   : '';
+const nativeHostCommandNames = Array.from(
+  nativeHostCommandSource.matchAll(/pub\s+(?:async\s+)?fn\s+(autocut_[a-z0-9_]+)\s*\(/gu),
+  (match) => match[1],
+);
+const nativeMainRegisteredCommandNames = Array.from(
+  mainRsSource.matchAll(/commands::(autocut_[a-z0-9_]+)/gu),
+  (match) => match[1],
+);
+const nativeHostSupportedCommandNames = Array.from(
+  nativeHostContractSource.matchAll(/"(autocut_[a-z0-9_]+)"/gu),
+  (match) => match[1],
+);
+const nativeHostClientCommandNames = Array.from(
+  nativeHostClientServiceSource.matchAll(/invoke<[^>]+>\('([^']+)'/gu),
+  (match) => match[1],
+).filter((command) => command.startsWith('autocut_'));
 const workspaceCatalogNames = new Set(
   [...workspaceSource.matchAll(/^\s{2}['"]?([^:'"\s][^:'"]*?)['"]?:\s*[^\s]+/gmu)].map((match) => match[1].trim()),
 );
@@ -1181,6 +1313,11 @@ assertRule(
     rootGitAttributes.includes('packages/sdkwork-autocut-desktop/src-tauri/binaries/**/ffmpeg.exe filter=lfs diff=lfs merge=lfs -text'),
   'root .gitattributes stores bundled FFmpeg sidecars through Git LFS',
 );
+assertRule(
+  rootGitAttributes.includes('packages/sdkwork-autocut-desktop/src-tauri/binaries/**/whisper-cli filter=lfs diff=lfs merge=lfs -text') &&
+    rootGitAttributes.includes('packages/sdkwork-autocut-desktop/src-tauri/binaries/**/whisper-cli.exe filter=lfs diff=lfs merge=lfs -text'),
+  'root .gitattributes stores bundled Whisper CLI sidecars through Git LFS',
+);
 assertRule(architectSource.includes('Git LFS'), 'ARCHITECT.md documents Git LFS for bundled FFmpeg sidecars');
 assertRule(readmeSource.includes('git lfs install'), 'README documents Git LFS setup before committing bundled FFmpeg sidecars');
 assertRule(exists('packages/sdkwork-autocut-desktop/package.json'), 'AutoCut desktop app is defined as packages/sdkwork-autocut-desktop');
@@ -1192,6 +1329,35 @@ assertRule(desktopPackage.name === '@sdkwork/autocut-desktop', 'desktop package 
 assertRule(desktopPackage.version === rootPackage.version, 'desktop package version matches root package.json version');
 assertRule(rootPackage.version === tauriConfig.version, 'root package.json version matches desktop Tauri application version');
 assertRule(cargoTomlSource.includes(`version = "${rootPackage.version}"`), 'desktop Tauri Cargo.toml package version matches root package.json version');
+assertRule(sdkworkAppConfig.app?.versionSource === 'package.json', 'sdkwork.app.config.json derives the application version from package.json');
+assertRule(sdkworkAppConfig.media?.metadata?.assetVersion === rootPackage.version, 'sdkwork.app.config.json media asset version matches root package.json version');
+assertRule(sdkworkAppConfig.release?.currentVersion === rootPackage.version, 'sdkwork.app.config.json release currentVersion matches root package.json version');
+assertRule(sdkworkAppConfig.release?.latest?.STABLE === rootPackage.version, 'sdkwork.app.config.json latest STABLE release matches root package.json version');
+assertRule(
+  Array.isArray(sdkworkAppConfig.release?.notes) &&
+    sdkworkAppConfig.release.notes.some((note) => note?.version === rootPackage.version && note?.current === true),
+  'sdkwork.app.config.json contains a current release note for the root package version',
+);
+assertRule(
+  !JSON.stringify(sdkworkAppConfig).includes('/STABLE/0.1.0/'),
+  'sdkwork.app.config.json does not point install packages at stale v0.1.0 CDN artifacts',
+);
+const appInstallPackages = Array.isArray(sdkworkAppConfig.artifacts?.installConfig?.packages)
+  ? sdkworkAppConfig.artifacts.installConfig.packages
+  : [];
+for (const installPackage of appInstallPackages) {
+  assertRule(
+    installPackage?.enabled !== true || String(installPackage?.url ?? '').includes(`/STABLE/${rootPackage.version}/`),
+    `sdkwork.app.config.json enabled install package ${installPackage?.id ?? 'unknown'} points at the current release version`,
+  );
+  assertRule(
+    installPackage?.enabled !== true || installPackage?.metadata?.generatedPlaceholder !== true,
+    `sdkwork.app.config.json enabled install package ${installPackage?.id ?? 'unknown'} is not marked as generated placeholder`,
+  );
+}
+assertRule(sdkworkAppConfig.security?.checksumRequired === true, 'sdkwork.app.config.json requires checksums for release install packages');
+assertRule(sdkworkAppConfig.security?.signatureRequired === true, 'sdkwork.app.config.json requires signatures for commercial release install packages');
+assertRule(sdkworkAppConfig.security?.sbomRequired === true, 'sdkwork.app.config.json requires SBOM evidence for commercial release install packages');
 assertRule(cargoTomlSource.includes('name = "sdkwork-video-cut-desktop"'), 'Tauri Cargo.toml uses the standard desktop crate name');
 assertRule(cargoTomlSource.includes('edition = "2024"'), 'Tauri Cargo.toml uses Rust 2024 edition');
 assertRule(exists('packages/sdkwork-autocut-desktop/rust-toolchain.toml'), 'desktop package pins a package-local Rust toolchain');
@@ -1219,7 +1385,7 @@ for (const [relativePath, sourceText] of [
   );
 }
 assertRule(indexHtmlSource.includes('<title>SDKWork Video Cut</title>'), 'desktop index.html title matches the Tauri product name');
-assertRule(rootPackage.version === '0.1.0', 'AutoCut desktop application version starts at 0.1.0');
+assertRule(rootPackage.version === '0.1.1', 'AutoCut desktop application version matches the v0.1.1 release line');
 assertRule(desktopPackage.scripts?.dev?.includes('--host 127.0.0.1'), 'desktop dev binds to loopback for desktop-local development');
 assertRule(desktopPackage.scripts?.dev?.includes('--port 3000'), 'desktop dev uses the standard AutoCut web port 3000');
 assertRule(desktopPackage.scripts?.dev?.includes('--strictPort'), 'desktop dev uses strictPort for deterministic desktop-local startup');
@@ -1404,6 +1570,8 @@ assertRule(databaseContractSource.includes('assetUuid'), 'database contract stan
 assertRule(databaseContractSource.includes('source_asset_uuid'), 'database contract standard documents artifact source asset traceability');
 assertRule(architectSource.includes('ffmpeg.toolchain.json'), 'ARCHITECT.md documents the package-local FFmpeg toolchain manifest');
 assertRule(architectSource.includes('prepare-autocut-ffmpeg-sidecar.mjs'), 'ARCHITECT.md documents the standardized FFmpeg sidecar preparation script');
+assertRule(architectSource.includes('speech-transcription.toolchain.json'), 'ARCHITECT.md documents the package-local speech transcription toolchain manifest');
+assertRule(architectSource.includes('prepare-autocut-speech-sidecar.mjs'), 'ARCHITECT.md documents the standardized Whisper sidecar preparation script');
 assertRule(architectSource.includes('check-autocut-release-smoke-preflight.mjs'), 'ARCHITECT.md documents the standardized release smoke preflight script');
 assertRule(architectSource.includes('write-autocut-native-release-smoke.mjs'), 'ARCHITECT.md documents the standardized native release smoke evidence writer script');
 assertRule(architectSource.includes('--run-real-llm-secret-smoke'), 'ARCHITECT.md documents the real Windows LLM secret store smoke gate');
@@ -1419,6 +1587,7 @@ assertRule(architectSource.includes('{outputRootDir}/tasks/{task_uuid}/outputs/'
 assertRule(architectSource.includes('dev-default'), 'ARCHITECT.md documents dev-scoped native LLM secret names');
 assertRule(architectSource.includes('release-default'), 'ARCHITECT.md documents release-scoped native LLM secret names');
 assertRule(frontendStandardSource.includes('prepare-autocut-ffmpeg-sidecar.mjs'), 'frontend module standard documents FFmpeg sidecar preparation');
+assertRule(frontendStandardSource.includes('prepare-autocut-speech-sidecar.mjs'), 'frontend module standard documents Whisper sidecar preparation');
 assertRule(frontendStandardSource.includes('check-autocut-release-smoke-preflight.mjs'), 'frontend module standard documents FFmpeg release smoke preflight');
 assertRule(frontendStandardSource.includes('write-autocut-native-release-smoke.mjs'), 'frontend module standard documents native release smoke evidence generation');
 assertRule(frontendStandardSource.includes('--run-real-llm-secret-smoke'), 'frontend module standard documents the real Windows LLM secret store smoke gate');
@@ -1434,6 +1603,7 @@ assertRule(frontendStandardSource.includes('{outputRootDir}/tasks/{task_uuid}/ou
 assertRule(frontendStandardSource.includes('dev-default'), 'frontend module standard documents dev-scoped native LLM secret names');
 assertRule(frontendStandardSource.includes('release-default'), 'frontend module standard documents release-scoped native LLM secret names');
 assertRule(readmeSource.includes('pnpm prepare:ffmpeg-sidecar'), 'README documents the FFmpeg sidecar preparation command');
+assertRule(readmeSource.includes('pnpm prepare:speech-sidecar'), 'README documents the Whisper speech sidecar preparation command');
 assertRule(readmeSource.includes('pnpm release:smoke-preflight'), 'README documents the FFmpeg release smoke preflight command');
 assertRule(readmeSource.includes('pnpm release:native-smoke'), 'README documents the native release smoke evidence command');
 assertRule(readmeSource.includes('--run-real-llm-secret-smoke'), 'README documents the real Windows LLM secret store smoke command');
@@ -1465,9 +1635,15 @@ const toolsRegistrySource = fs.existsSync(path.join(rootDir, requiredToolsRegist
 const serviceIndexSource = fs.existsSync(path.join(packagesDir, 'sdkwork-autocut-services', 'src', 'index.ts'))
   ? fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-services', 'src', 'index.ts'), 'utf8')
   : '';
+const i18nServiceSource = fs.existsSync(path.join(packagesDir, 'sdkwork-autocut-services', 'src', 'service', 'i18n.service.ts'))
+  ? fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-services', 'src', 'service', 'i18n.service.ts'), 'utf8')
+  : '';
 const autocutTypesSource = fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-types', 'src', 'index.ts'), 'utf8');
 const tasksPageSource = fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-tasks', 'src', 'pages', 'TasksPage.tsx'), 'utf8');
 const taskDetailPageSource = fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-tasks', 'src', 'pages', 'TaskDetailPage.tsx'), 'utf8');
+const realProcessingServiceSources = realProcessingServicePaths
+  .map((relativePath) => (exists(relativePath) ? fs.readFileSync(path.join(rootDir, relativePath), 'utf8') : ''))
+  .join('\n');
 const autocutEventSource = fs.existsSync(path.join(packagesDir, 'sdkwork-autocut-services', 'src', 'service', 'events.service.ts'))
   ? fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-services', 'src', 'service', 'events.service.ts'), 'utf8')
   : '';
@@ -1480,8 +1656,20 @@ const runtimeEnvironmentServiceSource = fs.existsSync(path.join(rootDir, require
 const settingsServiceSource = fs.existsSync(path.join(rootDir, requiredSettingsServicePath))
   ? fs.readFileSync(path.join(rootDir, requiredSettingsServicePath), 'utf8')
   : '';
+const i18nResourcesServiceSource = fs.existsSync(path.join(rootDir, requiredI18nResourcesServicePath))
+  ? fs.readFileSync(path.join(rootDir, requiredI18nResourcesServicePath), 'utf8')
+  : '';
+const settingsRegistrySource = fs.existsSync(path.join(rootDir, requiredSettingsRegistryPath))
+  ? fs.readFileSync(path.join(rootDir, requiredSettingsRegistryPath), 'utf8')
+  : '';
+const settingsPageSource = fs.existsSync(path.join(packagesDir, 'sdkwork-autocut-settings', 'src', 'pages', 'SettingsPage.tsx'))
+  ? fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-settings', 'src', 'pages', 'SettingsPage.tsx'), 'utf8')
+  : '';
 const mediaFixturesServiceSource = fs.existsSync(path.join(rootDir, requiredMediaFixturesServicePath))
   ? fs.readFileSync(path.join(rootDir, requiredMediaFixturesServicePath), 'utf8')
+  : '';
+const slicerPageSource = fs.existsSync(path.join(packagesDir, 'sdkwork-autocut-slicer', 'src', 'pages', 'SlicerPage.tsx'))
+  ? fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-slicer', 'src', 'pages', 'SlicerPage.tsx'), 'utf8')
   : '';
 const datetimeServiceSource = fs.existsSync(path.join(rootDir, requiredDatetimeServicePath))
   ? fs.readFileSync(path.join(rootDir, requiredDatetimeServicePath), 'utf8')
@@ -1514,6 +1702,7 @@ for (const file of desktopSrcFiles) {
     const isAllowedRootImport =
       depName === 'react' ||
       depName === 'react-dom' ||
+      depName === 'react-i18next' ||
       depName === 'react-router-dom' ||
       depName === '@tauri-apps/api' ||
       depName.startsWith(internalPrefix);
@@ -1547,6 +1736,37 @@ for (const entry of fs.readdirSync(desktopTauriDir, { withFileTypes: true })) {
     `desktop src-tauri entry ${entry.name} is allowed by the thin Tauri shell standard`,
   );
 }
+assertRule(
+  fs.existsSync(path.join(desktopTauriDir, 'capabilities')),
+  'desktop src-tauri declares explicit Tauri v2 capabilities for frontend API permissions',
+);
+assertRule(
+  fs.existsSync(desktopTauriDefaultCapabilityPath),
+  'desktop src-tauri capabilities/default.json is the canonical main-window permission contract',
+);
+assertRule(
+  desktopTauriDefaultCapability.identifier === 'autocut-main-window',
+  'desktop Tauri default capability uses the canonical AutoCut main-window identifier',
+);
+assertRule(
+  Array.isArray(desktopTauriDefaultCapability.windows) &&
+    desktopTauriDefaultCapability.windows.length === 1 &&
+    desktopTauriDefaultCapability.windows[0] === 'main',
+  'desktop Tauri default capability is scoped only to the main window',
+);
+for (const permission of [
+  'core:default',
+  'core:event:default',
+  'core:event:allow-listen',
+  'core:event:allow-unlisten',
+  'core:webview:default',
+  'core:window:default',
+]) {
+  assertRule(
+    desktopTauriDefaultCapability.permissions?.includes(permission),
+    `desktop Tauri default capability grants ${permission}`,
+  );
+}
 for (const entry of fs.readdirSync(path.join(desktopTauriDir, 'icons'), { withFileTypes: true })) {
   assertRule(
     allowedDesktopTauriIconEntries.has(entry.name),
@@ -1572,7 +1792,10 @@ for (const entry of fs.readdirSync(path.join(desktopTauriDir, 'src'), { withFile
     `desktop src-tauri/src entry ${entry.name} is allowed by the thin native shell standard`,
   );
 }
-assertRule(cargoTomlSource.includes('tauri = { version = "=2.10.3", features = [] }'), 'desktop Tauri crate keeps tauri features explicit and empty');
+assertRule(
+  cargoTomlSource.includes('tauri = { version = "=2.10.3", features = ["protocol-asset"] }'),
+  'desktop Tauri crate keeps Tauri features explicit and only enables the asset protocol required by local media previews',
+);
 assertRule(cargoTomlSource.includes('tauri-build = { version = "=2.5.6", features = [] }'), 'desktop Tauri build crate is pinned exactly for deterministic CLI compatibility');
 assertRule(!cargoTomlSource.includes('tauri-plugin-'), 'desktop Tauri crate does not add native plugins without an architecture contract');
 assertRule(cargoTomlSource.includes('reqwest = { version = "0.12"'), 'desktop Tauri crate declares reqwest for the contracted native LLM HTTP bridge');
@@ -1586,6 +1809,37 @@ assertRule(cargoTomlSource.includes('rusqlite = { version = "0.32"'), 'desktop T
 assertRule(cargoTomlSource.includes('features = ["bundled"]'), 'desktop Tauri crate uses bundled SQLite for deterministic desktop builds');
 assertRule(cargoTomlSource.includes('rfd = { version = "0.16.0"'), 'desktop Tauri crate declares rfd for the contracted trusted local file chooser');
 assertRule(!cargoTomlSource.includes('sqlx'), 'desktop Tauri crate does not add SQLx before the database contract is implemented');
+assertRule(
+  tauriConfig.app?.security?.assetProtocol?.enable === true,
+  'desktop Tauri config enables the asset protocol used by convertFileSrc previews',
+);
+assertRule(
+    nativeMediaRuntimeSource.includes('allow_autocut_asset_protocol_directory_scope') &&
+    nativeMediaRuntimeSource.includes('tauri::scope::Scopes') &&
+    /scopes\s*\.allow_directory\(directory_path,\s*true\)/u.test(nativeMediaRuntimeSource) &&
+    nativeMediaRuntimeSource.includes('allow_autocut_asset_protocol_file_parent_scope') &&
+    nativeMediaRuntimeSource.includes('allow_autocut_asset_protocol_directory_scope(app, &media_root)?'),
+  'desktop native runtime grants asset protocol preview access through trusted runtime scopes instead of broad static filesystem scope',
+);
+assertRule(
+    nativeMediaRuntimeSource.includes('allow_autocut_native_task_preview_scopes') &&
+    nativeMediaRuntimeSource.includes('collect_autocut_native_task_preview_directories') &&
+    nativeMediaRuntimeSource.includes('read_autocut_task_output_root_dir') &&
+    nativeMediaRuntimeSource.includes('allow_autocut_native_task_preview_scopes(app, &snapshots);') &&
+    nativeMediaRuntimeSource.includes('allow_existing_autocut_asset_protocol_directory_scope(app, &directory_path).is_err()') &&
+    nativeMediaRuntimeSource.includes('fn ensure_existing_autocut_preview_directory_path'),
+  'desktop native task listing restores trusted asset protocol preview scopes for persisted task outputs after app restart without failing task queries or recreating stale output paths',
+);
+assertRule(
+  Array.isArray(tauriConfig.app?.security?.assetProtocol?.scope) &&
+    tauriConfig.app.security.assetProtocol.scope.includes('$APPDATA/**'),
+  'desktop Tauri asset protocol scope allows the per-user AutoCut app-data media root',
+);
+assertRule(
+  tauriConfig.app?.security?.csp?.includes('asset:') &&
+    tauriConfig.app.security.csp.includes('http://asset.localhost'),
+  'desktop Tauri CSP allows both asset: and http://asset.localhost preview URLs',
+);
 assertRule(mainRsSource.includes('mod commands;'), 'desktop Tauri main.rs declares the native commands module');
 assertRule(mainRsSource.includes('mod database_contract;'), 'desktop Tauri main.rs declares the database contract module');
 assertRule(mainRsSource.includes('mod database_runtime;'), 'desktop Tauri main.rs declares the database runtime module');
@@ -1601,6 +1855,7 @@ assertRule(
     mainRsSource.includes('commands::autocut_describe_local_media_file') &&
     mainRsSource.includes('commands::autocut_select_local_video_file') &&
     mainRsSource.includes('commands::autocut_select_local_directory') &&
+    mainRsSource.includes('commands::autocut_allow_local_media_preview_directory') &&
     mainRsSource.includes('commands::autocut_list_native_tasks') &&
     mainRsSource.includes('commands::autocut_cancel_native_task') &&
     mainRsSource.includes('commands::autocut_recover_native_tasks') &&
@@ -1619,6 +1874,21 @@ assertRule(
     mainRsSource.includes('commands::autocut_audio_smoke'),
   'desktop Tauri main.rs exposes only the standard native host, database, media, speech, LLM HTTP, and LLM secret runtime commands',
 );
+assertSetsEqual(
+  nativeMainRegisteredCommandNames,
+  nativeHostCommandNames,
+  'desktop Tauri main.rs registers every command exposed by commands.rs and no stale command names',
+);
+assertSetsEqual(
+  nativeHostSupportedCommandNames,
+  nativeHostCommandNames,
+  'native host capabilities supportedCommands mirrors commands.rs exactly',
+);
+assertSetsEqual(
+  nativeHostClientCommandNames,
+  nativeHostCommandNames,
+  'renderer native host client invokes only commands registered by the native host',
+);
 assertRule(exists(requiredNativeHostCommandSourcePath), 'desktop Tauri owns native host commands.rs');
 assertRule(exists(requiredNativeHostContractSourcePath), 'desktop Tauri owns host_contract.rs');
 assertRule(exists(requiredNativeDatabaseContractSourcePath), 'desktop Tauri owns database_contract.rs');
@@ -1627,6 +1897,7 @@ assertRule(exists(requiredNativeMediaRuntimeSourcePath), 'desktop Tauri owns med
 assertRule(exists(requiredNativeLlmHttpRuntimeSourcePath), 'desktop Tauri owns llm_http_runtime.rs');
 assertRule(exists(requiredNativeLlmSecretRuntimeSourcePath), 'desktop Tauri owns llm_secret_runtime.rs');
 assertRule(exists(requiredNativeFfmpegToolchainManifestPath), 'desktop Tauri owns the FFmpeg toolchain manifest contract');
+assertRule(exists(requiredNativeSpeechToolchainManifestPath), 'desktop Tauri owns the speech-to-text toolchain manifest contract');
 assertRule(exists(requiredNativeSqliteBaselinePath), 'desktop Tauri owns SQLite baseline schema');
 assertRule(exists(requiredNativeSchemaRegistryPath), 'desktop Tauri owns schema registry baseline');
 assertRule(nativeHostCommandSource.includes('#[tauri::command]'), 'native host command is exposed through an explicit Tauri command');
@@ -1638,6 +1909,7 @@ assertRule(nativeHostCommandSource.includes('autocut_import_media_file'), 'nativ
 assertRule(nativeHostCommandSource.includes('autocut_describe_local_media_file'), 'native host command exposes autocut_describe_local_media_file');
 assertRule(nativeHostCommandSource.includes('autocut_select_local_video_file'), 'native host command exposes autocut_select_local_video_file');
 assertRule(nativeHostCommandSource.includes('autocut_select_local_directory'), 'native host command exposes autocut_select_local_directory');
+assertRule(nativeHostCommandSource.includes('autocut_allow_local_media_preview_directory'), 'native host command exposes autocut_allow_local_media_preview_directory');
 assertRule(nativeHostCommandSource.includes('autocut_list_native_tasks'), 'native host command exposes autocut_list_native_tasks');
 assertRule(nativeHostCommandSource.includes('autocut_cancel_native_task'), 'native host command exposes autocut_cancel_native_task');
 assertRule(nativeHostCommandSource.includes('autocut_recover_native_tasks'), 'native host command exposes autocut_recover_native_tasks');
@@ -1676,6 +1948,14 @@ assertRule(
     nativeHostCommandSource.includes('media_runtime::enhance_autocut_video_from_asset') &&
     nativeHostCommandSource.includes('media_runtime::run_autocut_audio_smoke'),
   'native host command delegates media operations to media_runtime',
+);
+assertRule(
+  nativeHostCommandSource.includes('run_autocut_blocking_native_command') &&
+    nativeHostCommandSource.includes('tauri::async_runtime::spawn_blocking') &&
+    nativeHostCommandSource.includes('pub async fn autocut_import_media_file') &&
+    nativeHostCommandSource.includes('pub async fn autocut_transcribe_media') &&
+    nativeHostCommandSource.includes('pub async fn autocut_slice_video'),
+  'native host runs Smart Slice import, speech transcription, and rendering commands on a blocking worker pool instead of the Tauri main thread',
 );
 assertRule(
   nativeHostCommandSource.includes('llm_http_runtime::send_autocut_llm_http_request'),
@@ -1773,6 +2053,12 @@ assertRule(
   'media_runtime.rs tests that native video slicing writes every slice under one task output directory',
 );
 assertRule(
+  nativeMediaRuntimeSource.includes('video_slice_encoder_candidates_prioritize_platform_hardware_and_end_with_cpu_fallback') &&
+    nativeMediaRuntimeSource.includes('video_slice_cpu_encoder_candidate_uses_compatible_libx264_output') &&
+    nativeMediaRuntimeSource.includes('video_slice_encoder_attempt_diagnostics_preserve_all_candidate_failures'),
+  'media_runtime.rs tests native video slicing hardware encoder discovery, CPU fallback compatibility, and candidate failure diagnostics',
+);
+assertRule(
   nativeMediaRuntimeSource.includes('video_slice_skips_clips_that_start_after_source_duration'),
   'media_runtime.rs tests that native video slicing skips clip plans outside source duration',
 );
@@ -1793,8 +2079,70 @@ assertRule(
   'media_runtime.rs tests Whisper JSON transcript parsing with segment timing',
 );
 assertRule(
+  nativeMediaRuntimeSource.includes('parse_whisper_transcript_json_accepts_comma_fraction_timestamps') &&
+    nativeMediaRuntimeSource.includes('normalized.replace') &&
+    nativeMediaRuntimeSource.includes("','") &&
+    nativeMediaRuntimeSource.includes('parse_ffmpeg_out_time_to_millis'),
+  'media_runtime.rs accepts Whisper/SRT-style comma timestamp fractions for local speech-to-text JSON parsing',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('parse_whisper_transcript_json_sorts_segments_by_start_time') &&
+    nativeMediaRuntimeSource.includes('segments.sort_by') &&
+    nativeMediaRuntimeSource.includes('parse_whisper_transcript_json_accepts_explicit_millisecond_fields') &&
+    nativeMediaRuntimeSource.includes('start_ms') &&
+    nativeMediaRuntimeSource.includes('end_ms') &&
+    nativeMediaRuntimeSource.includes('parse_whisper_transcript_json_accepts_nested_result_segments') &&
+    nativeMediaRuntimeSource.includes('parse_whisper_transcript_json_accepts_chunk_timestamp_arrays') &&
+    nativeMediaRuntimeSource.includes('parse_whisper_transcript_json_accepts_nested_result_chunks') &&
+    nativeMediaRuntimeSource.includes('result.chunks') &&
+    nativeMediaRuntimeSource.includes('timestamp[{offsets_index}]') &&
+    nativeMediaRuntimeSource.includes('read_whisper_segments_array') &&
+    nativeMediaRuntimeSource.includes('result.segments'),
+  'media_runtime.rs normalizes local speech-to-text JSON variants, including chunk timestamp arrays, into a sorted canonical transcript timeline',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('MAX_SPEECH_TRANSCRIPT_JSON_BYTES') &&
+    nativeMediaRuntimeSource.includes('MAX_SPEECH_TRANSCRIPT_SEGMENTS') &&
+    nativeMediaRuntimeSource.includes('read_whisper_transcript_json_file') &&
+    nativeMediaRuntimeSource.includes('parse_whisper_transcript_json_rejects_oversized_payloads_before_deserialization') &&
+    nativeMediaRuntimeSource.includes('parse_whisper_transcript_json_rejects_excessive_segment_counts') &&
+    nativeMediaRuntimeSource.includes('read_whisper_transcript_json_file_rejects_oversized_files_before_loading') &&
+    nativeMediaRuntimeSource.includes('fs::metadata(path)') &&
+    !nativeMediaRuntimeSource.includes('let transcript_json = fs::read_to_string(&transcript_path)'),
+  'media_runtime.rs limits local speech-to-text transcript JSON size and segment count before expensive processing',
+);
+assertRule(
   nativeMediaRuntimeSource.includes('speech_transcription_requires_local_toolchain_without_fake_transcript'),
   'media_runtime.rs tests that speech transcription fails closed when the local toolchain is not configured',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('speech_toolchain_rejects_relative_executable_paths') &&
+    nativeMediaRuntimeSource.includes('speech_toolchain_rejects_relative_model_paths') &&
+    nativeMediaRuntimeSource.includes('speech_toolchain_rejects_unsupported_model_extensions') &&
+    nativeMediaRuntimeSource.includes('speech_toolchain_rejects_partial_download_model_files') &&
+    nativeMediaRuntimeSource.includes('speech_toolchain_rejects_too_small_model_files') &&
+    nativeMediaRuntimeSource.includes('MIN_SPEECH_TRANSCRIPTION_MODEL_BYTES') &&
+    nativeMediaRuntimeSource.includes('ensure_supported_speech_executable_file_path') &&
+    nativeMediaRuntimeSource.includes('ensure_supported_speech_model_file_path'),
+  'media_runtime.rs enforces absolute local speech executable paths and complete supported local speech model files',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('normalize_speech_transcription_language(language: Option<&str>) -> Result<String, String>') &&
+    nativeMediaRuntimeSource.includes('is_supported_speech_transcription_language_tag') &&
+    nativeMediaRuntimeSource.includes('speech_transcription_language_rejects_unsafe_tokens_instead_of_sanitizing') &&
+    nativeMediaRuntimeSource.includes('speech_transcription_language_normalizes_bcp47_underscore_tags'),
+  'media_runtime.rs validates speech transcription languages fail-closed while preserving BCP-47 normalization',
+);
+assertRule(
+  nativeHostContractSource.includes('speech_toolchain_readiness_rejects_relative_executable_files'),
+  'host_contract.rs tests that speech toolchain readiness rejects relative executable paths',
+);
+assertRule(
+  nativeHostContractSource.includes('SUPPORTED_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS') &&
+    nativeHostContractSource.includes('MIN_SPEECH_TRANSCRIPTION_MODEL_BYTES') &&
+    nativeHostContractSource.includes('speech_toolchain_readiness_rejects_unsupported_model_extensions') &&
+    nativeHostContractSource.includes('speech_toolchain_readiness_rejects_too_small_model_files'),
+  'host_contract.rs reuses the native speech model extension and completeness contract for readiness checks',
 );
 assertRule(
   nativeMediaRuntimeSource.includes('video_slice_from_asset_writes_task_scoped_srt_subtitle_artifacts') &&
@@ -1808,6 +2156,21 @@ assertRule(
   'media_runtime.rs tests and implements task-scoped SRT and burned subtitle artifacts for transcript-assisted slicing',
 );
 assertRule(
+  slicerServiceSource.includes('assertNativeSliceSubtitleArtifactMatchesRequest') &&
+    slicerServiceSource.includes('subtitle artifact was returned even though subtitle rendering was not requested') &&
+    slicerServiceSource.includes('is missing the requested SRT subtitle artifact') &&
+    serviceBehaviorCheckSource.includes('rejects native subtitle artifacts when subtitles are explicitly disabled') &&
+    serviceBehaviorCheckSource.includes('does not persist video assets after unrequested native subtitle artifacts'),
+  'slicerService.ts fails closed when native subtitle artifacts do not match the explicit subtitle request mode',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('VIDEO_SLICE_BURNED_SUBTITLE_FORCE_STYLE') &&
+    nativeMediaRuntimeSource.includes('Alignment=2') &&
+    nativeMediaRuntimeSource.includes('MarginV=') &&
+    nativeMediaRuntimeSource.includes('force_style='),
+  'media_runtime.rs forces burned speech-to-text subtitles to render bottom-centered in every generated slice video',
+);
+assertRule(
   frontendStandardSource.includes('autocut_transcribe_media') &&
     frontendStandardSource.includes('SDKWORK_AUTOCUT_WHISPER_EXECUTABLE') &&
     frontendStandardSource.includes('transcript-assisted intelligent slicing') &&
@@ -1816,14 +2179,40 @@ assertRule(
   'frontend module standard documents local speech transcription, subtitle artifacts, and transcript-assisted intelligent slicing',
 );
 assertRule(
+  slicePlannerSource.includes('selectOptimalSliceCandidateSetByDynamicProgramming') &&
+    slicePlannerSource.includes('findPreviousCompatibleSliceCandidateIndexes') &&
+    slicePlannerSource.includes('sortSliceClipsByEndMs') &&
+    slicePlannerSource.includes('SLICE_CANDIDATE_DP_BEAM_WIDTH') &&
+    slicePlannerSource.includes('isSliceCandidatePlanInternallyCompatible') &&
+    slicePlannerSource.includes('doSliceCandidatesOverlap') &&
+    slicePlannerSource.includes('areTranscriptSliceClipsRepeated') &&
+    slicePlannerSource.includes('calculateTranscriptTokenOverlapScore') &&
+    slicePlannerSource.includes('extractTranscriptRepeatTokens') &&
+    slicePlannerSource.includes('STANDARD_TRANSCRIPT_SEGMENT_OVERLAP_TOLERANCE_MS') &&
+    slicePlannerSource.includes('continuityOverlapToleranceMs') &&
+    slicePlannerSource.includes('transcript-overlap-repaired'),
+  'slicePlanner.ts selects smart slice candidates with bounded dynamic programming, non-overlap enforcement, STT overlap tolerance, and transcript token-overlap repeat filtering',
+);
+assertRule(
+  slicerServiceSource.includes('SMART_SLICE_EXECUTION_STEPS') &&
+    slicerServiceSource.includes('reportSmartSliceExecutionPlan') &&
+    slicerServiceSource.includes('runSmartSliceExecutionStep') &&
+    slicerServiceSource.includes('progressBefore') &&
+    slicerServiceSource.includes('progressAfter') &&
+    !slicerServiceSource.includes('progress: 35'),
+  'slicerService.ts exposes a monotonic Smart Slice execution plan with console diagnostics instead of a sticky 35 percent stage',
+);
+assertRule(
   nativeMediaRuntimeSource.includes('complete_ops_slice_task') &&
     nativeMediaRuntimeSource.includes('"sliceResults"') &&
+    nativeMediaRuntimeSource.includes('AUTOCUT_MEDIA_TASK_COVER_DIR') &&
+    nativeMediaRuntimeSource.includes('autocut_task_cover_dir') &&
     nativeMediaRuntimeSource.includes('insert_media_slice_artifact') &&
     nativeMediaRuntimeSource.includes('insert_media_slice_thumbnail_artifact') &&
     nativeMediaRuntimeSource.includes('insert_media_slice_subtitle_artifact') &&
     nativeMediaRuntimeSource.includes('thumbnailArtifactPath') &&
     nativeMediaRuntimeSource.includes('subtitleArtifactPath'),
-  'media_runtime.rs persists native video slice output_json and video, thumbnail, and subtitle media_artifact rows',
+  'media_runtime.rs persists native video slice output_json and video, cover-directory thumbnail, and subtitle media_artifact rows',
 );
 for (const marker of [
   '"tool": "ffmpeg"',
@@ -1904,14 +2293,24 @@ assertRule(
 const tauriCsp = typeof tauriConfig.app?.security?.csp === 'string' ? tauriConfig.app.security.csp : '';
 assertRule(!/(?:^|;)\s*img-src[^;]*\shttps:(?:\s|;)/u.test(tauriCsp), 'Tauri CSP img-src does not allow broad https sources');
 assertRule(!/(?:^|;)\s*media-src[^;]*\shttps:(?:\s|;)/u.test(tauriCsp), 'Tauri CSP media-src does not allow broad https sources');
-for (const cspSource of requiredCspRemoteSources) {
-  assertRule(tauriCsp.includes(cspSource), `Tauri CSP explicitly allows fixture source ${cspSource}`);
+assertRule(!tauriCsp.includes('https://storage.googleapis.com'), 'Tauri CSP does not allow the removed BigBuckBunny storage fixture source');
+assertRule(!tauriCsp.includes('https://commondatastorage.googleapis.com'), 'Tauri CSP does not allow the removed legacy BigBuckBunny fixture source');
+for (const cspSource of forbiddenCspRemoteSources) {
+  assertRule(!tauriCsp.includes(cspSource), `Tauri CSP does not allow third-party fixture source ${cspSource}`);
 }
 assertRule(tauriConfig.build?.devUrl === 'http://127.0.0.1:5173', 'Tauri devUrl uses loopback 127.0.0.1:5173');
 assertRule(tauriConfig.bundle?.active === true, 'Tauri bundling is active');
 assertRule(
   rootPackage.scripts?.['prepare:ffmpeg-sidecar'] === 'node scripts/prepare-autocut-ffmpeg-sidecar.mjs',
   'root package exposes the standardized FFmpeg sidecar preparation command',
+);
+assertRule(
+  rootPackage.scripts?.['prepare:speech-sidecar'] === 'node scripts/prepare-autocut-speech-sidecar.mjs',
+  'root package exposes the standardized Whisper CLI speech sidecar preparation command',
+);
+assertRule(
+  rootPackage.scripts?.['prepare:release-sidecars'] === 'node scripts/prepare-autocut-release-sidecars.mjs',
+  'root package exposes the standardized CI release sidecar preparation command',
 );
 assertRule(
   rootPackage.scripts?.['release:smoke-preflight'] === 'node scripts/check-autocut-release-smoke-preflight.mjs',
@@ -1964,6 +2363,19 @@ assertRule(
     commercialReleaseReadinessSource.includes('nativeVideoSliceSmokeReady') &&
     commercialReleaseReadinessSource.includes('videoSliceReady'),
   'commercial release readiness blocks when native video slice smoke evidence is missing',
+);
+assertRule(
+  commercialReleaseReadinessSource.includes('2026-05-06.autocut-commercial-release-readiness.v2') &&
+    commercialReleaseReadinessSource.includes("mode: 'aggregate'") &&
+    commercialReleaseReadinessSource.includes("mode: 'single'") &&
+    commercialReleaseReadinessSource.includes('PLATFORM_RELEASE_EVIDENCE_MISSING') &&
+    commercialReleaseReadinessSource.includes('PLATFORM_RELEASE_EVIDENCE_INVALID') &&
+    commercialReleaseReadinessSource.includes('PLATFORM_RELEASE_EVIDENCE_MISMATCH') &&
+    commercialReleaseReadinessSource.includes('autocut-release-evidence-${platform}.json') &&
+    commercialReleaseReadinessSource.includes('normalizeAutoCutReleasePlatform') &&
+    commercialReleaseReadinessSource.includes('--evidence-dir') &&
+    commercialReleaseReadinessSource.includes('--platforms'),
+  'commercial release readiness gate defaults to aggregate four-platform evidence while preserving explicit single-platform diagnostics',
 );
 assertRule(
   rootPackage.scripts?.['release:sign-installers'] === 'node scripts/sign-autocut-release-installers.mjs',
@@ -2053,6 +2465,7 @@ for (const marker of [
   'SMART_SLICE_TASK_RENDER_DURATION_MISMATCH',
   'minimumContinuityScore',
   'minimumTranscriptCoverageScore',
+  'AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD',
   'formatAutoCutSmartSliceTaskEvidenceValidationMessage',
 ]) {
   assertRule(smartSliceTaskEvidenceCheckSource.includes(marker), `smart slice task evidence validation check contains ${marker}`);
@@ -2064,6 +2477,7 @@ for (const marker of [
   'minAveragePublishabilityScore',
   'minAverageContinuityScore',
   'minAverageTranscriptCoverageScore',
+  'AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD',
   'SMART_SLICE_TRANSCRIPT_CONTINUITY_TOO_LOW',
   'platformReadyOrReviewRatio',
   'validateSmartSliceTaskEvidence',
@@ -2098,15 +2512,132 @@ assertRule(
 assertRule(
   commercialReleaseReadinessSource.includes('SMART_SLICE_QUALITY_NOT_READY') &&
     commercialReleaseReadinessSource.includes('SMART_SLICE_MEDIA_ARTIFACTS_NOT_READY') &&
+    commercialReleaseReadinessSource.includes('INSTALLER_ARTIFACTS_NOT_READY') &&
     commercialReleaseReadinessSource.includes('smartSliceQualityReady') &&
     commercialReleaseReadinessSource.includes('smartSliceMediaArtifactsReady') &&
+    commercialReleaseReadinessSource.includes('installerArtifactsReady') &&
+    commercialReleaseReadinessSource.includes('expectedInstallerKindsByPlatform') &&
     commercialReleaseReadinessSource.includes('release:smart-slice-quality') &&
     commercialReleaseReadinessSource.includes('release:smart-slice-media-artifacts'),
-  'commercial release readiness gate blocks releases without smart slice quality or media artifact evidence',
+  'commercial release readiness gate blocks releases without smart slice quality, media artifact, or installer artifact evidence',
 );
 assertRule(
   rootPackage.scripts?.['release:evidence'] === 'node scripts/write-autocut-release-evidence.mjs',
   'root package exposes the standardized AutoCut release evidence writer command',
+);
+assertRule(
+  rootPackage.scripts?.['release:package-sbom'] === 'node scripts/write-autocut-package-sbom-files.mjs',
+  'root package exposes the standardized AutoCut per-package SBOM file writer command',
+);
+assertRule(
+  packageSbomSource.includes('CycloneDX') &&
+    packageSbomSource.includes('specVersion: \'1.6\'') &&
+    packageSbomSource.includes('pnpm-lock.yaml') &&
+    packageSbomSource.includes('parsePnpmSnapshotDependencies') &&
+    packageSbomSource.includes('expandNpmRuntimeDependencyClosure') &&
+    packageSbomSource.includes('ambiguous AutoCut npm runtime dependency version') &&
+    packageSbomSource.includes('Cargo.lock') &&
+    packageSbomSource.includes('Cargo.toml') &&
+    packageSbomSource.includes('target.\'cfg(windows)\'.dependencies') &&
+    packageSbomSource.includes("cargoPackages.find((entry) => entry.name === 'sdkwork-video-cut-desktop')") &&
+    packageSbomSource.includes('rootPackage.dependencies.filter') &&
+    packageSbomSource.includes('expandCargoDependencyClosure') &&
+    packageSbomSource.includes('parseCargoDependencyReference') &&
+    packageSbomSource.includes('ambiguous AutoCut Cargo dependency reference') &&
+    packageSbomSource.includes('matchTomlStringArray') &&
+    packageSbomSource.includes('assertAllNpmRuntimeDependenciesResolved') &&
+    packageSbomSource.includes('unresolved AutoCut npm runtime dependency versions') &&
+    packageSbomSource.includes('--platform') &&
+    packageSbomSource.includes('--package-id') &&
+    packageSbomSource.includes('desktop-windows-msi') &&
+    packageSbomSource.includes('desktop-linux-appimage') &&
+    packageSbomSource.includes('desktop-macos-aarch64-dmg'),
+  'per-package SBOM writer creates deterministic CycloneDX SBOMs from locked recursive npm and Cargo runtime dependency metadata without unresolved versions',
+);
+assertRule(
+  rootPackage.scripts?.['release:sbom-evidence'] === 'node scripts/write-autocut-sbom-evidence.mjs',
+  'root package exposes the standardized AutoCut SBOM evidence writer command',
+);
+assertRule(
+  sbomEvidenceSource.includes('2026-05-08.autocut-sbom-evidence.v1') &&
+    sbomEvidenceSource.includes('artifacts/release/sbom') &&
+    sbomEvidenceSource.includes('desktop-windows-msi') &&
+    sbomEvidenceSource.includes('desktop-windows-nsis') &&
+    sbomEvidenceSource.includes('desktop-linux-deb') &&
+    sbomEvidenceSource.includes('desktop-linux-appimage') &&
+    sbomEvidenceSource.includes('desktop-macos-x64-dmg') &&
+    sbomEvidenceSource.includes('desktop-macos-aarch64-dmg') &&
+    sbomEvidenceSource.includes('crypto.createHash(\'sha256\')') &&
+    sbomEvidenceSource.includes('PACKAGE_SBOM_MISSING') &&
+    sbomEvidenceSource.includes('PACKAGE_SBOM_FILE_EMPTY') &&
+    sbomEvidenceSource.includes('PACKAGE_SBOM_JSON_INVALID') &&
+    sbomEvidenceSource.includes('PACKAGE_SBOM_FORMAT_UNSUPPORTED') &&
+    sbomEvidenceSource.includes('PACKAGE_SBOM_UNKNOWN_PACKAGE_ID') &&
+    sbomEvidenceSource.includes('PACKAGE_SBOM_MULTIPLE_CANDIDATES') &&
+    sbomEvidenceSource.includes('--allow-blocked') &&
+    sbomEvidenceSource.includes('--release-tag'),
+  'SBOM evidence writer hashes real per-package CycloneDX/SPDX SBOM files and fails closed for missing, invalid, unknown, or duplicate SBOM inputs',
+);
+assertRule(
+  rootPackage.scripts?.['release:evidence-status'] === 'node scripts/check-autocut-release-evidence-status.mjs',
+  'root package exposes the standardized AutoCut aggregate release evidence status command',
+);
+assertRule(
+  releaseEvidenceStatusSource.includes('2026-05-08.autocut-release-evidence-status.v1') &&
+    releaseEvidenceStatusSource.includes('createAutoCutReleaseEnvironmentReport') &&
+    releaseEvidenceStatusSource.includes('createAutoCutMultiplatformReleaseReadinessReport') &&
+    releaseEvidenceStatusSource.includes('syncAutoCutAppManifestReleaseEvidence') &&
+    releaseEvidenceStatusSource.includes('createAutoCutAppManifestReleaseReadinessReport') &&
+    releaseEvidenceStatusSource.includes('createAutoCutCommercialReleaseReadinessReport') &&
+    releaseEvidenceStatusSource.includes('release-environment') &&
+    releaseEvidenceStatusSource.includes('platform-release-evidence') &&
+    releaseEvidenceStatusSource.includes('sbom-evidence') &&
+    releaseEvidenceStatusSource.includes('app-manifest-sync') &&
+    releaseEvidenceStatusSource.includes('app-manifest-readiness') &&
+    releaseEvidenceStatusSource.includes('multiplatform-preview-readiness') &&
+    releaseEvidenceStatusSource.includes('commercial-release-readiness') &&
+    releaseEvidenceStatusSource.includes('--allow-blocked') &&
+    releaseEvidenceStatusSource.includes('--json') &&
+    releaseEvidenceStatusSource.includes('nextActions'),
+  'release evidence status command aggregates environment, platform evidence, SBOM, app manifest, preview, and commercial readiness blockers without generating synthetic evidence',
+);
+assertRule(
+  rootPackage.scripts?.['release:sync-app-manifest'] === 'node scripts/sync-autocut-app-manifest-release-evidence.mjs',
+  'root package exposes the standardized AutoCut release evidence to app manifest sync command',
+);
+assertRule(
+  appManifestReleaseEvidenceSyncSource.includes('2026-05-08.autocut-app-manifest-release-evidence-sync.v1') &&
+    appManifestReleaseEvidenceSyncSource.includes('autocut-sbom-evidence.json') &&
+    appManifestReleaseEvidenceSyncSource.includes('autocut-release-evidence-${platform}.json') &&
+    appManifestReleaseEvidenceSyncSource.includes('PACKAGE_SBOM_EVIDENCE_MISSING') &&
+    appManifestReleaseEvidenceSyncSource.includes('PACKAGE_TRUST_EVIDENCE_NOT_READY') &&
+    appManifestReleaseEvidenceSyncSource.includes('PLATFORM_INSTALLER_SIGNATURE_EVIDENCE_NOT_READY') &&
+    appManifestReleaseEvidenceSyncSource.includes('SBOM_EVIDENCE_MISSING') &&
+    appManifestReleaseEvidenceSyncSource.includes('SBOM_EVIDENCE_NOT_READY') &&
+    appManifestReleaseEvidenceSyncSource.includes('sourceCode') &&
+    appManifestReleaseEvidenceSyncSource.includes('evidence.readiness?.sbomReady !== true') &&
+    appManifestReleaseEvidenceSyncSource.includes('--activate-commercial') &&
+    appManifestReleaseEvidenceSyncSource.includes('--dry-run') &&
+    appManifestReleaseEvidenceSyncSource.includes('--allow-blocked') &&
+    appManifestReleaseEvidenceSyncSource.includes('checksumAlgorithm = \'SHA-256\'') &&
+    appManifestReleaseEvidenceSyncSource.includes('delete appPackage.metadata.commercialActivationRequired'),
+  'app manifest release evidence sync reads real release, trust, and SBOM evidence before enabling commercial packages',
+);
+assertRule(
+  rootPackage.scripts?.['release:app-manifest-ready'] === 'node scripts/check-autocut-app-manifest-release-readiness.mjs',
+  'root package exposes the standardized AutoCut app manifest release readiness gate command',
+);
+assertRule(
+  appManifestReleaseReadinessSource.includes('2026-05-08.autocut-app-manifest-release-readiness.v1') &&
+    appManifestReleaseReadinessSource.includes("mode === 'inactive-preview'") &&
+    appManifestReleaseReadinessSource.includes("mode === 'active-commercial'") &&
+    appManifestReleaseReadinessSource.includes('DISABLED_PACKAGE_COMMERCIAL_ACTIVATION_MISSING') &&
+    appManifestReleaseReadinessSource.includes('ACTIVE_MANIFEST_HAS_NO_ENABLED_PACKAGES') &&
+    appManifestReleaseReadinessSource.includes('ENABLED_PACKAGE_CHECKSUM_INVALID') &&
+    appManifestReleaseReadinessSource.includes('ENABLED_PACKAGE_TRUST_EVIDENCE_INVALID') &&
+    appManifestReleaseReadinessSource.includes('ENABLED_PACKAGE_SBOM_INVALID') &&
+    appManifestReleaseReadinessSource.includes('ENABLED_PACKAGE_CHECKSUM_PLACEHOLDER'),
+  'app manifest release readiness gate separates inactive preview packages from active commercial packages with checksum, trust, and SBOM evidence blockers',
 );
 assertRule(
   rootPackage.scripts?.['release:preview-ready'] === 'node scripts/check-autocut-preview-release-readiness.mjs',
@@ -2121,11 +2652,91 @@ assertRule(
   'preview release readiness gate allows unsigned installers only with explicit warning and keeps all runtime evidence gates',
 );
 assertRule(
+  rootPackage.scripts?.['release:multiplatform-ready'] === 'node scripts/check-autocut-multiplatform-release-readiness.mjs',
+  'root package exposes the standardized AutoCut multiplatform preview release readiness gate command',
+);
+assertRule(
+  releasePlatformsSource.includes('windows-x86_64') &&
+    releasePlatformsSource.includes('linux-x86_64') &&
+    releasePlatformsSource.includes('macos-x86_64') &&
+    releasePlatformsSource.includes('macos-aarch64') &&
+    releasePlatformsSource.includes('autoCutReleasePlatformAliases') &&
+    releasePlatformsSource.includes('windows-x64') &&
+    releasePlatformsSource.includes('ubuntu-x64') &&
+    releasePlatformsSource.includes('darwin-arm64') &&
+    releasePlatformsSource.includes('is ambiguous; use macos-x86_64 or macos-aarch64') &&
+    releasePlatformsSource.includes('x86_64-unknown-linux-gnu') &&
+    releasePlatformsSource.includes('x86_64-apple-darwin') &&
+    releasePlatformsSource.includes('aarch64-apple-darwin') &&
+    releasePlatformsSource.includes('deb') &&
+    releasePlatformsSource.includes('appimage') &&
+    releasePlatformsSource.includes('dmg'),
+  'release platform registry maps all desktop release platforms and common Windows/Linux/macOS aliases to their native Tauri installer artifact policy',
+);
+assertRule(
+  releaseEvidenceSource.includes('createAutoCutReleaseInstallerSpecs') &&
+    releaseEvidenceSource.includes('normalizeAutoCutReleasePlatform') &&
+    releaseEvidenceSource.includes('readReleaseInstallers(resolvedRootDir, normalizedPlatform)') &&
+    releaseEvidenceSource.includes('speechBundledReady') &&
+    releaseEvidenceSource.includes('preflight.speechSidecar') &&
+    releaseEvidenceSource.includes('platformBundledReady') &&
+    releaseEvidenceSource.includes('manifestBundledReady'),
+  'release evidence writer discovers installers through the canonical multiplatform release platform registry and records verified local Whisper sidecar readiness',
+);
+assertRule(
+  multiplatformReleaseReadinessSource.includes('windows-x86_64') &&
+    multiplatformReleaseReadinessSource.includes('linux-x86_64') &&
+    multiplatformReleaseReadinessSource.includes('macos-x86_64') &&
+    multiplatformReleaseReadinessSource.includes('macos-aarch64') &&
+    multiplatformReleaseReadinessSource.includes('normalizeAutoCutReleasePlatform') &&
+    multiplatformReleaseReadinessSource.includes('UNSIGNED_MACOS_INSTALLERS_ACCEPTED_FOR_PREVIEW') &&
+    multiplatformReleaseReadinessSource.includes('INSTALLER_ARTIFACTS_NOT_READY') &&
+    multiplatformReleaseReadinessSource.includes('SPEECH_SIDECAR_NOT_BUNDLED') &&
+    multiplatformReleaseReadinessSource.includes('speechBundledReady'),
+  'multiplatform preview readiness gate requires all four platform evidence files, platform installer kinds, and verified local Whisper sidecars',
+);
+assertRule(
+  previewReleaseReadinessSource.includes('SPEECH_SIDECAR_NOT_BUNDLED') &&
+    previewReleaseReadinessSource.includes('speechBundledReady') &&
+    commercialReleaseReadinessSource.includes('SPEECH_SIDECAR_NOT_BUNDLED') &&
+    commercialReleaseReadinessSource.includes('release:smoke-preflight --require-bundled') &&
+    commercialReleaseReadinessSource.includes('Run prepare:speech-sidecar'),
+  'preview and commercial release readiness gates fail closed when the approved local Whisper sidecar is missing or unverifiable',
+);
+assertRule(
+  desktopReleaseWorkflowSource.includes('name: AutoCut Desktop Multiplatform Release') &&
+    desktopReleaseWorkflowSource.includes('build-windows') &&
+    desktopReleaseWorkflowSource.includes('build-linux') &&
+    desktopReleaseWorkflowSource.includes('build-macos') &&
+    desktopReleaseWorkflowSource.includes('windows-latest') &&
+    desktopReleaseWorkflowSource.includes('ubuntu-22.04') &&
+    desktopReleaseWorkflowSource.includes('macos-latest') &&
+    desktopReleaseWorkflowSource.includes('tauri-apps/tauri-action') &&
+    desktopReleaseWorkflowSource.includes('pnpm release:package-sbom -- --platform windows-x86_64') &&
+    desktopReleaseWorkflowSource.includes('pnpm release:package-sbom -- --platform linux-x86_64') &&
+    desktopReleaseWorkflowSource.includes('pnpm release:package-sbom -- --platform ${{ matrix.platform }}') &&
+    desktopReleaseWorkflowSource.includes('artifacts/release/sbom') &&
+    desktopReleaseWorkflowSource.includes('pnpm release:sbom-evidence -- --release-tag "${{ inputs.release_tag }}" --allow-blocked') &&
+    desktopReleaseWorkflowSource.includes('pnpm release:sync-app-manifest -- --dry-run --allow-blocked') &&
+    desktopReleaseWorkflowSource.includes('pnpm release:app-manifest-ready') &&
+    desktopReleaseWorkflowSource.includes('pnpm release:multiplatform-ready') &&
+    desktopReleaseWorkflowSource.includes('pnpm release:evidence-status -- --release-tag "${{ inputs.release_tag }}" --allow-dirty --skip-windows-installer-service --allow-blocked') &&
+    desktopReleaseWorkflowSource.includes('release:installer-signature -- --platform ${{ matrix.platform }}') &&
+    desktopReleaseWorkflowSource.includes('autocut-sbom-evidence.json') &&
+    desktopReleaseWorkflowSource.includes('autocut-app-manifest-release-evidence-sync.txt') &&
+    desktopReleaseWorkflowSource.includes('autocut-app-manifest-release-readiness.txt') &&
+    desktopReleaseWorkflowSource.includes('autocut-release-evidence-status.json') &&
+    desktopReleaseWorkflowSource.includes('artifacts/release/autocut-release-evidence-${{ matrix.platform }}.json'),
+  'GitHub workflow builds native Windows, Linux, Intel macOS, and Apple Silicon macOS desktop release artifacts with app manifest and aggregate readiness evidence',
+);
+assertRule(
   rootPackage.scripts?.['release:commercial-ready'] === 'node scripts/check-autocut-commercial-release-readiness.mjs',
   'root package exposes the standardized AutoCut commercial release readiness gate command',
 );
 assertRule(
     rootPackage.scripts?.test?.includes('scripts/prepare-autocut-ffmpeg-sidecar.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/prepare-autocut-speech-sidecar.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/prepare-autocut-release-sidecars.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/autocut-cli-args.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/check-autocut-release-smoke-preflight.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/write-autocut-native-release-smoke.test.mjs') &&
@@ -2137,9 +2748,16 @@ assertRule(
     rootPackage.scripts?.test?.includes('scripts/write-autocut-smart-slice-media-artifacts-evidence.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/check-autocut-smart-slice-release-fixture.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/write-autocut-release-evidence.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/write-autocut-package-sbom-files.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/write-autocut-sbom-evidence.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/sync-autocut-app-manifest-release-evidence.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/check-autocut-app-manifest-release-readiness.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/check-autocut-preview-release-readiness.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/check-autocut-multiplatform-release-readiness.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/check-autocut-release-workflow.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/check-autocut-release-evidence-status.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/check-autocut-commercial-release-readiness.test.mjs'),
-  'root package test script covers FFmpeg sidecar preparation, release smoke preflight, native release smoke, installer signing, installer signature, smart slice sample, smart slice task validation, smart slice quality, smart slice media artifacts, smart slice fixture, release evidence, preview readiness, and commercial readiness contracts',
+  'root package test script covers FFmpeg sidecar preparation, Whisper CLI speech sidecar preparation, CI release sidecar preparation, release smoke preflight, native release smoke, installer signing, installer signature, smart slice sample, smart slice task validation, smart slice quality, smart slice media artifacts, smart slice fixture, release evidence, package SBOM file generation, SBOM evidence, app manifest sync/readiness, preview readiness, multiplatform readiness, release workflow, aggregate evidence status, and commercial readiness contracts',
 );
 assertRule(
   tauriConfig.bundle?.resources?.['binaries/ffmpeg.toolchain.json'] === 'binaries/ffmpeg.toolchain.json',
@@ -2264,17 +2882,18 @@ for (const packageName of requiredLazyPackages) {
 }
 assertRule(appSource.includes('AUTOCUT_ROUTES.map'), 'root App.tsx renders routes from AUTOCUT_ROUTES');
 const requiredTaskTypes = [
-  '视频切片',
-  '文案提取',
-  '视频提音',
-  '视频转gif',
-  '视频压缩',
-  '视频格式转换',
-  '视频高清化',
-  '视频字幕翻译',
-  '视频人声翻译',
+  'video-slice',
+  'text-extraction',
+  'audio-extraction',
+  'video-gif',
+  'video-compress',
+  'video-convert',
+  'video-enhance',
+  'subtitle-translate',
+  'voice-translate',
 ];
 assertRule(autocutTypesSource.includes('AUTOCUT_TASK_TYPES'), '@sdkwork/autocut-types exports canonical AUTOCUT_TASK_TYPES');
+assertRule(autocutTypesSource.includes('AUTOCUT_TASK_TYPE'), '@sdkwork/autocut-types exports canonical AUTOCUT_TASK_TYPE enum codes');
 assertRule(autocutTypesSource.includes('export type TaskType = typeof AUTOCUT_TASK_TYPES[number]'), 'TaskType is derived from AUTOCUT_TASK_TYPES');
 assertRule(autocutTypesSource.includes('AUTOCUT_TASK_STATUS'), '@sdkwork/autocut-types exports canonical AUTOCUT_TASK_STATUS');
 assertRule(autocutTypesSource.includes('export type TaskStatus = typeof AUTOCUT_TASK_STATUS[keyof typeof AUTOCUT_TASK_STATUS]'), 'TaskStatus is derived from AUTOCUT_TASK_STATUS');
@@ -2284,10 +2903,49 @@ assertRule(autocutTypesSource.includes('sourceFileId?: string'), 'AppTask record
 assertRule(autocutTypesSource.includes('generatedAssetIds?: string[]'), 'AppTask records generatedAssetIds for task result traceability');
 assertRule(tasksPageSource.includes('Record<TaskType, React.ReactNode>'), 'TasksPage icon map is typed against every TaskType');
 assertRule(taskDetailPageSource.includes('Record<TaskType, string>'), 'TaskDetailPage reprocess route map is typed against every TaskType');
+assertRule(serviceIndexSource.includes("export * from './service/i18n.service';"), '@sdkwork/autocut-services exports the standard i18n service');
+assertRule(i18nServiceSource.includes("from 'i18next'"), 'AutoCut i18n service is backed by the i18next open-source framework');
+assertRule(i18nServiceSource.includes('createInstance'), 'AutoCut i18n service creates a dedicated i18next instance');
+assertRule(i18nServiceSource.includes('initAsync: false'), 'AutoCut i18n resources initialize synchronously for service/runtime use');
+assertRule(i18nServiceSource.includes('AUTOCUT_I18N_RESOURCES'), 'AutoCut localized display text lives in i18next resources');
+assertRule(appSource.includes("from 'react-i18next'") && appSource.includes('I18nextProvider'), 'Desktop App wires React through react-i18next I18nextProvider');
+assertRule(tasksPageSource.includes("from 'react-i18next'") && tasksPageSource.includes('useTranslation'), 'TasksPage resolves display labels through react-i18next');
+assertRule(taskDetailPageSource.includes("from 'react-i18next'") && taskDetailPageSource.includes('useTranslation'), 'TaskDetailPage resolves display labels through react-i18next');
+assertRule(
+  !/type:\s*['"][^'"]*[\u4e00-\u9fff][^'"]*['"]/u.test(realProcessingServiceSources),
+  'processing services never persist localized Chinese task.type values',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('fn create_autocut_task_input_json') &&
+    nativeMediaRuntimeSource.includes('"sourceName".to_string()') &&
+    nativeMediaRuntimeSource.includes('json!(asset.name.clone())'),
+  'media_runtime.rs centralizes native ops_task input_json creation with the original source file name',
+);
+assertRule(
+  !/let mut input_json = json!\(\{\s*"assetUuid": asset\.uuid/u.test(nativeMediaRuntimeSource),
+  'native media operations do not build ops_task input_json without the original source file name',
+);
+assertRule(
+  taskDetailPageSource.includes('function TaskVideoPreview') &&
+    taskDetailPageSource.includes('task-detail-video-preview-shell') &&
+    taskDetailPageSource.includes('task-detail-video-preview-media') &&
+    taskDetailPageSource.includes('object-contain') &&
+    taskDetailPageSource.includes('playsInline') &&
+    taskDetailPageSource.includes('max-h-[62vh]') &&
+    taskDetailPageSource.includes('max-h-[34%]'),
+  'TaskDetailPage uses a standardized bounded object-contain preview shell so each task video remains fully visible',
+);
+assertRule(
+  taskDetailPageSource.includes('task-detail-slice-thumbnail-media') &&
+    taskDetailPageSource.includes('loading="lazy"') &&
+    taskDetailPageSource.includes('decoding="async"') &&
+    !taskDetailPageSource.includes('object-cover'),
+  'TaskDetailPage slice thumbnails follow the complete-frame preview rule and never crop generated videos',
+);
 for (const taskType of requiredTaskTypes) {
   assertRule(autocutTypesSource.includes(`'${taskType}'`), `AUTOCUT_TASK_TYPES includes ${taskType}`);
-  assertRule(tasksPageSource.includes(`'${taskType}'`), `TasksPage icon map covers ${taskType}`);
-  assertRule(taskDetailPageSource.includes(`'${taskType}'`), `TaskDetailPage route map covers ${taskType}`);
+  assertRule(tasksPageSource.includes(`AUTOCUT_TASK_TYPE.${toTaskTypeEnumKey(taskType)}`), `TasksPage icon map covers ${taskType}`);
+  assertRule(taskDetailPageSource.includes(`AUTOCUT_TASK_TYPE.${toTaskTypeEnumKey(taskType)}`), `TaskDetailPage route map covers ${taskType}`);
 }
 const requiredEventNames = [
   'taskAdded',
@@ -2314,7 +2972,7 @@ assertRule(
   storageServiceSource.includes('`${AUTO_CUT_STORAGE_NAMESPACE}_${getAutoCutRuntimeEnvironment()}_'),
   'storage.service.ts namespaces browser key-value storage by runtime environment',
 );
-for (const storageKey of ['assets', 'tasks', 'messages', 'settings']) {
+for (const storageKey of ['assets', 'tasks', 'messages', 'settings', 'workflowPreferences']) {
   assertRule(storageServiceSource.includes(`${storageKey}:`), `storage.service.ts declares typed storage key ${storageKey}`);
 }
 assertRule(
@@ -2347,6 +3005,212 @@ assertRule(
   'settings.service.ts keeps transient LLM API keys isolated by runtime environment',
 );
 assertRule(
+  exists(requiredI18nServicePath) &&
+    i18nServiceSource.includes("import i18next") &&
+    i18nServiceSource.includes('normalizeAutoCutLocale') &&
+    i18nServiceSource.includes("case 'zh':") &&
+    i18nServiceSource.includes("case 'en':"),
+  'i18n.service.ts owns the open-source i18next locale runtime and legacy locale alias normalization',
+);
+assertRule(
+  exists(requiredI18nResourcesServicePath) &&
+    i18nResourcesServiceSource.includes('settings:') &&
+    i18nResourcesServiceSource.includes('page:') &&
+    i18nResourcesServiceSource.includes('tabs:') &&
+    i18nResourcesServiceSource.includes('toast:') &&
+    i18nResourcesServiceSource.includes('status:'),
+  'i18n-resources.service.ts owns Settings Center UI copy for every supported language',
+);
+assertRule(
+  autocutTypesSource.includes('labelKey: string') &&
+    autocutTypesSource.includes('descriptionKey: string') &&
+    autocutTypesSource.includes("region: AutoCutModelVendorRegion") &&
+    autocutTypesSource.includes('AUTOCUT_MODEL_VENDOR_PRESETS'),
+  'AutoCut ModelVendor registry stores stable ids plus i18n display metadata in @sdkwork/autocut-types',
+);
+assertRule(
+  !/label:\s*['"][^'"]*[\u4e00-\u9fff][^'"]*['"]/u.test(autocutTypesSource),
+  'AutoCut ModelVendor registry does not store localized Chinese labels in business constants',
+);
+assertRule(
+  settingsPageSource.includes('t(preset.labelKey)') &&
+    settingsPageSource.includes('t(preset.descriptionKey)') &&
+    !settingsPageSource.includes('{preset.label}'),
+  'SettingsPage resolves ModelVendor display labels and descriptions through i18next keys',
+);
+assertRule(
+  exists(requiredSettingsRegistryPath) &&
+    settingsRegistrySource.includes('AUTOCUT_SETTINGS_TABS') &&
+    settingsRegistrySource.includes('AUTOCUT_SETTINGS_LOCALE_OPTIONS') &&
+    settingsRegistrySource.includes('AutoCutSettingsTabId') &&
+    settingsRegistrySource.includes('labelKey') &&
+    settingsRegistrySource.includes('descriptionKey'),
+  'settings.registry.ts centralizes Settings Center tab and locale display metadata as i18n keys',
+);
+assertRule(
+  settingsServiceSource.includes('normalizeAutoCutLocale') &&
+    settingsServiceSource.includes('initializeAutoCutI18n') &&
+    settingsServiceSource.includes('language: normalizeAutoCutWorkspaceLanguage'),
+  'settings.service.ts normalizes workspace language to canonical application locales and synchronizes the i18next runtime',
+);
+assertRule(
+  servicesIndexSource.includes("export * from './service/speech-transcription.service'") &&
+    speechTranscriptionServiceSource.includes('getAutoCutSpeechTranscriptionProviderDefinitions') &&
+    speechTranscriptionServiceSource.includes('getAutoCutLocalSpeechTranscriptionModelPresets') &&
+    !speechTranscriptionServiceSource.includes('getAutoCutLocalSpeechTranscriptionExecutablePresets') &&
+    speechTranscriptionServiceSource.includes('resolveAutoCutRecommendedLocalSpeechTranscriptionModelPreset') &&
+    !speechTranscriptionServiceSource.includes('resolveAutoCutRecommendedLocalSpeechTranscriptionExecutablePreset') &&
+    speechTranscriptionServiceSource.includes('setupAutoCutLocalSpeechTranscriptionModelPreset') &&
+    !speechTranscriptionServiceSource.includes('setupAutoCutLocalSpeechTranscriptionExecutablePreset') &&
+    speechTranscriptionServiceSource.includes('inspectAutoCutLocalSpeechTranscriptionSetup') &&
+    speechTranscriptionServiceSource.includes('initializeAutoCutLocalSpeechTranscriptionSetup') &&
+    speechTranscriptionServiceSource.includes('dispatchAutoCutSpeechTranscriptionModelDownloadProgress') &&
+    !speechTranscriptionServiceSource.includes('dispatchAutoCutSpeechTranscriptionExecutableDownloadProgress') &&
+    speechTranscriptionServiceSource.includes('downloadAutoCutLocalSpeechTranscriptionModelPreset') &&
+    speechTranscriptionServiceSource.includes('copyAutoCutLocalSpeechTranscriptionModelPresetUrl') &&
+    speechTranscriptionServiceSource.includes('configureAutoCutSpeechTranscriptionProviderBridge') &&
+    speechTranscriptionServiceSource.includes('transcribeAutoCutMediaWithConfiguredProvider') &&
+    speechTranscriptionServiceSource.includes('testAutoCutSpeechTranscriptionProvider'),
+  'speech-transcription.service.ts owns the standard speech-to-text provider and guided local model acquisition boundary without runtime whisper-cli download presets',
+);
+assertRule(
+  !speechTranscriptionServiceSource.includes('validateAutoCutLocalSpeechTranscriptionExecutablePreset') &&
+    !speechTranscriptionServiceSource.includes('official whisper.cpp GitHub release URL') &&
+    !speechTranscriptionServiceSource.includes('pinned SHA-256 archive digest') &&
+    speechTranscriptionServiceSource.includes('executableDownloadReady') &&
+    speechTranscriptionServiceSource.includes('executableDownloadReady: false') &&
+    speechTranscriptionServiceSource.includes('isAutoCutLocalSpeechTranscriptionSetupStatusCompatibleWithRuntimeAndHost') &&
+    speechTranscriptionServiceSource.includes('areAutoCutLocalSpeechTranscriptionSetupCapabilitiesEqual') &&
+    speechTranscriptionServiceSource.includes('createAutoCutUnsupportedLocalSpeechTranscriptionExecutablePresetReason') &&
+    speechTranscriptionServiceSource.includes('runtime download is disabled') &&
+    speechTranscriptionServiceSource.includes('packaged sidecar') &&
+    serviceBehaviorCheckSource.includes('never downloads whisper-cli at runtime') &&
+    serviceBehaviorCheckSource.includes('re-inspects native capabilities instead of reusing a stale missing-executable setup cache before resolving the packaged whisper-cli sidecar'),
+  'speech-transcription.service.ts fails closed on local STT executable readiness and never downloads whisper-cli at runtime',
+);
+assertRule(
+    speechTranscriptionServiceSource.includes('validateAutoCutLocalSpeechTranscriptionModelPreset') &&
+    speechTranscriptionServiceSource.includes('target a local speech-to-text provider') &&
+    speechTranscriptionServiceSource.includes('implemented local speech-to-text engine') &&
+    speechTranscriptionServiceSource.includes('trusted Hugging Face source URL') &&
+    speechTranscriptionServiceSource.includes("'hf-mirror.com'") &&
+    speechTranscriptionServiceSource.includes('pinned SHA-256 model digest') &&
+    speechTranscriptionServiceSource.includes('modelDownload.sha256.toLowerCase() !== preset.sha256') &&
+    speechTranscriptionServiceSource.includes('URL file name must match fileName') &&
+    speechTranscriptionServiceSource.includes('ggerganov/whisper.cpp') &&
+    speechTranscriptionServiceSource.includes('supported model file extension') &&
+    serviceBehaviorCheckSource.includes('rejects presets for API providers') &&
+    serviceBehaviorCheckSource.includes('rejects presets for unimplemented local engines') &&
+    serviceBehaviorCheckSource.includes('rejects non-HTTPS model URLs') &&
+    serviceBehaviorCheckSource.includes('rejects mismatched URL file names') &&
+    serviceBehaviorCheckSource.includes('rejects untrusted mirror model URLs') &&
+    serviceBehaviorCheckSource.includes('rejects model presets without a pinned SHA-256 digest') &&
+    serviceBehaviorCheckSource.includes('rejects unsupported model file extensions'),
+  'speech-transcription.service.ts fails closed on malformed local STT model acquisition presets and mirror URLs before browser download or clipboard copy',
+);
+assertRule(
+  settingsPageSource.includes('getAutoCutLocalSpeechTranscriptionModelPresets') &&
+    settingsPageSource.includes('setupAutoCutLocalSpeechTranscriptionModelPreset') &&
+    settingsPageSource.includes('handleSetupSpeechTranscriptionModelPreset') &&
+    settingsPageSource.includes('isConfiguringSpeechModel') &&
+    settingsPageSource.includes('downloadAutoCutLocalSpeechTranscriptionModelPreset') &&
+    settingsPageSource.includes('copyAutoCutLocalSpeechTranscriptionModelPresetUrl') &&
+    !settingsPageSource.includes('downloadAutoCutUrl(modelPreset.url') &&
+    !settingsPageSource.includes('writeAutoCutClipboardText(modelPreset.url'),
+  'SettingsPage delegates guided local STT model acquisition actions to speech-transcription.service.ts instead of directly trusting preset URLs',
+);
+assertRule(
+  nativeHostClientServiceSource.includes('speechTranscriptionModelDownloadCommandReady') &&
+    nativeHostClientServiceSource.includes('speechTranscriptionExecutableDownloadCommandReady') &&
+    nativeHostClientServiceSource.includes('downloadSpeechTranscriptionModel') &&
+    !nativeHostClientServiceSource.includes('downloadSpeechTranscriptionExecutable') &&
+    nativeHostClientServiceSource.includes('AutoCutSpeechTranscriptionModelDownloadProgressEvent') &&
+    !nativeHostClientServiceSource.includes('AutoCutSpeechTranscriptionExecutableDownloadProgressEvent') &&
+    nativeHostClientServiceSource.includes('autocut_download_speech_transcription_model') &&
+    !nativeHostClientServiceSource.includes('autocut_download_speech_transcription_executable') &&
+    nativeHostContractSource.includes('speech_transcription_model_download_command_ready') &&
+    nativeHostContractSource.includes('speech_transcription_executable_download_command_ready') &&
+    nativeHostContractSource.includes('"autocut_download_speech_transcription_model"') &&
+    !nativeHostContractSource.includes('"autocut_download_speech_transcription_executable"') &&
+    nativeHostCommandSource.includes('autocut_download_speech_transcription_model') &&
+    !nativeHostCommandSource.includes('autocut_download_speech_transcription_executable') &&
+    mainRsSource.includes('commands::autocut_download_speech_transcription_model') &&
+    !mainRsSource.includes('commands::autocut_download_speech_transcription_executable') &&
+    nativeMediaRuntimeSource.includes('download_autocut_speech_transcription_model') &&
+    !nativeMediaRuntimeSource.includes('download_autocut_speech_transcription_executable') &&
+    nativeMediaRuntimeSource.includes('AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT') &&
+    !nativeMediaRuntimeSource.includes('AUTOCUT_SPEECH_TRANSCRIPTION_EXECUTABLE_DOWNLOAD_PROGRESS_EVENT') &&
+    nativeMediaRuntimeSource.includes('download_autocut_speech_transcription_model_file_with_progress') &&
+    nativeMediaRuntimeSource.includes('validate_autocut_speech_transcription_model_download_request') &&
+    !nativeMediaRuntimeSource.includes('validate_autocut_speech_transcription_executable_download_request') &&
+    nativeMediaRuntimeSource.includes('verify_file_sha256_for_label') &&
+    nativeMediaRuntimeSource.includes('AutoCut speech transcription model') &&
+    nativeMediaRuntimeSource.includes('speech-transcription.toolchain.json') &&
+    nativeMediaRuntimeSource.includes('resolve_autocut_bundled_speech_executable_from_candidate_manifests') &&
+    nativeMediaRuntimeSource.includes('resolve_autocut_default_bundled_speech_executable_path') &&
+    nativeMediaRuntimeSource.includes('validate_autocut_speech_toolchain_manifest') &&
+    nativeMediaRuntimeSource.includes('verify_autocut_ffmpeg_sidecar_integrity') &&
+    nativeMediaRuntimeSource.includes('speech_toolchain_resolver_uses_bundled_whisper_sidecar_when_executable_is_not_configured') &&
+    nativeMediaRuntimeSource.includes('speech_toolchain_manifest_rejects_placeholder_integrity_when_bundled_ready') &&
+    nativeMediaRuntimeSource.includes('models') &&
+    nativeMediaRuntimeSource.includes('speech'),
+  'native host exposes trusted local STT model downloads while resolving whisper-cli only from packaged sidecars, settings, environment, PATH, or common local installs',
+);
+assertRule(
+  speechTranscriptionServiceSource.includes("AUTOCUT_LOCAL_SPEECH_TRANSCRIPTION_DEFAULT_EXECUTABLE_ROOT = 'AutoCut application resources'") &&
+    speechTranscriptionServiceSource.includes("AUTOCUT_LOCAL_SPEECH_TRANSCRIPTION_EXECUTABLE_RESOURCE_SUBDIRECTORY = 'binaries'") &&
+    speechTranscriptionServiceSource.includes("defaultExecutablePlatform === 'windows-x86_64'") &&
+    serviceBehaviorCheckSource.includes('D:/Program Files/SDKWork Video Cut/resources/binaries/windows-x86_64/whisper-cli.exe') &&
+    !serviceBehaviorCheckSource.includes('target/debug/binaries/whisper-cli') &&
+    !serviceBehaviorCheckSource.includes('target\\\\debug\\\\binaries\\\\whisper-cli') &&
+    !serviceBehaviorCheckSource.includes('D:/autocut/media/runtimes/speech/windows-x86_64/whisper-cli.exe'),
+  'local STT initialization defaults and tests point whisper-cli to packaged application resources instead of writable app-data runtime or debug build directories',
+);
+assertRule(
+  tauriConfig.bundle?.resources?.['binaries/speech-transcription.toolchain.json'] === 'binaries/speech-transcription.toolchain.json' &&
+    tauriConfig.bundle?.resources?.['binaries/windows-x86_64'] === 'binaries/windows-x86_64' &&
+    tauriConfig.bundle?.resources?.['binaries/linux-x86_64'] === 'binaries/linux-x86_64' &&
+    tauriConfig.bundle?.resources?.['binaries/macos-x86_64'] === 'binaries/macos-x86_64' &&
+    tauriConfig.bundle?.resources?.['binaries/macos-aarch64'] === 'binaries/macos-aarch64' &&
+    nativeSpeechToolchainManifestSource.includes('"tool": "whisper-cli"') &&
+    nativeSpeechToolchainManifestSource.includes('"windows-x86_64"') &&
+    nativeSpeechToolchainManifestSource.includes('"linux-x86_64"') &&
+    nativeSpeechToolchainManifestSource.includes('"macos-x86_64"') &&
+    nativeSpeechToolchainManifestSource.includes('"macos-aarch64"') &&
+    nativeSpeechToolchainManifestSource.includes('"relativePath": "windows-x86_64/whisper-cli.exe"') &&
+    nativeSpeechToolchainManifestSource.includes('"relativePath": "linux-x86_64/whisper-cli"') &&
+    nativeSpeechToolchainManifestSource.includes('"relativePath": "macos-x86_64/whisper-cli"') &&
+    nativeSpeechToolchainManifestSource.includes('"relativePath": "macos-aarch64/whisper-cli"'),
+  'desktop Tauri packages the Whisper CLI speech-to-text sidecar manifest for release executable discovery',
+);
+assertRule(
+  speechTranscriptionServiceSource.includes("runtime.provider.kind === 'local'") &&
+    speechTranscriptionServiceSource.includes("runtime.provider.kind === 'api'") &&
+    speechTranscriptionServiceSource.includes('nativeHostClient.transcribeMedia') &&
+    speechTranscriptionServiceSource.includes('configuredSpeechTranscriptionProviderBridge.transcribe') &&
+    speechTranscriptionServiceSource.includes('ensureAutoCutLocalSpeechTranscriptionExecutionReady') &&
+    speechTranscriptionServiceSource.includes("sourceKind: 'execution-preflight'") &&
+    speechTranscriptionServiceSource.includes('validateAutoCutLocalSpeechTranscriptionModelDownloadResult') &&
+    speechTranscriptionServiceSource.includes('requires the matching ModelVendor') &&
+    serviceBehaviorCheckSource.includes('rejects incomplete native model downloads before saving modelPath') &&
+    serviceBehaviorCheckSource.includes('performs a fresh execution preflight probe before local STT dispatch') &&
+    speechTranscriptionServiceSource.includes('providerId: runtime.providerId'),
+  'speech-transcription.service.ts dispatches local and API STT providers only after model/provider preflight and passes providerId through requests',
+);
+assertRule(
+  speechTranscriptionServiceSource.includes('normalizeAutoCutSpeechTranscriptionSegments') &&
+    speechTranscriptionServiceSource.includes('valid timestamped speech segments') &&
+    speechTranscriptionServiceSource.includes('to contain recognized speech text') &&
+    speechTranscriptionServiceSource.includes('endMs to be after startMs') &&
+    speechTranscriptionServiceSource.includes('finite non-negative timestamp') &&
+    serviceBehaviorCheckSource.includes('rejects API provider results with no structured speech segments') &&
+    serviceBehaviorCheckSource.includes('rejects API provider segments with blank transcript text') &&
+    serviceBehaviorCheckSource.includes('rejects API provider segments with zero speech duration') &&
+    serviceBehaviorCheckSource.includes('rejects API provider segments with non-finite speech timestamps') &&
+    serviceBehaviorCheckSource.includes('rejects API provider segments with negative speech timestamps'),
+  'speech-transcription.service.ts fails closed on malformed STT provider transcript segments before smart slicing or text extraction',
+);
+assertRule(
   serviceBehaviorCheckSource.includes('autocut_dev_settings') &&
     serviceBehaviorCheckSource.includes('autocut_release_settings') &&
     serviceBehaviorCheckSource.includes('dev-default') &&
@@ -2359,10 +3223,33 @@ assertRule(exists(requiredMediaFixturesServicePath), '@sdkwork/autocut-services 
 for (const marker of requiredMediaFixturesMarkers) {
   assertRule(mediaFixturesServiceSource.includes(marker), `media-fixtures.service.ts exposes ${marker}`);
 }
+assertRule(!mediaFixturesServiceSource.includes('BigBuckBunny.mp4'), 'media-fixtures.service.ts does not expose the removed BigBuckBunny sample video');
+assertRule(!mediaFixturesServiceSource.includes('storage.googleapis.com/gtv-videos-bucket'), 'media-fixtures.service.ts does not expose Google sample video fixtures that return 403');
+for (const pattern of forbiddenRemoteFixtureUrlPatterns) {
+  assertRule(!pattern.test(mediaFixturesServiceSource), 'media-fixtures.service.ts does not expose third-party remote fixture media URLs');
+}
+assertRule(!slicerPageSource.includes('getAutoCutSampleVideoUrl'), 'SlicerPage does not load a remote sample video by default');
+assertRule(
+  slicerPageSource.includes('AutoCut no longer loads remote demo videos by default.'),
+  'SlicerPage shows a local-media empty state instead of loading a remote demo video',
+);
 assertRule(exists(requiredDatetimeServicePath), '@sdkwork/autocut-services defines canonical datetime.service.ts');
 for (const marker of requiredDatetimeServiceMarkers) {
   assertRule(datetimeServiceSource.includes(marker), `datetime.service.ts exposes ${marker}`);
 }
+assertRule(
+  !/toLocaleString\s*\(\s*\)/u.test(datetimeServiceSource),
+  'datetime.service.ts does not use environment-dependent bare toLocaleString() for task timestamps',
+);
+assertRule(
+  datetimeServiceSource.includes("return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`"),
+  'datetime.service.ts formats task timestamps as stable local YYYY-MM-DD HH:mm:ss text',
+);
+assertRule(
+  datetimeServiceSource.includes('AUTO_CUT_SQLITE_UTC_TIMESTAMP_PATTERN') &&
+    datetimeServiceSource.includes("normalizedTimestamp.replace(' ', 'T')}Z"),
+  'datetime.service.ts treats native SQLite UTC timestamps without timezone suffix as UTC instants',
+);
 for (const marker of requiredDownloadServiceMarkers) {
   assertRule(downloadServiceSource.includes(marker), `download.service.ts exposes ${marker}`);
 }
@@ -2415,6 +3302,43 @@ assertRule(
     serviceBehaviorCheckSource.includes('does not merge stale smart slice metadata by index'),
   'tasks.service.ts merges native smart-slice metadata only by artifact id or matching source window',
 );
+assertRule(
+  tasksServiceSource.includes('createNativeVideoSliceProjection') &&
+    tasksServiceSource.includes('assertAndMapNativeSliceResult') &&
+    tasksServiceSource.includes('createInvalidNativeVideoSliceProjection') &&
+    tasksServiceSource.includes('snapshot.status !== OPS_STATUS_COMPLETED') &&
+    tasksServiceSource.includes('assertPositiveNativeSliceCount') &&
+    tasksServiceSource.includes('sourceFileId: baseProjection.sourceFileId') &&
+    tasksServiceSource.includes('declared slices') &&
+    tasksServiceSource.includes('thumbnailArtifactPath') &&
+    tasksServiceSource.includes('assertPositiveNativeSliceNumber(slice.byteSize') &&
+    tasksServiceSource.includes('assertNativeSlicePathInsideTaskOutputDir') &&
+    tasksServiceSource.includes('enforceRecoveredNativeVideoSliceProfessionalTranscriptEvidence') &&
+    tasksServiceSource.includes('missing speech-to-text transcript evidence') &&
+    tasksServiceSource.includes('createRecoveredNativeVideoSliceDebugDiagnostics') &&
+    tasksServiceSource.includes('Input clip evidence:') &&
+    tasksServiceSource.includes('Output slice evidence:') &&
+    tasksServiceSource.includes('error.stack') &&
+    autocutTypesSource.includes('failureDiagnostics?: string') &&
+    autocutTypesSource.includes('AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD') &&
+    autocutTypesSource.includes('maxLeadingSilenceMs: 200') &&
+    autocutTypesSource.includes('maxTrailingSilenceMs: 250') &&
+    autocutTypesSource.includes('minTranscriptCoverageScore: 0.8') &&
+    tasksServiceSource.includes('AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD') &&
+    tasksServiceSource.includes('speechContinuityGrade to be strong or repaired') &&
+    serviceBehaviorCheckSource.includes('fails closed when recovered speech-to-text transcript evidence is missing') &&
+    serviceBehaviorCheckSource.includes('exposes the recovered transcript evidence validation stack trace for debugging') &&
+    serviceBehaviorCheckSource.includes('diagnostics summarize missing request-side transcript evidence') &&
+    serviceBehaviorCheckSource.includes('diagnostics summarize missing output-side transcript evidence') &&
+    serviceBehaviorCheckSource.includes('does not expose generated slices without recovered transcript evidence') &&
+    serviceBehaviorCheckSource.includes('fails closed when recovered transcript coverage is below the professional threshold') &&
+    serviceBehaviorCheckSource.includes('fails closed when recovered speech continuity is weak') &&
+    serviceBehaviorCheckSource.includes('native completed slice task fails closed when an artifact escapes its task output directory') &&
+    serviceBehaviorCheckSource.includes('fails closed when a thumbnail stays in the task output root instead of cover') &&
+    !tasksServiceSource.includes('.filter((slice): slice is TaskSliceResult => Boolean(slice))') &&
+    serviceBehaviorCheckSource.includes('native completed slice tasks with corrupt output are recovered as failed AppTasks'),
+  'tasks.service.ts fails closed instead of projecting corrupt, escaped, cover-bypassing, or transcript-less native smart-slice task output',
+);
 assertRule(exists(requiredAssetsServicePath), '@sdkwork/autocut-services defines canonical assets.service.ts');
 assertRule(
   !/\bassets\.mock\b/u.test(assetsServiceSource) && !/\bINITIAL_ASSETS\b/u.test(assetsServiceSource),
@@ -2427,6 +3351,13 @@ assertRule(
 );
 assertRule(exists(requiredToolsRegistryPath), '@sdkwork/autocut-services defines canonical tools.registry.ts');
 assertRule(!exists('packages/sdkwork-autocut-services/src/service/tools.mock.ts'), 'tool catalog uses registry naming instead of mock naming');
+assertRule(
+  toolsRegistrySource.includes('AUTOCUT_TOOL_DEFINITIONS') &&
+    toolsRegistrySource.includes('nameKey') &&
+    toolsRegistrySource.includes('descriptionKey') &&
+    !/[\u4e00-\u9fff]/u.test(toolsRegistrySource),
+  'tool catalog stores stable tool ids and i18n keys instead of localized display text',
+);
 assertRule(exists(requiredSlicerServicePath), '@sdkwork/autocut-slicer defines canonical slicerService.ts');
 assertRule(
   exists('packages/sdkwork-autocut-slicer/src/service/slicePlanner.ts'),
@@ -2459,7 +3390,7 @@ assertRule(
     slicerServiceSource.includes('sliceCountMode: planningPolicy.sliceCountMode') &&
     slicerServiceSource.includes('idealDurationMs: planningPolicy.idealDurationMs') &&
     slicerServiceSource.includes('resolveTrustedVideoSliceSourceDurationMs') &&
-    slicerServiceSource.includes('sourceDurationMs: importedMedia.durationMs') &&
+    slicerServiceSource.includes('sourceDurationMs: sourceMedia.durationMs') &&
     slicerServiceSource.includes('continuityJoinGapMs: planningPolicy.continuityJoinGapMs') &&
     slicerServiceSource.includes('customKeywords: planningPolicy.customKeywords') &&
     slicerServiceSource.includes('continuityScore: candidate.continuityScore') &&
@@ -2521,14 +3452,24 @@ assertRule(
     slicePlannerSource.includes('endsWithWeakConnector') &&
     slicePlannerSource.includes('endsWithTerminalPunctuation') &&
     slicePlannerSource.includes('canTreatAsOpenSentence') &&
+    slicePlannerSource.includes('selectOptimalSliceCandidateSet') &&
+    slicePlannerSource.includes('calculateSliceCandidateSetScore') &&
+    slicePlannerSource.includes('compareSliceCandidateSets') &&
+    slicePlannerSource.includes('filterRepeatedTranscriptCandidates') &&
+    slicePlannerSource.includes('areTranscriptSliceClipsRepeated') &&
+    slicePlannerSource.includes('normalizeTranscriptTextForRepeatDetection') &&
+    slicePlannerSource.includes('transcript-repeat-filtered') &&
+    slicePlannerSource.includes('NON_PUBLISHABILITY_PENALTY_RISKS') &&
+    slicePlannerSource.includes("'short-video'") &&
     slicePlannerSource.includes('trailing-connector-extended') &&
     slicePlannerSource.includes('open-sentence-extended') &&
     slicePlannerSource.includes('connector-repaired') &&
     slicePlannerSource.includes('findBestOverlappingTranscriptCandidate') &&
     slicePlannerSource.includes('calculateClipOverlapRatio') &&
     slicePlannerSource.includes('source-duration-tail') &&
-    slicePlannerSource.includes('llm-timing-snapped-to-transcript'),
-  'slicePlanner.ts owns speech-to-text continuity repair instead of trusting partial LLM timings',
+    slicePlannerSource.includes('llm-timing-snapped-to-transcript') &&
+    slicerPlannerCheckSource.includes('does not let one broad overlapping candidate crowd out multiple complete clips'),
+  'slicePlanner.ts owns speech-to-text continuity repair and dynamic non-overlapping candidate selection instead of trusting partial LLM timings',
 );
 assertRule(
   slicePlannerSource.includes('MAX_LLM_PLAN_ITEMS_TO_INSPECT') &&
@@ -2542,17 +3483,38 @@ assertRule(
   'slicePlanner.ts rejects non-positive candidate durations at the shared normalization boundary',
 );
 assertRule(
-  !slicerServiceSource.includes('llm-timing-snapped-to-transcript') &&
+    !slicerServiceSource.includes('llm-timing-snapped-to-transcript') &&
     !slicerServiceSource.includes('trailing-connector-extended') &&
+    !slicerServiceSource.includes('filterRepeatedTranscriptCandidates') &&
+    !slicerServiceSource.includes('areTranscriptSliceClipsRepeated') &&
+    !slicerServiceSource.includes('normalizeTranscriptTextForRepeatDetection') &&
+    !slicerServiceSource.includes('NON_PUBLISHABILITY_PENALTY_RISKS') &&
     !slicerServiceSource.includes('endsWithWeakConnector'),
-  'slicerService.ts does not duplicate speech-to-text continuity repair outside the planner kernel',
+  'slicerService.ts does not duplicate speech-to-text continuity repair, repeat filtering, or publishability scoring outside the planner kernel',
 );
 assertRule(
-  slicerServiceSource.includes('function toNativeSliceClipRequest') &&
+    slicerServiceSource.includes('function toNativeSliceClipRequest') &&
     slicerServiceSource.includes('clips: nativeClips') &&
+    slicerServiceSource.includes('plannedClips.map((clip) => toNativeSliceClipRequest(clip, transcriptSegments))') &&
+    slicerServiceSource.includes('clipTranscriptText ? { transcriptText: clipTranscriptText }') &&
+    slicerServiceSource.includes('clipTranscriptSegments.length ? { transcriptSegments: clipTranscriptSegments }') &&
+    slicerServiceSource.includes('assertNativeSliceTimingMatchesPlan') &&
+    slicerServiceSource.includes('assertNativeSlicePathInsideTaskOutputDir') &&
+    slicerServiceSource.includes('assertNativeSliceTaskOutputDirMatchesResult') &&
+    serviceBehaviorCheckSource.includes('video slice native escaped artifact containment') &&
+    slicerServiceSource.includes('nativeSlice.startMs !== plannedClip.startMs || nativeSlice.durationMs !== plannedClip.durationMs') &&
     slicerServiceSource.includes('plannedClips[index]') &&
     slicerServiceSource.includes('storyShape: plannedClip.storyShape'),
-  'slicerService.ts separates explainable planning metadata from native slice rendering requests',
+  'slicerService.ts separates explainable planning metadata from native slice rendering requests, embeds STT evidence, and rejects mismatched native timing or escaped output paths',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('pub transcript_text: Option<String>') &&
+    nativeMediaRuntimeSource.includes('pub transcript_segments: Option<Vec<AutoCutSpeechTranscriptionSegment>>') &&
+    nativeMediaRuntimeSource.includes('transcript_text: slice_output.clip.transcript_text.clone()') &&
+    nativeMediaRuntimeSource.includes('transcript_segments: slice_output.clip.transcript_segments.clone()') &&
+    nativeMediaRuntimeSource.includes('Opening transcript survives native task output.') &&
+    nativeMediaRuntimeSource.includes('"slice task output JSON must persist structured slice-level transcript segments"'),
+  'media_runtime.rs persists native smart-slice speech-to-text evidence in ops_task output_json sliceResults',
 );
 assertRule(
   !slicerServiceSource.includes('function normalizeCandidateSlicePlan') &&
@@ -2574,9 +3536,38 @@ assertRule(
     !slicerServiceSource.includes('resolveTranscriptPlanningDurationMs') &&
     slicerServiceSource.includes('source video is too short') &&
     serviceBehaviorCheckSource.includes('source media that is shorter than the minimum renderable slice') &&
-    serviceBehaviorCheckSource.includes('does not treat a short transcript as a short source when imported media duration is unknown') &&
+    serviceBehaviorCheckSource.includes('renders a short speech-aligned clip when imported media duration is unknown but STT has verified speech evidence') &&
+    serviceBehaviorCheckSource.includes('keeps unknown-duration short transcript clips above the speech-aligned minimum without padding them to the requested duration') &&
+    serviceBehaviorCheckSource.includes('calls native slicing for isolated micro speech when STT evidence is verified') &&
+    serviceBehaviorCheckSource.includes('labels sparse transcript fallback candidates for LLM review') &&
+    serviceBehaviorCheckSource.includes('removes repeated speech-to-text candidate windows before asking the LLM planner') &&
+    serviceBehaviorCheckSource.includes('records repeated transcript filtering on task slice results') &&
+    slicerPlannerCheckSource.includes('creates reviewable speech-backed clips from isolated micro speech') &&
+    slicerPlannerCheckSource.includes('English connector-chain speech-to-text planning') &&
+    slicerPlannerCheckSource.includes('preserves transcript repeat-filtering risks') &&
     serviceBehaviorCheckSource.includes('does not call the LLM planner when the source media is too short'),
-  'slicerService.ts fails closed before LLM planning and native rendering when no valid clip can be produced',
+  'slicerService.ts fails closed only for impossible source media and preserves STT-first sparse transcript fallback, trim, and repeat-filter standards',
+);
+const extractorTextServiceSource = fs.existsSync(path.join(rootDir, 'packages/sdkwork-autocut-extractor-text/src/service/extractorTextService.ts'))
+  ? fs.readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-extractor-text/src/service/extractorTextService.ts'), 'utf8')
+  : '';
+assertRule(
+  slicerServiceSource.includes('transcribeAutoCutMediaWithConfiguredProvider') &&
+    !slicerServiceSource.includes('nativeHostClient.transcribeMedia') &&
+    !slicerServiceSource.includes('executablePath: speechRuntimeConfig.executablePath') &&
+    extractorTextServiceSource.includes('transcribeAutoCutMediaWithConfiguredProvider') &&
+    !extractorTextServiceSource.includes('nativeHostClient.transcribeMedia') &&
+    !extractorTextServiceSource.includes('executablePath: speechRuntimeConfig.executablePath'),
+  'slicer and extractor-text workflows use the STT provider boundary instead of direct native Whisper toolchain coupling',
+);
+assertRule(
+  extractorTextServiceSource.includes('normalizeExtractedTranscriptText') &&
+    extractorTextServiceSource.includes("format !== 'filtered'") &&
+    extractorTextServiceSource.includes('trailingPunctuation') &&
+    serviceBehaviorCheckSource.includes('extractor text raw mode preserves native speech-to-text filler words') &&
+    serviceBehaviorCheckSource.includes('extractor text filtered mode removes redundant filler words from native speech-to-text') &&
+    serviceBehaviorCheckSource.includes('extractor text filtered mode removes pure filler speech segments'),
+  'extractorTextService.ts implements real raw/filtered local speech-to-text transcript cleanup instead of ignoring the UI format option',
 );
 for (const relativePath of realProcessingServicePaths) {
   const source = exists(relativePath) ? fs.readFileSync(path.join(rootDir, relativePath), 'utf8') : '';
@@ -2597,9 +3588,15 @@ for (const relativePath of realProcessingServicePaths) {
     relativePath !== 'packages/sdkwork-autocut-voice-translate/src/service/voiceTranslateService.ts'
   ) {
     assertRule(
-      source.includes('failAutoCutProcessingTask(newTask.id, String(error))'),
+      source.includes('failAutoCutProcessingTask('),
       `${relativePath} rejects native command failures instead of returning success`,
     );
+    if (relativePath === 'packages/sdkwork-autocut-slicer/src/service/slicerService.ts') {
+      assertRule(
+        source.includes('createVideoSliceFailureDiagnostics(error)'),
+        `${relativePath} persists smart-slice failure diagnostics with stack traces`,
+      );
+    }
   }
 }
 assertRule(!exists('packages/sdkwork-autocut-services/src/service/simulation.service.ts'), 'shared services no longer expose simulated task progress helpers');
@@ -2630,10 +3627,11 @@ assertRule(
   'desktop main.tsx configures runtime environment before native host setup',
 );
 assertRule(
-  desktopNativeHostSource.includes('window.__TAURI__') &&
+  desktopNativeHostSource.includes('isTauri') &&
+    desktopNativeHostSource.includes('invoke as AutoCutNativeInvoke') &&
     desktopNativeHostSource.includes('createAutoCutNativeHostClient') &&
     desktopNativeHostSource.includes('configureAutoCutNativeHostClient'),
-  'desktop native-host.ts adapts the Tauri invoke API into the canonical native host client',
+  'desktop native-host.ts adapts the Tauri v2 module invoke API into the canonical native host client',
 );
 assertRule(
   desktopNativeHostSource.includes('recoverNativeTasks') && desktopNativeHostSource.includes('limit: 100'),
@@ -2646,8 +3644,9 @@ assertRule(
 assertRule(
   desktopNativeHostSource.includes("from '@tauri-apps/api/core'") &&
     desktopNativeHostSource.includes('convertFileSrc') &&
-    desktopNativeHostSource.includes('createAssetUrl'),
-  'desktop native-host.ts converts native artifact paths through the Tauri asset protocol',
+    desktopNativeHostSource.includes('createAssetUrl') &&
+    desktopNativeHostSource.includes('allowLocalMediaPreviewDirectory'),
+  'desktop native-host.ts converts native artifact paths through the Tauri asset protocol and grants trusted preview scopes',
 );
 assertRule(
   desktopNativeHostSource.includes("from '@tauri-apps/api/webview'") &&
@@ -2669,6 +3668,8 @@ for (const marker of [
   'native host client invokes the media import command',
   'native host client invokes the local file describe command',
   'native host client invokes the local directory chooser command',
+  'native host client invokes the local media preview directory authorization command',
+  'native host client passes directoryPath under the Tauri preview authorization request argument',
   'native host client passes assetUuid under the Tauri request argument',
   'native host client invokes the assetUuid video GIF command',
   'native host client invokes the assetUuid video compression command',
@@ -2748,8 +3749,8 @@ function parseStaticImports(filePath) {
   const content = fs.readFileSync(filePath, 'utf8');
   const specs = [];
   const patterns = [
-    /from\s+['"]([^'"]+)['"]/g,
-    /import\s+['"]([^'"]+)['"]/g,
+    /(?:^|[\n\r;])\s*import\s+[^'"\n\r;]*\s+from\s+['"]([^'"]+)['"]/g,
+    /(?:^|[\n\r;])\s*import\s+['"]([^'"]+)['"]/g,
   ];
   for (const pattern of patterns) {
     for (const match of content.matchAll(pattern)) {
@@ -2793,6 +3794,10 @@ for (const packageDirent of packageDirs) {
     assertRule(
       manifest.scripts?.['tauri:build']?.startsWith('node ../../scripts/ensure-autocut-tauri-rust-toolchain.mjs && '),
       `${manifest.name} tauri:build verifies the pinned Rust toolchain before packaging Tauri`,
+    );
+    assertRule(
+      manifest.scripts?.['tauri:build']?.includes('node ../../scripts/prepare-autocut-speech-sidecar.mjs --check --require-bundled && '),
+      `${manifest.name} tauri:build requires an integrity-verified bundled Whisper CLI sidecar before packaging Tauri`,
     );
     assertRule(manifest.scripts?.['tauri:build']?.endsWith('pnpm exec tauri build'), `${manifest.name} tauri:build runs the package-local Tauri CLI`);
     assertRule(fs.existsSync(path.join(packagePath, 'index.html')), `${manifest.name} owns index.html`);
@@ -2847,6 +3852,8 @@ for (const packageDirent of packageDirs) {
 
     const isDiagnosticsService = relative === 'packages/sdkwork-autocut-services/src/service/diagnostics.service.ts';
     const isEventService = relative === 'packages/sdkwork-autocut-services/src/service/events.service.ts';
+    const isSpeechTranscriptionProviderService =
+      relative === 'packages/sdkwork-autocut-services/src/service/speech-transcription.service.ts';
     const isIdentityService = relative === 'packages/sdkwork-autocut-services/src/service/identity.service.ts';
     const isStorageService = relative === requiredStorageServicePath;
     const isNativeHostClientService = relative === requiredNativeHostClientServicePath;
@@ -2918,7 +3925,9 @@ for (const packageDirent of packageDirs) {
       `${relative} delegates timestamp millisecond conversion to datetime.service.ts`,
     );
     assertRule(
-      !isServiceSource || isDatetimeService || !/\.sort\(/u.test(sourceText),
+      !isServiceSource ||
+        isDatetimeService ||
+        !/\.sort\([\s\S]{0,320}\b(?:createdAt|updatedAt|completedAt|timestamp|Date\.parse|new Date|getTime)\b/u.test(sourceText),
       `${relative} delegates service datetime sorting to datetime.service.ts`,
     );
     assertRule(
@@ -2935,12 +3944,15 @@ for (const packageDirent of packageDirs) {
     );
     for (const pattern of forbiddenRemoteFixtureUrlPatterns) {
       assertRule(
-        isMediaFixturesService || !pattern.test(sourceText),
-        `${relative} references remote mock media only through media-fixtures.service.ts`,
+        !pattern.test(sourceText),
+        `${relative} does not reference third-party remote fixture media`,
       );
     }
     const hasAutocutEventString = /['"]autocut-[a-z-]+['"]/.test(sourceText);
-    assertRule(!hasAutocutEventString || isEventService, `${relative} references AutoCut events through canonical service helpers`);
+    assertRule(
+      !hasAutocutEventString || isEventService || isSpeechTranscriptionProviderService,
+      `${relative} references AutoCut events through canonical service helpers`,
+    );
     const hasAutocutCustomEventDispatch =
       /window\.dispatchEvent\(\s*new\s+CustomEvent/u.test(sourceText) ||
       /dispatchEvent\(\s*new\s+CustomEvent\s*\(\s*AUTOCUT_EVENTS/u.test(sourceText);

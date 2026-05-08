@@ -26,6 +26,27 @@ function writeInstallers(root) {
   return { msiPath, nsisPath };
 }
 
+function writeTargetInstallers(root, targetTriple, entries) {
+  const bundleRoot = path.join(
+    root,
+    'packages',
+    'sdkwork-autocut-desktop',
+    'src-tauri',
+    'target',
+    targetTriple,
+    'release',
+    'bundle',
+  );
+  const written = {};
+  for (const [relativePath, content] of entries) {
+    const absolutePath = path.join(bundleRoot, ...relativePath.split('/'));
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+    fs.writeFileSync(absolutePath, content);
+    written[relativePath] = absolutePath;
+  }
+  return written;
+}
+
 const root = tempRoot('autocut-installer-signature');
 writeInstallers(root);
 
@@ -60,6 +81,66 @@ assert.equal(
 assert.equal(
   unsignedEvidence.blockers.some((blocker) => blocker.code === 'INSTALLER_SIGNATURE_MISSING'),
   true,
+);
+
+const linuxRoot = tempRoot('autocut-installer-signature-linux');
+writeTargetInstallers(linuxRoot, 'x86_64-unknown-linux-gnu', [
+  ['deb/sdkwork-video-cut_0.1.0_amd64.deb', 'linux deb fixture'],
+  ['appimage/sdkwork-video-cut_0.1.0_amd64.AppImage', 'linux appimage fixture'],
+]);
+const linuxEvidence = createAutoCutInstallerSignatureEvidence({
+  rootDir: linuxRoot,
+  platform: 'linux-x86_64',
+  generatedAt: '2026-05-06T00:00:00.000Z',
+  runCommand() {
+    throw new Error('Linux preview signature evidence must not invoke Windows Authenticode checks.');
+  },
+});
+
+assert.equal(linuxEvidence.verification.platform, 'linux-x86_64');
+assert.equal(linuxEvidence.verification.method, 'unsigned-linux-preview-artifact-digest');
+assert.deepEqual(
+  linuxEvidence.installers.map((installer) => installer.kind),
+  ['deb', 'appimage'],
+);
+assert.equal(
+  linuxEvidence.installers.every((installer) => installer.exists && installer.signatureStatus === 'unsigned-preview'),
+  true,
+);
+assert.equal(linuxEvidence.readiness.installerSignatureReady, false);
+assert.deepEqual(
+  linuxEvidence.blockers.map((blocker) => blocker.code),
+  ['LINUX_INSTALLER_SIGNATURE_NOT_CONFIGURED', 'LINUX_INSTALLER_SIGNATURE_NOT_CONFIGURED'],
+);
+
+const macRoot = tempRoot('autocut-installer-signature-macos');
+writeTargetInstallers(macRoot, 'aarch64-apple-darwin', [
+  ['dmg/SDKWork Video Cut_0.1.0_aarch64.dmg', 'macos dmg fixture'],
+  ['macos/SDKWork Video Cut.app.tar.gz', 'macos app tar fixture'],
+]);
+const macEvidence = createAutoCutInstallerSignatureEvidence({
+  rootDir: macRoot,
+  platform: 'macos-aarch64',
+  generatedAt: '2026-05-06T00:00:00.000Z',
+  runCommand() {
+    throw new Error('Unsigned macOS preview evidence must not run local codesign checks.');
+  },
+});
+
+assert.equal(macEvidence.verification.platform, 'macos-aarch64');
+assert.equal(macEvidence.verification.method, 'unsigned-macos-preview-codesign-notarytool-required');
+assert.deepEqual(
+  macEvidence.installers.map((installer) => installer.kind),
+  ['dmg', 'app'],
+);
+assert.equal(
+  macEvidence.installers.every((installer) => installer.exists && installer.notarizationStatus === 'not-notarized'),
+  true,
+);
+assert.equal(macEvidence.readiness.installerSignatureReady, false);
+assert.deepEqual(
+  macEvidence.blockers.map((blocker) => blocker.code),
+  ['MACOS_INSTALLER_NOT_SIGNED_OR_NOTARIZED', 'MACOS_INSTALLER_NOT_SIGNED_OR_NOTARIZED'],
 );
 
 const notSignedStatusEvidence = createAutoCutInstallerSignatureEvidence({

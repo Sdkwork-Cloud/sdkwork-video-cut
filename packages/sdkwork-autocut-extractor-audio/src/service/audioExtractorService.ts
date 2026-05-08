@@ -1,9 +1,11 @@
-import { AUTOCUT_TASK_STATUS, type AppTask, type AudioExtractionParams } from '@sdkwork/autocut-types';
+import { AUTOCUT_TASK_STATUS, AUTOCUT_TASK_TYPE, type AppTask, type AudioExtractionParams } from '@sdkwork/autocut-types';
 import {
   addAsset,
   addMessage,
   addTask,
+  assertAutoCutNativeArtifactInsideTaskOutputDir,
   createAutoCutId,
+  createAutoCutTaskName,
   createAutoCutTimestamp,
   failAutoCutProcessingTask,
   failAutoCutUnsupportedNativeProcessingTask,
@@ -19,14 +21,15 @@ function resolveDesktopSourcePath(file: File | null | undefined) {
 }
 
 function createAudioExtractionTask(params: AudioExtractionParams): AppTask {
+  const createdAt = createAutoCutTimestamp();
   return {
     id: createAutoCutId('newTask'),
-    name: params.file ? params.file.name : `原文件_提取音频.${params.format}`,
-    type: '视频提音',
+    name: createAutoCutTaskName({ file: params.file, fallbackSourceName: `source-audio.${params.format}`, createdAt }),
+    type: AUTOCUT_TASK_TYPE.audioExtraction,
     status: AUTOCUT_TASK_STATUS.pending,
     progress: 0,
     progressMessage: '任务排队准备中...',
-    createdAt: createAutoCutTimestamp(),
+    createdAt,
     ...(params.fileId ? { sourceFileId: params.fileId } : {}),
   };
 }
@@ -101,6 +104,7 @@ export async function processAudioExtraction(params: AudioExtractionParams) {
         outputFormat: params.format,
         ...(outputRootDir ? { outputRootDir } : {}),
       });
+      assertAutoCutNativeArtifactInsideTaskOutputDir(extractedAudio, 'audio extraction output');
       const audioUrl = nativeHostClient.createAssetUrl(extractedAudio.artifactPath);
       const completedData = await finishAudioExtractionTask(newTask, audioUrl, extractedAudio.byteSize);
 

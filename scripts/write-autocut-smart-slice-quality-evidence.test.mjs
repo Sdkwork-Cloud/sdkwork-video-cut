@@ -22,6 +22,14 @@ function writeTaskFixture(root, task, relativePath = 'artifacts/smart-slice/smar
   return taskPath;
 }
 
+function createTranscriptSegments(sourceStartMs, lines) {
+  return lines.map((text, index) => ({
+    startMs: sourceStartMs + index * 10_000 + 200,
+    endMs: sourceStartMs + (index + 1) * 10_000,
+    text,
+  }));
+}
+
 function createReadyTask() {
   return {
     schemaVersion: '2026-05-06.autocut-smart-slice-task-evidence.v1',
@@ -48,13 +56,24 @@ function createReadyTask() {
         hookStrength: 'strong',
         endingCompleteness: 'complete',
         transcriptCoverageScore: 0.96,
-        subtitleSegmentCount: 4,
+        transcriptSegmentCount: 4,
         speechContinuityGrade: 'strong',
         sourceStartMs: 0,
-        sourceEndMs: 42000,
+        sourceEndMs: 40250,
         speechStartMs: 200,
-        speechEndMs: 41700,
-        transcriptText: 'Why retention drops. Because the opening hides the pain. So show the result first.',
+        speechEndMs: 40000,
+        transcriptText: [
+          'Why retention drops.',
+          'Because the opening hides the pain.',
+          'So show the result first.',
+          'End on the clear payoff.',
+        ].join(' '),
+        transcriptSegments: createTranscriptSegments(0, [
+          'Why retention drops.',
+          'Because the opening hides the pain.',
+          'So show the result first.',
+          'End on the clear payoff.',
+        ]),
       },
       {
         id: 'slice-ready-2',
@@ -73,13 +92,22 @@ function createReadyTask() {
         hookStrength: 'contextual',
         endingCompleteness: 'soft',
         transcriptCoverageScore: 0.9,
-        subtitleSegmentCount: 3,
+        transcriptSegmentCount: 3,
         speechContinuityGrade: 'repaired',
         sourceStartMs: 44000,
-        sourceEndMs: 80000,
+        sourceEndMs: 74250,
         speechStartMs: 44200,
-        speechEndMs: 79750,
-        transcriptText: 'The second short keeps the setup and ending together.',
+        speechEndMs: 74000,
+        transcriptText: [
+          'The second short keeps the setup.',
+          'It protects the transition.',
+          'The ending stays together.',
+        ].join(' '),
+        transcriptSegments: createTranscriptSegments(44000, [
+          'The second short keeps the setup.',
+          'It protects the transition.',
+          'The ending stays together.',
+        ]),
         sentenceBoundaryIssues: ['sentence-open-ending-repaired'],
       },
     ],
@@ -107,6 +135,7 @@ assert.equal(readyEvidence.slices[0].qualityGates.publishabilityReady, true);
 assert.equal(readyEvidence.slices[0].qualityGates.speechContinuityReady, true);
 assert.equal(readyEvidence.slices[0].qualityGates.transcriptReady, true);
 assert.equal(readyEvidence.slices[0].qualityGates.platformReady, true);
+assert.equal(readyEvidence.slices[0].transcript.transcriptStructuredSegmentCount, 4);
 assert.equal(readyEvidence.blockers.length, 0);
 assert.equal(
   formatAutoCutSmartSliceQualityEvidenceMessage({ outputPath: readyTaskPath, evidence: readyEvidence }),
@@ -130,7 +159,7 @@ blockedTask.sliceResults = [
     sentenceBoundaryIntegrityScore: 0.2,
     sentenceBoundaryIntegrityGrade: 'broken',
     transcriptCoverageScore: 0.2,
-    subtitleSegmentCount: 0,
+    transcriptSegmentCount: 0,
     speechContinuityGrade: 'weak',
     sourceStartMs: 1000,
     sourceEndMs: 11000,
@@ -163,6 +192,146 @@ assert.equal(blockedEvidence.slices[0].qualityGates.publishabilityReady, false);
 assert.equal(blockedEvidence.slices[0].qualityGates.speechContinuityReady, false);
 assert.equal(blockedEvidence.slices[0].qualityGates.transcriptReady, false);
 assert.equal(blockedEvidence.slices[0].qualityGates.platformReady, false);
+
+const missingStructuredTranscriptRoot = tempRoot('autocut-smart-slice-quality-missing-structured-transcript');
+const missingStructuredTranscriptTask = createReadyTask();
+missingStructuredTranscriptTask.sliceResults[0] = {
+  ...missingStructuredTranscriptTask.sliceResults[0],
+  transcriptSegments: [],
+};
+const missingStructuredTranscriptTaskPath = writeTaskFixture(
+  missingStructuredTranscriptRoot,
+  missingStructuredTranscriptTask,
+);
+const missingStructuredTranscriptEvidence = createAutoCutSmartSliceQualityEvidence({
+  rootDir: missingStructuredTranscriptRoot,
+  taskPath: missingStructuredTranscriptTaskPath,
+  generatedAt: '2026-05-06T00:00:00.000Z',
+});
+
+assert.equal(missingStructuredTranscriptEvidence.readiness.smartSliceQualityReady, false);
+assert.equal(missingStructuredTranscriptEvidence.slices[0].qualityGates.transcriptReady, false);
+assert.equal(missingStructuredTranscriptEvidence.slices[0].transcript.transcriptStructuredSegmentCount, 0);
+assert.deepEqual(
+  missingStructuredTranscriptEvidence.blockers.map((blocker) => blocker.code),
+  [
+    'SMART_SLICE_READY_RATIO_TOO_LOW',
+    'SMART_SLICE_TRANSCRIPT_CONTINUITY_TOO_LOW',
+  ],
+);
+
+const staleTranscriptTextRoot = tempRoot('autocut-smart-slice-quality-stale-transcript-text');
+const staleTranscriptTextTask = createReadyTask();
+staleTranscriptTextTask.sliceResults[0] = {
+  ...staleTranscriptTextTask.sliceResults[0],
+  transcriptText: 'This stale summary does not match the structured speech transcript.',
+};
+const staleTranscriptTextTaskPath = writeTaskFixture(staleTranscriptTextRoot, staleTranscriptTextTask);
+const staleTranscriptTextEvidence = createAutoCutSmartSliceQualityEvidence({
+  rootDir: staleTranscriptTextRoot,
+  taskPath: staleTranscriptTextTaskPath,
+  generatedAt: '2026-05-06T00:00:00.000Z',
+});
+
+assert.equal(staleTranscriptTextEvidence.readiness.smartSliceQualityReady, false);
+assert.equal(staleTranscriptTextEvidence.slices[0].qualityGates.transcriptReady, false);
+assert.equal(staleTranscriptTextEvidence.slices[0].transcript.transcriptTextMatchesSegments, false);
+assert.deepEqual(
+  staleTranscriptTextEvidence.blockers.map((blocker) => blocker.code),
+  [
+    'SMART_SLICE_READY_RATIO_TOO_LOW',
+    'SMART_SLICE_TRANSCRIPT_CONTINUITY_TOO_LOW',
+  ],
+);
+
+const overlappingTranscriptSegmentsRoot = tempRoot('autocut-smart-slice-quality-overlapping-transcript');
+const overlappingTranscriptSegmentsTask = createReadyTask();
+overlappingTranscriptSegmentsTask.sliceResults[0] = {
+  ...overlappingTranscriptSegmentsTask.sliceResults[0],
+  transcriptSegments: [
+    { startMs: 200, endMs: 10_000, text: 'Why retention drops.' },
+    { startMs: 9_900, endMs: 20_000, text: 'Because the opening hides the pain.' },
+    ...createTranscriptSegments(0, [
+      'So show the result first.',
+      'End on the clear payoff.',
+    ]).map((segment) => ({
+      ...segment,
+      startMs: segment.startMs + 20_000,
+      endMs: segment.endMs + 20_000,
+    })),
+  ],
+};
+const overlappingTranscriptSegmentsTaskPath = writeTaskFixture(
+  overlappingTranscriptSegmentsRoot,
+  overlappingTranscriptSegmentsTask,
+);
+const overlappingTranscriptSegmentsEvidence = createAutoCutSmartSliceQualityEvidence({
+  rootDir: overlappingTranscriptSegmentsRoot,
+  taskPath: overlappingTranscriptSegmentsTaskPath,
+  generatedAt: '2026-05-06T00:00:00.000Z',
+});
+
+assert.equal(overlappingTranscriptSegmentsEvidence.readiness.smartSliceQualityReady, false);
+assert.equal(overlappingTranscriptSegmentsEvidence.slices[0].qualityGates.transcriptReady, false);
+assert.equal(overlappingTranscriptSegmentsEvidence.slices[0].transcript.transcriptSegmentsOrdered, false);
+assert.deepEqual(
+  overlappingTranscriptSegmentsEvidence.blockers.map((blocker) => blocker.code),
+  [
+    'SMART_SLICE_READY_RATIO_TOO_LOW',
+    'SMART_SLICE_TRANSCRIPT_CONTINUITY_TOO_LOW',
+  ],
+);
+
+const speechBoundaryMismatchRoot = tempRoot('autocut-smart-slice-quality-speech-boundary-mismatch');
+const speechBoundaryMismatchTask = createReadyTask();
+speechBoundaryMismatchTask.sliceResults[0] = {
+  ...speechBoundaryMismatchTask.sliceResults[0],
+  speechEndMs: 41600,
+};
+const speechBoundaryMismatchTaskPath = writeTaskFixture(speechBoundaryMismatchRoot, speechBoundaryMismatchTask);
+const speechBoundaryMismatchEvidence = createAutoCutSmartSliceQualityEvidence({
+  rootDir: speechBoundaryMismatchRoot,
+  taskPath: speechBoundaryMismatchTaskPath,
+  generatedAt: '2026-05-06T00:00:00.000Z',
+});
+
+assert.equal(speechBoundaryMismatchEvidence.readiness.smartSliceQualityReady, false);
+assert.equal(speechBoundaryMismatchEvidence.slices[0].qualityGates.transcriptReady, false);
+assert.equal(speechBoundaryMismatchEvidence.slices[0].transcript.transcriptSpeechBoundaryMatches, false);
+assert.deepEqual(
+  speechBoundaryMismatchEvidence.blockers.map((blocker) => blocker.code),
+  [
+    'SMART_SLICE_READY_RATIO_TOO_LOW',
+    'SMART_SLICE_TRANSCRIPT_CONTINUITY_TOO_LOW',
+  ],
+);
+
+const excessiveSilenceRoot = tempRoot('autocut-smart-slice-quality-excessive-silence');
+const excessiveSilenceTask = createReadyTask();
+excessiveSilenceTask.sliceResults[0] = {
+  ...excessiveSilenceTask.sliceResults[0],
+  sourceStartMs: 0,
+  sourceEndMs: 42_000,
+  speechStartMs: 2_500,
+  speechEndMs: 39_000,
+};
+const excessiveSilenceTaskPath = writeTaskFixture(excessiveSilenceRoot, excessiveSilenceTask);
+const excessiveSilenceEvidence = createAutoCutSmartSliceQualityEvidence({
+  rootDir: excessiveSilenceRoot,
+  taskPath: excessiveSilenceTaskPath,
+  generatedAt: '2026-05-06T00:00:00.000Z',
+});
+
+assert.equal(excessiveSilenceEvidence.readiness.smartSliceQualityReady, false);
+assert.equal(excessiveSilenceEvidence.slices[0].qualityGates.silenceBoundaryReady, false);
+assert.deepEqual(
+  excessiveSilenceEvidence.blockers.map((blocker) => blocker.code),
+  [
+    'SMART_SLICE_READY_RATIO_TOO_LOW',
+    'SMART_SLICE_TRANSCRIPT_CONTINUITY_TOO_LOW',
+    'SMART_SLICE_EXCESSIVE_SILENCE_BOUNDARY',
+  ],
+);
 
 const pendingRoot = tempRoot('autocut-smart-slice-quality-pending');
 const pendingTask = createReadyTask();

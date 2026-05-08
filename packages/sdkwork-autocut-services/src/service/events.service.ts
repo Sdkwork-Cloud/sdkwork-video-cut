@@ -1,4 +1,11 @@
-import type { AppAsset, AppMessage, AppSettings, AppTask } from '@sdkwork/autocut-types';
+import type {
+  AppAsset,
+  AppMessage,
+  AppSettings,
+  AppTask,
+  AutoCutSpeechTranscriptionModelDownloadProgressEvent,
+  AutoCutWorkflowPreferences,
+} from '@sdkwork/autocut-types';
 
 export const AUTOCUT_EVENTS = {
   taskAdded: 'autocut-task-added',
@@ -9,6 +16,8 @@ export const AUTOCUT_EVENTS = {
   messageAdded: 'autocut-message-added',
   messagesUpdated: 'autocut-messages-updated',
   settingsUpdated: 'autocut-settings-updated',
+  speechTranscriptionModelDownloadProgress: 'autocut-speech-transcription-model-download-progress',
+  workflowPreferencesUpdated: 'autocut-workflow-preferences-updated',
 } as const;
 
 export type AutoCutEventName = keyof typeof AUTOCUT_EVENTS;
@@ -22,6 +31,8 @@ export interface AutoCutEventPayloadMap {
   messageAdded: AppMessage;
   messagesUpdated: undefined;
   settingsUpdated: AppSettings;
+  speechTranscriptionModelDownloadProgress: AutoCutSpeechTranscriptionModelDownloadProgressEvent;
+  workflowPreferencesUpdated: AutoCutWorkflowPreferences;
 }
 
 type AutoCutEventHandler<TName extends AutoCutEventName> = (

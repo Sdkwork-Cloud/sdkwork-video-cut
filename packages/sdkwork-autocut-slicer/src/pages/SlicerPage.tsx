@@ -1,12 +1,122 @@
 import { processVideoSlice } from '../service/slicerService';
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { Suspense, useState, useEffect, useMemo, useRef, useImperativeHandle, forwardRef } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowLeft, Play, Pause, Settings2, Scissors, CheckCircle2, MicOff, Waves, Video, RefreshCcw, XCircle, ChevronRight, Type } from "lucide-react";
-import { Button, useToast, TaskFailureState, createAutoCutTrustedLocalFile, resolveAutoCutTrustedSourcePath } from "@sdkwork/autocut-commons";
-import { AUTOCUT_MODEL_VENDOR_PRESETS, AUTOCUT_SLICE_LLM_MODEL_OPTIONS, AUTOCUT_TASK_STATUS, type ModelVendor, type SliceMode, type SliceAlgorithm, type SliceHighlightEngine, type SliceLLM, type SliceTargetPlatform, type SliceTargetAspectRatio, type SliceVideoObjectFit, type SliceCountMode, type SliceContinuityLevel, type SliceSubtitleMode, type AppTask, type VideoSliceParams } from "@sdkwork/autocut-types";
-import { createAutoCutObjectUrl, getAutoCutNativeHostClient, getAutoCutProcessingTaskErrorTaskId, getAutoCutSampleVideoUrl, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic, resolveAutoCutLlmRuntimeConfig, revokeAutoCutObjectUrl, selectAutoCutTrustedLocalVideoFile } from "@sdkwork/autocut-services";
-import { WebGLPlayer, WebGLPlayerRef, WebGLPlayerDragState } from "../components/WebGLPlayer";
-import type { TextEffectStyle } from "../components/WebGLPlayer";
+import { ArrowLeft, Play, Pause, Settings2, Scissors, CheckCircle2, MicOff, Waves, Video, RefreshCcw, XCircle, ChevronRight, Type, Download, AlertTriangle, ExternalLink, Loader2 } from "lucide-react";
+import { Button, useToast, TaskFailureState, createAutoCutTrustedLocalFile, resolveAutoCutTrustedSourcePath, type AutoCutTrustedFileSourceDescriptor } from "@sdkwork/autocut-commons";
+import { AUTOCUT_MODEL_VENDOR_PRESETS, AUTOCUT_SLICE_LLM_MODEL_OPTIONS, AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS, AUTOCUT_TASK_STATUS, AUTOCUT_TASK_TYPE, type AutoCutLocalSpeechTranscriptionSetupStatus, type AutoCutSpeechTranscriptionModelDownloadProgressEvent, type ModelVendor, type SliceMode, type SliceAlgorithm, type SliceHighlightEngine, type SliceLLM, type SliceTargetPlatform, type SliceTargetAspectRatio, type SliceVideoObjectFit, type SliceCountMode, type SliceContinuityLevel, type SliceSubtitleMode, type AppTask, type VideoSliceParams } from "@sdkwork/autocut-types";
+import { createAutoCutObjectUrl, formatAutoCutTimeOfDay, getAutoCutNativeHostClient, getAutoCutProcessingTaskErrorTaskId, getAutoCutWorkflowPreferences, getTasks, initializeAutoCutLocalSpeechTranscriptionSetup, inspectAutoCutLocalSpeechTranscriptionSetup, listenAutoCutEvent, reportAutoCutDiagnostic, resolveAutoCutLlmRuntimeConfig, revokeAutoCutObjectUrl, saveAutoCutVideoSlicePreferences, selectAutoCutTrustedLocalVideoFile, writeAutoCutClipboardText } from "@sdkwork/autocut-services";
+import type { WebGLPlayerRef, TextEffectStyle, TextEffectDragPayload } from "../components/WebGLPlayer";
+
+const WebGLPlayer = React.lazy(() => import("../components/WebGLPlayer"));
+
+function setWebGlTextEffectDragPayload(payload: TextEffectDragPayload | null) {
+  void import("../components/WebGLPlayer")
+    .then((module) => {
+      module.WebGLPlayerDragState.currentEffect = payload;
+    })
+    .catch((error) => {
+      reportAutoCutDiagnostic('warning', 'slicer.webgl.lazy-drag-state', 'Failed to prepare lazy WebGL text overlay drag state', error);
+    });
+}
+
+interface SmartSlicePlayerRef {
+  play: () => void;
+  pause: () => void;
+  togglePlay: () => void;
+  seek: (progress: number) => void;
+  updateSelectedText: (props: Partial<{ text: string; fontSize: number; fill: string }>) => void;
+}
+
+interface SmartSliceVideoPreviewProps {
+  videoSrc: string;
+  aspectRatio?: SliceTargetAspectRatio;
+  videoObjectFit?: SliceVideoObjectFit;
+  onVideoLoaded?: (width: number, height: number) => void;
+  onTimeUpdate?: (currentTime: number, duration: number) => void;
+  onPlayStateChange?: (isPlaying: boolean) => void;
+}
+
+const NativeSmartSliceVideoPreview = forwardRef<SmartSlicePlayerRef, SmartSliceVideoPreviewProps>(
+  ({ videoSrc, aspectRatio, videoObjectFit = 'contain', onVideoLoaded, onTimeUpdate, onPlayStateChange }, ref) => {
+    const videoRef = useRef<HTMLVideoElement | null>(null);
+    const containerAspectRatio = aspectRatio && aspectRatio !== 'auto' ? aspectRatio.replace(':', ' / ') : undefined;
+
+    useImperativeHandle(ref, () => ({
+      play: () => {
+        void videoRef.current?.play();
+        onPlayStateChange?.(true);
+      },
+      pause: () => {
+        videoRef.current?.pause();
+        onPlayStateChange?.(false);
+      },
+      togglePlay: () => {
+        const video = videoRef.current;
+        if (!video) {
+          return;
+        }
+        if (video.paused) {
+          void video.play();
+          onPlayStateChange?.(true);
+        } else {
+          video.pause();
+          onPlayStateChange?.(false);
+        }
+      },
+      seek: (progress) => {
+        const video = videoRef.current;
+        if (video?.duration) {
+          video.currentTime = video.duration * progress;
+        }
+      },
+      updateSelectedText: () => undefined,
+    }), [onPlayStateChange]);
+
+    return (
+      <div className="flex h-full w-full items-center justify-center bg-black p-2">
+        <div
+          className="relative flex h-full max-h-full w-full max-w-full items-center justify-center overflow-hidden bg-black"
+          style={containerAspectRatio ? { aspectRatio: containerAspectRatio } : undefined}
+        >
+          <video
+            ref={videoRef}
+            src={videoSrc}
+            className="h-full w-full bg-black"
+            style={{ objectFit: videoObjectFit }}
+            playsInline
+            preload="metadata"
+            onLoadedMetadata={(event) => {
+              const video = event.currentTarget;
+              onVideoLoaded?.(video.videoWidth, video.videoHeight);
+              onTimeUpdate?.(video.currentTime, video.duration || 0);
+            }}
+            onTimeUpdate={(event) => {
+              const video = event.currentTarget;
+              onTimeUpdate?.(video.currentTime, video.duration || 0);
+            }}
+            onPlay={() => onPlayStateChange?.(true)}
+            onPause={() => onPlayStateChange?.(false)}
+            onClick={() => {
+              const video = videoRef.current;
+              if (!video) {
+                return;
+              }
+              if (video.paused) {
+                void video.play();
+                onPlayStateChange?.(true);
+              } else {
+                video.pause();
+                onPlayStateChange?.(false);
+              }
+            }}
+          />
+        </div>
+      </div>
+    );
+  },
+);
+
+NativeSmartSliceVideoPreview.displayName = 'NativeSmartSliceVideoPreview';
 
 interface TextEffectPreset {
   id: string;
@@ -32,32 +142,179 @@ const MODES: SliceMode[] = [
   "通用",
 ];
 
+function normalizeSlicerNumberInput(
+  rawValue: string,
+  currentValue: number,
+  minValue: number,
+  maxValue: number,
+) {
+  const numericValue = Number(rawValue);
+  if (!Number.isFinite(numericValue)) {
+    return currentValue;
+  }
+
+  return Math.max(minValue, Math.min(maxValue, Math.round(numericValue)));
+}
+
+function getSmartSliceErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === 'string') {
+    return error;
+  }
+
+  return '';
+}
+
+function createSmartSliceFailureToastMessage(error: unknown) {
+  const errorMessage = getSmartSliceErrorMessage(error).trim();
+  return errorMessage ? `智能切片失败：${errorMessage}` : '智能切片失败：请打开控制台查看 AutoCut 诊断日志。';
+}
+
+function createSmartSliceSubmissionDiagnostics(params: VideoSliceParams) {
+  return {
+    source: params.file
+      ? 'file'
+      : params.fileId
+        ? 'fileId'
+        : params.url
+          ? 'url'
+          : 'missing',
+    fileName: params.file?.name,
+    fileSize: params.file?.size,
+    fileId: params.fileId,
+    hasUrl: Boolean(params.url?.trim()),
+    mode: params.mode,
+    llmModel: params.llmModel,
+    targetPlatform: params.targetPlatform,
+    targetAspectRatio: params.targetAspectRatio,
+    videoObjectFit: params.videoObjectFit,
+    sliceCountMode: params.sliceCountMode,
+    targetSliceCount: params.targetSliceCount,
+    idealDuration: params.idealDuration,
+    minDuration: params.minDuration,
+    maxDuration: params.maxDuration,
+    continuityLevel: params.continuityLevel,
+    customKeywordCount: params.customKeywords?.length ?? 0,
+    baseAlgorithm: params.baseAlgorithm,
+    highlightEngine: params.highlightEngine,
+    enableSubtitles: params.enableSubtitles,
+    subtitleMode: params.subtitleMode,
+    subtitleStyleId: params.subtitleStyleId,
+  };
+}
+
+function formatSmartSliceSpeechSetupBytes(value: number | undefined) {
+  if (!Number.isFinite(value) || !value || value <= 0) {
+    return '0 B';
+  }
+
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${unitIndex === 0 ? Math.round(size) : size.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function getSmartSliceSpeechSetupProgressLabel(progress: AutoCutSpeechTranscriptionModelDownloadProgressEvent | null) {
+  if (!progress) {
+    return 'Waiting for local model download';
+  }
+
+  const downloaded = formatSmartSliceSpeechSetupBytes(progress.downloadedBytes);
+  const total = progress.totalBytes ? formatSmartSliceSpeechSetupBytes(progress.totalBytes) : '';
+  return total ? `${downloaded} / ${total}` : downloaded;
+}
+
+function createSmartSliceSpeechSetupStatusText(
+  status: AutoCutLocalSpeechTranscriptionSetupStatus | null,
+  errorMessage: string,
+) {
+  if (errorMessage) {
+    return errorMessage;
+  }
+  if (!status) {
+    return 'Checking local speech-to-text runtime before Smart Slice.';
+  }
+  if (status.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready) {
+    return 'Local speech-to-text is ready. Smart Slice can now analyze transcript evidence.';
+  }
+  if (status.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.needsExecutable) {
+    return status.capabilities.toolchainReady
+      ? 'Local Whisper executable is available through the native host. AutoCut will save the verified path before slicing.'
+      : `AutoCut checked Settings, SDKWORK_AUTOCUT_WHISPER_EXECUTABLE, bundled sidecar, PATH, Homebrew, apt/system paths, and common local install directories, but no verified whisper-cli executable is available. Default bundled sidecar target: ${status.defaults.executablePath || status.defaults.executableDirectory}. Package the approved whisper-cli sidecar for this platform or select a verified local whisper-cli in Speech-to-Text settings, then retry initialization.`;
+  }
+  if (status.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.needsModel) {
+    return `Local Whisper model is required. AutoCut will download ${status.model.preset.label} into ${status.defaults.modelDirectory} and verify it before slicing.`;
+  }
+  if (status.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.needsTest) {
+    return 'Local speech-to-text paths exist but must pass provider validation before slicing.';
+  }
+
+  return status.diagnostics[0] ?? 'Local speech-to-text setup must be ready before Smart Slice can run.';
+}
+
+function waitForSmartSliceUiYield() {
+  return new Promise<void>((resolve) => {
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => resolve());
+      return;
+    }
+
+    setTimeout(() => resolve(), 0);
+  });
+}
+
 export function SlicerPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const { toast } = useToast();
-  const playerRef = useRef<WebGLPlayerRef>(null);
+  const playerRef = useRef<SmartSlicePlayerRef>(null);
   const replaceVideoInputRef = useRef<HTMLInputElement>(null);
   const initialSourceUrl = searchParams.get('url')?.trim() ?? '';
-  const initialFile = (location.state as { initialFile?: File } | null)?.initialFile ?? null;
+  const routeState = location.state as {
+    initialFile?: File;
+    initialFileId?: string;
+    initialTrustedFileSource?: AutoCutTrustedFileSourceDescriptor;
+  } | null;
+  const initialTrustedFileSource = routeState?.initialTrustedFileSource;
+  const initialFile = initialTrustedFileSource
+    ? createAutoCutTrustedLocalFile(initialTrustedFileSource)
+    : routeState?.initialFile ?? null;
+  const initialFileId = routeState?.initialFileId?.trim() ?? '';
 
   const [selectedMode, setSelectedMode] = useState<SliceMode>("通用");
   const [isProcessing, setIsProcessing] = useState(false);
   const [file, setFile] = useState<File | null>(initialFile);
+  const [fileId, setFileId] = useState<string>(initialFileId);
   const [sourceUrl] = useState(initialSourceUrl);
-  const [videoSrc, setVideoSrc] = useState<string>(getAutoCutSampleVideoUrl());
+  const [videoSrc, setVideoSrc] = useState<string>(initialSourceUrl);
   const [aspectRatio, setAspectRatio] = useState<SliceTargetAspectRatio>("auto");
   const [videoObjectFit, setVideoObjectFit] = useState<SliceVideoObjectFit>('contain');
   const [detectedRatio, setDetectedRatio] = useState<string>("16:9");
 
-  const [generateSubtitles, setGenerateSubtitles] = useState(false);
+  const [enableSubtitles, setEnableSubtitles] = useState(false);
   const [subtitleMode, setSubtitleMode] = useState<SliceSubtitleMode>('both');
   const [selectedSubtitleStyle, setSelectedSubtitleStyle] = useState('tiktok');
 
   const [slicerTasks, setSlicerTasks] = useState<AppTask[]>([]);
   const [activeLeftTab, setActiveLeftTab] = useState<'text' | 'tasks'>('text');
   const [selectedTextInfo, setSelectedTextInfo] = useState<{ id: string; text: string; fontSize: number; fill: string; x?: number; y?: number; rotation?: number; scale?: number; } | null>(null);
+  const [speechSetupDialogOpen, setSpeechSetupDialogOpen] = useState(false);
+  const [speechSetupStatus, setSpeechSetupStatus] = useState<AutoCutLocalSpeechTranscriptionSetupStatus | null>(null);
+  const [speechSetupErrorMessage, setSpeechSetupErrorMessage] = useState('');
+  const [isInitializingSpeechSetup, setIsInitializingSpeechSetup] = useState(false);
+  const [speechModelDownloadProgress, setSpeechModelDownloadProgress] = useState<AutoCutSpeechTranscriptionModelDownloadProgressEvent | null>(null);
+  const [enableOverlayEditor, setEnableOverlayEditor] = useState(false);
+  const webGlPlayerRef = playerRef as React.MutableRefObject<WebGLPlayerRef | null>;
+  const shouldUseWebGlOverlayEditor = enableOverlayEditor && videoSrc;
 
   const TEXT_EFFECTS: TextEffectPreset[] = [
     {
@@ -205,7 +462,7 @@ export function SlicerPage() {
           setVideoSrc(getAutoCutNativeHostClient().createAssetUrl(trustedSourcePath));
         } catch (error) {
           reportAutoCutDiagnostic('warning', 'slicer', 'Trusted desktop video preview failed', error);
-          setVideoSrc(getAutoCutSampleVideoUrl());
+          setVideoSrc('');
         }
         return;
       }
@@ -219,7 +476,7 @@ export function SlicerPage() {
   useEffect(() => {
     const fetchTasks = () => {
       getTasks().then(tasks => {
-        setSlicerTasks(tasks.filter(t => t.type === '视频切片'));
+        setSlicerTasks(tasks.filter(t => t.type === AUTOCUT_TASK_TYPE.videoSlice));
       });
     };
     fetchTasks();
@@ -310,6 +567,39 @@ export function SlicerPage() {
   const [videoProgress, setVideoProgress] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
 
+  useEffect(() => {
+    getAutoCutWorkflowPreferences()
+      .then((preferences) => {
+        const videoSlice = preferences.videoSlice;
+        if (MODES.includes(videoSlice.mode as SliceMode)) {
+          setSelectedMode(videoSlice.mode as SliceMode);
+        }
+        setAspectRatio(videoSlice.targetAspectRatio);
+        setVideoObjectFit(videoSlice.videoObjectFit);
+        setEnableSubtitles(videoSlice.enableSubtitles);
+        setSubtitleMode(videoSlice.subtitleMode);
+        setSelectedSubtitleStyle(videoSlice.subtitleStyleId);
+        setTargetPlatform(videoSlice.targetPlatform);
+        setSliceCountMode(videoSlice.sliceCountMode);
+        setTargetSliceCount(videoSlice.targetSliceCount);
+        setIdealDuration(videoSlice.idealDuration);
+        setContinuityLevel(videoSlice.continuityLevel);
+        setCustomKeywordsInput(videoSlice.customKeywordsInput);
+        setMinDuration(videoSlice.minDuration);
+        setMaxDuration(videoSlice.maxDuration);
+        setBaseAlgorithm(videoSlice.baseAlgorithm);
+        setHighlightEngine(videoSlice.highlightEngine);
+        setNoiseReduction(videoSlice.enableNoiseReduction);
+        setCoughFilter(videoSlice.enableCoughFilter);
+        setRepeatFilter(videoSlice.enableRepeatFilter);
+      })
+      .catch((error) => reportAutoCutDiagnostic('warning', 'slicer', 'Load video slice parameter preferences failed', error));
+  }, []);
+
+  useEffect(() => listenAutoCutEvent('speechTranscriptionModelDownloadProgress', (progress) => {
+    setSpeechModelDownloadProgress(progress);
+  }), []);
+
   const formatTime = (timeInSecs: number) => {
     if (!timeInSecs || isNaN(timeInSecs)) return "00:00";
     const mins = Math.floor(timeInSecs / 60).toString().padStart(2, '0');
@@ -365,13 +655,86 @@ export function SlicerPage() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [currentTime, duration]);
 
+  const refreshSmartSliceLocalSpeechTranscriptionSetup = async () => {
+    const status = await inspectAutoCutLocalSpeechTranscriptionSetup();
+    setSpeechSetupStatus(status);
+    return status;
+  };
+
+  const runSmartSliceLocalSpeechTranscriptionInitialization = async () => {
+    if (isInitializingSpeechSetup) {
+      return false;
+    }
+
+    setSpeechSetupDialogOpen(true);
+    setSpeechSetupErrorMessage('');
+    setIsInitializingSpeechSetup(true);
+    try {
+      setSpeechModelDownloadProgress(null);
+      await waitForSmartSliceUiYield();
+      const preflightStatus = await refreshSmartSliceLocalSpeechTranscriptionSetup();
+      reportAutoCutDiagnostic('warning', 'slicer.speech-setup', 'Smart Slice local STT initialization preflight', {
+        readiness: preflightStatus.readiness,
+        executableReady: preflightStatus.executable.ready,
+        executableSourceKind: preflightStatus.executable.sourceKind,
+        executablePath: preflightStatus.executable.path,
+        defaultExecutablePath: preflightStatus.defaults.executablePath,
+        executableDirectory: preflightStatus.defaults.executableDirectory,
+        executableStrategy: preflightStatus.defaults.executableStrategy,
+        modelReady: preflightStatus.model.ready,
+        modelPath: preflightStatus.model.path || preflightStatus.defaults.modelPath,
+        modelDirectory: preflightStatus.defaults.modelDirectory,
+        toolchainReady: preflightStatus.capabilities.toolchainReady,
+        executableDownloadReady: preflightStatus.capabilities.executableDownloadReady,
+        modelDownloadReady: preflightStatus.capabilities.modelDownloadReady,
+        diagnostics: preflightStatus.diagnostics,
+      });
+      await waitForSmartSliceUiYield();
+      const result = await initializeAutoCutLocalSpeechTranscriptionSetup();
+      setSpeechSetupStatus(result.status);
+      toast('Local speech-to-text is ready. Smart Slice will continue with verified transcript evidence.', 'success');
+      return result.status.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Local speech-to-text setup was not ready before Smart Slice could start.';
+      setSpeechSetupErrorMessage(message);
+      reportAutoCutDiagnostic('error', 'slicer.speech-setup', 'Smart Slice local STT initialization failed', error);
+      await refreshSmartSliceLocalSpeechTranscriptionSetup().catch(() => null);
+      return false;
+    } finally {
+      setIsInitializingSpeechSetup(false);
+    }
+  };
+
+  const ensureSmartSliceLocalSpeechTranscriptionReady = async () => {
+    setSpeechSetupErrorMessage('');
+    const status = await refreshSmartSliceLocalSpeechTranscriptionSetup();
+    if (status.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready) {
+      setSpeechSetupDialogOpen(false);
+      return true;
+    }
+
+    setSpeechSetupDialogOpen(true);
+    const initialized = await runSmartSliceLocalSpeechTranscriptionInitialization();
+    if (initialized) {
+      setSpeechSetupDialogOpen(false);
+    }
+    return initialized;
+  };
+
   const handleStart = async () => {
     setIsProcessing(true);
     toast('视频智能切片任务已创建并提交', 'info');
     try {
+      const speechReady = await ensureSmartSliceLocalSpeechTranscriptionReady();
+      if (!speechReady) {
+        return;
+      }
+      await waitForSmartSliceUiYield();
+      const effectiveSubtitleMode = enableSubtitles && subtitleMode === 'none' ? 'both' : subtitleMode;
       const sliceParams: VideoSliceParams = {
         mode: selectedMode,
         file,
+        ...(fileId && !file ? { fileId } : {}),
         llmModel,
         targetPlatform,
         targetAspectRatio: aspectRatio,
@@ -391,15 +754,40 @@ export function SlicerPage() {
         enableNoiseReduction: noiseReduction,
         enableCoughFilter: coughFilter,
         enableRepeatFilter: repeatFilter,
-        enableSubtitles: generateSubtitles,
-        subtitleMode,
+        enableSubtitles,
+        ...(enableSubtitles
+          ? {
+              subtitleMode: effectiveSubtitleMode,
+              subtitleStyleId: selectedSubtitleStyle,
+            }
+          : {}),
       };
       if (sourceUrl) {
         sliceParams.url = sourceUrl;
       }
-      if (generateSubtitles) {
-        sliceParams.subtitleStyleId = selectedSubtitleStyle;
-      }
+      reportAutoCutDiagnostic('warning', 'slicer.submit', 'Smart Slice submit params', createSmartSliceSubmissionDiagnostics(sliceParams));
+      await saveAutoCutVideoSlicePreferences({
+        mode: selectedMode,
+        targetPlatform,
+        targetAspectRatio: aspectRatio,
+        videoObjectFit,
+        sliceCountMode,
+        targetSliceCount,
+        idealDuration,
+        continuityLevel,
+        customKeywordsInput,
+        minDuration,
+        maxDuration,
+        llmModel,
+        baseAlgorithm,
+        highlightEngine,
+        enableNoiseReduction: noiseReduction,
+        enableCoughFilter: coughFilter,
+        enableRepeatFilter: repeatFilter,
+        enableSubtitles,
+        subtitleMode: enableSubtitles ? effectiveSubtitleMode : 'none',
+        subtitleStyleId: selectedSubtitleStyle,
+      });
       await processVideoSlice(sliceParams);
       setIsProcessing(false);
       setActiveLeftTab("tasks");
@@ -411,14 +799,27 @@ export function SlicerPage() {
       }
       reportAutoCutDiagnostic('error', 'slicer', 'Video slicing failed', e);
       setIsProcessing(false);
-      toast('参数配置异常或服务未响应', 'error');
+      toast(createSmartSliceFailureToastMessage(e), 'error');
+    } finally {
+      setIsProcessing(false);
     }
+  };
+
+  const handleSubtitleToggle = () => {
+    setEnableSubtitles((enabled) => {
+      const nextEnabled = !enabled;
+      if (nextEnabled) {
+        setSubtitleMode((currentMode) => currentMode === 'none' ? 'both' : currentMode);
+      }
+      return nextEnabled;
+    });
   };
 
   const handleReplaceVideoFallbackSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = event.target.files?.[0] ?? null;
     if (selectedFile) {
       setFile(selectedFile);
+      setFileId('');
     }
     event.target.value = '';
   };
@@ -436,6 +837,7 @@ export function SlicerPage() {
 
       const trustedFile = createAutoCutTrustedLocalFile(selectedVideo);
       setFile(trustedFile);
+      setFileId('');
       return;
     } catch (error) {
       reportAutoCutDiagnostic('warning', 'slicer', 'Desktop trusted video replacement failed, using browser fallback', error);
@@ -464,7 +866,10 @@ export function SlicerPage() {
 
           <div className="flex border-b border-[#222] border-t shrink-0 bg-[#0d0d0d]">
             <button
-              onClick={() => setActiveLeftTab('text')}
+              onClick={() => {
+                setActiveLeftTab('text');
+                setEnableOverlayEditor(true);
+              }}
               className={`flex-1 py-3 text-xs font-bold uppercase tracking-wider transition-colors flex justify-center items-center gap-2 ${activeLeftTab === 'text' ? 'text-blue-400 border-b-2 border-blue-500 bg-[#111]' : 'text-gray-500 hover:text-gray-300 hover:bg-[#111]'}`}
             >
               <Type size={14} /> 花字特效
@@ -485,17 +890,18 @@ export function SlicerPage() {
                     key={effect.id}
                     draggable
                     onDragStart={(e) => {
+                      setEnableOverlayEditor(true);
                       e.dataTransfer.setData("application/json", JSON.stringify({
                         textContent: effect.text,
                         styleConfig: effect.styleConfig
                       }));
-                      WebGLPlayerDragState.currentEffect = {
+                      setWebGlTextEffectDragPayload({
                           textContent: effect.text,
                           styleConfig: effect.styleConfig
-                      };
+                      });
                     }}
                     onDragEnd={() => {
-                        WebGLPlayerDragState.currentEffect = null;
+                        setWebGlTextEffectDragPayload(null);
                     }}
                     className="p-4 bg-[#111] rounded-xl border border-[#222] hover:border-blue-500/50 hover:bg-[#1A1A1A] transition-all cursor-grab active:cursor-grabbing group relative overflow-hidden flex flex-col items-center justify-center gap-3"
                   >
@@ -531,7 +937,7 @@ export function SlicerPage() {
                       <div>
                         <h3 className="text-[11px] font-medium text-gray-200 line-clamp-1">{task.name}</h3>
                         <div className="mt-1 text-[10px] text-gray-500 font-mono">
-                          {task.createdAt.split(' ')[1]}
+                          {formatAutoCutTimeOfDay(task.createdAt)}
                         </div>
                       </div>
                     </div>
@@ -556,8 +962,12 @@ export function SlicerPage() {
                         <div className="flex items-center gap-1.5 text-[10px] text-red-500">
                         <XCircle size={12} /> <span className="font-semibold">切片失败</span>
                         </div>
-                        <div className="text-[10px] text-red-400/80 line-clamp-2">{task.errorMessage || '任务处理失败'}</div>
-                        <TaskFailureState variant="compact" errorMessage={task.errorMessage} />
+                        <TaskFailureState
+                          variant="compact"
+                          errorMessage={task.errorMessage}
+                          failureDiagnostics={task.failureDiagnostics}
+                          onCopyErrorMessage={writeAutoCutClipboardText}
+                        />
                       </div>
                     )}
                   </div>
@@ -582,27 +992,87 @@ export function SlicerPage() {
 
             {/* Player Container */}
             <div className="w-full flex-1 relative bg-[#050505] rounded-xl overflow-hidden shadow-2xl border border-[#222] group min-h-[300px]">
-               <WebGLPlayer
-                  ref={playerRef}
-                  videoSrc={videoSrc}
-                  aspectRatio={aspectRatio}
-                  videoObjectFit={videoObjectFit}
-                  onSelectText={setSelectedTextInfo}
-                  onVideoLoaded={(w, h) => {
-                     const ratio = w / h;
-                     if (ratio > 1.5) setDetectedRatio("16:9");
-                     else if (ratio < 0.7) setDetectedRatio("9:16");
-                     else if (Math.abs(ratio - 1) < 0.1) setDetectedRatio("1:1");
-                     else if (Math.abs(ratio - 1.33) < 0.1) setDetectedRatio("4:3");
-                     else setDetectedRatio(`${w}:${h}`);
-                  }}
-                  onTimeUpdate={(c, d) => {
-                      setCurrentTime(c);
-                      setDuration(d);
-                      setVideoProgress((c / d) * 100);
-                  }}
-                  onPlayStateChange={setIsPlaying}
-               />
+               {videoSrc ? (
+                 shouldUseWebGlOverlayEditor ? (
+                   <Suspense
+                      fallback={
+                        <NativeSmartSliceVideoPreview
+                          ref={playerRef}
+                          videoSrc={videoSrc}
+                          aspectRatio={aspectRatio}
+                          videoObjectFit={videoObjectFit}
+                          onVideoLoaded={(w, h) => {
+                             const ratio = w / h;
+                             if (ratio > 1.5) setDetectedRatio("16:9");
+                             else if (ratio < 0.7) setDetectedRatio("9:16");
+                             else if (Math.abs(ratio - 1) < 0.1) setDetectedRatio("1:1");
+                             else if (Math.abs(ratio - 1.33) < 0.1) setDetectedRatio("4:3");
+                             else setDetectedRatio(`${w}:${h}`);
+                          }}
+                          onTimeUpdate={(c, d) => {
+                              setCurrentTime(c);
+                              setDuration(d);
+                              setVideoProgress(d > 0 ? (c / d) * 100 : 0);
+                          }}
+                          onPlayStateChange={setIsPlaying}
+                        />
+                      }
+                   >
+                     <WebGLPlayer
+                        ref={webGlPlayerRef}
+                        videoSrc={videoSrc}
+                        aspectRatio={aspectRatio}
+                        videoObjectFit={videoObjectFit}
+                        onSelectText={setSelectedTextInfo}
+                        onVideoLoaded={(w, h) => {
+                           const ratio = w / h;
+                           if (ratio > 1.5) setDetectedRatio("16:9");
+                           else if (ratio < 0.7) setDetectedRatio("9:16");
+                           else if (Math.abs(ratio - 1) < 0.1) setDetectedRatio("1:1");
+                           else if (Math.abs(ratio - 1.33) < 0.1) setDetectedRatio("4:3");
+                           else setDetectedRatio(`${w}:${h}`);
+                        }}
+                        onTimeUpdate={(c, d) => {
+                            setCurrentTime(c);
+                            setDuration(d);
+                            setVideoProgress(d > 0 ? (c / d) * 100 : 0);
+                        }}
+                        onPlayStateChange={setIsPlaying}
+                     />
+                   </Suspense>
+                 ) : (
+                   <NativeSmartSliceVideoPreview
+                      ref={playerRef}
+                      videoSrc={videoSrc}
+                      aspectRatio={aspectRatio}
+                      videoObjectFit={videoObjectFit}
+                      onVideoLoaded={(w, h) => {
+                         const ratio = w / h;
+                         if (ratio > 1.5) setDetectedRatio("16:9");
+                         else if (ratio < 0.7) setDetectedRatio("9:16");
+                         else if (Math.abs(ratio - 1) < 0.1) setDetectedRatio("1:1");
+                         else if (Math.abs(ratio - 1.33) < 0.1) setDetectedRatio("4:3");
+                         else setDetectedRatio(`${w}:${h}`);
+                      }}
+                      onTimeUpdate={(c, d) => {
+                          setCurrentTime(c);
+                          setDuration(d);
+                          setVideoProgress(d > 0 ? (c / d) * 100 : 0);
+                      }}
+                      onPlayStateChange={setIsPlaying}
+                   />
+                 )
+               ) : (
+                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#050505] text-center">
+                   <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-[#333] bg-[#111]">
+                     <Video size={28} className="text-blue-500" />
+                   </div>
+                   <div className="max-w-xs space-y-1">
+                     <p className="text-sm font-semibold text-gray-200">Select a local video to start</p>
+                     <p className="text-xs leading-5 text-gray-500">AutoCut no longer loads remote demo videos by default.</p>
+                   </div>
+                 </div>
+               )}
 
               {isProcessing && (
                 <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center z-50">
@@ -610,7 +1080,7 @@ export function SlicerPage() {
                     <div className="animate-spin text-blue-500">
                       <Settings2 size={32} />
                     </div>
-                    <p className="font-medium text-xs text-blue-400">正在进行基于 WebGL 的高光帧提取与识别...</p>
+                    <p className="font-medium text-xs text-blue-400">Smart Slice is running native speech analysis and FFmpeg rendering...</p>
                   </div>
                 </div>
               )}
@@ -682,11 +1152,11 @@ export function SlicerPage() {
                 </div>
                 <div className="min-w-0 flex flex-col justify-center">
                   <h2 className="text-[13px] font-bold text-gray-200 truncate flex items-center gap-2">
-                    {file ? file.name : "内置演示素材.mp4"}
+                    {file ? file.name : sourceUrl ? "Remote source URL" : fileId ? "Selected native asset" : "No video selected"}
                     {file && <span className="px-1.5 py-0.5 bg-[#333] text-[10px] text-gray-400 rounded">{(file.size / 1024 / 1024).toFixed(1)}MB</span>}
                   </h2>
                   <div className="text-[11px] text-gray-500 font-mono mt-1 truncate">
-                    {file ? "本地文件" : getAutoCutSampleVideoUrl()}
+                    {file ? "Local trusted video" : sourceUrl || fileId || "Choose a local video file before processing"}
                   </div>
                 </div>
               </div>
@@ -911,7 +1381,11 @@ export function SlicerPage() {
                       <input
                         type="number"
                         value={targetSliceCount}
-                        onChange={e => setTargetSliceCount(Number(e.target.value))}
+                        onChange={(event) =>
+                          setTargetSliceCount((currentValue) =>
+                            normalizeSlicerNumberInput(event.target.value, currentValue, 1, 20),
+                          )
+                        }
                         className="w-full bg-[#141414] border border-[#222] rounded-lg pl-11 pr-2 py-1.5 text-xs text-white focus:border-blue-500 focus:bg-[#1A1A1A] outline-none transition-all"
                         min={1}
                         max={20}
@@ -922,7 +1396,11 @@ export function SlicerPage() {
                       <input
                         type="number"
                         value={idealDuration}
-                        onChange={e => setIdealDuration(Number(e.target.value))}
+                        onChange={(event) =>
+                          setIdealDuration((currentValue) =>
+                            normalizeSlicerNumberInput(event.target.value, currentValue, minDuration, maxDuration),
+                          )
+                        }
                         className="w-full bg-[#141414] border border-[#222] rounded-lg pl-11 pr-2 py-1.5 text-xs text-white focus:border-blue-500 focus:bg-[#1A1A1A] outline-none transition-all"
                         min={5}
                         max={600}
@@ -951,41 +1429,67 @@ export function SlicerPage() {
                 <div className="flex items-center gap-2">
                   <div className="flex-1 relative">
                     <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-500 font-medium">Min</span>
-                    <input type="number" value={minDuration} onChange={e => setMinDuration(Number(e.target.value))} className="w-full bg-[#141414] border border-[#222] rounded-lg pl-8 pr-2 py-1.5 text-xs text-white focus:border-blue-500 focus:bg-[#1A1A1A] outline-none transition-all" min={5} max={180} />
+                    <input
+                      type="number"
+                      value={minDuration}
+                      onChange={(event) =>
+                        setMinDuration((currentValue) =>
+                          normalizeSlicerNumberInput(event.target.value, currentValue, 5, Math.min(180, maxDuration)),
+                        )
+                      }
+                      className="w-full bg-[#141414] border border-[#222] rounded-lg pl-8 pr-2 py-1.5 text-xs text-white focus:border-blue-500 focus:bg-[#1A1A1A] outline-none transition-all"
+                      min={5}
+                      max={180}
+                    />
                   </div>
                   <span className="text-gray-600 font-light">-</span>
                   <div className="flex-1 relative">
                     <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-500 font-medium">Max</span>
-                    <input type="number" value={maxDuration} onChange={e => setMaxDuration(Number(e.target.value))} className="w-full bg-[#141414] border border-[#222] rounded-lg pl-8 pr-2 py-1.5 text-xs text-white focus:border-blue-500 focus:bg-[#1A1A1A] outline-none transition-all" min={10} max={600} />
+                    <input
+                      type="number"
+                      value={maxDuration}
+                      onChange={(event) =>
+                        setMaxDuration((currentValue) =>
+                          normalizeSlicerNumberInput(event.target.value, currentValue, Math.max(10, minDuration), 600),
+                        )
+                      }
+                      className="w-full bg-[#141414] border border-[#222] rounded-lg pl-8 pr-2 py-1.5 text-xs text-white focus:border-blue-500 focus:bg-[#1A1A1A] outline-none transition-all"
+                      min={10}
+                      max={600}
+                    />
                   </div>
                 </div>
               </div>
 
               {/* Subtitles Option */}
               <div>
-                <label className="flex items-center justify-between cursor-pointer group">
+                <div className="flex items-center justify-between group">
                   <div>
                     <div className="text-[11px] font-bold text-gray-400 group-hover:text-gray-200 transition-colors uppercase tracking-wider">自动生成中英文字幕</div>
                     <div className="text-[10px] text-gray-600 mt-1">使用 Whisper 大模型生成高潮解说字幕</div>
                   </div>
-                  <div className="relative inline-flex items-center shrink-0">
-                    <input
-                       type="checkbox"
-                       className="sr-only peer"
-                       checked={generateSubtitles}
-                       onChange={(e) => setGenerateSubtitles(e.target.checked)}
-                    />
-                    <div className="w-9 h-5 bg-[#222] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-gray-400 peer-checked:after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-500"></div>
-                  </div>
-                </label>
-                {generateSubtitles && (
+                  <button
+                    type="button"
+                    onClick={handleSubtitleToggle}
+                    className={`inline-flex min-w-[68px] items-center gap-1.5 rounded border px-2 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors shrink-0 ${
+                      enableSubtitles
+                        ? 'border-blue-500/40 bg-blue-500/15 text-blue-200'
+                        : 'border-[#333] bg-[#141414] text-gray-400 hover:border-[#444] hover:text-gray-200'
+                    }`}
+                    aria-pressed={enableSubtitles}
+                  >
+                    <Type size={12} />
+                    {enableSubtitles ? 'On' : 'Off'}
+                  </button>
+                </div>
+                {enableSubtitles ? (
                   <div className="mt-3 bg-[#141414] border border-[#222] rounded-lg p-3 relative animate-in fade-in slide-in-from-top-2">
                      <span className="text-[10px] font-bold text-gray-500 mb-2 block uppercase tracking-wider">Subtitle publishing</span>
                      <div className="grid grid-cols-3 gap-1 mb-3">
                        {[
-                         { value: 'both', label: 'Burn + SRT' },
-                         { value: 'burned', label: 'Burned' },
                          { value: 'srt', label: 'SRT' },
+                         { value: 'burned', label: 'Burned' },
+                         { value: 'both', label: 'Burn + SRT' },
                        ].map((option) => (
                          <button
                            key={option.value}
@@ -1018,7 +1522,7 @@ export function SlicerPage() {
                        </div>
                      </div>
                   </div>
-                )}
+                ) : null}
               </div>
 
               <div className="w-full h-px bg-[#222]"></div>
@@ -1157,6 +1661,137 @@ export function SlicerPage() {
           )}
         </aside>
       </div>
+
+      {speechSetupDialogOpen && (
+        <div className="absolute inset-0 z-[80] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="smart-slice-speech-setup-title">
+          <div className="w-full max-w-[560px] rounded-lg border border-[#2b2b2b] bg-[#101010] shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-[#242424] px-5 py-4">
+              <div className="flex items-start gap-3">
+                <div className={`mt-0.5 flex h-9 w-9 items-center justify-center rounded-md border ${
+                  speechSetupErrorMessage
+                    ? 'border-red-500/30 bg-red-500/10 text-red-300'
+                    : isInitializingSpeechSetup
+                      ? 'border-blue-500/30 bg-blue-500/10 text-blue-300'
+                      : 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+                }`}>
+                  {speechSetupErrorMessage ? <AlertTriangle size={18} /> : isInitializingSpeechSetup ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
+                </div>
+                <div>
+                  <h2 id="smart-slice-speech-setup-title" className="text-sm font-semibold text-gray-100">Local speech-to-text setup</h2>
+                  <p className="mt-1 text-xs leading-5 text-gray-400">{createSmartSliceSpeechSetupStatusText(speechSetupStatus, speechSetupErrorMessage)}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSpeechSetupDialogOpen(false)}
+                className="rounded-md p-1.5 text-gray-500 transition-colors hover:bg-[#202020] hover:text-gray-200"
+                disabled={isInitializingSpeechSetup}
+                aria-label="Close local speech-to-text setup"
+              >
+                <XCircle size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-4 px-5 py-4">
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { label: 'Executable', ready: speechSetupStatus?.executable.ready, detail: speechSetupStatus?.executable.path || speechSetupStatus?.defaults.executablePath || speechSetupStatus?.executable.sourceKind || speechSetupStatus?.defaults.executableStrategy || 'checking' },
+                  { label: 'Model', ready: speechSetupStatus?.model.ready, detail: speechSetupStatus?.model.path || speechSetupStatus?.defaults.modelPath || speechSetupStatus?.model.preset.label || 'recommended' },
+                  { label: 'Provider test', ready: speechSetupStatus?.test.ready, detail: speechSetupStatus?.readiness ?? 'checking' },
+                ].map((item) => (
+                  <div key={item.label} className="rounded-md border border-[#252525] bg-[#151515] p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{item.label}</span>
+                      {item.ready ? <CheckCircle2 size={14} className="text-green-400" /> : <AlertTriangle size={14} className="text-amber-400" />}
+                    </div>
+                    <div className="mt-2 break-all text-xs leading-4 text-gray-300">{item.detail}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="rounded-md border border-[#252525] bg-[#151515] p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-semibold text-gray-200">Whisper CLI sidecar</div>
+                    <div className="mt-1 text-[11px] text-gray-500">{speechSetupStatus?.executable.sourceKind || 'system discovery'}</div>
+                  </div>
+                  <div className={`text-xs font-bold ${speechSetupStatus?.executable.ready ? 'text-emerald-300' : 'text-amber-300'}`}>
+                    {speechSetupStatus?.executable.ready ? 'verified' : 'required'}
+                  </div>
+                </div>
+                <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#252525]">
+                  <div
+                    className="h-full rounded-full bg-emerald-500 transition-all"
+                    style={{ width: speechSetupStatus?.executable.ready ? '100%' : '8%' }}
+                  />
+                </div>
+                <div className="mt-2 flex justify-between text-[10px] text-gray-600">
+                  <span>{speechSetupStatus?.defaults.executableStrategy || 'bundled sidecar > local discovery'}</span>
+                  <span>{speechSetupStatus?.capabilities.executableDownloadReady ? 'legacy download disabled' : 'packaged'}</span>
+                </div>
+                <div className="mt-2 break-all text-[10px] text-gray-500">
+                  {speechSetupStatus?.executable.path || speechSetupStatus?.defaults.executablePath || 'Executable path will be resolved by the desktop host'}
+                </div>
+              </div>
+
+              <div className="rounded-md border border-[#252525] bg-[#151515] p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-semibold text-gray-200">Offline Whisper model</div>
+                    <div className="mt-1 text-[11px] text-gray-500">{getSmartSliceSpeechSetupProgressLabel(speechModelDownloadProgress)}</div>
+                  </div>
+                  <div className="text-xs font-bold text-blue-300">{speechModelDownloadProgress?.progress ?? 0}%</div>
+                </div>
+                <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#252525]">
+                  <div
+                    className="h-full rounded-full bg-blue-500 transition-all"
+                    style={{ width: `${Math.min(100, Math.max(0, speechModelDownloadProgress?.progress ?? 0))}%` }}
+                  />
+                </div>
+                <div className="mt-2 flex justify-between text-[10px] text-gray-600">
+                  <span>{speechModelDownloadProgress?.phase ?? 'waiting'}</span>
+                  <span>
+                    {formatSmartSliceSpeechSetupBytes(speechModelDownloadProgress?.downloadedBytes)}
+                    {speechModelDownloadProgress?.totalBytes ? ` / ${formatSmartSliceSpeechSetupBytes(speechModelDownloadProgress.totalBytes)}` : ''}
+                  </span>
+                </div>
+                <div className="mt-2 break-all text-[10px] text-gray-500">
+                  {speechModelDownloadProgress?.modelPath || speechSetupStatus?.model.path || speechSetupStatus?.defaults.modelPath || 'Model path will be resolved by the desktop host'}
+                </div>
+              </div>
+
+              {speechSetupStatus?.diagnostics?.length ? (
+                <div className="max-h-24 overflow-y-auto rounded-md border border-[#252525] bg-[#0b0b0b] p-3 text-[11px] leading-5 text-gray-400">
+                  {speechSetupStatus.diagnostics.map((diagnostic, index) => (
+                    <div key={`${diagnostic}:${index}`}>{diagnostic}</div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[#242424] px-5 py-4">
+              <Button
+                type="button"
+                variant="secondary"
+                className="h-9 gap-2 border-[#333] bg-[#181818] px-3 text-xs text-gray-200 hover:bg-[#222]"
+                onClick={() => navigate('/settings?tab=speech')}
+              >
+                <ExternalLink size={14} />
+                Speech-to-Text settings
+              </Button>
+              <Button
+                type="button"
+                className="h-9 gap-2 bg-blue-600 px-3 text-xs text-white hover:bg-blue-500"
+                onClick={runSmartSliceLocalSpeechTranscriptionInitialization}
+                disabled={isInitializingSpeechSetup}
+              >
+                {isInitializingSpeechSetup ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                {isInitializingSpeechSetup ? 'Initializing' : 'Initialize again'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

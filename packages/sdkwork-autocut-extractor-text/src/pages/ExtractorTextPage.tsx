@@ -3,8 +3,13 @@ import { useState, useEffect } from 'react';
 import { FileText, Type, Download, PlayCircle, Activity, Copy, CheckCircle2 } from 'lucide-react';
 import { FileUpload, Button, TaskFailureState } from '@sdkwork/autocut-commons';
 import { useToast } from '@sdkwork/autocut-commons';
-import { downloadExtractedTextFile, formatExtractedText, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
-import { AUTOCUT_TASK_STATUS, isAutoCutTaskActiveStatus, type AppTask } from '@sdkwork/autocut-types';
+import { downloadExtractedTextFile, formatExtractedText, getAutoCutProcessingTaskErrorTaskId, getAutoCutWorkflowPreferences, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic, saveAutoCutTextExtractionPreferences, selectAutoCutTrustedLocalMediaFile, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
+import {
+  AUTOCUT_SPEECH_TRANSCRIPTION_LANGUAGE_OPTIONS,
+  AUTOCUT_TASK_STATUS,
+  isAutoCutTaskActiveStatus,
+  type AppTask,
+} from '@sdkwork/autocut-types';
 
 export function ExtractorTextPage() {
   const { toast } = useToast();
@@ -16,6 +21,16 @@ export function ExtractorTextPage() {
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [activeTask, setActiveTask] = useState<AppTask | null>(null);
   const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    getAutoCutWorkflowPreferences()
+      .then((preferences) => {
+        setLanguage(preferences.textExtraction.language);
+        setSeparateSpeakers(preferences.textExtraction.separateSpeakers);
+        setFilterWords(preferences.textExtraction.filterWords);
+      })
+      .catch((error) => reportAutoCutDiagnostic('warning', 'extractor-text', 'Load text extraction parameter preferences failed', error));
+  }, []);
 
   useEffect(() => {
     if (!activeTaskId) return;
@@ -37,6 +52,7 @@ export function ExtractorTextPage() {
   const handleStartProcess = async () => {
     toast('开始分析与提取文案任务...', 'info');
     try {
+      await saveAutoCutTextExtractionPreferences({ language, separateSpeakers, filterWords });
       const res = await processExtractorText({ file, language, format: filterWords ? 'filtered' : 'raw', separateSpeakers });
       if (res.success) {
         toast('提取引擎已就绪，正在努力识别中', 'success');
@@ -57,7 +73,7 @@ export function ExtractorTextPage() {
 
   const handleDownload = () => {
     if (!activeTask?.extractedText) return;
-    downloadExtractedTextFile(activeTask.extractedText, `${activeTask.name}.txt`);
+    downloadExtractedTextFile(activeTask, `${activeTask.name}.txt`);
   };
 
   return (
@@ -79,7 +95,13 @@ export function ExtractorTextPage() {
                选择源文件
             </h2>
 
-            <FileUpload file={file} onChange={setFile} accept="audio/*,video/*" maxSizeMB={500} />
+            <FileUpload
+              file={file}
+              onChange={setFile}
+              accept="audio/*,video/*"
+              maxSizeMB={500}
+              trustedFileSourceSelector={() => selectAutoCutTrustedLocalMediaFile(['audio', 'video'])}
+            />
           </div>
 
           <div className="p-6">
@@ -92,9 +114,9 @@ export function ExtractorTextPage() {
                 <div>
                   <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase">识别语言</label>
                   <select value={language} onChange={e => setLanguage(e.target.value)} className="w-full bg-[#141414] border border-[#222] rounded-lg px-3 py-2.5 text-xs text-white focus:border-purple-500 outline-none transition-all">
-                    <option value="auto">自动检测 (中/英/日/韩)</option>
-                    <option value="zh">纯中文 (简体)</option>
-                    <option value="en">纯英文 (English)</option>
+                    {AUTOCUT_SPEECH_TRANSCRIPTION_LANGUAGE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
                   </select>
                 </div>
 
@@ -172,7 +194,7 @@ export function ExtractorTextPage() {
                    <Activity size={40} className="text-purple-500 relative z-10 animate-pulse" />
                  </div>
                  <h2 className="text-2xl font-extrabold text-white mb-2 tracking-tight drop-shadow-sm">正在提取文案...</h2>
-                 <p className="text-[14px] font-medium text-gray-400 mb-8 max-w-md">AI 正在逐帧识别音频内容，请耐心等待</p>
+                 <p className="text-[14px] font-medium text-gray-400 mb-8 max-w-md">AI 正在识别音视频中的语音内容，请耐心等待</p>
 
                  <div className="w-64 h-2 bg-[#222] rounded-full overflow-hidden shadow-inner border border-[#333]">
                    <div className="h-full bg-purple-500 transition-all duration-300 relative shadow-[0_0_10px_rgba(168,85,247,0.8)]" style={{ width: `${activeTask?.progress || 0}%` }}></div>
@@ -193,7 +215,7 @@ export function ExtractorTextPage() {
                 </div>
                 <div className="flex items-center gap-3">
                    <Button onClick={() => {
-                     const text = formatExtractedText(activeTask.extractedText);
+                     const text = formatExtractedText(activeTask);
                      void writeAutoCutClipboardText(text);
                      setCopied(true);
                      setTimeout(() => setCopied(false), 2000);
@@ -227,7 +249,11 @@ export function ExtractorTextPage() {
           )}
 
           {activeTask?.status === AUTOCUT_TASK_STATUS.failed && (
-            <TaskFailureState errorMessage={activeTask.errorMessage} onRetry={handleStartProcess} />
+            <TaskFailureState
+              errorMessage={activeTask.errorMessage}
+              onCopyErrorMessage={writeAutoCutClipboardText}
+              onRetry={handleStartProcess}
+            />
           )}
         </div>
       </div>

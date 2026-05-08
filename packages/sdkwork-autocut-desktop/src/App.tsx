@@ -1,7 +1,9 @@
 import { Suspense, lazy, type ComponentType } from 'react';
+import { I18nextProvider } from 'react-i18next';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { ToastProvider } from '@sdkwork/autocut-commons';
 import { AppLayout } from '@sdkwork/autocut-core';
+import { getAutoCutI18n } from '@sdkwork/autocut-services';
 
 type AutoCutRoute = {
   path: string;
@@ -95,20 +97,22 @@ function RouteLoadingFallback() {
 
 export default function App() {
   return (
-    <ToastProvider>
-      <BrowserRouter>
-        <Suspense fallback={<RouteLoadingFallback />}>
-          <Routes>
-            <Route element={<AppLayout />}>
-              {AUTOCUT_ROUTES.map(({ path, Component }) => (
-                <Route key={path} path={path} element={<Component />} />
-              ))}
-            </Route>
+    <I18nextProvider i18n={getAutoCutI18n()}>
+      <ToastProvider>
+        <BrowserRouter>
+          <Suspense fallback={<RouteLoadingFallback />}>
+            <Routes>
+              <Route element={<AppLayout />}>
+                {AUTOCUT_ROUTES.map(({ path, Component }) => (
+                  <Route key={path} path={path} element={<Component />} />
+                ))}
+              </Route>
 
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </Suspense>
-      </BrowserRouter>
-    </ToastProvider>
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </Suspense>
+        </BrowserRouter>
+      </ToastProvider>
+    </I18nextProvider>
   );
 }

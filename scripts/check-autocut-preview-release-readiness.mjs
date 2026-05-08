@@ -64,6 +64,7 @@ function createPreviewReadiness(evidence) {
       preflight.bundledReady === true &&
       preflight.sidecarPresent === true &&
       preflight.integrityReady === true &&
+      preflight.speechSidecar?.bundledReady === true &&
       readiness.nativeReleaseSmokeReady &&
       readiness.nativeVideoSliceSmokeReady &&
       evidence.nativeReleaseSmoke?.ready === true &&
@@ -77,6 +78,7 @@ function createPreviewReadiness(evidence) {
 
   return {
     ffmpegBundledReady: Boolean(readiness.ffmpegBundledReady),
+    speechBundledReady: Boolean(readiness.speechBundledReady),
     ffmpegExecutionReady: Boolean(readiness.ffmpegExecutionReady),
     ffmpegExecutionPreviewReady,
     nativeReleaseSmokeReady: Boolean(readiness.nativeReleaseSmokeReady),
@@ -98,6 +100,19 @@ function createPreviewReleaseBlockers(evidence, readiness) {
       code: 'FFMPEG_SIDECAR_NOT_BUNDLED',
       message: 'Approved FFmpeg sidecar is not bundled with verified integrity.',
       remediation: 'Run prepare:ffmpeg-sidecar with an approved binary, then release:smoke-preflight --require-bundled.',
+    });
+  }
+
+  if (
+    !readiness.speechBundledReady ||
+    preflight.speechSidecar?.bundledReady !== true ||
+    preflight.speechSidecar?.sidecarPresent !== true ||
+    preflight.speechSidecar?.integrityReady !== true
+  ) {
+    blockers.push({
+      code: 'SPEECH_SIDECAR_NOT_BUNDLED',
+      message: 'Approved local Whisper speech-to-text sidecar is not bundled with verified integrity.',
+      remediation: 'Run prepare:speech-sidecar with an approved whisper-cli binary for the target platform, then regenerate release:evidence.',
     });
   }
 

@@ -10,13 +10,16 @@ import {
   normalizeAutoCutCliArgs,
   readAutoCutCliOptionValue,
 } from './autocut-cli-args.mjs';
+import {
+  createAutoCutReleaseInstallerSpecs,
+  normalizeAutoCutReleasePlatform,
+} from './autocut-release-platforms.mjs';
 import { createAutoCutReleaseSmokePreflightReport } from './check-autocut-release-smoke-preflight.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const evidenceSchemaVersion = '2026-05-05.autocut-release-evidence.v1';
 const desktopPackageRelativePath = 'packages/sdkwork-autocut-desktop';
 const manifestRelativePath = `${desktopPackageRelativePath}/src-tauri/binaries/ffmpeg.toolchain.json`;
-const bundleRelativeRoot = `${desktopPackageRelativePath}/src-tauri/target/release/bundle`;
 const defaultOutputRelativePath = 'artifacts/release/autocut-release-evidence.json';
 const nativeReleaseSmokeRelativePath = 'artifacts/release/autocut-native-release-smoke.json';
 const installerSignatureEvidenceRelativePath = 'artifacts/release/autocut-installer-signature-evidence.json';
@@ -31,11 +34,12 @@ export function createAutoCutReleaseEvidence({
   runPreflightCommand,
 } = {}) {
   const resolvedRootDir = path.resolve(rootDir);
+  const normalizedPlatform = normalizeAutoCutReleasePlatform(platform);
   const manifestPath = path.join(resolvedRootDir, manifestRelativePath);
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const preflight = createAutoCutReleaseSmokePreflightReport({
     rootDir: resolvedRootDir,
-    platform,
+    platform: normalizedPlatform,
     requireBundled: false,
     skipExecutableSmoke,
     ...(runPreflightCommand ? { runCommand: runPreflightCommand } : {}),
@@ -44,10 +48,11 @@ export function createAutoCutReleaseEvidence({
   const smartSliceQuality = readSmartSliceQualityEvidence(resolvedRootDir);
   const smartSliceMediaArtifacts = readSmartSliceMediaArtifactsEvidence(resolvedRootDir);
   const installerSignature = readInstallerSignatureEvidence(resolvedRootDir);
-  const installers = readReleaseInstallers(resolvedRootDir);
+  const installers = readReleaseInstallers(resolvedRootDir, normalizedPlatform);
   const ffmpegExecutionReady = Boolean(
     preflight.ffmpegExecutionReady &&
       preflight.bundledReady &&
+      preflight.speechSidecar?.bundledReady &&
       preflight.executableSmokeReady === true &&
       nativeReleaseSmoke.ready &&
       smartSliceQuality.ready &&
@@ -59,7 +64,7 @@ export function createAutoCutReleaseEvidence({
   return {
     schemaVersion: evidenceSchemaVersion,
     generatedAt,
-    platform,
+    platform: normalizedPlatform,
     product: {
       name: 'SDKWork Video Cut',
       packageName: '@sdkwork/video-cut',
@@ -68,6 +73,7 @@ export function createAutoCutReleaseEvidence({
     readiness: {
       ffmpegExecutionReady,
       ffmpegBundledReady: preflight.bundledReady,
+      speechBundledReady: preflight.speechSidecar.bundledReady,
       releaseSmokeReady: preflight.releaseSmokeReady,
       nativeReleaseSmokeReady: nativeReleaseSmoke.ready,
       nativeVideoSliceSmokeReady: nativeReleaseSmoke.videoSliceReady,
@@ -83,6 +89,14 @@ export function createAutoCutReleaseEvidence({
       executableSmokeReady: preflight.executableSmokeReady,
       releaseSmokeReady: preflight.releaseSmokeReady,
       ffmpegExecutionReady: preflight.ffmpegExecutionReady,
+      speechSidecar: {
+        platform: preflight.speechSidecar.platform,
+        sidecarPresent: preflight.speechSidecar.sidecarPresent,
+        integrityReady: preflight.speechSidecar.integrityReady,
+        bundledReady: preflight.speechSidecar.bundledReady,
+        platformBundledReady: preflight.speechSidecar.platformBundledReady,
+        manifestBundledReady: preflight.speechSidecar.manifestBundledReady,
+      },
     },
     ffmpegManifest: {
       path: toPosixRelative(resolvedRootDir, manifestPath),
@@ -90,11 +104,11 @@ export function createAutoCutReleaseEvidence({
       bundledReady: Boolean(manifest.bundledReady),
       requiredBinary: manifest.requiredBinary,
       platform: {
-        key: platform,
-        relativePath: manifest.platforms?.[platform]?.relativePath ?? '',
-        binaryName: manifest.platforms?.[platform]?.binaryName ?? '',
-        sha256: manifest.platforms?.[platform]?.integrity?.sha256 ?? '',
-        byteSize: manifest.platforms?.[platform]?.integrity?.byteSize ?? 0,
+        key: normalizedPlatform,
+        relativePath: manifest.platforms?.[normalizedPlatform]?.relativePath ?? '',
+        binaryName: manifest.platforms?.[normalizedPlatform]?.binaryName ?? '',
+        sha256: manifest.platforms?.[normalizedPlatform]?.integrity?.sha256 ?? '',
+        byteSize: manifest.platforms?.[normalizedPlatform]?.integrity?.byteSize ?? 0,
       },
     },
     nativeReleaseSmoke,
@@ -131,26 +145,16 @@ export function formatAutoCutReleaseEvidenceMessage(result) {
   return `ok - autocut release evidence ${result.outputPath} installers=${result.evidence.installers.length} ffmpegExecutionReady=${result.evidence.readiness.ffmpegExecutionReady}`;
 }
 
-function readReleaseInstallers(rootDir) {
-  const bundleRoot = path.join(rootDir, bundleRelativeRoot);
-  const installerSpecs = [
-    {
-      kind: 'msi',
-      path: path.join(bundleRoot, 'msi', 'SDKWork Video Cut_0.1.0_x64_en-US.msi'),
-    },
-    {
-      kind: 'nsis',
-      path: path.join(bundleRoot, 'nsis', 'SDKWork Video Cut_0.1.0_x64-setup.exe'),
-    },
-  ];
+function readReleaseInstallers(rootDir, platform) {
+  const installerSpecs = createAutoCutReleaseInstallerSpecs({ rootDir, platform });
   return installerSpecs.map((spec) => {
-    if (!fs.existsSync(spec.path) || !fs.statSync(spec.path).isFile()) {
-      throw new Error(`missing AutoCut release installer: ${spec.path}`);
+    if (!fs.existsSync(spec.absolutePath) || !fs.statSync(spec.absolutePath).isFile()) {
+      throw new Error(`missing AutoCut release installer: ${spec.absolutePath}`);
     }
-    const bytes = fs.readFileSync(spec.path);
+    const bytes = fs.readFileSync(spec.absolutePath);
     return {
       kind: spec.kind,
-      path: toPosixRelative(rootDir, spec.path),
+      path: toPosixRelative(rootDir, spec.absolutePath),
       byteSize: bytes.length,
       sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
     };

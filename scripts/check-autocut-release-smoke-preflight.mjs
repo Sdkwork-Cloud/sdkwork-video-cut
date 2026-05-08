@@ -11,20 +11,23 @@ import {
   normalizeAutoCutCliArgs,
   readAutoCutCliOptionValue,
 } from './autocut-cli-args.mjs';
+import {
+  createAutoCutHostPlatformKey,
+  normalizeAutoCutReleasePlatform,
+} from './autocut-release-platforms.mjs';
+import {
+  createAutoCutSpeechSidecarReadinessReport,
+} from './prepare-autocut-speech-sidecar.mjs';
+
+export { createAutoCutHostPlatformKey };
 
 const __filename = fileURLToPath(import.meta.url);
 const defaultManifestRelativePath =
   'packages/sdkwork-autocut-desktop/src-tauri/binaries/ffmpeg.toolchain.json';
-const allowedPlatforms = new Set([
-  'windows-x86_64',
-  'linux-x86_64',
-  'macos-x86_64',
-  'macos-aarch64',
-]);
 
 export function createAutoCutReleaseSmokePreflightReport({
   rootDir = process.cwd(),
-  platform = hostPlatformKey(),
+  platform = createAutoCutHostPlatformKey(),
   requireBundled = false,
   skipExecutableSmoke = false,
   runCommand = runAutoCutReleaseSmokeCommand,
@@ -42,10 +45,16 @@ export function createAutoCutReleaseSmokePreflightReport({
   assertInsideDirectory(sidecarPath, path.dirname(manifestPath));
   const sidecarPresent = fs.existsSync(sidecarPath) && fs.statSync(sidecarPath).isFile();
   const integrityReady = sidecarPresent && verifyIntegrity(sidecarPath, platformEntry);
+  const platformBundledReady = Boolean(sidecarPresent && integrityReady);
+  const manifestBundledReady = Boolean(manifest.bundledReady);
+  const speechSidecar = createAutoCutSpeechSidecarReadinessReport({
+    rootDir: resolvedRootDir,
+    platform: normalizedPlatform,
+  });
 
-  if (requireBundled && (!manifest.bundledReady || !sidecarPresent || !integrityReady)) {
+  if (requireBundled && (!platformBundledReady || !speechSidecar.platformBundledReady)) {
     throw new Error(
-      `AutoCut release smoke preflight requires a bundled FFmpeg sidecar for ${normalizedPlatform}.`,
+      `AutoCut release smoke preflight requires bundled FFmpeg and speech-to-text sidecars for ${normalizedPlatform}.`,
     );
   }
 
@@ -65,15 +74,19 @@ export function createAutoCutReleaseSmokePreflightReport({
     sidecarPath,
     sidecarPresent,
     integrityReady,
-    bundledReady: Boolean(manifest.bundledReady && sidecarPresent && integrityReady),
+    bundledReady: platformBundledReady,
+    platformBundledReady,
+    manifestBundledReady,
+    speechSidecar,
     executableSmokeReady,
     ffmpegExecutionReady: Boolean(
-      manifest.bundledReady &&
-        sidecarPresent &&
-        integrityReady &&
+      platformBundledReady &&
         executableSmokeReady === true
     ),
-    releaseSmokeReady: !requireBundled || Boolean(manifest.bundledReady && sidecarPresent && integrityReady),
+    releaseSmokeReady: !requireBundled || Boolean(
+      platformBundledReady &&
+        speechSidecar.platformBundledReady
+    ),
   };
 }
 
@@ -81,7 +94,9 @@ export function formatAutoCutReleaseSmokePreflightMessage(report) {
   return [
     `ok - autocut release smoke preflight platform=${report.platform}`,
     `bundledReady=${report.bundledReady}`,
+    `platformBundledReady=${report.platformBundledReady}`,
     `integrityReady=${report.integrityReady}`,
+    `speechBundledReady=${report.speechSidecar.bundledReady}`,
     `executableSmokeReady=${report.executableSmokeReady}`,
     `ffmpegExecutionReady=${report.ffmpegExecutionReady}`,
   ].join(' ');
@@ -125,21 +140,16 @@ function verifyIntegrity(sidecarPath, platformEntry) {
   );
 }
 
-function hostPlatformKey() {
-  const osKey = process.platform === 'darwin' ? 'macos' : process.platform;
-  const archKey = process.arch === 'x64' ? 'x86_64' : process.arch;
-  return `${osKey}-${archKey}`;
-}
-
 function normalizePlatform(platform) {
   if (typeof platform !== 'string' || platform.trim() === '') {
     throw new Error('AutoCut release smoke preflight requires --platform.');
   }
   const normalized = platform.trim();
-  if (!allowedPlatforms.has(normalized)) {
+  try {
+    return normalizeAutoCutReleasePlatform(normalized);
+  } catch {
     throw new Error(`Unsupported AutoCut release smoke platform: ${normalized}`);
   }
-  return normalized;
 }
 
 function assertInsideDirectory(candidatePath, rootPath) {

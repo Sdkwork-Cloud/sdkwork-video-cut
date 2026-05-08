@@ -1,0 +1,82 @@
+{
+  "tool": "whisper-cli",
+  "contractVersion": "2026-05-08.speech-toolchain.v1",
+  "bundledReady": false,
+  "requiredBinary": "whisper-cli",
+  "license": {
+    "name": "whisper.cpp",
+    "spdxExpression": "MIT",
+    "notice": "Bundled whisper.cpp sidecars must keep their upstream license notices with release artifacts."
+  },
+  "platforms": {
+    "windows-x86_64": {
+      "relativePath": "windows-x86_64/whisper-cli.exe",
+      "binaryName": "whisper-cli.exe",
+      "integrity": {
+        "sha256": "d4c598cf97de103f888d1a53b8abddc85bf27ab752f785ca69318cedc8a2cf64",
+        "byteSize": 485888
+      },
+      "companionFiles": [
+        {
+          "relativePath": "windows-x86_64/ggml-base.dll",
+          "integrity": {
+            "sha256": "138a2b1a03b7dd757d764f60b39a8b32a08137e21fce4d3d78fbac6c5e716f9d",
+            "byteSize": 549376
+          }
+        },
+        {
+          "relativePath": "windows-x86_64/ggml-cpu.dll",
+          "integrity": {
+            "sha256": "9a74d977527dbac38d96900fd7ce422aebbf96001aff5be6a05d7c547dcb9bcb",
+            "byteSize": 774144
+          }
+        },
+        {
+          "relativePath": "windows-x86_64/ggml.dll",
+          "integrity": {
+            "sha256": "9f2b124cbe1d002dc25de9a5ff9813c4fec7ef9f3bb9f41035fc6b46fb77bfa0",
+            "byteSize": 67072
+          }
+        },
+        {
+          "relativePath": "windows-x86_64/SDL2.dll",
+          "integrity": {
+            "sha256": "de23db1694a3c7a4a735e7ecd3d214b2023cc2267922c6c35d30c7fc7370d677",
+            "byteSize": 2500096
+          }
+        },
+        {
+          "relativePath": "windows-x86_64/whisper.dll",
+          "integrity": {
+            "sha256": "ce1958796ebd9d03aafc56cdc2f04c21f214a9c7623889a0a23bc6c162976e87",
+            "byteSize": 483840
+          }
+        }
+      ]
+    },
+    "linux-x86_64": {
+      "relativePath": "linux-x86_64/whisper-cli",
+      "binaryName": "whisper-cli",
+      "integrity": {
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "byteSize": 0
+      }
+    },
+    "macos-x86_64": {
+      "relativePath": "macos-x86_64/whisper-cli",
+      "binaryName": "whisper-cli",
+      "integrity": {
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "byteSize": 0
+      }
+    },
+    "macos-aarch64": {
+      "relativePath": "macos-aarch64/whisper-cli",
+      "binaryName": "whisper-cli",
+      "integrity": {
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "byteSize": 0
+      }
+    }
+  }
+}

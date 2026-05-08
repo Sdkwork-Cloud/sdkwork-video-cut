@@ -154,6 +154,7 @@ function writeFixtureReleaseInputs(rootDir, generatedAt, fixtureProfile) {
     createSmartSliceTaskFixture(rootDir, generatedAt, fixtureProfile),
   );
   writeFfmpegFixture(rootDir);
+  writeSpeechSidecarFixture(rootDir);
   writeJson(
     path.join(rootDir, 'artifacts/release/autocut-native-release-smoke.json'),
     {
@@ -220,13 +221,23 @@ function createSmartSliceTaskFixture(rootDir, generatedAt, fixtureProfile) {
         id: 'asset-release-fixture-slice-1',
         name: 'release-fixture-01.mp4',
         sourceStartMs: 0,
-        sourceEndMs: 42000,
+        sourceEndMs: 41950,
         speechStartMs: 200,
         speechEndMs: 41700,
         duration: 42,
-        transcriptText:
-          'Why short videos fail is simple. The opening hides the result, so viewers leave before the payoff.',
-        subtitleSegmentCount: 4,
+        transcriptText: [
+          'Why short videos fail is simple.',
+          'The opening hides the result.',
+          'Viewers leave before the payoff.',
+          'Show the result first.',
+        ].join(' '),
+        transcriptSegments: createSmartSliceTranscriptSegments(0, [
+          ['Why short videos fail is simple.', 200, 10_000],
+          ['The opening hides the result.', 10_000, 22_000],
+          ['Viewers leave before the payoff.', 22_000, 34_000],
+          ['Show the result first.', 34_000, 41_700],
+        ]),
+        transcriptSegmentCount: 4,
         publishabilityScore: 0.88,
         publishabilityGrade: 'excellent',
         platformReadinessScore: 0.84,
@@ -237,7 +248,8 @@ function createSmartSliceTaskFixture(rootDir, generatedAt, fixtureProfile) {
         ...(blocked
           ? {
               transcriptText: '',
-              subtitleSegmentCount: 0,
+              transcriptSegments: [],
+              transcriptSegmentCount: 0,
             }
           : {}),
       }),
@@ -250,9 +262,17 @@ function createSmartSliceTaskFixture(rootDir, generatedAt, fixtureProfile) {
         speechStartMs: 44200,
         speechEndMs: 79750,
         duration: 36,
-        transcriptText:
-          'The practical fix is to show the outcome first, then use one clear example to prove the point.',
-        subtitleSegmentCount: 3,
+        transcriptText: [
+          'The practical fix is to show the outcome first.',
+          'Use one clear example to prove the point.',
+          'Keep the setup and ending together.',
+        ].join(' '),
+        transcriptSegments: createSmartSliceTranscriptSegments(44_000, [
+          ['The practical fix is to show the outcome first.', 200, 12_000],
+          ['Use one clear example to prove the point.', 12_000, 25_000],
+          ['Keep the setup and ending together.', 25_000, 35_750],
+        ]),
+        transcriptSegmentCount: 3,
         publishabilityScore: 0.74,
         publishabilityGrade: 'good',
         platformReadinessScore: 0.76,
@@ -277,7 +297,8 @@ function createSmartSliceResultFixture({
   speechEndMs,
   duration,
   transcriptText,
-  subtitleSegmentCount,
+  transcriptSegments,
+  transcriptSegmentCount,
   publishabilityScore,
   publishabilityGrade,
   platformReadinessScore,
@@ -332,10 +353,19 @@ function createSmartSliceResultFixture({
     boundaryPaddingBeforeMs: Math.max(0, speechStartMs - sourceStartMs),
     boundaryPaddingAfterMs: Math.max(0, sourceEndMs - speechEndMs),
     transcriptText,
+    transcriptSegments,
     transcriptCoverageScore,
-    subtitleSegmentCount,
+    transcriptSegmentCount,
     speechContinuityGrade,
   };
+}
+
+function createSmartSliceTranscriptSegments(sourceStartMs, lines) {
+  return lines.map(([text, relativeStartMs, relativeEndMs]) => ({
+    startMs: sourceStartMs + relativeStartMs,
+    endMs: sourceStartMs + relativeEndMs,
+    text,
+  }));
 }
 
 function writeSmartSliceMediaFiles(rootDir) {
@@ -376,6 +406,42 @@ function writeFfmpegFixture(rootDir) {
         'windows-x86_64': {
           relativePath: sidecarRelativePath,
           binaryName: 'ffmpeg.exe',
+          integrity: {
+            sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+            byteSize: bytes.length,
+          },
+        },
+      },
+    },
+  );
+}
+
+function writeSpeechSidecarFixture(rootDir) {
+  const sidecarRelativePath = 'windows-x86_64/whisper-cli.exe';
+  const sidecarPath = path.join(
+    rootDir,
+    'packages/sdkwork-autocut-desktop/src-tauri/binaries',
+    sidecarRelativePath,
+  );
+  fs.mkdirSync(path.dirname(sidecarPath), { recursive: true });
+  fs.writeFileSync(sidecarPath, 'whisper cli version release fixture');
+  const bytes = fs.readFileSync(sidecarPath);
+  writeJson(
+    path.join(rootDir, 'packages/sdkwork-autocut-desktop/src-tauri/binaries/speech-transcription.toolchain.json'),
+    {
+      tool: 'whisper-cli',
+      contractVersion: '2026-05-08.speech-toolchain.v1',
+      bundledReady: false,
+      requiredBinary: 'whisper-cli',
+      license: {
+        name: 'whisper.cpp',
+        spdxExpression: 'MIT',
+        notice: 'Bundled whisper.cpp sidecars must keep their upstream license notices.',
+      },
+      platforms: {
+        'windows-x86_64': {
+          relativePath: sidecarRelativePath,
+          binaryName: 'whisper-cli.exe',
           integrity: {
             sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
             byteSize: bytes.length,
@@ -502,6 +568,7 @@ function createCommercialReadinessIfPossible(rootDir, generatedAt, releaseReady)
 
   const report = createAutoCutCommercialReleaseReadinessReport({
     rootDir,
+    evidencePath: path.join(rootDir, releaseEvidenceRelativePath),
     generatedAt,
   });
   return {

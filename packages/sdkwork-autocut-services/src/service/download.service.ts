@@ -2,6 +2,7 @@ import type { AppTask } from '@sdkwork/autocut-types';
 import { createAutoCutTimestamp } from './identity.service';
 
 export type ExtractedTextSegment = NonNullable<AppTask['extractedText']>[number];
+export type ExtractedTextDownloadSource = AppTask | readonly ExtractedTextSegment[] | undefined;
 
 const SMART_SLICE_TASK_EVIDENCE_SCHEMA_VERSION = '2026-05-06.autocut-smart-slice-task-evidence.v1';
 
@@ -42,12 +43,36 @@ export function downloadAutoCutUrl(url: string | undefined, filename: string) {
   document.body.removeChild(anchor);
 }
 
-export function formatExtractedText(extractedText: readonly ExtractedTextSegment[] | undefined) {
+function formatTranscriptTimestamp(milliseconds: number) {
+  const safeMilliseconds = Math.max(0, Math.round(milliseconds));
+  const hours = Math.floor(safeMilliseconds / 3_600_000);
+  const minutes = Math.floor((safeMilliseconds % 3_600_000) / 60_000);
+  const seconds = Math.floor((safeMilliseconds % 60_000) / 1_000);
+  const millis = safeMilliseconds % 1_000;
+
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
+}
+
+function isAppTaskExtractedTextSource(source: ExtractedTextDownloadSource): source is AppTask {
+  return Boolean(source && !Array.isArray(source) && typeof source === 'object' && 'id' in source);
+}
+
+export function formatExtractedText(source: ExtractedTextDownloadSource) {
+  if (isAppTaskExtractedTextSource(source) && source.transcriptSegments?.length) {
+    return source.transcriptSegments
+      .map((segment) => {
+        const speaker = segment.speaker?.trim() || 'Speaker';
+        return `[${formatTranscriptTimestamp(segment.startMs)} - ${formatTranscriptTimestamp(segment.endMs)}] ${speaker}: ${segment.text}`;
+      })
+      .join('\n');
+  }
+
+  const extractedText = isAppTaskExtractedTextSource(source) ? source.extractedText : source;
   return extractedText?.map((item) => `[${item.time}] ${item.speaker}: ${item.text}`).join('\n') ?? '';
 }
 
-export function downloadExtractedTextFile(extractedText: readonly ExtractedTextSegment[] | undefined, filename: string) {
-  const { url } = createAutoCutTextObjectUrl(formatExtractedText(extractedText));
+export function downloadExtractedTextFile(source: ExtractedTextDownloadSource, filename: string) {
+  const { url } = createAutoCutTextObjectUrl(formatExtractedText(source));
   try {
     downloadAutoCutUrl(url, filename);
   } finally {

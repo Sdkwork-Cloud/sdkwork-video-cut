@@ -1,4 +1,5 @@
 import {
+  AUTOCUT_TASK_TYPE,
   AUTOCUT_TASK_STATUS,
   type AppTask,
   type AutoCutTaskProcessResult,
@@ -7,6 +8,7 @@ import {
 import {
   addTask,
   createAutoCutId,
+  createAutoCutTaskName,
   createAutoCutTimestamp,
   failAutoCutUnsupportedNativeProcessingTask,
   validateAutoCutProcessingSource,
@@ -14,15 +16,16 @@ import {
 
 export async function processSubtitleTranslate(params: SubtitleTranslateParams): Promise<AutoCutTaskProcessResult> {
   validateAutoCutProcessingSource(params);
+  const createdAt = createAutoCutTimestamp();
 
   const newTask: AppTask = {
     id: createAutoCutId('newTask'),
-    name: params.file ? params.file.name : 'subtitle-translation.mp4',
-    type: '视频字幕翻译',
+    name: createAutoCutTaskName({ file: params.file, fallbackSourceName: 'subtitle-translation-source.mp4', createdAt }),
+    type: AUTOCUT_TASK_TYPE.subtitleTranslate,
     status: AUTOCUT_TASK_STATUS.pending,
     progress: 0,
     progressMessage: 'Subtitle translation task queued...',
-    createdAt: createAutoCutTimestamp(),
+    createdAt,
     ...(params.fileId ? { sourceFileId: params.fileId } : {}),
   };
 

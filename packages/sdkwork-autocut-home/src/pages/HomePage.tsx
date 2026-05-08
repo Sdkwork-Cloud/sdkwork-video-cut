@@ -16,9 +16,6 @@ import {
 } from "lucide-react";
 import { Card, Button } from "@sdkwork/autocut-commons";
 import {
-  createAutoCutTrustedLocalFile,
-} from "@sdkwork/autocut-commons";
-import {
   getTools,
   reportAutoCutDiagnostic,
   selectAutoCutTrustedLocalVideoFile,
@@ -67,10 +64,9 @@ export function HomePage() {
         return;
       }
 
-      const trustedFile = createAutoCutTrustedLocalFile(selectedVideo);
       navigate('/slicer', {
         state: {
-          initialFile: trustedFile,
+          initialTrustedFileSource: selectedVideo,
         },
       });
       return;

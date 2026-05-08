@@ -416,6 +416,22 @@ pass while reporting `bundledReady=false`, while release builds that claim a
 bundled FFmpeg must run it with `--require-bundled`. Frontend modules must use
 only the typed capability and probe flags returned by `native-host-client.service.ts`.
 Release evidence is standardized through `scripts/write-autocut-release-evidence.mjs`.
+
+The package-local speech transcription toolchain manifest is
+`packages/sdkwork-autocut-desktop/src-tauri/binaries/speech-transcription.toolchain.json`.
+It uses the same platform directory and integrity standard for the bundled
+`whisper-cli` sidecar. `scripts/prepare-autocut-speech-sidecar.mjs` is the only
+standard registration path and must be called with `--platform`, `--source`, and
+`--accept-license`. Placeholder zero integrity may exist only when
+`bundledReady=false`; release preflight with `--require-bundled` requires the
+speech sidecar as well as FFmpeg before Smart Slice can claim local STT readiness.
+The desktop `tauri:build` script must run the same speech sidecar
+`--check --require-bundled` gate before packaging. Whisper model files remain
+on-demand downloads: presets may declare the official Hugging Face URL and
+vetted Hugging Face mirror URLs, and native validation must reject untrusted
+hosts, HTTP, mismatched file names, paths outside
+`ggerganov/whisper.cpp/resolve/main/`, or bytes whose SHA-256 digest does not
+match the pinned model preset digest.
 It writes an ignored JSON artifact under `artifacts/release/` with installer
 digests, FFmpeg manifest state, preflight state, native smoke evidence, smart
 slice quality/media evidence, installer signature evidence, and the derived
@@ -456,15 +472,104 @@ certificate from a PFX file or Windows certificate-store thumbprint plus
 ready.
 Installer signing evidence is standardized through
 `scripts/write-autocut-installer-signature-evidence.mjs`.
+The evidence writer MUST accept `--platform` and use the canonical platform
+registry in `scripts/autocut-release-platforms.mjs`: Windows emits MSI/NSIS
+Authenticode evidence, Linux emits DEB/AppImage preview artifact digest
+evidence, and macOS emits DMG/app archive preview digest evidence with explicit
+signing and notarization blockers. Non-Windows platforms must not call
+Windows-only PowerShell Authenticode checks.
+Release evidence MUST discover installers through that same platform registry,
+so `windows-x86_64`, `linux-x86_64`, `macos-x86_64`, and `macos-aarch64` all
+produce platform-correct installer kind, byte-size, and SHA-256 records.
 Unsigned preview readiness is standardized through
 `scripts/check-autocut-preview-release-readiness.mjs`; it may allow unsigned
 installers only with an explicit `UNSIGNED_INSTALLERS_ACCEPTED_FOR_PREVIEW`
 warning after FFmpeg execution, native video slicing, smart slice quality/media,
 installer artifacts, and aggregate release smoke are ready. The final commercial
 hard gate is `scripts/check-autocut-commercial-release-readiness.mjs`. This gate
-must stay blocked until sidecar integrity, executable smoke, native smoke, smart
-slice quality/media evidence, installer signature, aggregate release smoke, and
-`ffmpegExecutionReady` are all true.
+must aggregate all four platform evidence files by default:
+`autocut-release-evidence-windows-x86_64.json`,
+`autocut-release-evidence-linux-x86_64.json`,
+`autocut-release-evidence-macos-x86_64.json`, and
+`autocut-release-evidence-macos-aarch64.json`. The `--evidence` option is only a
+single-platform diagnostic escape hatch and must not redefine the default formal
+commercial release gate. The default gate must stay blocked until every platform
+has sidecar integrity, executable smoke, native smoke, smart slice quality/media
+evidence, installer signature, aggregate release smoke, and
+`ffmpegExecutionReady` all true.
+Phase 1 multiplatform preview release is standardized by
+`.github/workflows/autocut-desktop-release.yml` and
+`scripts/check-autocut-multiplatform-release-readiness.mjs`. The workflow builds
+Windows x86_64 on `windows-latest`, Ubuntu/Linux x86_64 on `ubuntu-22.04`, and
+macOS Intel plus Apple Silicon on `macos-latest` using
+`x86_64-apple-darwin` and `aarch64-apple-darwin`. It must upload platform
+evidence files named `autocut-release-evidence-windows-x86_64.json`,
+`autocut-release-evidence-linux-x86_64.json`,
+`autocut-release-evidence-macos-x86_64.json`, and
+`autocut-release-evidence-macos-aarch64.json`. The aggregate
+`pnpm release:multiplatform-ready` gate must require all four platforms before
+a preview release is considered complete.
+Phase 2 commercial release keeps preview artifacts blocked until platform trust
+is real: Windows Authenticode, macOS Developer ID signing plus `spctl` and
+notarization, and Linux package signing/install smoke for both `.deb` and
+`.AppImage`.
+App manifest publication is standardized through
+`scripts/sync-autocut-app-manifest-release-evidence.mjs` and
+`scripts/check-autocut-app-manifest-release-readiness.mjs`. The gate must allow
+inactive preview manifests to keep planned GitHub Release packages disabled
+without fabricated checksums only when every disabled package states
+`metadata.commercialActivationRequired`. Once `publish.status` becomes
+`ACTIVE`, at least one install package must be enabled and every enabled package
+must include `checksumAlgorithm: "SHA-256"`, a real 64-character checksum,
+verified `metadata.trustEvidence`, and CycloneDX or SPDX `metadata.sbom`
+evidence. Generated placeholders and placeholder checksums are never
+commercially installable.
+The sync script must read the four platform `autocut-release-evidence-*.json`
+files plus `artifacts/release/autocut-sbom-evidence.json` and must be the only
+mechanism that copies release asset digests, package sizes, platform trust
+metadata, and SBOM metadata into `sdkwork.app.config.json`. CI preview jobs must
+use `--dry-run --allow-blocked` so commercial activation blockers are published
+without failing an unsigned preview release; `--activate-commercial` is reserved
+for the post-asset commercial activation step after real GitHub Release assets
+are uploaded.
+`scripts/write-autocut-package-sbom-files.mjs` creates the local per-package
+CycloneDX 1.6 SBOM files from workspace package manifests, `pnpm-lock.yaml`,
+desktop `Cargo.toml`, and desktop `Cargo.lock`; unresolved runtime npm
+dependency versions must block generation. `scripts/write-autocut-sbom-evidence.mjs`
+owns the SBOM evidence file consumed by the sync step. It must read real
+per-package SBOM files from `artifacts/release/sbom/`, accept CycloneDX JSON and
+SPDX JSON only, compute byte size and SHA-256 from the files, and block missing,
+empty, invalid, unknown-package, or duplicate SBOM inputs. Preview CI may
+publish a blocked SBOM evidence report with `--allow-blocked`, but application
+packages must not receive SBOM metadata until real files exist.
+`scripts/check-autocut-release-evidence-status.mjs` composes the release
+environment probe, four-platform release evidence, SBOM evidence, app manifest
+sync dry run, app manifest readiness, multiplatform preview readiness, and
+commercial release readiness into one domain-indexed blocker report. It must
+not create evidence or invent checksums, signatures, notarization, Linux trust,
+or SBOM metadata. Preview CI may publish the `--allow-blocked --json` report as
+diagnostic evidence, but a commercial release must run this gate without
+`--allow-blocked` before tag push or GitHub Release upload.
+`scripts/check-autocut-commercial-release-readiness.mjs` must directly verify
+the platform installer artifact policy as part of the final commercial gate:
+Windows requires MSI/NSIS, Linux requires DEB/AppImage, and each macOS
+architecture requires DMG/app archive evidence. Every installer entry must have
+a non-empty path, positive byte size, and real SHA-256 digest before commercial
+readiness can pass.
+`sdkwork.app.config.json` must mirror the active release line: media asset
+version, `release.currentVersion`, latest channel, release notes, and package
+URLs must match the current package version. Production security flags must
+require checksums, signatures, and SBOM evidence. Planned GitHub Release
+packages remain `enabled=false` until real release asset SHA-256 digests,
+platform trust evidence, and SBOM metadata are written; placeholder CDN
+packages must never be treated as installable commercial packages.
+The upstream SDKWork v3 validator remains the final post-asset validation
+because it requires checksums whenever `checksumRequired=true`; before assets
+exist, AutoCut must not fake checksums and instead relies on
+`pnpm release:app-manifest-ready` plus the inactive-preview contract above.
+Runtime media examples must be local/user-supplied only. The desktop CSP and
+shared services must not expose public demo media domains such as SoundHelix,
+Giphy, Picsum, or BigBuckBunny as app resources.
 This evidence is a release artifact, not frontend runtime state, and packages
 must not read it directly.
 

@@ -1,21 +1,32 @@
 import type {
   AppSettings,
   AutoCutAccountSettings,
+  AutoCutAppLocale,
   AutoCutModelPreset,
   AutoCutLlmRuntimeConfig,
   AutoCutLlmSettings,
   AutoCutNotificationSettings,
+  AutoCutSpeechTranscriptionProviderDefinition,
   AutoCutSpeechTranscriptionSettings,
   AutoCutWorkspaceSettings,
   ModelVendor,
 } from '@sdkwork/autocut-types';
-import { AUTOCUT_MODEL_VENDOR_PRESETS, getAutoCutModelPreset } from '@sdkwork/autocut-types';
+import {
+  AUTOCUT_DEFAULT_SPEECH_TRANSCRIPTION_PROVIDER_ID,
+  AUTOCUT_MODEL_VENDOR_PRESETS,
+  AUTOCUT_SPEECH_TRANSCRIPTION_LANGUAGE_OPTIONS,
+  AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS,
+  getAutoCutModelPreset,
+  getAutoCutSpeechTranscriptionProviderDefinition,
+} from '@sdkwork/autocut-types';
 import { dispatchAutoCutEvent } from './events.service';
 import { createAutoCutId, createAutoCutTimestamp } from './identity.service';
 import { readAutoCutStorage, writeAutoCutStorage } from './storage.service';
 import { randomDelay } from './timing';
 import { getAutoCutNativeHostClient } from './native-host-client.service';
 import { createAutoCutRuntimeScopedName, getAutoCutRuntimeEnvironment } from './runtime-environment.service';
+import { testAutoCutSpeechTranscriptionProvider } from './speech-transcription.service';
+import { initializeAutoCutI18n, normalizeAutoCutLocale } from './i18n.service';
 
 const INITIAL_SETTINGS: AppSettings = {
   account: {
@@ -27,7 +38,7 @@ const INITIAL_SETTINGS: AppSettings = {
     outputDirectory: '',
     hardwareAcceleration: true,
     completionSound: true,
-    language: 'zh',
+    language: 'zh-CN',
   },
   billing: {
     planName: 'Pro',
@@ -60,6 +71,7 @@ const INITIAL_SETTINGS: AppSettings = {
     usageReports: true,
   },
   speechTranscription: {
+    providerId: AUTOCUT_DEFAULT_SPEECH_TRANSCRIPTION_PROVIDER_ID,
     executablePath: '',
     modelPath: '',
     language: 'auto',
@@ -83,18 +95,26 @@ const transientAutoCutLlmApiKeys = new Map<string, string>();
 
 const AUTO_CUT_LLM_SECRET_NAME = 'default';
 
-type StoredAppSettings = Omit<Partial<AppSettings>, 'llm'> & {
+type StoredAutoCutWorkspaceSettings = Partial<Omit<AutoCutWorkspaceSettings, 'language'>> & {
+  language?: string;
+};
+
+type StoredAppSettings = Omit<Partial<AppSettings>, 'llm' | 'workspace'> & {
+  workspace?: StoredAutoCutWorkspaceSettings;
   llm?: Partial<AutoCutLlmSettings>;
   speechTranscription?: Partial<AutoCutSpeechTranscriptionSettings>;
 };
 
 function readSettings() {
   const storedSettings = readAutoCutStorage<StoredAppSettings>('settings', INITIAL_SETTINGS);
-  return normalizeAutoCutSettings(storedSettings);
+  const settings = normalizeAutoCutSettings(storedSettings);
+  initializeAutoCutI18n(settings.workspace.language);
+  return settings;
 }
 
 function writeSettings(settings: AppSettings) {
   const safeSettings = normalizeAutoCutSettings(settings);
+  initializeAutoCutI18n(safeSettings.workspace.language);
   writeAutoCutStorage('settings', safeSettings);
   dispatchAutoCutEvent('settingsUpdated', safeSettings);
   return safeSettings;
@@ -102,6 +122,22 @@ function writeSettings(settings: AppSettings) {
 
 function updateSettings(updater: (settings: AppSettings) => AppSettings) {
   return writeSettings(updater(readSettings()));
+}
+
+export function markAutoCutSpeechTranscriptionProviderTested(probe: {
+  ready: boolean;
+  diagnostics: string[];
+}) {
+  return updateSettings((settings) => ({
+    ...settings,
+    speechTranscription: sanitizeAutoCutSpeechTranscriptionSettings({
+      ...settings.speechTranscription,
+      lastTestedAt: createAutoCutTimestamp(),
+      lastProbeReady: probe.ready,
+      lastProbeDiagnostics: probe.diagnostics,
+    }),
+    updatedAt: createAutoCutTimestamp(),
+  }));
 }
 
 function normalizeAutoCutSettings(settings: StoredAppSettings): AppSettings {
@@ -116,6 +152,7 @@ function normalizeAutoCutSettings(settings: StoredAppSettings): AppSettings {
       ...INITIAL_SETTINGS.workspace,
       ...settings.workspace,
       outputDirectory: normalizeAutoCutOutputDirectory(settings.workspace?.outputDirectory),
+      language: normalizeAutoCutWorkspaceLanguage(settings.workspace?.language),
     },
     billing: {
       ...INITIAL_SETTINGS.billing,
@@ -142,24 +179,89 @@ function normalizeAutoCutSettings(settings: StoredAppSettings): AppSettings {
   };
 }
 
+type AutoCutSpeechTranscriptionSettingsInput = Partial<AutoCutSpeechTranscriptionSettings> & {
+  previousSpeechTranscription?: AutoCutSpeechTranscriptionSettings;
+};
+
 function sanitizeAutoCutSpeechTranscriptionSettings(
-  settings: Partial<AutoCutSpeechTranscriptionSettings>,
+  settings: AutoCutSpeechTranscriptionSettingsInput,
 ): AutoCutSpeechTranscriptionSettings {
-  const executablePath = normalizeOptionalText(settings.executablePath) ?? '';
-  const modelPath = normalizeOptionalText(settings.modelPath) ?? '';
-  const language = normalizeOptionalText(settings.language) ?? 'auto';
+  const previousSpeechTranscription = settings.previousSpeechTranscription;
+  const provider = getAutoCutSpeechTranscriptionProviderDefinition(settings.providerId);
+  const executablePath = provider.kind === 'local'
+    ? normalizeAutoCutSpeechTranscriptionExecutablePath(settings.executablePath)
+    : normalizeOptionalText(settings.executablePath) ?? '';
+  const modelPath = provider.kind === 'local'
+    ? normalizeAutoCutSpeechTranscriptionModelPath(settings.modelPath)
+    : normalizeOptionalText(settings.modelPath) ?? '';
+  const language = normalizeAutoCutSpeechTranscriptionLanguage(settings.language);
+  const providerApiSettings = sanitizeAutoCutSpeechTranscriptionApiSettings(settings, provider);
   const lastProbeDiagnostics = Array.isArray(settings.lastProbeDiagnostics)
     ? settings.lastProbeDiagnostics.filter((diagnostic): diagnostic is string => typeof diagnostic === 'string')
     : undefined;
+  const probeStateStillApplies = previousSpeechTranscription
+    ? createAutoCutSpeechTranscriptionProbeConfigKey({
+        providerId: provider.id,
+        executablePath,
+        modelPath,
+        language,
+        ...providerApiSettings,
+      }) === createAutoCutSpeechTranscriptionProbeConfigKey(previousSpeechTranscription)
+    : true;
 
   return {
+    providerId: provider.id,
     executablePath,
     modelPath,
     language,
-    configured: Boolean(executablePath && modelPath),
-    ...(settings.lastTestedAt ? { lastTestedAt: settings.lastTestedAt } : {}),
-    ...(typeof settings.lastProbeReady === 'boolean' ? { lastProbeReady: settings.lastProbeReady } : {}),
-    ...(lastProbeDiagnostics ? { lastProbeDiagnostics } : {}),
+    ...providerApiSettings,
+    configured: provider.kind === 'local'
+      ? Boolean(executablePath && modelPath)
+      : Boolean(providerApiSettings.apiKeyConfigured),
+    ...(probeStateStillApplies && settings.lastTestedAt ? { lastTestedAt: settings.lastTestedAt } : {}),
+    ...(probeStateStillApplies && typeof settings.lastProbeReady === 'boolean' ? { lastProbeReady: settings.lastProbeReady } : {}),
+    ...(probeStateStillApplies && lastProbeDiagnostics ? { lastProbeDiagnostics } : {}),
+  };
+}
+
+function createAutoCutSpeechTranscriptionProbeConfigKey(
+  settings: Pick<
+    AutoCutSpeechTranscriptionSettings,
+    'providerId' | 'executablePath' | 'modelPath' | 'language'
+  > & Partial<Pick<AutoCutSpeechTranscriptionSettings, 'modelVendor' | 'baseUrl' | 'model' | 'apiKeyConfigured'>>,
+) {
+  return JSON.stringify({
+    providerId: settings.providerId,
+    executablePath: settings.executablePath,
+    modelPath: settings.modelPath,
+    language: settings.language,
+    modelVendor: settings.modelVendor ?? null,
+    baseUrl: settings.baseUrl ?? null,
+    model: settings.model ?? null,
+    apiKeyConfigured: settings.apiKeyConfigured ?? null,
+  });
+}
+
+function sanitizeAutoCutSpeechTranscriptionApiSettings(
+  settings: Partial<AutoCutSpeechTranscriptionSettings>,
+  provider: AutoCutSpeechTranscriptionProviderDefinition,
+) {
+  if (provider.kind !== 'api') {
+    return {};
+  }
+
+  const modelVendor = isAutoCutModelVendor(settings.modelVendor)
+    ? settings.modelVendor
+    : provider.modelVendor ?? 'custom';
+  const preset = AUTOCUT_MODEL_VENDOR_PRESETS[modelVendor];
+  const baseUrl = normalizeAutoCutBaseUrl(settings.baseUrl ?? preset.baseUrl);
+  const model = normalizeAutoCutModel(settings.model ?? provider.defaultModel ?? preset.defaultModel);
+
+  return {
+    modelVendor,
+    baseUrl,
+    model,
+    apiKeyConfigured: Boolean(settings.apiKeyConfigured),
   };
 }
 
@@ -292,8 +394,90 @@ function normalizeOptionalText(value: string | undefined) {
   return normalized || undefined;
 }
 
+function normalizeAutoCutSpeechTranscriptionLanguage(value: string | undefined) {
+  const normalized = normalizeOptionalText(value) ?? 'auto';
+  const sanitized = normalized
+    .replace(/_/gu, '-')
+    .split('-')
+    .map((part, index) => index === 0 ? part.toLowerCase() : part.toUpperCase())
+    .join('-');
+  const supportedValues = new Set<string>(
+    AUTOCUT_SPEECH_TRANSCRIPTION_LANGUAGE_OPTIONS.map((option) => option.value),
+  );
+  if (supportedValues.has(sanitized)) {
+    return sanitized;
+  }
+
+  return /^[a-z]{2,3}(?:-[A-Z0-9]{2,8}){0,2}$/u.test(sanitized) ? sanitized : 'auto';
+}
+
+function normalizeAutoCutSpeechTranscriptionModelPath(value: string | undefined) {
+  const modelPath = normalizeOptionalText(value) ?? '';
+  if (!modelPath) {
+    return '';
+  }
+
+  assertAutoCutAbsoluteLocalModelFilePath(modelPath);
+  assertAutoCutSupportedSpeechModelExtension(modelPath);
+  return modelPath;
+}
+
+function normalizeAutoCutSpeechTranscriptionExecutablePath(value: string | undefined) {
+  const executablePath = normalizeOptionalText(value) ?? '';
+  if (!executablePath) {
+    return '';
+  }
+
+  assertAutoCutAbsoluteLocalExecutableFilePath(executablePath);
+  return executablePath;
+}
+
+function assertAutoCutAbsoluteLocalExecutableFilePath(executablePath: string) {
+  if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(executablePath)) {
+    throw new Error('AutoCut local speech-to-text executablePath must be an absolute local executable file path, not a URL.');
+  }
+  if (executablePath.endsWith('/') || executablePath.endsWith('\\')) {
+    throw new Error('AutoCut local speech-to-text executablePath must be an absolute local executable file path, not a directory.');
+  }
+  const isWindowsAbsolute = /^[a-z]:[\\/]/iu.test(executablePath) || /^\\\\[^\\/]+[\\/][^\\/]+/u.test(executablePath);
+  const isPosixAbsolute = executablePath.startsWith('/');
+  if (!isWindowsAbsolute && !isPosixAbsolute) {
+    throw new Error('AutoCut local speech-to-text executablePath must be an absolute local executable file path.');
+  }
+}
+
+function assertAutoCutAbsoluteLocalModelFilePath(modelPath: string) {
+  if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(modelPath)) {
+    throw new Error('AutoCut local speech-to-text modelPath must be an absolute local model file path, not a URL.');
+  }
+  if (modelPath.endsWith('/') || modelPath.endsWith('\\')) {
+    throw new Error('AutoCut local speech-to-text modelPath must be an absolute local model file path, not a directory.');
+  }
+  const isWindowsAbsolute = /^[a-z]:[\\/]/iu.test(modelPath) || /^\\\\[^\\/]+[\\/][^\\/]+/u.test(modelPath);
+  const isPosixAbsolute = modelPath.startsWith('/');
+  if (!isWindowsAbsolute && !isPosixAbsolute) {
+    throw new Error('AutoCut local speech-to-text modelPath must be an absolute local model file path.');
+  }
+}
+
+function assertAutoCutSupportedSpeechModelExtension(modelPath: string) {
+  const normalized = modelPath.toLowerCase();
+  const hasSupportedExtension = AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS.some((extension) =>
+    normalized.endsWith(extension),
+  );
+  if (!hasSupportedExtension) {
+    throw new Error(
+      `AutoCut local speech-to-text modelPath must use a supported model file extension: ${AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS.join(', ')}.`,
+    );
+  }
+}
+
 function normalizeAutoCutOutputDirectory(value: string | undefined) {
   return normalizeOptionalText(value) ?? '';
+}
+
+function normalizeAutoCutWorkspaceLanguage(value: string | undefined): AutoCutAppLocale {
+  return normalizeAutoCutLocale(value);
 }
 
 function clampAutoCutNumber(value: number | undefined, min: number, max: number, fallback: number) {
@@ -351,6 +535,7 @@ export async function saveAutoCutWorkspaceSettings(workspace: AutoCutWorkspaceSe
       ...settings.workspace,
       ...workspace,
       outputDirectory: normalizeAutoCutOutputDirectory(workspace.outputDirectory),
+      language: normalizeAutoCutWorkspaceLanguage(workspace.language),
     },
     updatedAt: createAutoCutTimestamp(),
   }));
@@ -380,7 +565,10 @@ export async function saveAutoCutSpeechTranscriptionSettings(
   await randomDelay(80, 140);
   return updateSettings((settings) => ({
     ...settings,
-    speechTranscription: sanitizeAutoCutSpeechTranscriptionSettings(speechTranscription),
+    speechTranscription: sanitizeAutoCutSpeechTranscriptionSettings({
+      ...speechTranscription,
+      previousSpeechTranscription: settings.speechTranscription,
+    }),
     updatedAt: createAutoCutTimestamp(),
   }));
 }
@@ -391,40 +579,7 @@ export async function resolveAutoCutSpeechTranscriptionRuntimeConfig(): Promise<
 }
 
 export async function testAutoCutSpeechTranscriptionToolchain() {
-  await randomDelay(20, 50);
-  const speechRuntimeConfig = await resolveAutoCutSpeechTranscriptionRuntimeConfig();
-  if (!speechRuntimeConfig.configured) {
-    throw new Error('AutoCut local speech-to-text requires both executablePath and modelPath.');
-  }
-
-  const nativeHostClient = getAutoCutNativeHostClient();
-  const capabilities = await nativeHostClient.getCapabilities();
-  if (!capabilities.speechTranscriptionProbeCommandReady) {
-    throw new Error('AutoCut local speech-to-text test requires the Tauri desktop host.');
-  }
-
-  const probe = await nativeHostClient.probeSpeechTranscription({
-    executablePath: speechRuntimeConfig.executablePath,
-    modelPath: speechRuntimeConfig.modelPath,
-    sourceKind: 'settings',
-  });
-
-  updateSettings((settings) => ({
-    ...settings,
-    speechTranscription: sanitizeAutoCutSpeechTranscriptionSettings({
-      ...settings.speechTranscription,
-      lastTestedAt: createAutoCutTimestamp(),
-      lastProbeReady: probe.ready,
-      lastProbeDiagnostics: probe.diagnostics,
-    }),
-    updatedAt: createAutoCutTimestamp(),
-  }));
-
-  if (!probe.ready) {
-    throw new Error(probe.diagnostics[0] ?? 'AutoCut local speech-to-text toolchain is not ready.');
-  }
-
-  return probe;
+  return testAutoCutSpeechTranscriptionProvider();
 }
 
 export async function saveAutoCutLlmSettings(llm: AutoCutLlmSettings): Promise<AppSettings> {

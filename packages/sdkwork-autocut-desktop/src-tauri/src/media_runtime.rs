@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,11 +9,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use reqwest::Url;
+use reqwest::blocking::Client;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::database_runtime;
 
@@ -21,12 +23,33 @@ const AUTOCUT_MEDIA_ROOT_DIR: &str = "media";
 const AUTOCUT_MEDIA_INPUT_DIR: &str = "inputs";
 const AUTOCUT_MEDIA_TASK_DIR: &str = "tasks";
 const AUTOCUT_MEDIA_TASK_OUTPUT_DIR: &str = "outputs";
+const AUTOCUT_MEDIA_TASK_COVER_DIR: &str = "cover";
+const AUTOCUT_MEDIA_MODEL_DIR: &str = "models";
+const AUTOCUT_MEDIA_SPEECH_MODEL_DIR: &str = "speech";
+const AUTOCUT_DEFAULT_SPEECH_TRANSCRIPTION_MODEL_FILE_NAME: &str =
+    "ggml-large-v3-turbo-q5_0.bin";
+pub(crate) const AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT: &str =
+    "autocut-speech-transcription-model-download-progress";
 const AUTOCUT_FFMPEG_TOOLCHAIN_MANIFEST_JSON: &str =
     include_str!("../binaries/ffmpeg.toolchain.json");
 const AUTOCUT_FFMPEG_TOOLCHAIN_MANIFEST_FILE_NAME: &str = "ffmpeg.toolchain.json";
+const AUTOCUT_SPEECH_TOOLCHAIN_MANIFEST_JSON: &str =
+    include_str!("../binaries/speech-transcription.toolchain.json");
+const AUTOCUT_SPEECH_TOOLCHAIN_MANIFEST_FILE_NAME: &str =
+    "speech-transcription.toolchain.json";
 const DEFAULT_FFMPEG_EXECUTABLE: &str = "ffmpeg";
 const SUPPORTED_VIDEO_FILE_DIALOG_EXTENSIONS: &[&str] =
     &["mp4", "mov", "mkv", "webm", "avi", "flv", "m4v"];
+const SUPPORTED_AUDIO_FILE_DIALOG_EXTENSIONS: &[&str] =
+    &["mp3", "wav", "flac", "aac", "m4a", "ogg"];
+pub(crate) const SUPPORTED_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS: &[&str] =
+    &["bin", "gguf", "onnx", "pt", "safetensors"];
+const MAX_SPEECH_TRANSCRIPT_JSON_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SPEECH_TRANSCRIPT_SEGMENTS: usize = 20_000;
+pub(crate) const MIN_SPEECH_TRANSCRIPTION_MODEL_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const TRUSTED_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_HOSTS: &[&str] =
+    &["huggingface.co", "hf-mirror.com"];
 const SUPPORTED_AUDIO_FORMATS: &[&str] = &["mp3", "wav", "flac", "aac"];
 const SUPPORTED_VIDEO_GIF_FPS: &[&str] = &["10", "15", "24"];
 const SUPPORTED_VIDEO_GIF_RESOLUTIONS: &[(&str, i64)] =
@@ -67,6 +90,8 @@ const OPS_STAGE_TYPE_VIDEO_CONVERT: i64 = 4;
 const OPS_STAGE_TYPE_VIDEO_ENHANCE: i64 = 5;
 const OPS_STAGE_TYPE_VIDEO_SLICE: i64 = 6;
 const OPS_STAGE_TYPE_SPEECH_TRANSCRIPTION: i64 = 7;
+const VIDEO_SLICE_BURNED_SUBTITLE_FORCE_STYLE: &str =
+    "Alignment=2,MarginV=36,Fontsize=24,Outline=2,Shadow=1";
 const OPS_STATUS_PROCESSING: i64 = 1;
 const OPS_STATUS_COMPLETED: i64 = 2;
 const OPS_STATUS_FAILED: i64 = 3;
@@ -130,7 +155,8 @@ pub struct AutoCutFfmpegToolchain {
 struct AutoCutFfmpegToolchainManifest {
     tool: String,
     contract_version: String,
-    bundled_ready: bool,
+    #[serde(rename = "bundledReady")]
+    _bundled_ready: bool,
     required_binary: String,
     license: AutoCutFfmpegToolchainLicense,
     platforms: std::collections::HashMap<String, AutoCutFfmpegPlatformToolchain>,
@@ -144,19 +170,39 @@ struct AutoCutFfmpegToolchainLicense {
     notice: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AutoCutFfmpegPlatformToolchain {
     relative_path: String,
     binary_name: String,
     integrity: AutoCutFfmpegPlatformIntegrity,
+    #[serde(default)]
+    companion_files: Vec<AutoCutToolchainCompanionFile>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AutoCutFfmpegPlatformIntegrity {
     sha256: String,
     byte_size: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutoCutToolchainCompanionFile {
+    relative_path: String,
+    integrity: AutoCutFfmpegPlatformIntegrity,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutoCutSpeechToolchainManifest {
+    tool: String,
+    contract_version: String,
+    bundled_ready: bool,
+    required_binary: String,
+    license: AutoCutFfmpegToolchainLicense,
+    platforms: std::collections::HashMap<String, AutoCutFfmpegPlatformToolchain>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -187,6 +233,40 @@ pub struct AutoCutLocalMediaFileDescription {
     pub media_type: String,
     pub mime_type: String,
     pub duration_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoCutLocalMediaFileSelectRequest {
+    pub media_types: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoCutLocalMediaPreviewDirectoryRequest {
+    pub directory_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoCutLocalMediaPreviewDirectoryResult {
+    pub directory_path: String,
+    pub allowed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoCutNativeArtifactInFolderRequest {
+    pub artifact_path: String,
+    pub task_output_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoCutNativeArtifactInFolderResult {
+    pub artifact_path: String,
+    pub containing_directory_path: String,
+    pub opened: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -233,12 +313,35 @@ pub struct AutoCutVideoGifResult {
     pub ffmpeg_executable: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoCutVideoSliceClipRequest {
     pub start_ms: i64,
     pub duration_ms: i64,
     pub label: String,
+    pub output_file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_start_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_end_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speech_start_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speech_end_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary_padding_before_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary_padding_after_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_segments: Option<Vec<AutoCutSpeechTranscriptionSegment>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_segment_count: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_coverage_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speech_continuity_grade: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -280,6 +383,28 @@ pub struct AutoCutVideoSliceArtifactResult {
     pub start_ms: i64,
     pub duration_ms: i64,
     pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_start_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_end_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speech_start_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speech_end_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boundary_padding_before_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boundary_padding_after_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_segments: Option<Vec<AutoCutSpeechTranscriptionSegment>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_segment_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_coverage_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speech_continuity_grade: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -305,10 +430,12 @@ pub struct AutoCutSpeechTranscriptionSegment {
 #[serde(rename_all = "camelCase")]
 pub struct AutoCutSpeechTranscriptionRequest {
     pub asset_uuid: String,
+    pub provider_id: Option<String>,
     pub language: Option<String>,
     pub output_root_dir: Option<String>,
     pub executable_path: Option<String>,
     pub model_path: Option<String>,
+    pub workflow_purpose: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -329,26 +456,75 @@ pub struct AutoCutSpeechTranscriptionResult {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoCutSpeechTranscriptionProbeRequest {
+    pub provider_id: Option<String>,
     pub executable_path: Option<String>,
     pub model_path: Option<String>,
     pub source_kind: Option<String>,
+    pub output_root_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoCutSpeechTranscriptionProbe {
     pub ready: bool,
+    pub executable_ready: bool,
+    pub model_ready: bool,
     pub executable_path: String,
     pub model_path: String,
     pub source_kind: String,
     pub diagnostics: Vec<String>,
     pub version_line: Option<String>,
+    pub default_executable_directory: String,
+    pub default_executable_path: String,
+    pub default_model_directory: String,
+    pub default_model_path: String,
+    pub executable_strategy: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoCutSpeechTranscriptionFileSelectRequest {
     pub kind: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoCutSpeechTranscriptionModelDownloadRequest {
+    pub provider_id: String,
+    pub preset_id: String,
+    pub file_name: String,
+    pub url: String,
+    pub mirror_urls: Option<Vec<String>>,
+    pub sha256: String,
+    pub output_root_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoCutSpeechTranscriptionModelDownloadResult {
+    pub provider_id: String,
+    pub preset_id: String,
+    pub file_name: String,
+    pub model_path: String,
+    pub byte_size: u64,
+    pub downloaded: bool,
+    pub source_url: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoCutSpeechTranscriptionModelDownloadProgressEvent {
+    pub provider_id: String,
+    pub preset_id: String,
+    pub file_name: String,
+    pub phase: String,
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub progress: Option<u8>,
+    pub model_path: Option<String>,
+    pub source_url: Option<String>,
+    pub error_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -552,13 +728,38 @@ struct AutoCutVideoSliceOperationOutput {
     subtitle_output: Option<AutoCutMediaOperationOutput>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AutoCutVideoSliceEncoderCandidate {
+    label: String,
+    video_codec: String,
+    pre_input_args: Vec<String>,
+    encoder_args: Vec<String>,
+    filter_chain_suffix: Option<String>,
+    requires_hardware: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AutoCutVideoSliceEncoderAttemptDiagnostic {
+    label: String,
+    video_codec: String,
+    status: String,
+    stderr_tail: String,
+}
+
 #[derive(Debug, Clone)]
 struct AutoCutSpeechToolchain {
     executable: String,
     model_path: String,
     source_kind: String,
+    executable_ready: bool,
+    model_ready: bool,
     ready: bool,
     diagnostics: Vec<String>,
+    default_executable_directory: String,
+    default_executable_path: String,
+    default_model_directory: String,
+    default_model_path: String,
+    executable_strategy: String,
 }
 
 #[derive(Debug, Clone)]
@@ -673,7 +874,48 @@ pub fn describe_autocut_local_media_file(
     describe_autocut_local_media_file_from_path(Path::new(&request.source_path), Some(&toolchain))
 }
 
-pub fn select_autocut_local_video_file(app: &AppHandle) -> Result<Option<AutoCutLocalMediaFileDescription>, String> {
+pub fn select_autocut_local_media_file(
+    app: &AppHandle,
+    request: AutoCutLocalMediaFileSelectRequest,
+) -> Result<Option<AutoCutLocalMediaFileDescription>, String> {
+    let requested_media_types = normalize_autocut_media_file_select_types(&request.media_types)?;
+    let mut dialog = rfd::FileDialog::new().set_title("Select audio or video file");
+    if requested_media_types
+        .iter()
+        .any(|media_type| media_type == "video")
+    {
+        dialog = dialog.add_filter("Video", SUPPORTED_VIDEO_FILE_DIALOG_EXTENSIONS);
+    }
+    if requested_media_types
+        .iter()
+        .any(|media_type| media_type == "audio")
+    {
+        dialog = dialog.add_filter("Audio", SUPPORTED_AUDIO_FILE_DIALOG_EXTENSIONS);
+    }
+
+    let Some(source_path) = dialog.pick_file() else {
+        return Ok(None);
+    };
+
+    let toolchain = resolve_autocut_ffmpeg_toolchain_for_app(app);
+    let description = describe_autocut_local_media_file_from_path(&source_path, Some(&toolchain))?;
+    if !requested_media_types
+        .iter()
+        .any(|media_type| media_type == &description.media_type)
+    {
+        return Err(format!(
+            "selected AutoCut source file must be one of: {}",
+            requested_media_types.join(", ")
+        ));
+    }
+    allow_autocut_asset_protocol_file_parent_scope(app, Path::new(&description.source_path))?;
+
+    Ok(Some(description))
+}
+
+pub fn select_autocut_local_video_file(
+    app: &AppHandle,
+) -> Result<Option<AutoCutLocalMediaFileDescription>, String> {
     let Some(source_path) = rfd::FileDialog::new()
         .set_title("Select video file")
         .add_filter("Video", SUPPORTED_VIDEO_FILE_DIALOG_EXTENSIONS)
@@ -687,11 +929,12 @@ pub fn select_autocut_local_video_file(app: &AppHandle) -> Result<Option<AutoCut
     if description.media_type != "video" {
         return Err("selected AutoCut source file must be a video file".to_string());
     }
+    allow_autocut_asset_protocol_file_parent_scope(app, Path::new(&description.source_path))?;
 
     Ok(Some(description))
 }
 
-pub fn select_autocut_local_directory() -> Result<Option<String>, String> {
+pub fn select_autocut_local_directory(app: &AppHandle) -> Result<Option<String>, String> {
     let Some(directory_path) = rfd::FileDialog::new()
         .set_title("Select AutoCut directory")
         .pick_folder()
@@ -706,10 +949,58 @@ pub fn select_autocut_local_directory() -> Result<Option<String>, String> {
     fs::create_dir_all(&directory_path)
         .map_err(|error| format!("create selected AutoCut directory failed: {error}"))?;
 
-    directory_path
+    let directory_path = directory_path
         .canonicalize()
-        .map(|path| Some(path.display().to_string()))
-        .map_err(|error| format!("canonicalize selected AutoCut directory failed: {error}"))
+        .map_err(|error| format!("canonicalize selected AutoCut directory failed: {error}"))?;
+    allow_autocut_asset_protocol_directory_scope(app, &directory_path)?;
+
+    Ok(Some(directory_path.display().to_string()))
+}
+
+pub fn allow_autocut_local_media_preview_directory(
+    app: &AppHandle,
+    request: AutoCutLocalMediaPreviewDirectoryRequest,
+) -> Result<AutoCutLocalMediaPreviewDirectoryResult, String> {
+    let directory_path = ensure_autocut_preview_directory_path(Path::new(&request.directory_path))?;
+    allow_autocut_asset_protocol_directory_scope(app, &directory_path)?;
+
+    Ok(AutoCutLocalMediaPreviewDirectoryResult {
+        directory_path: directory_path.display().to_string(),
+        allowed: true,
+    })
+}
+
+pub fn open_autocut_artifact_in_folder(
+    request: AutoCutNativeArtifactInFolderRequest,
+) -> Result<AutoCutNativeArtifactInFolderResult, String> {
+    let artifact_path =
+        ensure_existing_autocut_artifact_file_path(Path::new(&request.artifact_path))?;
+    if let Some(task_output_dir) = request.task_output_dir.as_deref() {
+        let task_output_dir =
+            ensure_existing_autocut_preview_directory_path(Path::new(task_output_dir))?;
+        if !artifact_path.starts_with(&task_output_dir) {
+            return Err(format!(
+                "AutoCut generated artifact path is outside its task output directory: {}",
+                artifact_path.display()
+            ));
+        }
+    }
+    let containing_directory_path = artifact_path
+        .parent()
+        .ok_or_else(|| {
+            format!(
+                "AutoCut generated artifact has no containing directory: {}",
+                artifact_path.display()
+            )
+        })?
+        .to_path_buf();
+    spawn_autocut_artifact_folder_reveal_command(&artifact_path, &containing_directory_path)?;
+
+    Ok(AutoCutNativeArtifactInFolderResult {
+        artifact_path: artifact_path.display().to_string(),
+        containing_directory_path: containing_directory_path.display().to_string(),
+        opened: true,
+    })
 }
 
 pub fn select_autocut_speech_transcription_file(
@@ -723,16 +1014,21 @@ pub fn select_autocut_speech_transcription_file(
     } else if kind == "model" {
         rfd::FileDialog::new()
             .set_title("Select local speech transcription model")
-            .add_filter("Model", &["bin", "gguf", "onnx", "pt", "safetensors"])
+            .add_filter("Model", SUPPORTED_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS)
     } else {
-        return Err("AutoCut speech transcription file chooser kind must be executable or model".to_string());
+        return Err(
+            "AutoCut speech transcription file chooser kind must be executable or model"
+                .to_string(),
+        );
     };
 
     let Some(path) = dialog.pick_file() else {
         return Ok(None);
     };
     if !path.is_absolute() {
-        return Err("selected AutoCut speech transcription file must be an absolute path".to_string());
+        return Err(
+            "selected AutoCut speech transcription file must be an absolute path".to_string(),
+        );
     }
     if !path.is_file() {
         return Err(format!(
@@ -744,20 +1040,65 @@ pub fn select_autocut_speech_transcription_file(
     Ok(Some(path.display().to_string()))
 }
 
+pub fn download_autocut_speech_transcription_model(
+    app: &AppHandle,
+    request: AutoCutSpeechTranscriptionModelDownloadRequest,
+) -> Result<AutoCutSpeechTranscriptionModelDownloadResult, String> {
+    let root = autocut_media_root_for_request(app, request.output_root_dir.as_deref())?;
+    download_autocut_speech_transcription_model_in_root(&root, request, Some(app))
+}
+
 pub fn probe_autocut_speech_transcription(
+    app: &AppHandle,
+    request: AutoCutSpeechTranscriptionProbeRequest,
+) -> AutoCutSpeechTranscriptionProbe {
+    let default_model_path =
+        autocut_default_speech_model_path_for_request(app, request.output_root_dir.as_deref()).ok();
+    let default_executable_path = autocut_default_speech_executable_path(app).ok();
+    let toolchain = resolve_autocut_speech_toolchain_for_app_request(
+        Some(app),
+        request.executable_path.as_deref(),
+        request.model_path.as_deref(),
+        request.source_kind.as_deref(),
+        default_executable_path.as_deref(),
+        default_model_path.as_deref(),
+    );
+    probe_autocut_speech_transcription_with_toolchain(request, toolchain)
+}
+
+#[cfg(test)]
+fn probe_autocut_speech_transcription_for_request(
     request: AutoCutSpeechTranscriptionProbeRequest,
 ) -> AutoCutSpeechTranscriptionProbe {
     let toolchain = resolve_autocut_speech_toolchain_for_request(
         request.executable_path.as_deref(),
         request.model_path.as_deref(),
         request.source_kind.as_deref(),
+        None,
+        None,
     );
+    probe_autocut_speech_transcription_with_toolchain(request, toolchain)
+}
+
+fn probe_autocut_speech_transcription_with_toolchain(
+    request: AutoCutSpeechTranscriptionProbeRequest,
+    toolchain: AutoCutSpeechToolchain,
+) -> AutoCutSpeechTranscriptionProbe {
     let mut diagnostics = toolchain.diagnostics.clone();
+    if let Some(provider_id) = normalize_path_text(request.provider_id.as_deref()) {
+        if !matches!(provider_id.as_str(), "local-whisper-cli") {
+            diagnostics.push(format!(
+                "AutoCut native speech transcription probe only supports local providers, got providerId {provider_id}"
+            ));
+        }
+    }
     let version_line = if toolchain.ready {
         match Command::new(&toolchain.executable).arg("--help").output() {
             Ok(output) => read_speech_toolchain_version_line(&output),
             Err(error) => {
-                diagnostics.push(format!("AutoCut speech transcription probe could not execute help: {error}"));
+                diagnostics.push(format!(
+                    "AutoCut speech transcription probe could not execute help: {error}"
+                ));
                 None
             }
         }
@@ -767,11 +1108,18 @@ pub fn probe_autocut_speech_transcription(
 
     AutoCutSpeechTranscriptionProbe {
         ready: diagnostics.is_empty() && toolchain.ready,
+        executable_ready: toolchain.executable_ready,
+        model_ready: toolchain.model_ready,
         executable_path: toolchain.executable,
         model_path: toolchain.model_path,
         source_kind: toolchain.source_kind,
         diagnostics,
         version_line,
+        default_executable_directory: toolchain.default_executable_directory,
+        default_executable_path: toolchain.default_executable_path,
+        default_model_directory: toolchain.default_model_directory,
+        default_model_path: toolchain.default_model_path,
+        executable_strategy: toolchain.executable_strategy,
     }
 }
 
@@ -830,10 +1178,13 @@ pub fn transcribe_autocut_media_from_asset(
     let connection = database_runtime::open_autocut_database_connection(app)?;
     let media_root = autocut_media_root_for_request(app, request.output_root_dir.as_deref())?;
     let ffmpeg_toolchain = resolve_autocut_ffmpeg_toolchain_for_app(app);
-    let speech_toolchain = resolve_autocut_speech_toolchain_for_request(
+    let speech_toolchain = resolve_autocut_speech_toolchain_for_app_request(
+        Some(app),
         request.executable_path.as_deref(),
         request.model_path.as_deref(),
         Some("settings"),
+        autocut_default_speech_executable_path(app).ok().as_deref(),
+        None,
     );
     transcribe_autocut_media_from_asset_in_root_with_toolchain(
         &connection,
@@ -904,7 +1255,9 @@ pub fn list_autocut_native_tasks(
 ) -> Result<Vec<AutoCutNativeTaskSnapshot>, String> {
     let _command_contract = "autocut_list_native_tasks";
     let connection = database_runtime::open_autocut_database_connection(app)?;
-    list_autocut_native_tasks_on_connection(&connection, request)
+    let snapshots = list_autocut_native_tasks_on_connection(&connection, request)?;
+    allow_autocut_native_task_preview_scopes(app, &snapshots);
+    Ok(snapshots)
 }
 
 pub fn cancel_autocut_native_task(
@@ -953,26 +1306,258 @@ fn autocut_media_root_for_request(
     app: &AppHandle,
     output_root_dir: Option<&str>,
 ) -> Result<PathBuf, String> {
-    let Some(output_root_dir) = output_root_dir.map(str::trim).filter(|value| !value.is_empty()) else {
-        return autocut_media_root(app);
+    let media_root = match output_root_dir
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(output_root_dir) => {
+            let output_root = PathBuf::from(output_root_dir);
+            if !output_root.is_absolute() {
+                return Err("AutoCut outputRootDir must be an absolute directory path".to_string());
+            }
+            fs::create_dir_all(&output_root).map_err(|error| {
+                format!("create configured AutoCut output directory failed: {error}")
+            })?;
+            output_root.canonicalize().map_err(|error| {
+                format!("canonicalize configured AutoCut output directory failed: {error}")
+            })?
+        }
+        None => autocut_media_root(app)?,
     };
+    allow_autocut_asset_protocol_directory_scope(app, &media_root)?;
+    Ok(media_root)
+}
 
-    let output_root = PathBuf::from(output_root_dir);
-    if !output_root.is_absolute() {
-        return Err("AutoCut outputRootDir must be an absolute directory path".to_string());
-    }
-    fs::create_dir_all(&output_root)
-        .map_err(|error| format!("create configured AutoCut output directory failed: {error}"))?;
-    output_root
+fn autocut_default_speech_model_path_for_request(
+    app: &AppHandle,
+    output_root_dir: Option<&str>,
+) -> Result<PathBuf, String> {
+    let model_directory = autocut_media_root_for_request(app, output_root_dir)?
+        .join(AUTOCUT_MEDIA_MODEL_DIR)
+        .join(AUTOCUT_MEDIA_SPEECH_MODEL_DIR);
+    fs::create_dir_all(&model_directory)
+        .map_err(|error| format!("create AutoCut speech model directory failed: {error}"))?;
+    let canonical_model_directory = model_directory
         .canonicalize()
-        .map_err(|error| format!("canonicalize configured AutoCut output directory failed: {error}"))
+        .map_err(|error| format!("canonicalize AutoCut speech model directory failed: {error}"))?;
+    Ok(canonical_model_directory.join(AUTOCUT_DEFAULT_SPEECH_TRANSCRIPTION_MODEL_FILE_NAME))
+}
+
+fn autocut_default_speech_executable_path(app: &AppHandle) -> Result<PathBuf, String> {
+    resolve_autocut_default_bundled_speech_executable_path(
+        &autocut_speech_toolchain_manifest_candidate_paths(Some(app)),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
+    .ok_or_else(|| "AutoCut speech toolchain manifest has no default bundled whisper-cli sidecar target for this platform.".to_string())
+}
+
+fn ensure_autocut_preview_directory_path(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("AutoCut local media preview directory must be an absolute path".to_string());
+    }
+
+    fs::create_dir_all(path)
+        .map_err(|error| format!("create AutoCut local media preview directory failed: {error}"))?;
+    let directory_path = path.canonicalize().map_err(|error| {
+        format!("canonicalize AutoCut local media preview directory failed: {error}")
+    })?;
+    if !directory_path.is_dir() {
+        return Err(format!(
+            "AutoCut local media preview directory is not a directory: {}",
+            directory_path.display()
+        ));
+    }
+
+    Ok(directory_path)
+}
+
+fn ensure_existing_autocut_preview_directory_path(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("AutoCut local media preview directory must be an absolute path".to_string());
+    }
+
+    let directory_path = path.canonicalize().map_err(|error| {
+        format!("canonicalize AutoCut local media preview directory failed: {error}")
+    })?;
+    if !directory_path.is_dir() {
+        return Err(format!(
+            "AutoCut local media preview directory is not a directory: {}",
+            directory_path.display()
+        ));
+    }
+
+    Ok(directory_path)
+}
+
+fn ensure_existing_autocut_artifact_file_path(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("AutoCut generated artifact path must be an absolute path".to_string());
+    }
+
+    let artifact_path = path
+        .canonicalize()
+        .map_err(|error| format!("canonicalize AutoCut generated artifact path failed: {error}"))?;
+    if !artifact_path.is_file() {
+        return Err(format!(
+            "AutoCut generated artifact path is not a file: {}",
+            artifact_path.display()
+        ));
+    }
+
+    Ok(artifact_path)
+}
+
+fn spawn_autocut_artifact_folder_reveal_command(
+    artifact_path: &Path,
+    containing_directory_path: &Path,
+) -> Result<(), String> {
+    let mut command =
+        build_autocut_artifact_folder_reveal_command(artifact_path, containing_directory_path)?;
+    command.spawn().map(|_| ()).map_err(|error| {
+        format!("open AutoCut generated artifact containing folder failed: {error}")
+    })
+}
+
+fn build_autocut_artifact_folder_reveal_command(
+    artifact_path: &Path,
+    containing_directory_path: &Path,
+) -> Result<Command, String> {
+    if cfg!(target_os = "windows") {
+        let mut command = Command::new("explorer");
+        command.arg(format!("/select,{}", artifact_path.display()));
+        return Ok(command);
+    }
+    if cfg!(target_os = "macos") {
+        let mut command = Command::new("open");
+        command.arg("-R");
+        command.arg(artifact_path);
+        return Ok(command);
+    }
+    if cfg!(target_os = "linux") {
+        let mut command = Command::new("xdg-open");
+        command.arg(containing_directory_path);
+        return Ok(command);
+    }
+
+    Err("AutoCut generated artifact folder opening is not supported on this platform".to_string())
+}
+
+fn allow_autocut_asset_protocol_file_parent_scope(
+    app: &AppHandle,
+    file_path: &Path,
+) -> Result<(), String> {
+    let parent = file_path.parent().ok_or_else(|| {
+        format!(
+            "AutoCut local media preview file has no parent directory: {}",
+            file_path.display()
+        )
+    })?;
+    allow_autocut_asset_protocol_directory_scope(app, parent)
+}
+
+fn allow_autocut_asset_protocol_directory_scope(
+    app: &AppHandle,
+    directory_path: &Path,
+) -> Result<(), String> {
+    let directory_path = ensure_autocut_preview_directory_path(directory_path)?;
+    let scopes = app.state::<tauri::scope::Scopes>();
+    scopes
+        .allow_directory(directory_path, true)
+        .map_err(|error| format!("grant AutoCut asset protocol preview directory failed: {error}"))
+}
+
+fn allow_existing_autocut_asset_protocol_directory_scope(
+    app: &AppHandle,
+    directory_path: &Path,
+) -> Result<(), String> {
+    let directory_path = ensure_existing_autocut_preview_directory_path(directory_path)?;
+    let scopes = app.state::<tauri::scope::Scopes>();
+    scopes
+        .allow_directory(directory_path, true)
+        .map_err(|error| format!("grant AutoCut asset protocol preview directory failed: {error}"))
+}
+
+fn allow_autocut_native_task_preview_scopes(
+    app: &AppHandle,
+    snapshots: &[AutoCutNativeTaskSnapshot],
+) {
+    for directory_path in collect_autocut_native_task_preview_directories(snapshots) {
+        if allow_existing_autocut_asset_protocol_directory_scope(app, &directory_path).is_err() {
+            continue;
+        }
+    }
+}
+
+fn collect_autocut_native_task_preview_directories(
+    snapshots: &[AutoCutNativeTaskSnapshot],
+) -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+    for snapshot in snapshots {
+        for source in [&snapshot.input_json, &snapshot.output_json] {
+            let Some(directory) = read_autocut_task_output_root_dir(source, &snapshot.uuid) else {
+                continue;
+            };
+            if directories.iter().any(|existing| existing == &directory) {
+                continue;
+            }
+            directories.push(directory);
+        }
+    }
+
+    directories
+}
+
+fn read_autocut_task_output_root_dir(json_source: &str, task_uuid: &str) -> Option<PathBuf> {
+    let value = serde_json::from_str::<Value>(json_source).ok()?;
+    let task_output_dir = value
+        .get("taskOutputDir")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    if let Some(task_output_dir) = task_output_dir {
+        if task_output_dir.is_absolute()
+            && task_output_dir.file_name().and_then(|name| name.to_str())
+                == Some(AUTOCUT_MEDIA_TASK_OUTPUT_DIR)
+            && task_output_dir
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                == Some(task_uuid)
+            && task_output_dir
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                == Some(AUTOCUT_MEDIA_TASK_DIR)
+        {
+            return task_output_dir
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+                .filter(|root| root.is_absolute())
+                .map(Path::to_path_buf);
+        }
+    }
+
+    value
+        .get("outputRootDir")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
 }
 
 fn resolve_autocut_request_media_root(
     default_root: &Path,
     output_root_dir: Option<&str>,
 ) -> Result<PathBuf, String> {
-    let Some(output_root_dir) = output_root_dir.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(output_root_dir) = output_root_dir
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
         return default_root
             .canonicalize()
             .map_err(|error| format!("canonicalize AutoCut media directory failed: {error}"));
@@ -984,9 +1569,10 @@ fn resolve_autocut_request_media_root(
     }
     fs::create_dir_all(&output_root)
         .map_err(|error| format!("create configured AutoCut output directory failed: {error}"))?;
-    output_root
-        .canonicalize()
-        .map_err(|error| format!("canonicalize configured AutoCut output directory failed: {error}"))
+    let output_root = output_root.canonicalize().map_err(|error| {
+        format!("canonicalize configured AutoCut output directory failed: {error}")
+    })?;
+    Ok(output_root)
 }
 
 fn autocut_operation_output_root_dir_payload(
@@ -1000,13 +1586,31 @@ fn autocut_operation_output_root_dir_payload(
 }
 
 fn insert_autocut_output_root_dir_payload(input_json: &mut Value, output_root_dir: Option<&str>) {
-    let Some(output_root_dir) = output_root_dir.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(output_root_dir) = output_root_dir
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
         return;
     };
 
     if let Value::Object(input) = input_json {
         input.insert("outputRootDir".to_string(), json!(output_root_dir));
     }
+}
+
+fn create_autocut_task_input_json(asset: &AutoCutRegisteredMediaAsset, payload: Value) -> Value {
+    let input = match payload {
+        Value::Object(input) => input,
+        other => {
+            let mut input = Map::new();
+            input.insert("details".to_string(), other);
+            input
+        }
+    };
+    let mut input = input;
+    input.insert("assetUuid".to_string(), json!(asset.uuid.clone()));
+    input.insert("sourceName".to_string(), json!(asset.name.clone()));
+    Value::Object(input)
 }
 
 fn resolve_autocut_ffmpeg_toolchain_for_app(app: &AppHandle) -> AutoCutFfmpegToolchain {
@@ -1165,7 +1769,8 @@ fn resolve_autocut_ffmpeg_toolchain_from_manifest(
                 manifest_path.display()
             )
         })?
-        .join(&platform.relative_path);
+        .to_path_buf();
+    let sidecar_path = join_autocut_manifest_relative_path(&sidecar_path, &platform.relative_path);
     if sidecar_path.is_file() {
         if let Err(error) = verify_autocut_ffmpeg_sidecar_integrity(&sidecar_path, platform) {
             diagnostics.push(error);
@@ -1181,7 +1786,7 @@ fn resolve_autocut_ffmpeg_toolchain_from_manifest(
             executable: sidecar_path.display().to_string(),
             source_kind: "bundled-sidecar".to_string(),
             manifest_ready,
-            bundled_ready: manifest.bundled_ready,
+            bundled_ready: true,
             diagnostics,
         });
     }
@@ -1279,17 +1884,24 @@ fn verify_autocut_ffmpeg_sidecar_integrity(
     sidecar_path: &Path,
     platform: &AutoCutFfmpegPlatformToolchain,
 ) -> Result<(), String> {
+    verify_autocut_ffmpeg_sidecar_integrity_with_integrity(sidecar_path, &platform.integrity)
+}
+
+fn verify_autocut_ffmpeg_sidecar_integrity_with_integrity(
+    sidecar_path: &Path,
+    integrity: &AutoCutFfmpegPlatformIntegrity,
+) -> Result<(), String> {
     let metadata = fs::metadata(sidecar_path).map_err(|error| {
         format!(
             "read bundled FFmpeg sidecar metadata {} failed: {error}",
             sidecar_path.display()
         )
     })?;
-    if metadata.len() != platform.integrity.byte_size {
+    if metadata.len() != integrity.byte_size {
         return Err(format!(
             "bundled FFmpeg sidecar byteSize mismatch for {}: manifest={}, actual={}",
             sidecar_path.display(),
-            platform.integrity.byte_size,
+            integrity.byte_size,
             metadata.len()
         ));
     }
@@ -1302,11 +1914,11 @@ fn verify_autocut_ffmpeg_sidecar_integrity(
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     let digest = format!("{:x}", hasher.finalize());
-    if !digest.eq_ignore_ascii_case(&platform.integrity.sha256) {
+    if !digest.eq_ignore_ascii_case(&integrity.sha256) {
         return Err(format!(
             "bundled FFmpeg sidecar checksum mismatch for {}: manifest={}, actual={digest}",
             sidecar_path.display(),
-            platform.integrity.sha256
+            integrity.sha256
         ));
     }
     Ok(())
@@ -1323,13 +1935,18 @@ fn resolve_ffmpeg_executable_from_toolchain(required_binary: &str) -> String {
 
 fn autocut_ffmpeg_platform_key(os: &str, arch: &str) -> String {
     let normalized_os = match os {
+        "win32" => "windows",
         "macos" => "macos",
+        "darwin" => "macos",
         "windows" => "windows",
         "linux" => "linux",
         other => other,
     };
     let normalized_arch = match arch {
+        "x64" => "x86_64",
         "x86_64" => "x86_64",
+        "amd64" => "x86_64",
+        "arm64" => "aarch64",
         "aarch64" => "aarch64",
         other => other,
     };
@@ -1397,6 +2014,26 @@ fn autocut_task_output_dir(root: &Path, task_uuid: &str) -> Result<PathBuf, Stri
     }
 
     Ok(canonical_output_dir)
+}
+
+fn autocut_task_cover_dir(task_output_dir: &Path) -> Result<PathBuf, String> {
+    let cover_dir = task_output_dir.join(AUTOCUT_MEDIA_TASK_COVER_DIR);
+    fs::create_dir_all(&cover_dir)
+        .map_err(|error| format!("create AutoCut task cover directory failed: {error}"))?;
+
+    let canonical_task_output_dir = task_output_dir
+        .canonicalize()
+        .map_err(|error| format!("canonicalize AutoCut task output directory failed: {error}"))?;
+    let canonical_cover_dir = cover_dir
+        .canonicalize()
+        .map_err(|error| format!("canonicalize AutoCut task cover directory failed: {error}"))?;
+    if !canonical_cover_dir.starts_with(&canonical_task_output_dir) {
+        return Err(
+            "AutoCut task cover directory must stay under the task output directory".to_string(),
+        );
+    }
+
+    Ok(canonical_cover_dir)
 }
 
 fn ensure_safe_import_source_path(path: &Path) -> Result<PathBuf, String> {
@@ -1751,17 +2388,30 @@ fn normalize_video_slice_subtitle_mode(
         return Ok(if subtitle_format == Some("srt") {
             AutoCutVideoSliceSubtitleMode::Srt
         } else {
-            AutoCutVideoSliceSubtitleMode::None
+            return Err("video slice subtitleSegments require subtitleFormat srt".to_string());
         });
     };
 
-    match mode.to_ascii_lowercase().as_str() {
-        "none" => Ok(AutoCutVideoSliceSubtitleMode::None),
+    let normalized_mode = mode.to_ascii_lowercase();
+    let subtitle_mode = match normalized_mode.as_str() {
+        "none" => {
+            Err("video slice subtitleMode none cannot be used with subtitle segments".to_string())
+        }
         "srt" => Ok(AutoCutVideoSliceSubtitleMode::Srt),
         "burned" => Ok(AutoCutVideoSliceSubtitleMode::Burned),
         "both" => Ok(AutoCutVideoSliceSubtitleMode::Both),
-        _ => Err("unsupported video slice subtitleMode, expected none, srt, burned, or both".to_string()),
+        _ => Err(
+            "unsupported video slice subtitleMode, expected none, srt, burned, or both".to_string(),
+        ),
+    }?;
+
+    if subtitle_format != Some("srt") {
+        return Err(format!(
+            "video slice subtitleMode {normalized_mode} requires subtitleFormat srt"
+        ));
     }
+
+    Ok(subtitle_mode)
 }
 
 fn normalize_video_slice_clips(
@@ -1790,31 +2440,209 @@ fn normalize_video_slice_clips(
                     index + 1
                 ));
             }
+            ensure_video_slice_clip_transcript_evidence(clip, index + 1)?;
 
             Ok(AutoCutVideoSliceClipRequest {
                 start_ms: clip.start_ms,
                 duration_ms: clip.duration_ms,
                 label: sanitize_video_slice_label(&clip.label, index),
+                output_file_name: normalize_video_slice_output_file_name(
+                    clip.output_file_name.as_deref(),
+                    &clip.label,
+                    index,
+                    "mp4",
+                ),
+                ..clone_video_slice_clip_evidence(clip)
             })
         })
         .collect()
 }
 
-fn normalize_speech_transcription_language(language: Option<&str>) -> String {
+fn ensure_video_slice_clip_transcript_evidence(
+    clip: &AutoCutVideoSliceClipRequest,
+    clip_number: usize,
+) -> Result<(), String> {
+    let transcript_segments = clip.transcript_segments.as_ref().filter(|segments| !segments.is_empty()).ok_or_else(|| {
+        format!(
+            "AutoCut video slice clip {clip_number} requires speech-to-text transcript evidence before native rendering"
+        )
+    })?;
+    let transcript_text = clip
+        .transcript_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "AutoCut video slice clip {clip_number} requires visible speech-to-text transcript evidence before native rendering"
+            )
+        })?;
+    let expected_text = transcript_segments
+        .iter()
+        .map(|segment| segment.text.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if expected_text.is_empty() {
+        return Err(format!(
+            "AutoCut video slice clip {clip_number} requires non-empty speech-to-text transcript segment text"
+        ));
+    }
+    if normalize_transcript_evidence_text(transcript_text)
+        != normalize_transcript_evidence_text(&expected_text)
+    {
+        return Err(format!(
+            "AutoCut video slice clip {clip_number} transcriptText must match structured speech-to-text transcriptSegments"
+        ));
+    }
+    if clip.transcript_segment_count != Some(transcript_segments.len() as i64) {
+        return Err(format!(
+            "AutoCut video slice clip {clip_number} transcriptSegmentCount must match structured speech-to-text transcriptSegments"
+        ));
+    }
+
+    let source_start_ms = clip.source_start_ms.unwrap_or(clip.start_ms);
+    let source_end_ms = clip.source_end_ms.unwrap_or(clip.start_ms + clip.duration_ms);
+    if source_end_ms <= source_start_ms {
+        return Err(format!(
+            "AutoCut video slice clip {clip_number} sourceEndMs must be after sourceStartMs"
+        ));
+    }
+    if source_start_ms < clip.start_ms || source_end_ms > clip.start_ms + clip.duration_ms {
+        return Err(format!(
+            "AutoCut video slice clip {clip_number} source range must stay inside rendered clip timing"
+        ));
+    }
+
+    let speech_start_ms = clip.speech_start_ms.ok_or_else(|| {
+        format!(
+            "AutoCut video slice clip {clip_number} requires speechStartMs from speech-to-text evidence"
+        )
+    })?;
+    let speech_end_ms = clip.speech_end_ms.ok_or_else(|| {
+        format!(
+            "AutoCut video slice clip {clip_number} requires speechEndMs from speech-to-text evidence"
+        )
+    })?;
+    if speech_end_ms <= speech_start_ms
+        || speech_start_ms < source_start_ms
+        || speech_end_ms > source_end_ms
+    {
+        return Err(format!(
+            "AutoCut video slice clip {clip_number} speech range must stay inside its source range"
+        ));
+    }
+    if transcript_segments.first().map(|segment| segment.start_ms) != Some(speech_start_ms)
+        || transcript_segments.last().map(|segment| segment.end_ms) != Some(speech_end_ms)
+    {
+        return Err(format!(
+            "AutoCut video slice clip {clip_number} speech range must match transcript segment boundaries"
+        ));
+    }
+
+    let mut previous_end_ms: Option<i64> = None;
+    for (segment_index, segment) in transcript_segments.iter().enumerate() {
+        let segment_number = segment_index + 1;
+        if segment.text.trim().is_empty() {
+            return Err(format!(
+                "AutoCut video slice clip {clip_number} transcript segment {segment_number} must contain recognized speech text"
+            ));
+        }
+        if segment.end_ms <= segment.start_ms
+            || segment.start_ms < source_start_ms
+            || segment.end_ms > source_end_ms
+        {
+            return Err(format!(
+                "AutoCut video slice clip {clip_number} transcript segment {segment_number} must stay inside the source range"
+            ));
+        }
+        if previous_end_ms.is_some_and(|previous| segment.start_ms < previous) {
+            return Err(format!(
+                "AutoCut video slice clip {clip_number} transcript segments must be ordered and non-overlapping"
+            ));
+        }
+        previous_end_ms = Some(segment.end_ms);
+    }
+
+    if clip.transcript_coverage_score.filter(|score| *score >= 0.8).is_none() {
+        return Err(format!(
+            "AutoCut video slice clip {clip_number} transcriptCoverageScore must be at least 0.8"
+        ));
+    }
+    if !matches!(
+        clip.speech_continuity_grade.as_deref(),
+        Some("strong") | Some("repaired")
+    ) {
+        return Err(format!(
+            "AutoCut video slice clip {clip_number} speechContinuityGrade must be strong or repaired"
+        ));
+    }
+
+    Ok(())
+}
+
+fn normalize_transcript_evidence_text(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn normalize_speech_transcription_language(language: Option<&str>) -> Result<String, String> {
     let normalized = language
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("auto");
-    let sanitized = normalized
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric() || *character == '-' || *character == '_')
-        .take(16)
-        .collect::<String>();
-    if sanitized.is_empty() {
-        "auto".to_string()
-    } else {
-        sanitized
+    if normalized.eq_ignore_ascii_case("auto") {
+        return Ok("auto".to_string());
     }
+    if normalized.len() > 35 {
+        return Err("AutoCut speech transcription language must be auto or a valid BCP-47 language tag up to 35 characters.".to_string());
+    }
+
+    let canonical = normalized
+        .replace('_', "-")
+        .split('-')
+        .enumerate()
+        .map(|(index, part)| {
+            if index == 0 {
+                part.to_ascii_lowercase()
+            } else {
+                part.to_ascii_uppercase()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("-");
+    if is_supported_speech_transcription_language_tag(&canonical) {
+        Ok(canonical)
+    } else {
+        Err("AutoCut speech transcription language must be auto or a valid BCP-47 language tag such as zh, en, fr, or ja-JP.".to_string())
+    }
+}
+
+fn is_supported_speech_transcription_language_tag(language: &str) -> bool {
+    let mut parts = language.split('-');
+    let Some(primary) = parts.next() else {
+        return false;
+    };
+    if !(2..=3).contains(&primary.len())
+        || !primary
+            .chars()
+            .all(|character| character.is_ascii_lowercase())
+    {
+        return false;
+    }
+    let mut subtag_count = 0;
+    for part in parts {
+        subtag_count += 1;
+        if subtag_count > 2
+            || !(2..=8).contains(&part.len())
+            || !part
+                .chars()
+                .all(|character| character.is_ascii_uppercase() || character.is_ascii_digit())
+        {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn normalize_path_text(value: Option<&str>) -> Option<String> {
@@ -1875,15 +2703,38 @@ fn adjust_video_slice_clips_for_source_duration(
                 start_ms: clip.start_ms,
                 duration_ms,
                 label: clip.label.clone(),
+                output_file_name: clip.output_file_name.clone(),
+                ..clone_video_slice_clip_evidence(clip)
             })
         })
         .collect::<Vec<_>>();
 
     if adjusted.is_empty() {
-        return Err("AutoCut video slicing found no clips inside the source media duration".to_string());
+        return Err(
+            "AutoCut video slicing found no clips inside the source media duration".to_string(),
+        );
     }
 
     Ok(adjusted)
+}
+
+fn clone_video_slice_clip_evidence(
+    clip: &AutoCutVideoSliceClipRequest,
+) -> AutoCutVideoSliceClipRequest {
+    AutoCutVideoSliceClipRequest {
+        source_start_ms: clip.source_start_ms,
+        source_end_ms: clip.source_end_ms,
+        speech_start_ms: clip.speech_start_ms,
+        speech_end_ms: clip.speech_end_ms,
+        boundary_padding_before_ms: clip.boundary_padding_before_ms,
+        boundary_padding_after_ms: clip.boundary_padding_after_ms,
+        transcript_text: clip.transcript_text.clone(),
+        transcript_segments: clip.transcript_segments.clone(),
+        transcript_segment_count: clip.transcript_segment_count,
+        transcript_coverage_score: clip.transcript_coverage_score,
+        speech_continuity_grade: clip.speech_continuity_grade.clone(),
+        ..AutoCutVideoSliceClipRequest::default()
+    }
 }
 
 fn sanitize_video_slice_label(label: &str, index: usize) -> String {
@@ -1905,6 +2756,511 @@ fn sanitize_video_slice_label(label: &str, index: usize) -> String {
     } else {
         normalized.chars().take(60).collect()
     }
+}
+
+fn normalize_video_slice_output_file_name(
+    requested_file_name: Option<&str>,
+    label: &str,
+    index: usize,
+    output_format: &str,
+) -> Option<String> {
+    let source = requested_file_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(label);
+    let normalized_source = source.replace('\\', "/");
+    let without_directories = normalized_source
+        .rsplit('/')
+        .next()
+        .unwrap_or(source)
+        .trim();
+    let without_extension = without_directories
+        .strip_suffix(&format!(".{output_format}"))
+        .or_else(|| {
+            without_directories.strip_suffix(&format!(".{}", output_format.to_ascii_uppercase()))
+        })
+        .unwrap_or(without_directories);
+    let stem = sanitize_autocut_file_name_stem(without_extension);
+    let expected_prefix = format!("{:02}-", index + 1);
+    let fallback = format!("video-slice-{:02}", index + 1);
+    let normalized_stem = if stem.is_empty() { fallback } else { stem };
+    let indexed_stem = if normalized_stem.starts_with(&expected_prefix) {
+        normalized_stem
+    } else {
+        format!("{expected_prefix}{normalized_stem}")
+    };
+    let truncated = indexed_stem.chars().take(96).collect::<String>();
+
+    Some(format!("{truncated}.{output_format}"))
+}
+
+fn sanitize_autocut_file_name_stem(value: &str) -> String {
+    let mut sanitized = String::new();
+    let mut previous_was_separator = false;
+
+    for character in value.trim().chars().flat_map(char::to_lowercase) {
+        let is_safe_text = character.is_alphanumeric();
+        if is_safe_text {
+            sanitized.push(character);
+            previous_was_separator = false;
+        } else if !previous_was_separator {
+            sanitized.push('-');
+            previous_was_separator = true;
+        }
+    }
+
+    sanitized.trim_matches('-').to_string()
+}
+
+fn download_autocut_speech_transcription_model_in_root(
+    root: &Path,
+    request: AutoCutSpeechTranscriptionModelDownloadRequest,
+    app: Option<&AppHandle>,
+) -> Result<AutoCutSpeechTranscriptionModelDownloadResult, String> {
+    validate_autocut_speech_transcription_model_download_request(&request)?;
+    let download_urls = autocut_speech_transcription_model_download_urls(&request);
+    let model_directory = root
+        .join(AUTOCUT_MEDIA_MODEL_DIR)
+        .join(AUTOCUT_MEDIA_SPEECH_MODEL_DIR);
+    fs::create_dir_all(&model_directory)
+        .map_err(|error| format!("create AutoCut speech model directory failed: {error}"))?;
+    let canonical_model_directory = model_directory
+        .canonicalize()
+        .map_err(|error| format!("canonicalize AutoCut speech model directory failed: {error}"))?;
+    let target_path = canonical_model_directory.join(&request.file_name);
+    if target_path.exists() {
+        let byte_size = fs::metadata(&target_path)
+            .map_err(|error| {
+                format!("read existing AutoCut speech model metadata failed: {error}")
+            })?
+            .len();
+        if byte_size > 0 {
+            emit_autocut_speech_transcription_model_download_progress(
+                app,
+                &request,
+                "skipped",
+                byte_size,
+                Some(byte_size),
+                Some(target_path.display().to_string()),
+                None,
+            );
+            return Ok(AutoCutSpeechTranscriptionModelDownloadResult {
+                provider_id: request.provider_id,
+                preset_id: request.preset_id,
+                file_name: request.file_name,
+                model_path: target_path.display().to_string(),
+                byte_size,
+                downloaded: false,
+                source_url: request.url.clone(),
+                sha256: request.sha256,
+            });
+        }
+    }
+
+    let temporary_path = canonical_model_directory.join(format!("{}.download", request.file_name));
+    emit_autocut_speech_transcription_model_download_progress(
+        app,
+        &request,
+        "started",
+        0,
+        None,
+        None,
+        None,
+    );
+    let mut download_errors = Vec::new();
+    let mut successful_source_url = None::<String>;
+    let mut byte_size = 0_u64;
+    for source_url in &download_urls {
+        let _ = fs::remove_file(&temporary_path);
+        match download_autocut_speech_transcription_model_file_with_progress(
+            &request,
+            source_url,
+            &temporary_path,
+            app,
+        ) {
+            Ok(downloaded_byte_size) => {
+                byte_size = downloaded_byte_size;
+                successful_source_url = Some(source_url.clone());
+                break;
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&temporary_path);
+                download_errors.push(format!("{source_url}: {error}"));
+            }
+        }
+    }
+    let Some(successful_source_url) = successful_source_url else {
+        let error = format!(
+            "download AutoCut speech transcription model failed for every trusted source: {}",
+            download_errors.join("; ")
+        );
+        emit_autocut_speech_transcription_model_download_progress(
+            app,
+            &request,
+            "failed",
+            0,
+            None,
+            None,
+            Some(error.clone()),
+        );
+        return Err(error);
+    };
+    if byte_size == 0 {
+        let _ = fs::remove_file(&temporary_path);
+        let error =
+            "AutoCut speech transcription model download returned an empty file.".to_string();
+        emit_autocut_speech_transcription_model_download_progress(
+            app,
+            &request,
+            "failed",
+            0,
+            None,
+            None,
+            Some(error.clone()),
+        );
+        return Err(error);
+    }
+    verify_file_sha256_for_label(
+        &temporary_path,
+        &request.sha256,
+        "AutoCut speech transcription model",
+    )
+    .map_err(|error| {
+        let _ = fs::remove_file(&temporary_path);
+        emit_autocut_speech_transcription_model_download_progress(
+            app,
+            &request,
+            "failed",
+            byte_size,
+            Some(byte_size),
+            None,
+            Some(error.clone()),
+        );
+        error
+    })?;
+    fs::rename(&temporary_path, &target_path)
+        .map_err(|error| format!("install AutoCut speech transcription model failed: {error}"))?;
+    let canonical_model_path = target_path
+        .canonicalize()
+        .map_err(|error| format!("canonicalize installed AutoCut speech model failed: {error}"))?;
+    emit_autocut_speech_transcription_model_download_progress(
+        app,
+        &request,
+        "completed",
+        byte_size,
+        Some(byte_size),
+        Some(canonical_model_path.display().to_string()),
+        None,
+    );
+
+    Ok(AutoCutSpeechTranscriptionModelDownloadResult {
+        provider_id: request.provider_id,
+        preset_id: request.preset_id,
+        file_name: request.file_name,
+        model_path: canonical_model_path.display().to_string(),
+        byte_size,
+        downloaded: true,
+        source_url: successful_source_url,
+        sha256: request.sha256,
+    })
+}
+
+fn validate_autocut_speech_transcription_model_download_request(
+    request: &AutoCutSpeechTranscriptionModelDownloadRequest,
+) -> Result<(), String> {
+    if request.provider_id.trim() != "local-whisper-cli" {
+        return Err(
+            "AutoCut speech transcription model download only supports local-whisper-cli."
+                .to_string(),
+        );
+    }
+    if request.preset_id.trim().is_empty() {
+        return Err("AutoCut speech transcription model download requires presetId.".to_string());
+    }
+    let file_name = request.file_name.trim();
+    if file_name.is_empty() || file_name != request.file_name {
+        return Err(
+            "AutoCut speech transcription model download requires a normalized fileName."
+                .to_string(),
+        );
+    }
+    if Path::new(file_name)
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+        || file_name.contains('/')
+        || file_name.contains('\\')
+    {
+        return Err("AutoCut speech transcription model download fileName must not contain path separators.".to_string());
+    }
+    let extension = Path::new(file_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if !SUPPORTED_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS
+        .iter()
+        .any(|supported| *supported == extension)
+    {
+        return Err(format!(
+            "AutoCut speech transcription model download fileName must use a supported model file extension: {}.",
+            SUPPORTED_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS.join(", ")
+        ));
+    }
+    if request.sha256.len() != 64
+        || !request.sha256.chars().all(|character| character.is_ascii_hexdigit())
+    {
+        return Err(
+            "AutoCut speech transcription model download requires a pinned SHA-256 model digest."
+                .to_string(),
+        );
+    }
+
+    let download_urls = autocut_speech_transcription_model_download_urls(request);
+    if download_urls.is_empty() {
+        return Err(
+            "AutoCut speech transcription model download requires at least one trusted source URL."
+                .to_string(),
+        );
+    }
+    if download_urls[0] != request.url.trim() {
+        return Err(
+            "AutoCut speech transcription model download primary URL must be first."
+                .to_string(),
+        );
+    }
+    for source_url in download_urls {
+        validate_autocut_speech_transcription_model_download_url(&source_url, file_name)?;
+    }
+
+    Ok(())
+}
+
+fn autocut_speech_transcription_model_download_urls(
+    request: &AutoCutSpeechTranscriptionModelDownloadRequest,
+) -> Vec<String> {
+    let mut urls = vec![request.url.trim().to_string()];
+    if let Some(mirror_urls) = &request.mirror_urls {
+        for mirror_url in mirror_urls {
+            let normalized = mirror_url.trim().to_string();
+            if !normalized.is_empty() && !urls.iter().any(|url| url == &normalized) {
+                urls.push(normalized);
+            }
+        }
+    }
+    urls.retain(|url| !url.is_empty());
+    urls
+}
+
+fn validate_autocut_speech_transcription_model_download_url(
+    source_url: &str,
+    file_name: &str,
+) -> Result<(), String> {
+    let parsed_url = Url::parse(source_url).map_err(|error| {
+        format!("AutoCut speech transcription model download URL is invalid: {error}")
+    })?;
+    if parsed_url.scheme() != "https"
+        || !parsed_url
+            .host_str()
+            .map(|host| TRUSTED_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_HOSTS.contains(&host))
+            .unwrap_or(false)
+    {
+        return Err("AutoCut speech transcription model download URL must use a trusted HTTPS Hugging Face source.".to_string());
+    }
+    let path_segments = parsed_url
+        .path_segments()
+        .map(|segments| segments.collect::<Vec<_>>())
+        .unwrap_or_default();
+    let url_file_name = path_segments.last().copied().unwrap_or("");
+    if url_file_name != file_name {
+        return Err(
+            "AutoCut speech transcription model download URL file name must match fileName."
+                .to_string(),
+        );
+    }
+    if path_segments.len() < 5
+        || path_segments[0] != "ggerganov"
+        || path_segments[1] != "whisper.cpp"
+        || path_segments[2] != "resolve"
+        || path_segments[3] != "main"
+    {
+        return Err("AutoCut speech transcription model download URL must target the trusted ggerganov/whisper.cpp model path.".to_string());
+    }
+    Ok(())
+}
+
+fn download_autocut_speech_transcription_model_file_with_progress(
+    request: &AutoCutSpeechTranscriptionModelDownloadRequest,
+    source_url: &str,
+    target_path: &Path,
+    app: Option<&AppHandle>,
+) -> Result<u64, String> {
+    let client = Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(60 * 60))
+        .build()
+        .map_err(|error| format!("build AutoCut speech model download client failed: {error}"))?;
+    let mut response = client
+        .get(source_url)
+        .send()
+        .map_err(|error| format!("download AutoCut speech transcription model failed: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "download AutoCut speech transcription model failed with HTTP status {}",
+            response.status()
+        ));
+    }
+
+    let mut output = fs::File::create(target_path).map_err(|error| {
+        format!("create AutoCut speech transcription model temp file failed: {error}")
+    })?;
+    let total_bytes = response.content_length();
+    let mut byte_size = 0_u64;
+    let mut buffer = [0_u8; 128 * 1024];
+    let mut last_emitted_progress = None::<u8>;
+    loop {
+        let read_bytes = response.read(&mut buffer).map_err(|error| {
+            format!("read AutoCut speech transcription model download failed: {error}")
+        })?;
+        if read_bytes == 0 {
+            break;
+        }
+        output.write_all(&buffer[..read_bytes]).map_err(|error| {
+            format!("write AutoCut speech transcription model temp file failed: {error}")
+        })?;
+        byte_size += read_bytes as u64;
+        if byte_size > MAX_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_BYTES {
+            let _ = fs::remove_file(target_path);
+            return Err(
+                "AutoCut speech transcription model download exceeds the maximum allowed size."
+                    .to_string(),
+            );
+        }
+
+        let progress = calculate_autocut_speech_model_download_progress(byte_size, total_bytes);
+        if total_bytes.is_none()
+            || progress >= 100
+            || last_emitted_progress.map(|last| progress.saturating_sub(last) >= 2).unwrap_or(true)
+        {
+            emit_autocut_speech_transcription_model_download_progress_for_source(
+                app,
+                request,
+                source_url,
+                "downloading",
+                byte_size,
+                total_bytes,
+                None,
+                None,
+            );
+            last_emitted_progress = Some(progress);
+        }
+    }
+    if byte_size > MAX_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_BYTES {
+        let _ = fs::remove_file(target_path);
+        return Err(
+            "AutoCut speech transcription model download exceeds the maximum allowed size."
+                .to_string(),
+        );
+    }
+
+    Ok(byte_size)
+}
+
+fn emit_autocut_speech_transcription_model_download_progress(
+    app: Option<&AppHandle>,
+    request: &AutoCutSpeechTranscriptionModelDownloadRequest,
+    phase: &str,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    model_path: Option<String>,
+    error_message: Option<String>,
+) {
+    emit_autocut_speech_transcription_model_download_progress_for_source(
+        app,
+        request,
+        &request.url,
+        phase,
+        downloaded_bytes,
+        total_bytes,
+        model_path,
+        error_message,
+    );
+}
+
+fn emit_autocut_speech_transcription_model_download_progress_for_source(
+    app: Option<&AppHandle>,
+    request: &AutoCutSpeechTranscriptionModelDownloadRequest,
+    source_url: &str,
+    phase: &str,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    model_path: Option<String>,
+    error_message: Option<String>,
+) {
+    let Some(app) = app else {
+        return;
+    };
+    let event = AutoCutSpeechTranscriptionModelDownloadProgressEvent {
+        provider_id: request.provider_id.clone(),
+        preset_id: request.preset_id.clone(),
+        file_name: request.file_name.clone(),
+        phase: phase.to_string(),
+        downloaded_bytes,
+        total_bytes,
+        progress: Some(calculate_autocut_speech_model_download_progress(
+            downloaded_bytes,
+            total_bytes,
+        )),
+        model_path,
+        source_url: Some(source_url.to_string()),
+        error_message,
+    };
+    let _ = app.emit(
+        AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT,
+        event,
+    );
+}
+
+fn calculate_autocut_speech_model_download_progress(
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+) -> u8 {
+    let Some(total_bytes) = total_bytes.filter(|value| *value > 0) else {
+        return 0;
+    };
+    let percent = downloaded_bytes.saturating_mul(100) / total_bytes;
+    percent.min(100) as u8
+}
+
+fn verify_file_sha256_for_label(
+    path: &Path,
+    expected_sha256: &str,
+    label: &str,
+) -> Result<(), String> {
+    let digest = calculate_file_sha256(path)?;
+    if !digest.eq_ignore_ascii_case(expected_sha256) {
+        return Err(format!(
+            "{label} checksum mismatch: expected {expected_sha256}, actual {digest}."
+        ));
+    }
+
+    Ok(())
+}
+
+fn calculate_file_sha256(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("open file for SHA-256 validation failed: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let read_bytes = file
+            .read(&mut buffer)
+            .map_err(|error| format!("read file for SHA-256 validation failed: {error}"))?;
+        if read_bytes == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read_bytes]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn import_autocut_media_file_in_root(
@@ -2084,6 +3440,31 @@ fn describe_autocut_local_media_file_from_path(
     })
 }
 
+fn normalize_autocut_media_file_select_types(
+    media_types: &[String],
+) -> Result<Vec<String>, String> {
+    let mut normalized_types = Vec::new();
+    for media_type in media_types {
+        let normalized = media_type.trim().to_ascii_lowercase();
+        if normalized != "audio" && normalized != "video" {
+            return Err(
+                "AutoCut local media chooser mediaTypes must contain only audio or video"
+                    .to_string(),
+            );
+        }
+        if !normalized_types.contains(&normalized) {
+            normalized_types.push(normalized);
+        }
+    }
+
+    if normalized_types.is_empty() {
+        normalized_types.push("audio".to_string());
+        normalized_types.push("video".to_string());
+    }
+
+    Ok(normalized_types)
+}
+
 fn extract_autocut_audio_from_asset_in_root_with_toolchain(
     connection: &Connection,
     root: &Path,
@@ -2110,10 +3491,12 @@ fn extract_autocut_audio_from_asset_in_root_with_toolchain(
     let task_output_dir = autocut_task_output_dir(&root, &task_uuid)?;
     let output_root_dir =
         autocut_operation_output_root_dir_payload(&root, request.output_root_dir.as_deref());
-    let mut input_json = json!({
-        "assetUuid": asset.uuid,
-        "outputFormat": format.clone()
-    });
+    let mut input_json = create_autocut_task_input_json(
+        &asset,
+        json!({
+            "outputFormat": format.clone()
+        }),
+    );
     insert_autocut_output_root_dir_payload(&mut input_json, output_root_dir.as_deref());
     let spec = AutoCutMediaOperationSpec {
         operation: "audioExtraction",
@@ -2258,12 +3641,14 @@ fn generate_autocut_gif_from_asset_in_root_with_toolchain(
     let task_output_dir = autocut_task_output_dir(&root, &task_uuid)?;
     let output_root_dir =
         autocut_operation_output_root_dir_payload(&root, request.output_root_dir.as_deref());
-    let mut input_json = json!({
-        "assetUuid": asset.uuid,
-        "fps": fps.clone(),
-        "resolution": resolution.clone(),
-        "dither": request.dither
-    });
+    let mut input_json = create_autocut_task_input_json(
+        &asset,
+        json!({
+            "fps": fps.clone(),
+            "resolution": resolution.clone(),
+            "dither": request.dither
+        }),
+    );
     insert_autocut_output_root_dir_payload(&mut input_json, output_root_dir.as_deref());
     let spec = AutoCutMediaOperationSpec {
         operation: "videoGif",
@@ -2301,7 +3686,8 @@ fn generate_autocut_gif_from_asset_in_root_with_toolchain(
         }),
     )?;
 
-    let output_path = task_output_dir.join(format!("video-gif-{}.gif", monotonic_artifact_suffix()?));
+    let output_path =
+        task_output_dir.join(format!("video-gif-{}.gif", monotonic_artifact_suffix()?));
     let generation = run_ffmpeg_video_gif(
         connection,
         &task_uuid,
@@ -2398,7 +3784,8 @@ fn slice_autocut_video_from_asset_in_root_with_toolchain(
     let output_format = normalize_video_slice_format(&request.output_format)?;
     let clips = normalize_video_slice_clips(&request.clips)?;
     let render_profile = normalize_video_slice_render_profile(request.render_profile)?;
-    let subtitle_format = normalize_video_slice_subtitle_format(request.subtitle_format.as_deref())?;
+    let subtitle_format =
+        normalize_video_slice_subtitle_format(request.subtitle_format.as_deref())?;
     let subtitle_segments = normalize_video_slice_subtitle_segments(request.subtitle_segments);
     let subtitle_mode = normalize_video_slice_subtitle_mode(
         request.subtitle_mode.as_deref(),
@@ -2410,18 +3797,19 @@ fn slice_autocut_video_from_asset_in_root_with_toolchain(
     let task_output_dir = autocut_task_output_dir(&root, &task_uuid)?;
     let output_root_dir =
         autocut_operation_output_root_dir_payload(&root, request.output_root_dir.as_deref());
-    let mut input_json = json!({
-        "assetUuid": asset.uuid,
-        "outputFormat": output_format.clone(),
-        "renderProfile": render_profile.clone(),
-        "clips": clips,
-        "requestedClips": clips,
-        "subtitleFormat": subtitle_format,
-        "subtitleMode": subtitle_mode.as_str(),
-        "subtitleStyleId": request.subtitle_style_id,
-        "subtitleSegments": subtitle_segments.clone(),
-        "subtitleSegmentCount": subtitle_segments.len()
-    });
+    let mut input_json = create_autocut_task_input_json(
+        &asset,
+        json!({
+            "outputFormat": output_format.clone(),
+            "renderProfile": render_profile.clone(),
+            "clips": clips,
+            "requestedClips": clips,
+            "subtitleFormat": subtitle_format,
+            "subtitleMode": subtitle_mode.as_str(),
+            "subtitleStyleId": request.subtitle_style_id,
+            "subtitleSegments": subtitle_segments.clone()
+        }),
+    );
     insert_autocut_output_root_dir_payload(&mut input_json, output_root_dir.as_deref());
     let spec = AutoCutMediaOperationSpec {
         operation: "videoSlice",
@@ -2507,7 +3895,10 @@ fn slice_autocut_video_from_asset_in_root_with_toolchain(
                         artifact_uuid: artifact_uuid.clone(),
                         artifact_path: slice_output.video_output.artifact_path.clone(),
                         thumbnail_artifact_uuid: thumbnail_artifact_uuid.clone(),
-                        thumbnail_artifact_path: slice_output.thumbnail_output.artifact_path.clone(),
+                        thumbnail_artifact_path: slice_output
+                            .thumbnail_output
+                            .artifact_path
+                            .clone(),
                         subtitle_artifact_uuid: subtitle_artifact_uuid.clone(),
                         subtitle_artifact_path: slice_output
                             .subtitle_output
@@ -2528,6 +3919,17 @@ fn slice_autocut_video_from_asset_in_root_with_toolchain(
                         start_ms: slice_output.clip.start_ms,
                         duration_ms: slice_output.clip.duration_ms,
                         label: slice_output.clip.label.clone(),
+                        source_start_ms: slice_output.clip.source_start_ms,
+                        source_end_ms: slice_output.clip.source_end_ms,
+                        speech_start_ms: slice_output.clip.speech_start_ms,
+                        speech_end_ms: slice_output.clip.speech_end_ms,
+                        boundary_padding_before_ms: slice_output.clip.boundary_padding_before_ms,
+                        boundary_padding_after_ms: slice_output.clip.boundary_padding_after_ms,
+                        transcript_text: slice_output.clip.transcript_text.clone(),
+                        transcript_segments: slice_output.clip.transcript_segments.clone(),
+                        transcript_segment_count: slice_output.clip.transcript_segment_count,
+                        transcript_coverage_score: slice_output.clip.transcript_coverage_score,
+                        speech_continuity_grade: slice_output.clip.speech_continuity_grade.clone(),
                     };
                     insert_media_slice_artifact(
                         connection,
@@ -2550,9 +3952,10 @@ fn slice_autocut_video_from_asset_in_root_with_toolchain(
                         index,
                         &artifact_uuid,
                     )?;
-                    if let (Some(subtitle_uuid), Some(subtitle_output)) =
-                        (subtitle_artifact_uuid.as_deref(), slice_output.subtitle_output.as_ref())
-                    {
+                    if let (Some(subtitle_uuid), Some(subtitle_output)) = (
+                        subtitle_artifact_uuid.as_deref(),
+                        slice_output.subtitle_output.as_ref(),
+                    ) {
                         insert_media_slice_subtitle_artifact(
                             connection,
                             subtitle_uuid,
@@ -2626,21 +4029,29 @@ fn transcribe_autocut_media_from_asset_in_root_with_toolchain(
         ));
     }
 
-    let language = normalize_speech_transcription_language(request.language.as_deref());
+    let language = normalize_speech_transcription_language(request.language.as_deref())?;
     let task_uuid = autocut_uuid("ops-task")?;
     let artifact_uuid = autocut_uuid("media-artifact")?;
     let task_output_dir = autocut_task_output_dir(&root, &task_uuid)?;
     let output_root_dir =
         autocut_operation_output_root_dir_payload(&root, request.output_root_dir.as_deref());
-    let mut input_json = json!({
-        "assetUuid": asset.uuid,
-        "language": language.clone()
-    });
+    let mut input_json = create_autocut_task_input_json(
+        &asset,
+        json!({
+            "language": language.clone()
+        }),
+    );
+    if let Some(provider_id) = normalize_path_text(request.provider_id.as_deref()) {
+        input_json["providerId"] = json!(provider_id);
+    }
     if let Some(executable_path) = normalize_path_text(request.executable_path.as_deref()) {
         input_json["executablePath"] = json!(executable_path);
     }
     if let Some(model_path) = normalize_path_text(request.model_path.as_deref()) {
         input_json["modelPath"] = json!(model_path);
+    }
+    if let Some(workflow_purpose) = normalize_path_text(request.workflow_purpose.as_deref()) {
+        input_json["workflowPurpose"] = json!(workflow_purpose);
     }
     insert_autocut_output_root_dir_payload(&mut input_json, output_root_dir.as_deref());
     let spec = AutoCutMediaOperationSpec {
@@ -2694,7 +4105,9 @@ fn transcribe_autocut_media_from_asset_in_root_with_toolchain(
                 return Err("AutoCut native task was canceled by user request".to_string());
             }
             let transcript_byte_size = fs::metadata(&result.transcript_path)
-                .map_err(|error| format!("read AutoCut transcript artifact metadata failed: {error}"))?
+                .map_err(|error| {
+                    format!("read AutoCut transcript artifact metadata failed: {error}")
+                })?
                 .len();
             let operation_output = AutoCutMediaOperationOutput {
                 artifact_path: result.transcript_path.clone(),
@@ -2792,12 +4205,14 @@ fn compress_autocut_video_from_asset_in_root_with_toolchain(
     let task_output_dir = autocut_task_output_dir(&root, &task_uuid)?;
     let output_root_dir =
         autocut_operation_output_root_dir_payload(&root, request.output_root_dir.as_deref());
-    let mut input_json = json!({
-        "assetUuid": asset.uuid,
-        "compressionMode": compression_mode.clone(),
-        "crf": crf,
-        "preset": preset
-    });
+    let mut input_json = create_autocut_task_input_json(
+        &asset,
+        json!({
+            "compressionMode": compression_mode.clone(),
+            "crf": crf,
+            "preset": preset
+        }),
+    );
     insert_autocut_output_root_dir_payload(&mut input_json, output_root_dir.as_deref());
     let spec = AutoCutMediaOperationSpec {
         operation: "videoCompress",
@@ -2940,13 +4355,15 @@ fn convert_autocut_video_from_asset_in_root_with_toolchain(
     let task_output_dir = autocut_task_output_dir(&root, &task_uuid)?;
     let output_root_dir =
         autocut_operation_output_root_dir_payload(&root, request.output_root_dir.as_deref());
-    let mut input_json = json!({
-        "assetUuid": asset.uuid,
-        "targetFormat": target_format.clone(),
-        "videoCodec": video_codec.clone(),
-        "audioCodec": audio_codec.clone(),
-        "resolution": request.resolution
-    });
+    let mut input_json = create_autocut_task_input_json(
+        &asset,
+        json!({
+            "targetFormat": target_format.clone(),
+            "videoCodec": video_codec.clone(),
+            "audioCodec": audio_codec.clone(),
+            "resolution": request.resolution
+        }),
+    );
     insert_autocut_output_root_dir_payload(&mut input_json, output_root_dir.as_deref());
     let spec = AutoCutMediaOperationSpec {
         operation: "videoConvert",
@@ -3091,12 +4508,14 @@ fn enhance_autocut_video_from_asset_in_root_with_toolchain(
     let task_output_dir = autocut_task_output_dir(&root, &task_uuid)?;
     let output_root_dir =
         autocut_operation_output_root_dir_payload(&root, request.output_root_dir.as_deref());
-    let mut input_json = json!({
-        "assetUuid": asset.uuid,
-        "targetResolution": target_resolution.clone(),
-        "enhanceMode": enhance_mode.clone(),
-        "frameRate": frame_rate.clone().unwrap_or_else(|| "original".to_string())
-    });
+    let mut input_json = create_autocut_task_input_json(
+        &asset,
+        json!({
+            "targetResolution": target_resolution.clone(),
+            "enhanceMode": enhance_mode.clone(),
+            "frameRate": frame_rate.clone().unwrap_or_else(|| "original".to_string())
+        }),
+    );
     insert_autocut_output_root_dir_payload(&mut input_json, output_root_dir.as_deref());
     let spec = AutoCutMediaOperationSpec {
         operation: "videoEnhance",
@@ -3219,7 +4638,8 @@ fn run_autocut_audio_smoke_in_root_with_toolchain(
     fs::create_dir_all(&task_output_dir).map_err(|error| {
         format!("create AutoCut audio smoke artifact directory failed: {error}")
     })?;
-    let output_path = task_output_dir.join(format!("audio-smoke-{}.wav", monotonic_artifact_suffix()?));
+    let output_path =
+        task_output_dir.join(format!("audio-smoke-{}.wav", monotonic_artifact_suffix()?));
 
     let mut result = run_ffmpeg_sine_smoke(toolchain, &output_path)?;
     result.task_uuid = smoke_task_uuid;
@@ -3300,9 +4720,9 @@ fn spawn_tracked_native_media_command(
         .map_err(|error| format!("run AutoCut native media {operation_label} failed: {error}"))?;
     let tracked_child = Arc::new(Mutex::new(child));
     {
-        let mut registry = tracked_native_media_processes()
-            .lock()
-            .map_err(|error| format!("lock AutoCut native media process registry failed: {error}"))?;
+        let mut registry = tracked_native_media_processes().lock().map_err(|error| {
+            format!("lock AutoCut native media process registry failed: {error}")
+        })?;
         registry.insert(
             normalized_task_uuid.clone(),
             AutoCutTrackedNativeMediaProcess {
@@ -3390,9 +4810,11 @@ fn wait_for_tracked_ffmpeg_output(
     if let Err(error) =
         drain_ffmpeg_progress_updates(&pipe_event_receiver, &mut progress_state, on_progress)
     {
-        let stderr_cleanup =
-            join_child_pipe_reader(stderr_reader, "AutoCut FFmpeg stderr").err();
-        return Err(append_cleanup_diagnostics(error, stderr_cleanup.into_iter()));
+        let stderr_cleanup = join_child_pipe_reader(stderr_reader, "AutoCut FFmpeg stderr").err();
+        return Err(append_cleanup_diagnostics(
+            error,
+            stderr_cleanup.into_iter(),
+        ));
     }
     let stderr = join_child_pipe_reader(stderr_reader, "AutoCut FFmpeg stderr")?;
 
@@ -3473,7 +4895,10 @@ impl AutoCutThrottledPoll {
         }
     }
 
-    fn run_if_due(&mut self, action: &mut impl FnMut() -> Result<(), String>) -> Result<(), String> {
+    fn run_if_due(
+        &mut self,
+        action: &mut impl FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
         let now = Instant::now();
         let is_due = self
             .last_run
@@ -3525,7 +4950,10 @@ fn append_cleanup_diagnostics(
     if diagnostics.is_empty() {
         original_error
     } else {
-        format!("{original_error}; cleanup diagnostics: {}", diagnostics.join("; "))
+        format!(
+            "{original_error}; cleanup diagnostics: {}",
+            diagnostics.join("; ")
+        )
     }
 }
 
@@ -3533,17 +4961,19 @@ fn stop_tracked_native_media_child(
     tracked_child: &Arc<Mutex<Child>>,
     reason: &str,
 ) -> Result<(), String> {
-    let mut child = tracked_child
-        .lock()
-        .map_err(|error| format!("lock AutoCut native media process for cleanup failed: {error}"))?;
+    let mut child = tracked_child.lock().map_err(|error| {
+        format!("lock AutoCut native media process for cleanup failed: {error}")
+    })?;
     if child
         .try_wait()
-        .map_err(|error| format!("inspect AutoCut native media process for cleanup failed: {error}"))?
+        .map_err(|error| {
+            format!("inspect AutoCut native media process for cleanup failed: {error}")
+        })?
         .is_none()
     {
-        child
-            .kill()
-            .map_err(|error| format!("stop AutoCut native media process after {reason} failed: {error}"))?;
+        child.kill().map_err(|error| {
+            format!("stop AutoCut native media process after {reason} failed: {error}")
+        })?;
         let _ = child.wait();
     }
     Ok(())
@@ -3560,7 +4990,9 @@ fn read_child_pipe_by_line(
             let mut line = Vec::new();
             let bytes_read = buffered_reader
                 .read_until(b'\n', &mut line)
-                .map_err(|error| format!("read AutoCut native media process pipe failed: {error}"))?;
+                .map_err(|error| {
+                    format!("read AutoCut native media process pipe failed: {error}")
+                })?;
             if bytes_read == 0 {
                 break;
             }
@@ -3679,7 +5111,12 @@ fn run_ffmpeg_speech_audio_extract(
         "speech audio extraction",
         |progress| {
             heartbeat_ops_worker_lease(connection, worker_lease, 120)?;
-            record_ffmpeg_streaming_progress(connection, task_uuid, progress.clamp(1, 35), "speechTranscription")
+            record_ffmpeg_streaming_progress(
+                connection,
+                task_uuid,
+                progress.clamp(1, 35),
+                "speechTranscription",
+            )
         },
     )?;
 
@@ -3711,10 +5148,8 @@ fn run_local_speech_transcription(
         ));
     }
 
-    let audio_path = task_output_dir.join(format!(
-        "speech-audio-{}.wav",
-        monotonic_artifact_suffix()?
-    ));
+    let audio_path =
+        task_output_dir.join(format!("speech-audio-{}.wav", monotonic_artifact_suffix()?));
     run_ffmpeg_speech_audio_extract(
         connection,
         task_uuid,
@@ -3747,8 +5182,7 @@ fn run_local_speech_transcription(
         language,
         worker_lease,
     )?;
-    let transcript_json = fs::read_to_string(&transcript_path)
-        .map_err(|error| format!("read AutoCut speech transcript JSON failed: {error}"))?;
+    let transcript_json = read_whisper_transcript_json_file(&transcript_path)?;
     let segments = parse_whisper_transcript_json(&transcript_json)?;
     let text = segments
         .iter()
@@ -3887,14 +5321,19 @@ fn run_ffmpeg_video_slices(
 ) -> Result<Vec<AutoCutVideoSliceOperationOutput>, String> {
     let total_clips = clips.len();
     let mut outputs = Vec::with_capacity(total_clips);
+    let cover_dir = autocut_task_cover_dir(task_output_dir)?;
 
     for (index, clip) in clips.iter().enumerate() {
-        let output_path = task_output_dir.join(format!(
-            "video-slice-{:02}-{}.{}",
-            index + 1,
-            monotonic_artifact_suffix()?,
-            output_format
-        ));
+        let output_file_name = match clip.output_file_name.as_ref() {
+            Some(output_file_name) => output_file_name.clone(),
+            None => format!(
+                "video-slice-{:02}-{}.{}",
+                index + 1,
+                monotonic_artifact_suffix()?,
+                output_format
+            ),
+        };
+        let output_path = task_output_dir.join(output_file_name);
         let burned_subtitle_path = write_video_slice_burned_subtitle_filter_artifact(
             task_output_dir,
             clip,
@@ -3915,7 +5354,7 @@ fn run_ffmpeg_video_slices(
             total_clips,
             worker_lease,
         )?;
-        let thumbnail_path = task_output_dir.join(format!(
+        let thumbnail_path = cover_dir.join(format!(
             "video-slice-{:02}-thumbnail-{}.jpg",
             index + 1,
             monotonic_artifact_suffix()?
@@ -4001,8 +5440,9 @@ fn write_video_slice_burned_subtitle_filter_artifact(
         clip_index + 1,
         monotonic_artifact_suffix()?
     ));
-    fs::write(&output_path, subtitle_text)
-        .map_err(|error| format!("write AutoCut video slice burned subtitle filter artifact failed: {error}"))?;
+    fs::write(&output_path, subtitle_text).map_err(|error| {
+        format!("write AutoCut video slice burned subtitle filter artifact failed: {error}")
+    })?;
 
     Ok(Some(output_path))
 }
@@ -4088,8 +5528,9 @@ fn append_video_slice_burned_subtitle_filter(
         return filter_chain;
     };
     let subtitle_filter = format!(
-        "subtitles='{}'",
-        escape_ffmpeg_filter_path(burned_subtitle_path)
+        "subtitles='{}':force_style='{}'",
+        escape_ffmpeg_filter_path(burned_subtitle_path),
+        VIDEO_SLICE_BURNED_SUBTITLE_FORCE_STYLE
     );
 
     Some(match filter_chain {
@@ -4106,6 +5547,382 @@ fn escape_ffmpeg_filter_path(path: &Path) -> String {
         .replace('\'', "\\'")
 }
 
+fn autocut_video_slice_encoder_candidates() -> Vec<AutoCutVideoSliceEncoderCandidate> {
+    let mut candidates = Vec::new();
+
+    if cfg!(target_os = "windows") {
+        candidates.push(AutoCutVideoSliceEncoderCandidate {
+            label: "windows-nvidia-nvenc".to_string(),
+            video_codec: "h264_nvenc".to_string(),
+            pre_input_args: Vec::new(),
+            encoder_args: vec![
+                "-preset".to_string(),
+                "p4".to_string(),
+                "-tune".to_string(),
+                "hq".to_string(),
+                "-cq".to_string(),
+                "23".to_string(),
+                "-b:v".to_string(),
+                "0".to_string(),
+                "-pix_fmt".to_string(),
+                "yuv420p".to_string(),
+            ],
+            filter_chain_suffix: None,
+            requires_hardware: true,
+        });
+        candidates.push(AutoCutVideoSliceEncoderCandidate {
+            label: "windows-intel-quick-sync".to_string(),
+            video_codec: "h264_qsv".to_string(),
+            pre_input_args: Vec::new(),
+            encoder_args: vec![
+                "-preset".to_string(),
+                "veryfast".to_string(),
+                "-global_quality".to_string(),
+                "23".to_string(),
+                "-look_ahead".to_string(),
+                "0".to_string(),
+            ],
+            filter_chain_suffix: None,
+            requires_hardware: true,
+        });
+        candidates.push(AutoCutVideoSliceEncoderCandidate {
+            label: "windows-amd-amf".to_string(),
+            video_codec: "h264_amf".to_string(),
+            pre_input_args: Vec::new(),
+            encoder_args: vec![
+                "-quality".to_string(),
+                "balanced".to_string(),
+                "-usage".to_string(),
+                "transcoding".to_string(),
+                "-rc".to_string(),
+                "cqp".to_string(),
+                "-qp_i".to_string(),
+                "23".to_string(),
+                "-qp_p".to_string(),
+                "23".to_string(),
+                "-qp_b".to_string(),
+                "23".to_string(),
+                "-pix_fmt".to_string(),
+                "yuv420p".to_string(),
+            ],
+            filter_chain_suffix: None,
+            requires_hardware: true,
+        });
+    }
+
+    if cfg!(target_os = "macos") {
+        candidates.push(AutoCutVideoSliceEncoderCandidate {
+            label: "macos-apple-videotoolbox".to_string(),
+            video_codec: "h264_videotoolbox".to_string(),
+            pre_input_args: Vec::new(),
+            encoder_args: vec![
+                "-allow_sw".to_string(),
+                "1".to_string(),
+                "-realtime".to_string(),
+                "0".to_string(),
+                "-b:v".to_string(),
+                "6M".to_string(),
+                "-maxrate".to_string(),
+                "8M".to_string(),
+                "-bufsize".to_string(),
+                "12M".to_string(),
+                "-pix_fmt".to_string(),
+                "yuv420p".to_string(),
+            ],
+            filter_chain_suffix: None,
+            requires_hardware: true,
+        });
+    }
+
+    if cfg!(target_os = "linux") {
+        if let Some(vaapi_device) = autocut_linux_vaapi_render_device() {
+            candidates.push(AutoCutVideoSliceEncoderCandidate {
+                label: "linux-vaapi".to_string(),
+                video_codec: "h264_vaapi".to_string(),
+                pre_input_args: vec![
+                    "-vaapi_device".to_string(),
+                    vaapi_device.display().to_string(),
+                ],
+                encoder_args: vec![
+                    "-qp".to_string(),
+                    "23".to_string(),
+                    "-profile:v".to_string(),
+                    "high".to_string(),
+                ],
+                filter_chain_suffix: Some("format=nv12,hwupload".to_string()),
+                requires_hardware: true,
+            });
+        }
+        candidates.push(AutoCutVideoSliceEncoderCandidate {
+            label: "linux-nvidia-nvenc".to_string(),
+            video_codec: "h264_nvenc".to_string(),
+            pre_input_args: Vec::new(),
+            encoder_args: vec![
+                "-preset".to_string(),
+                "p4".to_string(),
+                "-tune".to_string(),
+                "hq".to_string(),
+                "-cq".to_string(),
+                "23".to_string(),
+                "-b:v".to_string(),
+                "0".to_string(),
+                "-pix_fmt".to_string(),
+                "yuv420p".to_string(),
+            ],
+            filter_chain_suffix: None,
+            requires_hardware: true,
+        });
+        candidates.push(AutoCutVideoSliceEncoderCandidate {
+            label: "linux-intel-quick-sync".to_string(),
+            video_codec: "h264_qsv".to_string(),
+            pre_input_args: Vec::new(),
+            encoder_args: vec![
+                "-preset".to_string(),
+                "veryfast".to_string(),
+                "-global_quality".to_string(),
+                "23".to_string(),
+                "-look_ahead".to_string(),
+                "0".to_string(),
+            ],
+            filter_chain_suffix: None,
+            requires_hardware: true,
+        });
+    }
+
+    candidates.push(autocut_video_slice_cpu_encoder_candidate());
+    candidates
+}
+
+fn autocut_video_slice_cpu_encoder_candidate() -> AutoCutVideoSliceEncoderCandidate {
+    AutoCutVideoSliceEncoderCandidate {
+        label: "portable-cpu-libx264".to_string(),
+        video_codec: "libx264".to_string(),
+        pre_input_args: Vec::new(),
+        encoder_args: vec![
+            "-preset".to_string(),
+            "veryfast".to_string(),
+            "-crf".to_string(),
+            "23".to_string(),
+            "-pix_fmt".to_string(),
+            "yuv420p".to_string(),
+        ],
+        filter_chain_suffix: None,
+        requires_hardware: false,
+    }
+}
+
+fn autocut_linux_vaapi_render_device() -> Option<PathBuf> {
+    let render_dir = Path::new("/dev/dri");
+    let entries = fs::read_dir(render_dir).ok()?;
+    let mut candidates = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("renderD"))
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+fn append_ffmpeg_video_slice_encoder_args(
+    command: &mut Command,
+    candidate: &AutoCutVideoSliceEncoderCandidate,
+) {
+    command.args(["-c:v", candidate.video_codec.as_str()]);
+    for arg in &candidate.encoder_args {
+        command.arg(arg);
+    }
+    command.args(["-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"]);
+}
+
+fn video_slice_filter_chain_for_encoder_candidate(
+    render_profile: Option<&AutoCutVideoSliceRenderProfile>,
+    burned_subtitle_path: Option<&Path>,
+    candidate: &AutoCutVideoSliceEncoderCandidate,
+) -> Option<String> {
+    let filter_chain = append_video_slice_burned_subtitle_filter(
+        video_slice_render_filter_chain(render_profile),
+        burned_subtitle_path,
+    );
+    match (filter_chain, candidate.filter_chain_suffix.as_deref()) {
+        (Some(filter_chain), Some(suffix)) => Some(format!("{filter_chain},{suffix}")),
+        (Some(filter_chain), None) => Some(filter_chain),
+        (None, Some(suffix)) => Some(suffix.to_string()),
+        (None, None) => None,
+    }
+}
+
+fn remove_partial_video_slice_output(output_path: &Path) -> Result<(), String> {
+    match fs::remove_file(output_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "remove partial AutoCut video slice output before encoder retry failed: {error}"
+        )),
+    }
+}
+
+fn stderr_tail_for_video_slice_diagnostics(stderr: &[u8]) -> String {
+    const MAX_DIAGNOSTIC_CHARS: usize = 4_000;
+    let stderr = String::from_utf8_lossy(stderr);
+    let trimmed = stderr.trim();
+    if trimmed.chars().count() <= MAX_DIAGNOSTIC_CHARS {
+        return trimmed.to_string();
+    }
+    let tail = trimmed
+        .chars()
+        .rev()
+        .take(MAX_DIAGNOSTIC_CHARS)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    format!("...{tail}")
+}
+
+fn format_video_slice_encoder_attempt_diagnostics(
+    attempts: &[AutoCutVideoSliceEncoderAttemptDiagnostic],
+) -> String {
+    attempts
+        .iter()
+        .map(|attempt| {
+            let stderr_tail = if attempt.stderr_tail.trim().is_empty() {
+                "no stderr captured".to_string()
+            } else {
+                attempt.stderr_tail.clone()
+            };
+            format!(
+                "{} [{}] status={} stderr={}",
+                attempt.label, attempt.video_codec, attempt.status, stderr_tail
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+fn build_ffmpeg_video_slice_command(
+    toolchain: &AutoCutFfmpegToolchain,
+    input_path: &Path,
+    output_path: &Path,
+    clip: &AutoCutVideoSliceClipRequest,
+    render_profile: Option<&AutoCutVideoSliceRenderProfile>,
+    burned_subtitle_path: Option<&Path>,
+    candidate: &AutoCutVideoSliceEncoderCandidate,
+) -> Command {
+    let mut command = Command::new(&toolchain.executable);
+    command.args(["-hide_banner", "-nostdin", "-y"]);
+    for arg in &candidate.pre_input_args {
+        command.arg(arg);
+    }
+    command.args(["-ss", seconds_arg_from_millis(clip.start_ms).as_str()]);
+    command.args(["-i"]);
+    command.arg(input_path);
+    command.args(["-t", seconds_arg_from_millis(clip.duration_ms).as_str()]);
+    command.args(["-map", "0:v:0", "-map", "0:a?"]);
+    let filter_chain = video_slice_filter_chain_for_encoder_candidate(
+        render_profile,
+        burned_subtitle_path,
+        candidate,
+    );
+    if let Some(filter_chain) = filter_chain {
+        command.args(["-vf", filter_chain.as_str()]);
+    }
+    append_ffmpeg_video_slice_encoder_args(&mut command, candidate);
+    append_ffmpeg_progress_output_args(&mut command);
+    command.arg(output_path);
+    command
+}
+
+fn run_ffmpeg_video_slice_with_encoder_fallback(
+    connection: &Connection,
+    task_uuid: &str,
+    toolchain: &AutoCutFfmpegToolchain,
+    input_path: &Path,
+    output_path: &Path,
+    clip: &AutoCutVideoSliceClipRequest,
+    render_profile: Option<&AutoCutVideoSliceRenderProfile>,
+    burned_subtitle_path: Option<&Path>,
+    clip_index: usize,
+    total_clips: usize,
+    worker_lease: &AutoCutOpsWorkerLease,
+) -> Result<AutoCutMediaOperationOutput, String> {
+    let candidates = autocut_video_slice_encoder_candidates();
+    let mut attempts = Vec::new();
+
+    for (candidate_index, candidate) in candidates.iter().enumerate() {
+        if candidate_index > 0 {
+            remove_partial_video_slice_output(output_path)?;
+        }
+        let _ = heartbeat_ops_worker_lease(connection, worker_lease, 120)?;
+        insert_ops_task_event(
+            connection,
+            task_uuid,
+            OPS_TASK_EVENT_TYPE_PROGRESS,
+            json!({
+                "operation": "videoSlice",
+                "phase": "ffmpeg-video-slice-encoder-attempt",
+                "source": "native-host",
+                "clipIndex": clip_index + 1,
+                "clipCount": total_clips,
+                "encoderLabel": candidate.label,
+                "videoCodec": candidate.video_codec,
+                "requiresHardware": candidate.requires_hardware,
+                "attempt": candidate_index + 1,
+                "attemptCount": candidates.len()
+            })
+            .to_string(),
+        )?;
+        let mut command = build_ffmpeg_video_slice_command(
+            toolchain,
+            input_path,
+            output_path,
+            clip,
+            render_profile,
+            burned_subtitle_path,
+            candidate,
+        );
+        let output = run_tracked_ffmpeg_command_with_progress(
+            task_uuid,
+            &mut command,
+            &format!("video slicing with {}", candidate.label),
+            |progress| {
+                heartbeat_ops_worker_lease(connection, worker_lease, 120)?;
+                let weighted_progress = weighted_slice_progress(progress, clip_index, total_clips);
+                record_ffmpeg_streaming_progress(
+                    connection,
+                    task_uuid,
+                    weighted_progress,
+                    "videoSlice",
+                )
+            },
+        )?;
+
+        if output.status.success() {
+            return build_media_operation_output(output_path, "mp4", toolchain.executable.clone());
+        }
+
+        attempts.push(AutoCutVideoSliceEncoderAttemptDiagnostic {
+            label: candidate.label.clone(),
+            video_codec: candidate.video_codec.clone(),
+            status: output.status.to_string(),
+            stderr_tail: stderr_tail_for_video_slice_diagnostics(&output.stderr),
+        });
+    }
+
+    let cleanup_error = remove_partial_video_slice_output(output_path).err();
+    let diagnostics = format_video_slice_encoder_attempt_diagnostics(&attempts);
+    let cleanup_diagnostics = cleanup_error
+        .map(|error| format!("; cleanup diagnostics: {error}"))
+        .unwrap_or_default();
+    Err(format!(
+        "AutoCut FFmpeg video slicing failed after trying platform hardware encoders and the libx264 CPU fallback. Encoder attempts: {diagnostics}{cleanup_diagnostics}"
+    ))
+}
+
 fn run_ffmpeg_video_slice(
     connection: &Connection,
     task_uuid: &str,
@@ -4119,59 +5936,19 @@ fn run_ffmpeg_video_slice(
     total_clips: usize,
     worker_lease: &AutoCutOpsWorkerLease,
 ) -> Result<AutoCutMediaOperationOutput, String> {
-    let mut command = Command::new(&toolchain.executable);
-    command.args(["-hide_banner", "-nostdin", "-y"]);
-    command.args(["-ss", seconds_arg_from_millis(clip.start_ms).as_str()]);
-    command.args(["-i"]);
-    command.arg(input_path);
-    command.args(["-t", seconds_arg_from_millis(clip.duration_ms).as_str()]);
-    command.args([
-        "-map",
-        "0:v:0",
-        "-map",
-        "0:a?",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "23",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "128k",
-        "-movflags",
-        "+faststart",
-    ]);
-    let filter_chain = append_video_slice_burned_subtitle_filter(
-        video_slice_render_filter_chain(render_profile),
-        burned_subtitle_path,
-    );
-    if let Some(filter_chain) = filter_chain {
-        command.args(["-vf", filter_chain.as_str()]);
-    }
-    append_ffmpeg_progress_output_args(&mut command);
-    command.arg(output_path);
-    let output = run_tracked_ffmpeg_command_with_progress(
+    run_ffmpeg_video_slice_with_encoder_fallback(
+        connection,
         task_uuid,
-        &mut command,
-        "video slicing",
-        |progress| {
-            heartbeat_ops_worker_lease(connection, worker_lease, 120)?;
-            let weighted_progress = weighted_slice_progress(progress, clip_index, total_clips);
-            record_ffmpeg_streaming_progress(connection, task_uuid, weighted_progress, "videoSlice")
-        },
-    )?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "AutoCut FFmpeg video slicing failed with status {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-
-    build_media_operation_output(output_path, "mp4", toolchain.executable.clone())
+        toolchain,
+        input_path,
+        output_path,
+        clip,
+        render_profile,
+        burned_subtitle_path,
+        clip_index,
+        total_clips,
+        worker_lease,
+    )
 }
 
 fn run_ffmpeg_video_slice_thumbnail(
@@ -4195,7 +5972,14 @@ fn run_ffmpeg_video_slice_thumbnail(
     let thumbnail_filter = video_slice_render_filter_chain(render_profile)
         .map(|filter_chain| format!("{filter_chain},scale=320:-2:flags=lanczos"))
         .unwrap_or_else(|| "scale=320:-2:flags=lanczos".to_string());
-    command.args(["-frames:v", "1", "-vf", thumbnail_filter.as_str(), "-q:v", "3"]);
+    command.args([
+        "-frames:v",
+        "1",
+        "-vf",
+        thumbnail_filter.as_str(),
+        "-q:v",
+        "3",
+    ]);
     append_ffmpeg_progress_output_args(&mut command);
     command.arg(output_path);
     let output = run_tracked_ffmpeg_command_with_progress(
@@ -5180,15 +6964,112 @@ fn read_ffmpeg_media_duration_millis(
     })
 }
 
+pub(crate) fn autocut_speech_transcription_toolchain_ready() -> bool {
+    resolve_autocut_speech_toolchain().ready
+}
+
+pub(crate) fn autocut_speech_transcription_toolchain_ready_for_app(app: &AppHandle) -> bool {
+    let default_executable_path = autocut_default_speech_executable_path(app).ok();
+    let default_model_path = autocut_default_speech_model_path_for_request(app, None).ok();
+    resolve_autocut_speech_toolchain_for_app_request(
+        Some(app),
+        None,
+        None,
+        None,
+        default_executable_path.as_deref(),
+        default_model_path.as_deref(),
+    )
+    .ready
+}
+
 fn resolve_autocut_speech_toolchain() -> AutoCutSpeechToolchain {
-    resolve_autocut_speech_toolchain_for_request(None, None, None)
+    resolve_autocut_speech_toolchain_for_request(None, None, None, None, None)
 }
 
 fn resolve_autocut_speech_toolchain_for_request(
     executable_path: Option<&str>,
     model_path: Option<&str>,
     source_kind: Option<&str>,
+    default_installed_executable_path: Option<&Path>,
+    default_model_path: Option<&Path>,
 ) -> AutoCutSpeechToolchain {
+    resolve_autocut_speech_toolchain_for_app_request(
+        None,
+        executable_path,
+        model_path,
+        source_kind,
+        default_installed_executable_path,
+        default_model_path,
+    )
+}
+
+fn resolve_autocut_speech_toolchain_for_app_request(
+    app: Option<&AppHandle>,
+    executable_path: Option<&str>,
+    model_path: Option<&str>,
+    source_kind: Option<&str>,
+    default_installed_executable_path: Option<&Path>,
+    default_model_path: Option<&Path>,
+) -> AutoCutSpeechToolchain {
+    resolve_autocut_speech_toolchain_from_candidate_manifests(
+        executable_path,
+        model_path,
+        source_kind,
+        &autocut_speech_toolchain_manifest_candidate_paths(app),
+        default_installed_executable_path,
+        std::env::var("SDKWORK_AUTOCUT_WHISPER_EXECUTABLE")
+            .ok()
+            .as_deref(),
+        std::env::var("SDKWORK_AUTOCUT_WHISPER_MODEL").ok().as_deref(),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        default_model_path,
+        std::env::var("PATH").ok().as_deref(),
+        &autocut_common_speech_executable_candidate_paths(),
+    )
+}
+
+fn resolve_autocut_speech_toolchain_from_candidate_manifests(
+    executable_path: Option<&str>,
+    model_path: Option<&str>,
+    source_kind: Option<&str>,
+    manifest_paths: &[PathBuf],
+    default_installed_executable_path: Option<&Path>,
+    env_executable: Option<&str>,
+    env_model_path: Option<&str>,
+    os: &str,
+    arch: &str,
+    default_model_path: Option<&Path>,
+    path_env: Option<&str>,
+    common_executable_candidate_paths: &[PathBuf],
+) -> AutoCutSpeechToolchain {
+    let default_model_path_value = default_model_path.map(|path| path.display().to_string());
+    let default_model_directory = default_model_path
+        .and_then(Path::parent)
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let default_model_path_text = default_model_path_value.clone().unwrap_or_default();
+    let default_executable_path = default_installed_executable_path
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            resolve_autocut_default_bundled_speech_executable_path(
+                manifest_paths,
+                os,
+                arch,
+            )
+        });
+    let default_executable_path_text = default_executable_path
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let default_executable_directory = default_executable_path
+        .as_ref()
+        .and_then(|path| path.parent())
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let executable_strategy =
+        "Settings executablePath > SDKWORK_AUTOCUT_WHISPER_EXECUTABLE > verified bundled sidecar > PATH/Homebrew/apt/common local whisper-cli"
+            .to_string();
     let explicit_executable = executable_path
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -5206,54 +7087,561 @@ fn resolve_autocut_speech_toolchain_for_request(
     } else {
         "env".to_string()
     };
-    let executable = explicit_executable.or_else(|| std::env::var("SDKWORK_AUTOCUT_WHISPER_EXECUTABLE")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty()));
-    let model_path = explicit_model_path.or_else(|| std::env::var("SDKWORK_AUTOCUT_WHISPER_MODEL")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty()));
-    let mut diagnostics = Vec::new();
+    let env_executable_value = env_executable
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let env_model_value = env_model_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let bundled_executable = if explicit_executable.is_none() && env_executable_value.is_none() {
+        resolve_autocut_bundled_speech_executable_from_candidate_manifests(manifest_paths, os, arch)
+    } else {
+        None
+    };
+    let mut diagnostics = bundled_executable
+        .as_ref()
+        .map(|toolchain| toolchain.diagnostics.clone())
+        .unwrap_or_default();
+    let bundled_executable_path = bundled_executable
+        .as_ref()
+        .map(|toolchain| toolchain.executable.clone());
+    let installed_executable = if explicit_executable.is_none()
+        && env_executable_value.is_none()
+        && bundled_executable_path.is_none()
+    {
+        default_installed_executable_path
+            .filter(|path| path.is_file())
+            .map(Path::to_path_buf)
+    } else {
+        None
+    };
+    let installed_executable_path = installed_executable
+        .as_ref()
+        .map(|path| path.display().to_string());
+    let discovered_executable =
+        if explicit_executable.is_none()
+            && env_executable_value.is_none()
+            && bundled_executable_path.is_none()
+            && installed_executable_path.is_none()
+        {
+            resolve_autocut_speech_executable_from_system_candidates(
+                path_env,
+                common_executable_candidate_paths,
+                os,
+            )
+        } else {
+            None
+        };
+    let discovered_executable_path = discovered_executable
+        .as_ref()
+        .map(|path| path.display().to_string());
+    let executable = explicit_executable
+        .or(env_executable_value)
+        .or_else(|| bundled_executable_path.clone())
+        .or_else(|| installed_executable_path.clone())
+        .or_else(|| discovered_executable_path.clone());
+    let default_model_value = default_model_path
+        .filter(|path| path.is_file())
+        .map(|path| path.display().to_string());
+    let model_path = explicit_model_path.or(env_model_value).or(default_model_value);
+    let executable_source_kind = bundled_executable_path
+        .as_deref()
+        .filter(|bundled_path| executable.as_deref() == Some(*bundled_path))
+        .map(|_| "bundled-sidecar")
+        .or_else(|| {
+            installed_executable_path
+                .as_deref()
+                .filter(|installed_path| executable.as_deref() == Some(*installed_path))
+                .map(|_| "app-data-runtime")
+        })
+        .or_else(|| {
+            discovered_executable_path
+                .as_deref()
+                .filter(|discovered_path| executable.as_deref() == Some(*discovered_path))
+                .map(|_| "system-path")
+        });
 
     let Some(executable) = executable else {
-        diagnostics.push("AutoCut local speech transcription executablePath is not configured; set it in Settings or SDKWORK_AUTOCUT_WHISPER_EXECUTABLE".to_string());
+        diagnostics.push("AutoCut local speech transcription executablePath is not configured; AutoCut checked Settings, SDKWORK_AUTOCUT_WHISPER_EXECUTABLE, verified bundled sidecar, PATH, and common local installation directories.".to_string());
         return AutoCutSpeechToolchain {
             executable: String::new(),
             model_path: String::new(),
             source_kind: resolved_source_kind,
+            executable_ready: false,
+            model_ready: false,
             ready: false,
             diagnostics,
+            default_executable_directory,
+            default_executable_path: default_executable_path_text,
+            default_model_directory,
+            default_model_path: default_model_path_text,
+            executable_strategy,
         };
     };
     let Some(model_path) = model_path else {
-        diagnostics.push("AutoCut local speech transcription modelPath is not configured; set it in Settings or SDKWORK_AUTOCUT_WHISPER_MODEL".to_string());
+        diagnostics.push("AutoCut local speech transcription modelPath is not configured; AutoCut checked Settings, SDKWORK_AUTOCUT_WHISPER_MODEL, and the default local model path.".to_string());
         return AutoCutSpeechToolchain {
             executable,
             model_path: String::new(),
-            source_kind: resolved_source_kind,
+            source_kind: executable_source_kind
+                .unwrap_or(resolved_source_kind.as_str())
+                .to_string(),
+            executable_ready: true,
+            model_ready: false,
             ready: false,
             diagnostics,
+            default_executable_directory,
+            default_executable_path: default_executable_path_text,
+            default_model_directory,
+            default_model_path: default_model_path_text,
+            executable_strategy,
         };
     };
-    if Path::new(&executable).is_absolute() && !Path::new(&executable).is_file() {
-        diagnostics.push(format!(
-            "AutoCut local speech transcription executablePath does not point to a readable file: {executable}"
-        ));
+    let mut executable_ready = true;
+    let mut model_ready = true;
+    if let Err(error) = ensure_supported_speech_executable_file_path(&executable) {
+        executable_ready = false;
+        diagnostics.push(error);
     }
-    if !Path::new(&model_path).is_file() {
-        diagnostics.push(format!(
-            "AutoCut local speech transcription modelPath does not point to a readable file: {model_path}"
-        ));
+    if let Err(error) = ensure_supported_speech_model_file_path(&model_path) {
+        model_ready = false;
+        diagnostics.push(error);
     }
 
     AutoCutSpeechToolchain {
         executable,
         model_path,
-        source_kind: resolved_source_kind,
+        source_kind: executable_source_kind
+            .unwrap_or(resolved_source_kind.as_str())
+            .to_string(),
+        executable_ready,
+        model_ready,
         ready: diagnostics.is_empty(),
         diagnostics,
+        default_executable_directory,
+        default_executable_path: default_executable_path_text,
+        default_model_directory,
+        default_model_path: default_model_path_text,
+        executable_strategy,
     }
+}
+
+fn resolve_autocut_default_bundled_speech_executable_path(
+    manifest_paths: &[PathBuf],
+    os: &str,
+    arch: &str,
+) -> Option<PathBuf> {
+    for manifest_path in manifest_paths {
+        if let Ok(manifest) = parse_autocut_speech_toolchain_manifest(manifest_path) {
+            if validate_autocut_speech_toolchain_manifest(&manifest).is_err() {
+                continue;
+            }
+            let platform_key = autocut_ffmpeg_platform_key(os, arch);
+            if let Some(platform) = manifest.platforms.get(platform_key.as_str()) {
+                if let Some(parent) = manifest_path.parent() {
+                    return Some(join_autocut_manifest_relative_path(
+                        parent,
+                        &platform.relative_path,
+                    ));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn resolve_autocut_speech_executable_from_system_candidates(
+    path_env: Option<&str>,
+    common_executable_candidate_paths: &[PathBuf],
+    os: &str,
+) -> Option<PathBuf> {
+    let binary_names = autocut_speech_executable_binary_names(os);
+    for directory in split_autocut_system_path_directories(path_env, os) {
+        for binary_name in &binary_names {
+            let candidate = directory.join(binary_name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    for candidate in common_executable_candidate_paths {
+        if candidate.is_file() {
+            return Some(candidate.clone());
+        }
+    }
+    None
+}
+
+fn split_autocut_system_path_directories(path_env: Option<&str>, os: &str) -> Vec<PathBuf> {
+    path_env
+        .unwrap_or_default()
+        .split(if os == "windows" { ';' } else { ':' })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn autocut_speech_executable_binary_names(os: &str) -> Vec<&'static str> {
+    if os == "windows" {
+        vec!["whisper-cli.exe", "whisper.exe", "main.exe"]
+    } else {
+        vec!["whisper-cli", "whisper", "main"]
+    }
+}
+
+fn autocut_common_speech_executable_candidate_paths() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if cfg!(windows) {
+        candidates.push(PathBuf::from(r"C:\Program Files\whisper.cpp\whisper-cli.exe"));
+        candidates.push(PathBuf::from(r"C:\Program Files\whisper.cpp\main.exe"));
+        candidates.push(PathBuf::from(r"C:\tools\whisper-cli.exe"));
+        candidates.push(PathBuf::from(r"C:\tools\whisper.cpp\whisper-cli.exe"));
+    } else if cfg!(target_os = "macos") {
+        candidates.push(PathBuf::from("/opt/homebrew/bin/whisper-cli"));
+        candidates.push(PathBuf::from("/usr/local/bin/whisper-cli"));
+        candidates.push(PathBuf::from("/opt/local/bin/whisper-cli"));
+    } else {
+        candidates.push(PathBuf::from("/usr/local/bin/whisper-cli"));
+        candidates.push(PathBuf::from("/usr/bin/whisper-cli"));
+        candidates.push(PathBuf::from("/opt/whisper.cpp/whisper-cli"));
+    }
+    candidates
+}
+
+fn autocut_speech_toolchain_manifest_candidate_paths(app: Option<&AppHandle>) -> Vec<PathBuf> {
+    let mut manifest_paths = Vec::new();
+    if let Some(app) = app {
+        if let Ok(resource_dir) = app.path().resource_dir() {
+            manifest_paths.push(
+                resource_dir
+                    .join("binaries")
+                    .join(AUTOCUT_SPEECH_TOOLCHAIN_MANIFEST_FILE_NAME),
+            );
+        }
+    }
+    manifest_paths.push(autocut_source_speech_toolchain_manifest_path());
+    manifest_paths
+}
+
+fn autocut_source_speech_toolchain_manifest_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("binaries")
+        .join(AUTOCUT_SPEECH_TOOLCHAIN_MANIFEST_FILE_NAME)
+}
+
+fn resolve_autocut_bundled_speech_executable_from_candidate_manifests(
+    manifest_paths: &[PathBuf],
+    os: &str,
+    arch: &str,
+) -> Option<AutoCutSpeechToolchain> {
+    let mut diagnostics = Vec::new();
+    for manifest_path in manifest_paths {
+        match resolve_autocut_bundled_speech_executable_from_manifest(manifest_path, os, arch) {
+            Ok(mut toolchain) => {
+                toolchain.diagnostics.splice(0..0, diagnostics);
+                return Some(toolchain);
+            }
+            Err(error) => diagnostics.push(error),
+        }
+    }
+
+    None
+}
+
+fn resolve_autocut_bundled_speech_executable_from_manifest(
+    manifest_path: &Path,
+    os: &str,
+    arch: &str,
+) -> Result<AutoCutSpeechToolchain, String> {
+    let manifest = parse_autocut_speech_toolchain_manifest(manifest_path)?;
+    validate_autocut_speech_toolchain_manifest(&manifest)?;
+    let platform_key = autocut_ffmpeg_platform_key(os, arch);
+    let platform = manifest
+        .platforms
+        .get(platform_key.as_str())
+        .ok_or_else(|| {
+            format!("speech toolchain manifest has no platform entry for {platform_key}")
+        })?;
+    let sidecar_path = manifest_path
+        .parent()
+        .ok_or_else(|| {
+            format!(
+                "resolve speech toolchain manifest parent failed: {}",
+                manifest_path.display()
+            )
+        })?
+        .to_path_buf();
+    let sidecar_path = join_autocut_manifest_relative_path(&sidecar_path, &platform.relative_path);
+    if !sidecar_path.is_file() {
+        return Err(format!(
+            "missing bundled speech transcription sidecar {}",
+            sidecar_path.display()
+        ));
+    }
+    verify_autocut_ffmpeg_sidecar_integrity(&sidecar_path, platform).map_err(|error| {
+        error.replace("bundled FFmpeg sidecar", "bundled speech transcription sidecar")
+    })?;
+    let sidecar_root = manifest_path.parent().ok_or_else(|| {
+        format!(
+            "resolve speech toolchain manifest parent failed: {}",
+            manifest_path.display()
+        )
+    })?;
+    verify_autocut_speech_sidecar_companion_files(sidecar_root, platform)?;
+
+    Ok(AutoCutSpeechToolchain {
+        executable: sidecar_path.display().to_string(),
+        model_path: String::new(),
+        source_kind: "bundled-sidecar".to_string(),
+        executable_ready: true,
+        model_ready: false,
+        ready: false,
+        diagnostics: Vec::new(),
+        default_executable_directory: sidecar_path
+            .parent()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
+        default_executable_path: sidecar_path.display().to_string(),
+        default_model_directory: String::new(),
+        default_model_path: String::new(),
+        executable_strategy: "verified bundled sidecar".to_string(),
+    })
+}
+
+fn verify_autocut_speech_sidecar_companion_files(
+    sidecar_root: &Path,
+    platform: &AutoCutFfmpegPlatformToolchain,
+) -> Result<(), String> {
+    for companion_file in &platform.companion_files {
+        let companion_path =
+            join_autocut_manifest_relative_path(sidecar_root, &companion_file.relative_path);
+        if !companion_path.is_file() {
+            return Err(format!(
+                "missing bundled speech transcription sidecar companion {}",
+                companion_path.display()
+            ));
+        }
+        verify_autocut_ffmpeg_sidecar_integrity_with_integrity(
+            &companion_path,
+            &companion_file.integrity,
+        )
+        .map_err(|error| {
+            error.replace("bundled FFmpeg sidecar", "bundled speech transcription sidecar companion")
+        })?;
+    }
+
+    Ok(())
+}
+
+fn join_autocut_manifest_relative_path(parent: &Path, relative_path: &str) -> PathBuf {
+    relative_path
+        .split(['/', '\\'])
+        .filter(|segment| !segment.is_empty())
+        .fold(parent.to_path_buf(), |path, segment| path.join(segment))
+}
+
+fn parse_autocut_speech_toolchain_manifest(
+    manifest_path: &Path,
+) -> Result<AutoCutSpeechToolchainManifest, String> {
+    let source = fs::read_to_string(manifest_path).map_err(|error| {
+        format!(
+            "read speech toolchain manifest {} failed: {error}",
+            manifest_path.display()
+        )
+    })?;
+    let embedded_manifest = AUTOCUT_SPEECH_TOOLCHAIN_MANIFEST_JSON;
+    serde_json::from_str(&source)
+        .map_err(|error| format!("parse speech toolchain manifest failed: {error}"))
+        .and_then(|manifest: AutoCutSpeechToolchainManifest| {
+            if embedded_manifest.contains("\"tool\"") {
+                Ok(manifest)
+            } else {
+                Err("embedded speech toolchain manifest contract is invalid".to_string())
+            }
+        })
+}
+
+fn validate_autocut_speech_toolchain_manifest(
+    manifest: &AutoCutSpeechToolchainManifest,
+) -> Result<(), String> {
+    if manifest.tool != "whisper-cli" {
+        return Err(format!(
+            "speech toolchain manifest declares unsupported tool {}",
+            manifest.tool
+        ));
+    }
+    if manifest.contract_version.trim().is_empty() {
+        return Err("speech toolchain manifest contractVersion must be non-empty".to_string());
+    }
+    if manifest.required_binary.trim().is_empty() {
+        return Err("speech toolchain manifest requiredBinary must be non-empty".to_string());
+    }
+    if manifest.license.name.trim().is_empty()
+        || manifest.license.spdx_expression.trim().is_empty()
+        || manifest.license.notice.trim().is_empty()
+    {
+        return Err("speech toolchain manifest license metadata must be complete".to_string());
+    }
+    for (platform_key, platform) in &manifest.platforms {
+        if platform.relative_path.trim().is_empty() {
+            return Err(format!(
+                "speech toolchain manifest platform {platform_key} relativePath must be non-empty"
+            ));
+        }
+        if platform.binary_name.trim().is_empty() {
+            return Err(format!(
+                "speech toolchain manifest platform {platform_key} binaryName must be non-empty"
+            ));
+        }
+        if !platform.relative_path.ends_with(&platform.binary_name) {
+            return Err(format!(
+                "speech toolchain manifest platform {platform_key} binaryName must match relativePath"
+            ));
+        }
+        if platform.relative_path.contains("..")
+            || Path::new(&platform.relative_path).is_absolute()
+            || platform
+                .relative_path
+                .split(['/', '\\'])
+                .any(|segment| segment.is_empty())
+        {
+            return Err(format!(
+                "speech toolchain manifest platform {platform_key} relativePath must be a safe relative path"
+            ));
+        }
+        for companion_file in &platform.companion_files {
+            validate_autocut_speech_toolchain_companion_file(platform_key, companion_file)?;
+        }
+        if platform.integrity.sha256.len() != 64
+            || !platform
+                .integrity
+                .sha256
+                .chars()
+                .all(|ch| ch.is_ascii_hexdigit())
+        {
+            return Err(format!(
+                "speech toolchain manifest platform {platform_key} sha256 must be a 64 character hex digest"
+            ));
+        }
+        if manifest.bundled_ready
+            && (platform.integrity.byte_size == 0
+                || platform.integrity.sha256
+                    == "0000000000000000000000000000000000000000000000000000000000000000")
+        {
+            return Err(format!(
+                "speech toolchain manifest platform {platform_key} cannot claim bundled readiness with placeholder integrity"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_autocut_speech_toolchain_companion_file(
+    platform_key: &str,
+    companion_file: &AutoCutToolchainCompanionFile,
+) -> Result<(), String> {
+    if companion_file.relative_path.trim().is_empty() {
+        return Err(format!(
+            "speech toolchain manifest platform {platform_key} companion relativePath must be non-empty"
+        ));
+    }
+    if companion_file.relative_path.contains("..")
+        || Path::new(&companion_file.relative_path).is_absolute()
+        || companion_file
+            .relative_path
+            .split(['/', '\\'])
+            .any(|segment| segment.is_empty())
+    {
+        return Err(format!(
+            "speech toolchain manifest platform {platform_key} companion relativePath must be a safe relative path"
+        ));
+    }
+    if companion_file.integrity.sha256.len() != 64
+        || !companion_file
+            .integrity
+            .sha256
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit())
+    {
+        return Err(format!(
+            "speech toolchain manifest platform {platform_key} companion sha256 must be a 64 character hex digest"
+        ));
+    }
+
+    Ok(())
+}
+
+fn ensure_supported_speech_executable_file_path(executable_path: &str) -> Result<(), String> {
+    let path = Path::new(executable_path);
+    if !path.is_absolute() {
+        return Err(
+            "AutoCut local speech transcription executablePath must be an absolute local executable file path."
+                .to_string(),
+        );
+    }
+    if !path.is_file() {
+        return Err(format!(
+            "AutoCut local speech transcription executablePath does not point to a readable file: {executable_path}"
+        ));
+    }
+
+    Ok(())
+}
+
+fn ensure_supported_speech_model_file_path(model_path: &str) -> Result<(), String> {
+    let path = Path::new(model_path);
+    if !path.is_absolute() {
+        return Err(
+            "AutoCut local speech transcription modelPath must be an absolute local model file path."
+                .to_string(),
+        );
+    }
+    if path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(|file_name| file_name.ends_with(".download"))
+        .unwrap_or(false)
+    {
+        return Err(
+            "AutoCut local speech transcription modelPath points to a partial .download file; use the Settings model downloader again and select the installed model file.".to_string(),
+        );
+    }
+    if !path.is_file() {
+        return Err(format!(
+            "AutoCut local speech transcription modelPath does not point to a readable file: {model_path}"
+        ));
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if !SUPPORTED_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS
+        .iter()
+        .any(|supported| *supported == extension)
+    {
+        return Err(format!(
+            "AutoCut local speech transcription modelPath must use a supported model file extension: {}.",
+            SUPPORTED_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS.join(", ")
+        ));
+    }
+    let byte_size = fs::metadata(path)
+        .map_err(|error| {
+            format!("read AutoCut local speech transcription model metadata failed: {error}")
+        })?
+        .len();
+    if byte_size < MIN_SPEECH_TRANSCRIPTION_MODEL_BYTES {
+        return Err(format!(
+            "AutoCut local speech transcription modelPath is missing or incomplete: {model_path} is {byte_size} bytes, below the minimum viable local STT model size. Use the Settings recommended offline Whisper model downloader again."
+        ));
+    }
+
+    Ok(())
 }
 
 fn read_speech_toolchain_version_line(output: &Output) -> Option<String> {
@@ -5267,14 +7655,28 @@ fn read_speech_toolchain_version_line(output: &Output) -> Option<String> {
         .map(str::to_string)
 }
 
-fn parse_whisper_transcript_json(source: &str) -> Result<Vec<AutoCutSpeechTranscriptionSegment>, String> {
+fn parse_whisper_transcript_json(
+    source: &str,
+) -> Result<Vec<AutoCutSpeechTranscriptionSegment>, String> {
+    if source.len() > MAX_SPEECH_TRANSCRIPT_JSON_BYTES {
+        return Err(format!(
+            "AutoCut Whisper transcript JSON is too large: {} bytes exceeds {} bytes",
+            source.len(),
+            MAX_SPEECH_TRANSCRIPT_JSON_BYTES
+        ));
+    }
+
     let value: Value = serde_json::from_str(source)
         .map_err(|error| format!("parse AutoCut Whisper transcript JSON failed: {error}"))?;
-    let segments_value = value
-        .get("transcription")
-        .and_then(Value::as_array)
-        .or_else(|| value.get("segments").and_then(Value::as_array))
-        .ok_or_else(|| "AutoCut Whisper transcript JSON must contain transcription or segments array".to_string())?;
+    let segments_value = read_whisper_segments_array(&value)?;
+    if segments_value.len() > MAX_SPEECH_TRANSCRIPT_SEGMENTS {
+        return Err(format!(
+            "AutoCut Whisper transcript JSON contains too many segments: {} exceeds {}",
+            segments_value.len(),
+            MAX_SPEECH_TRANSCRIPT_SEGMENTS
+        ));
+    }
+
     let mut segments = Vec::new();
     for segment_value in segments_value {
         let text = segment_value
@@ -5286,8 +7688,9 @@ fn parse_whisper_transcript_json(source: &str) -> Result<Vec<AutoCutSpeechTransc
         if text.is_empty() {
             continue;
         }
-        let start_ms = read_whisper_segment_time_ms(segment_value, "start", "offsets", 0)?;
-        let end_ms = read_whisper_segment_time_ms(segment_value, "end", "offsets", 1)?;
+        let start_ms =
+            read_whisper_segment_time_ms(segment_value, "start", "start_ms", "offsets", 0)?;
+        let end_ms = read_whisper_segment_time_ms(segment_value, "end", "end_ms", "offsets", 1)?;
         if end_ms <= start_ms {
             continue;
         }
@@ -5306,15 +7709,51 @@ fn parse_whisper_transcript_json(source: &str) -> Result<Vec<AutoCutSpeechTransc
     }
 
     if segments.is_empty() {
-        return Err("AutoCut Whisper transcript JSON contains no usable transcript segments".to_string());
+        return Err(
+            "AutoCut Whisper transcript JSON contains no usable transcript segments".to_string(),
+        );
     }
 
+    segments.sort_by(|first, second| {
+        first
+            .start_ms
+            .cmp(&second.start_ms)
+            .then_with(|| first.end_ms.cmp(&second.end_ms))
+    });
+
     Ok(segments)
+}
+
+fn read_whisper_transcript_json_file(path: &Path) -> Result<String, String> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("inspect AutoCut speech transcript JSON failed: {error}"))?;
+    let byte_size = metadata.len();
+    if byte_size > MAX_SPEECH_TRANSCRIPT_JSON_BYTES as u64 {
+        return Err(format!(
+            "AutoCut speech transcript JSON is too large: {byte_size} bytes exceeds {} bytes",
+            MAX_SPEECH_TRANSCRIPT_JSON_BYTES
+        ));
+    }
+
+    fs::read_to_string(path)
+        .map_err(|error| format!("read AutoCut speech transcript JSON failed: {error}"))
+}
+
+fn read_whisper_segments_array(value: &Value) -> Result<&Vec<Value>, String> {
+    value
+        .get("transcription")
+        .and_then(Value::as_array)
+        .or_else(|| value.get("segments").and_then(Value::as_array))
+        .or_else(|| value.get("chunks").and_then(Value::as_array))
+        .or_else(|| value.get("result").and_then(|result| result.get("segments")).and_then(Value::as_array))
+        .or_else(|| value.get("result").and_then(|result| result.get("chunks")).and_then(Value::as_array))
+        .ok_or_else(|| "AutoCut Whisper transcript JSON must contain transcription, segments, chunks, result.segments, or result.chunks array".to_string())
 }
 
 fn read_whisper_segment_time_ms(
     segment: &Value,
     field_name: &str,
+    milliseconds_field_name: &str,
     offsets_field_name: &str,
     offsets_index: usize,
 ) -> Result<i64, String> {
@@ -5322,16 +7761,34 @@ fn read_whisper_segment_time_ms(
         return whisper_segment_boundary_time_to_ms(value)
             .ok_or_else(|| format!("AutoCut Whisper segment {field_name} is not a valid time"));
     }
-    if let Some(offset_value) = read_whisper_indexed_time(segment, offsets_field_name, offsets_index) {
-        return whisper_time_to_ms(offset_value)
-            .ok_or_else(|| format!("AutoCut Whisper segment {offsets_field_name}[{offsets_index}] is not a valid time"));
+    if let Some(value) = segment.get(milliseconds_field_name) {
+        return whisper_time_to_ms(value).ok_or_else(|| {
+            format!(
+                "AutoCut Whisper segment {milliseconds_field_name} is not a valid millisecond time"
+            )
+        });
+    }
+    if let Some(offset_value) =
+        read_whisper_indexed_time(segment, offsets_field_name, offsets_index)
+    {
+        return whisper_time_to_ms(offset_value).ok_or_else(|| {
+            format!(
+                "AutoCut Whisper segment {offsets_field_name}[{offsets_index}] is not a valid time"
+            )
+        });
     }
     if let Some(timestamp_value) = read_whisper_indexed_time(segment, "timestamps", offsets_index) {
-        return whisper_segment_boundary_time_to_ms(timestamp_value)
-            .ok_or_else(|| format!("AutoCut Whisper segment timestamps[{offsets_index}] is not a valid time"));
+        return whisper_segment_boundary_time_to_ms(timestamp_value).ok_or_else(|| {
+            format!("AutoCut Whisper segment timestamps[{offsets_index}] is not a valid time")
+        });
+    }
+    if let Some(timestamp_value) = read_whisper_indexed_time(segment, "timestamp", offsets_index) {
+        return whisper_segment_boundary_time_to_ms(timestamp_value).ok_or_else(|| {
+            format!("AutoCut Whisper segment timestamp[{offsets_index}] is not a valid time")
+        });
     }
     Err(format!(
-        "AutoCut Whisper segment is missing {field_name}, {offsets_field_name}[{offsets_index}], or timestamps[{offsets_index}]"
+        "AutoCut Whisper segment is missing {field_name}, {milliseconds_field_name}, {offsets_field_name}[{offsets_index}], timestamps[{offsets_index}], or timestamp[{offsets_index}]"
     ))
 }
 
@@ -5383,7 +7840,7 @@ fn parse_whisper_timestamp_to_millis(value: &str) -> Option<i64> {
     }
 
     if normalized.contains(':') {
-        return parse_ffmpeg_out_time_to_millis(normalized);
+        return parse_ffmpeg_out_time_to_millis(&normalized.replace(',', "."));
     }
 
     normalized
@@ -5600,6 +8057,7 @@ fn read_video_slice_retry_request(
             serde_json::from_value::<Vec<AutoCutVideoSliceClipRequest>>(value)
                 .map_err(|error| format!("parse AutoCut video slice retry clips failed: {error}"))
         })?;
+    ensure_video_slice_retry_clips_have_transcript_evidence(&task.uuid, &clips)?;
 
     Ok(AutoCutVideoSliceRequest {
         asset_uuid: retry_asset_uuid(task)?,
@@ -5610,8 +8068,9 @@ fn read_video_slice_retry_request(
             .get("renderProfile")
             .cloned()
             .map(|value| {
-                serde_json::from_value::<AutoCutVideoSliceRenderProfile>(value)
-                    .map_err(|error| format!("parse AutoCut video slice retry renderProfile failed: {error}"))
+                serde_json::from_value::<AutoCutVideoSliceRenderProfile>(value).map_err(|error| {
+                    format!("parse AutoCut video slice retry renderProfile failed: {error}")
+                })
             })
             .transpose()?,
         subtitle_format: retry_optional_string_field(task, "subtitleFormat")?,
@@ -5621,11 +8080,41 @@ fn read_video_slice_retry_request(
             .get("subtitleSegments")
             .cloned()
             .map(|value| {
-                serde_json::from_value::<Vec<AutoCutSpeechTranscriptionSegment>>(value)
-                    .map_err(|error| format!("parse AutoCut video slice retry subtitleSegments failed: {error}"))
+                serde_json::from_value::<Vec<AutoCutSpeechTranscriptionSegment>>(value).map_err(
+                    |error| {
+                        format!("parse AutoCut video slice retry subtitleSegments failed: {error}")
+                    },
+                )
             })
             .transpose()?,
     })
+}
+
+fn ensure_video_slice_retry_clips_have_transcript_evidence(
+    task_uuid: &str,
+    clips: &[AutoCutVideoSliceClipRequest],
+) -> Result<(), String> {
+    for (index, clip) in clips.iter().enumerate() {
+        let clip_number = index + 1;
+        if clip
+            .transcript_segments
+            .as_ref()
+            .filter(|segments| !segments.is_empty())
+            .is_none()
+            || clip
+                .transcript_text
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .is_none()
+        {
+            return Err(format!(
+                "AutoCut native video slice retry cannot reuse transcript-less legacy clips from task {task_uuid}; clip {clip_number} is missing speech-to-text transcript evidence. Re-run Smart Slice after speech-to-text setup so every generated clip has verified transcript evidence."
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn read_speech_transcription_retry_request(
@@ -5633,10 +8122,12 @@ fn read_speech_transcription_retry_request(
 ) -> Result<AutoCutSpeechTranscriptionRequest, String> {
     Ok(AutoCutSpeechTranscriptionRequest {
         asset_uuid: retry_asset_uuid(task)?,
+        provider_id: retry_optional_string_field(task, "providerId")?,
         language: Some(retry_string_field(task, "language", Some("auto"))?),
         output_root_dir: retry_output_root_dir(task)?,
         executable_path: retry_optional_string_field(task, "executablePath")?,
         model_path: retry_optional_string_field(task, "modelPath")?,
+        workflow_purpose: retry_optional_string_field(task, "workflowPurpose")?,
     })
 }
 
@@ -5839,8 +8330,8 @@ fn finish_canceled_operation_if_requested(
     Ok(true)
 }
 
-fn tracked_native_media_processes(
-) -> &'static Mutex<HashMap<String, AutoCutTrackedNativeMediaProcess>> {
+fn tracked_native_media_processes()
+-> &'static Mutex<HashMap<String, AutoCutTrackedNativeMediaProcess>> {
     AUTOCUT_TRACKED_NATIVE_MEDIA_PROCESSES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -6284,6 +8775,10 @@ fn complete_ops_slice_task(
         .first()
         .map(|slice| slice.task_output_dir.clone())
         .unwrap_or_default();
+    let subtitle_artifact_count = slice_artifacts
+        .iter()
+        .filter(|slice| slice.subtitle_artifact_uuid.is_some())
+        .count();
     connection
         .execute(
             r#"
@@ -6301,6 +8796,7 @@ fn complete_ops_slice_task(
                     "assetUuid": asset_uuid,
                     "taskOutputDir": task_output_dir,
                     "sliceCount": slice_artifacts.len(),
+                    "subtitleArtifactCount": subtitle_artifact_count,
                     "sliceResults": slice_artifacts
                 })
                 .to_string(),
@@ -6348,7 +8844,9 @@ fn complete_ops_transcription_task(
                 task_uuid,
             ],
         )
-        .map_err(|error| format!("complete AutoCut speech transcription ops_task failed: {error}"))?;
+        .map_err(|error| {
+            format!("complete AutoCut speech transcription ops_task failed: {error}")
+        })?;
 
     Ok(())
 }
@@ -6770,7 +9268,12 @@ fn insert_media_slice_thumbnail_artifact(
                 AUTOCUT_LOCAL_ORGANIZATION_ID,
                 task_uuid,
                 asset.uuid,
-                format!("{} slice {:02} thumbnail {}", asset.name, clip_index + 1, clip.label),
+                format!(
+                    "{} slice {:02} thumbnail {}",
+                    asset.name,
+                    clip_index + 1,
+                    clip.label
+                ),
                 MEDIA_ARTIFACT_TYPE_VIDEO_SLICE_THUMBNAIL,
                 result.artifact_path,
                 "image/jpeg",
@@ -6854,7 +9357,12 @@ fn insert_media_slice_subtitle_artifact(
                 AUTOCUT_LOCAL_ORGANIZATION_ID,
                 task_uuid,
                 asset.uuid,
-                format!("{} slice {:02} subtitle {}", asset.name, clip_index + 1, clip.label),
+                format!(
+                    "{} slice {:02} subtitle {}",
+                    asset.name,
+                    clip_index + 1,
+                    clip.label
+                ),
                 MEDIA_ARTIFACT_TYPE_VIDEO_SLICE_SUBTITLE,
                 result.artifact_path,
                 "application/x-subrip",
@@ -6894,7 +9402,7 @@ fn u64_to_i64(value: u64, column_name: &str) -> Result<i64, String> {
 
 fn classify_media_type(extension: &str) -> &'static str {
     match extension {
-        "mp4" | "mov" | "mkv" | "webm" | "avi" => "video",
+        "mp4" | "mov" | "mkv" | "webm" | "avi" | "flv" | "m4v" => "video",
         "mp3" | "wav" | "flac" | "aac" | "m4a" | "ogg" => "audio",
         "gif" => "gif",
         "png" | "jpg" | "jpeg" | "webp" => "image",
@@ -6909,6 +9417,8 @@ fn media_mime_type(extension: &str, media_type: &str) -> &'static str {
         "mkv" => "video/x-matroska",
         "webm" => "video/webm",
         "avi" => "video/x-msvideo",
+        "flv" => "video/x-flv",
+        "m4v" => "video/x-m4v",
         "mp3" => "audio/mpeg",
         "wav" => "audio/wav",
         "flac" => "audio/flac",
@@ -6957,12 +9467,78 @@ mod tests {
         dir
     }
 
+    fn write_minimal_valid_speech_model(path: &Path) {
+        let file = fs::File::create(path).expect("create speech model fixture");
+        file.set_len(MIN_SPEECH_TRANSCRIPTION_MODEL_BYTES)
+            .expect("size speech model fixture");
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        format!("{:x}", hasher.finalize())
+    }
+
+    fn smart_slice_test_clip(
+        start_ms: i64,
+        duration_ms: i64,
+        label: &str,
+    ) -> AutoCutVideoSliceClipRequest {
+        let speech_start_ms = start_ms;
+        let speech_end_ms = start_ms + duration_ms;
+        let transcript_text = format!("{label} transcript evidence.");
+        AutoCutVideoSliceClipRequest {
+            start_ms,
+            duration_ms,
+            label: label.to_string(),
+            output_file_name: None,
+            source_start_ms: Some(start_ms),
+            source_end_ms: Some(speech_end_ms),
+            speech_start_ms: Some(speech_start_ms),
+            speech_end_ms: Some(speech_end_ms),
+            boundary_padding_before_ms: Some(0),
+            boundary_padding_after_ms: Some(0),
+            transcript_text: Some(transcript_text.clone()),
+            transcript_segments: Some(vec![AutoCutSpeechTranscriptionSegment {
+                start_ms: speech_start_ms,
+                end_ms: speech_end_ms,
+                text: transcript_text,
+                speaker: Some("Speaker 1".to_string()),
+            }]),
+            transcript_segment_count: Some(1),
+            transcript_coverage_score: Some(1.0),
+            speech_continuity_grade: Some("strong".to_string()),
+        }
+    }
+
     fn prepared_connection() -> Connection {
         let connection = Connection::open_in_memory().expect("open in-memory sqlite");
         connection
             .execute_batch(crate::database_runtime::AUTOCUT_SQLITE_BASELINE_SQL)
             .expect("apply baseline schema");
         connection
+    }
+
+    fn read_ops_task_input_json(connection: &Connection, task_uuid: &str) -> Value {
+        let input_json = connection
+            .query_row(
+                "SELECT input_json FROM ops_task WHERE uuid = ?1",
+                [task_uuid],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("query ops_task input_json");
+        serde_json::from_str(&input_json).expect("parse ops_task input_json")
+    }
+
+    fn assert_ops_task_input_has_source_name(
+        connection: &Connection,
+        task_uuid: &str,
+        asset_uuid: &str,
+        source_name: &str,
+    ) {
+        let input = read_ops_task_input_json(connection, task_uuid);
+        assert_eq!(input["assetUuid"], asset_uuid);
+        assert_eq!(input["sourceName"], source_name);
     }
 
     fn test_system_ffmpeg_toolchain() -> AutoCutFfmpegToolchain {
@@ -7008,6 +9584,110 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn video_slice_encoder_candidates_prioritize_platform_hardware_and_end_with_cpu_fallback() {
+        let candidates = autocut_video_slice_encoder_candidates();
+        assert!(
+            !candidates.is_empty(),
+            "native video slicing must always expose at least a CPU encoder candidate"
+        );
+        let last = candidates
+            .last()
+            .expect("video slice encoder candidates include CPU fallback");
+        assert_eq!(last.video_codec, "libx264");
+        assert!(
+            !last.requires_hardware,
+            "final video slice encoder candidate must be the portable CPU fallback"
+        );
+        assert_eq!(
+            candidates
+                .iter()
+                .filter(|candidate| candidate.video_codec == "libx264")
+                .count(),
+            1,
+            "libx264 CPU fallback should appear exactly once"
+        );
+        if candidates.len() > 1 {
+            assert!(
+                candidates[..candidates.len() - 1]
+                    .iter()
+                    .all(|candidate| candidate.requires_hardware),
+                "all candidates before the CPU fallback should be hardware attempts"
+            );
+        }
+
+        let codecs = candidates
+            .iter()
+            .map(|candidate| candidate.video_codec.as_str())
+            .collect::<Vec<_>>();
+        if cfg!(target_os = "windows") {
+            assert!(codecs.contains(&"h264_nvenc"));
+            assert!(codecs.contains(&"h264_qsv"));
+            assert!(codecs.contains(&"h264_amf"));
+        }
+        if cfg!(target_os = "macos") {
+            assert!(codecs.contains(&"h264_videotoolbox"));
+        }
+        if cfg!(target_os = "linux") {
+            assert!(codecs.contains(&"h264_nvenc"));
+            assert!(codecs.contains(&"h264_qsv"));
+            if autocut_linux_vaapi_render_device().is_some() {
+                assert!(codecs.contains(&"h264_vaapi"));
+            }
+        }
+    }
+
+    #[test]
+    fn video_slice_cpu_encoder_candidate_uses_compatible_libx264_output() {
+        let candidate = autocut_video_slice_cpu_encoder_candidate();
+        assert_eq!(candidate.label, "portable-cpu-libx264");
+        assert_eq!(candidate.video_codec, "libx264");
+        assert!(!candidate.requires_hardware);
+        assert!(candidate.pre_input_args.is_empty());
+        assert!(candidate.filter_chain_suffix.is_none());
+        assert!(
+            candidate
+                .encoder_args
+                .windows(2)
+                .any(|args| args == ["-preset", "veryfast"])
+        );
+        assert!(
+            candidate
+                .encoder_args
+                .windows(2)
+                .any(|args| args == ["-crf", "23"])
+        );
+        assert!(
+            candidate
+                .encoder_args
+                .windows(2)
+                .any(|args| args == ["-pix_fmt", "yuv420p"])
+        );
+    }
+
+    #[test]
+    fn video_slice_encoder_attempt_diagnostics_preserve_all_candidate_failures() {
+        let diagnostics = format_video_slice_encoder_attempt_diagnostics(&[
+            AutoCutVideoSliceEncoderAttemptDiagnostic {
+                label: "gpu-first".to_string(),
+                video_codec: "h264_nvenc".to_string(),
+                status: "exit status: 1".to_string(),
+                stderr_tail: "Cannot load libcuda.so.1".to_string(),
+            },
+            AutoCutVideoSliceEncoderAttemptDiagnostic {
+                label: "cpu-last".to_string(),
+                video_codec: "libx264".to_string(),
+                status: "exit status: 2".to_string(),
+                stderr_tail: String::new(),
+            },
+        ]);
+
+        assert!(diagnostics.contains("gpu-first [h264_nvenc]"));
+        assert!(diagnostics.contains("Cannot load libcuda.so.1"));
+        assert!(diagnostics.contains("cpu-last [libx264]"));
+        assert!(diagnostics.contains("no stderr captured"));
+    }
+
     fn run_ffmpeg_test_audio(
         toolchain: &AutoCutFfmpegToolchain,
         output_path: &Path,
@@ -7034,6 +9714,93 @@ mod tests {
                 "AutoCut FFmpeg test audio failed with status {}: {}",
                 output.status,
                 String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn run_ffmpeg_test_video_with_audio(
+        toolchain: &AutoCutFfmpegToolchain,
+        output_path: &Path,
+    ) -> Result<(), String> {
+        let output = Command::new(&toolchain.executable)
+            .args([
+                "-hide_banner",
+                "-nostdin",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=128x128:rate=30:duration=2.0",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=1000:duration=2.0",
+                "-shortest",
+                "-c:v",
+                "libx264",
+                "-g",
+                "90",
+                "-keyint_min",
+                "90",
+                "-sc_threshold",
+                "0",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+            ])
+            .arg(output_path)
+            .output()
+            .map_err(|error| format!("run AutoCut FFmpeg test video with audio failed: {error}"))?;
+
+        if !output.status.success() {
+            return Err(format!(
+                "AutoCut FFmpeg test video with audio failed with status {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn assert_ffmpeg_video_has_audible_audio(
+        toolchain: &AutoCutFfmpegToolchain,
+        input_path: &Path,
+    ) -> Result<(), String> {
+        let output = Command::new(&toolchain.executable)
+            .args(["-hide_banner", "-nostdin", "-i"])
+            .arg(input_path)
+            .args(["-map", "0:a:0", "-af", "volumedetect", "-f", "null", "-"])
+            .output()
+            .map_err(|error| format!("run AutoCut FFmpeg audio assertion failed: {error}"))?;
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.status.success() {
+            return Err(format!(
+                "AutoCut FFmpeg audio assertion failed with status {}: {}",
+                output.status,
+                stderr.trim()
+            ));
+        }
+
+        let mean_volume_db = stderr.lines().find_map(|line| {
+            let (_, value) = line.split_once("mean_volume:")?;
+            value.trim().split_whitespace().next()?.parse::<f64>().ok()
+        });
+        let Some(mean_volume_db) = mean_volume_db else {
+            return Err(format!(
+                "AutoCut FFmpeg audio assertion could not read mean_volume for {}",
+                input_path.display()
+            ));
+        };
+        if !mean_volume_db.is_finite() || mean_volume_db <= -60.0 {
+            return Err(format!(
+                "AutoCut FFmpeg audio assertion expected audible audio, got mean_volume {mean_volume_db} dB"
             ));
         }
 
@@ -7608,7 +10375,7 @@ mod tests {
             r#"{
               "tool": "ffmpeg",
               "contractVersion": "2026-05-05.ffmpeg-toolchain.v1",
-              "bundledReady": false,
+              "bundledReady": true,
               "requiredBinary": "ffmpeg",
               "license": {
                 "name": "FFmpeg",
@@ -7680,7 +10447,7 @@ mod tests {
             r#"{
               "tool": "ffmpeg",
               "contractVersion": "2026-05-05.ffmpeg-toolchain.v1",
-              "bundledReady": false,
+              "bundledReady": true,
               "requiredBinary": "ffmpeg",
               "license": {
                 "name": "FFmpeg",
@@ -7719,6 +10486,77 @@ mod tests {
                 .iter()
                 .any(|message| message.contains("missing bundled FFmpeg")),
             "missing sidecar diagnostics should be explicit: {:?}",
+            toolchain.diagnostics
+        );
+    }
+
+    #[test]
+    fn ffmpeg_toolchain_resolver_accepts_verified_platform_sidecar_without_global_manifest_readiness(
+    ) {
+        let manifest_root =
+            unique_temp_dir("sdkwork-autocut-ffmpeg-platform-bundled-sidecar");
+        let manifest_path = manifest_root.join("ffmpeg.toolchain.json");
+        let windows_sidecar_path = manifest_root.join("windows-x86_64").join("ffmpeg.exe");
+        fs::create_dir_all(windows_sidecar_path.parent().expect("sidecar parent"))
+            .expect("create FFmpeg sidecar dir");
+        let sidecar_bytes = b"windows ffmpeg sidecar fixture";
+        fs::write(&windows_sidecar_path, sidecar_bytes)
+            .expect("write bundled FFmpeg sidecar fixture");
+        let sidecar_sha256 = sha256_hex(sidecar_bytes);
+        fs::write(
+            &manifest_path,
+            format!(
+                r#"{{
+                  "tool": "ffmpeg",
+                  "contractVersion": "2026-05-05.ffmpeg-toolchain.v1",
+                  "bundledReady": false,
+                  "requiredBinary": "ffmpeg",
+                  "license": {{
+                    "name": "FFmpeg",
+                    "spdxExpression": "LGPL-2.1-or-later OR GPL-2.0-or-later",
+                    "notice": "Test manifest only."
+                  }},
+                  "platforms": {{
+                    "windows-x86_64": {{
+                      "relativePath": "windows-x86_64/ffmpeg.exe",
+                      "binaryName": "ffmpeg.exe",
+                      "integrity": {{
+                        "sha256": "{sidecar_sha256}",
+                        "byteSize": {}
+                      }}
+                    }},
+                    "linux-x86_64": {{
+                      "relativePath": "linux-x86_64/ffmpeg",
+                      "binaryName": "ffmpeg",
+                      "integrity": {{
+                        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                        "byteSize": 0
+                      }}
+                    }}
+                  }}
+                }}"#,
+                sidecar_bytes.len()
+            ),
+        )
+        .expect("write FFmpeg toolchain manifest");
+
+        let toolchain = resolve_autocut_ffmpeg_toolchain_from_manifest(
+            &manifest_path,
+            None,
+            "windows",
+            "x86_64",
+        )
+        .expect("resolve FFmpeg toolchain");
+
+        assert_eq!(
+            toolchain.executable,
+            windows_sidecar_path.display().to_string()
+        );
+        assert_eq!(toolchain.source_kind, "bundled-sidecar");
+        assert!(toolchain.manifest_ready);
+        assert!(
+            toolchain.bundled_ready,
+            "verified current-platform FFmpeg sidecar should be bundled-ready even before all platform sidecars are bundled: {:?}",
             toolchain.diagnostics
         );
     }
@@ -8110,6 +10948,12 @@ mod tests {
             extraction_result.source_asset_uuid,
             import_result.asset_uuid
         );
+        assert_ops_task_input_has_source_name(
+            &connection,
+            &extraction_result.task_uuid,
+            &import_result.asset_uuid,
+            &import_result.name,
+        );
         assert!(
             !extraction_result.artifact_uuid.is_empty(),
             "audio extraction must expose the media_artifact uuid"
@@ -8267,6 +11111,9 @@ mod tests {
             .iter()
             .find(|event| event.event_type == OPS_TASK_EVENT_TYPE_STARTED)
             .expect("task query must include the started event");
+        let input_json: Value =
+            serde_json::from_str(&snapshot.input_json).expect("parse snapshot input JSON");
+        assert_eq!(input_json["sourceName"], import_result.name);
         assert_eq!(started_event.payload["operation"], "audioExtraction");
         assert_eq!(started_event.payload["phase"], "native-task-started");
         assert_eq!(started_event.payload["source"], "native-host");
@@ -8295,6 +11142,76 @@ mod tests {
                 .iter()
                 .any(|event| event.event_type == OPS_TASK_EVENT_TYPE_COMPLETED),
             "task query must include the completed event"
+        );
+    }
+
+    #[test]
+    fn native_task_preview_scope_collection_uses_only_absolute_output_roots() {
+        let configured_root = unique_temp_dir("sdkwork-autocut-preview-scope-output-root");
+        let task_uuid = "ops-task-preview-scope";
+        let task_output_dir = configured_root
+            .join(AUTOCUT_MEDIA_TASK_DIR)
+            .join(task_uuid)
+            .join(AUTOCUT_MEDIA_TASK_OUTPUT_DIR);
+        let snapshots = vec![
+            AutoCutNativeTaskSnapshot {
+                uuid: task_uuid.to_string(),
+                task_type: OPS_TASK_TYPE_VIDEO_SLICE,
+                status: OPS_STATUS_COMPLETED,
+                progress: 100,
+                source_asset_uuid: Some("asset-preview-scope".to_string()),
+                input_json: json!({
+                    "outputRootDir": configured_root.display().to_string()
+                })
+                .to_string(),
+                output_json: json!({
+                    "taskOutputDir": task_output_dir.display().to_string(),
+                    "sliceResults": [
+                        {
+                            "artifactPath": task_output_dir.join("slice-001.mp4").display().to_string(),
+                            "thumbnailArtifactPath": task_output_dir.join(AUTOCUT_MEDIA_TASK_COVER_DIR).join("slice-001.jpg").display().to_string()
+                        }
+                    ]
+                })
+                .to_string(),
+                error_code: None,
+                error_message: None,
+                created_at: "2026-05-06T00:00:00Z".to_string(),
+                updated_at: "2026-05-06T00:00:01Z".to_string(),
+                stages: Vec::new(),
+                events: Vec::new(),
+                worker_leases: Vec::new(),
+            },
+            AutoCutNativeTaskSnapshot {
+                uuid: "ops-task-relative-output".to_string(),
+                task_type: OPS_TASK_TYPE_AUDIO_EXTRACTION,
+                status: OPS_STATUS_COMPLETED,
+                progress: 100,
+                source_asset_uuid: Some("asset-relative-output".to_string()),
+                input_json: json!({
+                    "outputRootDir": "relative-output-root"
+                })
+                .to_string(),
+                output_json: json!({
+                    "taskOutputDir": "relative/tasks/ops-task-relative-output/outputs"
+                })
+                .to_string(),
+                error_code: None,
+                error_message: None,
+                created_at: "2026-05-06T00:00:02Z".to_string(),
+                updated_at: "2026-05-06T00:00:03Z".to_string(),
+                stages: Vec::new(),
+                events: Vec::new(),
+                worker_leases: Vec::new(),
+            },
+        ];
+
+        let directories = collect_autocut_native_task_preview_directories(&snapshots);
+
+        assert_eq!(
+            directories,
+            vec![configured_root],
+            "preview scope collection must restore each absolute configured output root once and ignore relative history"
         );
     }
 
@@ -8889,6 +11806,90 @@ mod tests {
     }
 
     #[test]
+    fn native_task_retry_rejects_legacy_video_slices_without_speech_to_text_evidence() {
+        let root = unique_temp_dir("sdkwork-autocut-native-retry-legacy-slice-root");
+        let source_root = unique_temp_dir("sdkwork-autocut-native-retry-legacy-slice-source");
+        let source_path = source_root.join("source.mp4");
+        run_ffmpeg_test_video(&test_system_ffmpeg_toolchain(), &source_path)
+            .expect("create source video fixture");
+        let connection = prepared_connection();
+        let import_result = import_autocut_media_file_in_root(
+            &connection,
+            &root,
+            AutoCutMediaImportRequest {
+                source_path: source_path.display().to_string(),
+                output_root_dir: None,
+            },
+            &test_system_ffmpeg_toolchain(),
+        )
+        .expect("import source media");
+        let original_task_uuid = autocut_uuid("ops-task").expect("create original task uuid");
+        let retry_spec = AutoCutMediaOperationSpec {
+            operation: "videoSlice",
+            task_type: OPS_TASK_TYPE_VIDEO_SLICE,
+            stage_type: OPS_STAGE_TYPE_VIDEO_SLICE,
+            artifact_type: MEDIA_ARTIFACT_TYPE_VIDEO_SLICE,
+            artifact_name_suffix: "slice.mp4".to_string(),
+            mime_type: "video/mp4",
+            input_json: json!({
+                "assetUuid": import_result.asset_uuid,
+                "outputFormat": "mp4",
+                "clips": [
+                    {
+                        "startMs": 0,
+                        "durationMs": 45_000,
+                        "label": "Smart slice 1",
+                        "outputFileName": "01-smart-slice-1.mp4"
+                    }
+                ]
+            }),
+            failure_error_code: "FFMPEG_VIDEO_SLICE_FAILED",
+        };
+        insert_ops_task(
+            &connection,
+            &original_task_uuid,
+            &import_result.asset_uuid,
+            &retry_spec,
+        )
+        .expect("insert legacy video slice retry source task");
+        mark_ops_task_interrupted(&connection, &original_task_uuid).expect("mark interrupted");
+
+        let retry_error = retry_autocut_native_task_in_root_with_toolchain(
+            &connection,
+            &root,
+            AutoCutNativeTaskRetryRequest {
+                task_uuid: original_task_uuid.clone(),
+            },
+            &test_system_ffmpeg_toolchain(),
+        )
+        .expect_err("legacy video slice retry must fail before reusing transcript-less clips");
+
+        assert!(
+            retry_error.contains("Re-run Smart Slice after speech-to-text setup"),
+            "legacy retry rejection should tell the user to rerun Smart Slice with STT: {retry_error}"
+        );
+        assert!(
+            retry_error.contains("speech-to-text transcript evidence"),
+            "legacy retry rejection should explain the missing STT evidence contract: {retry_error}"
+        );
+        let original_status = read_ops_task_status(&connection, &original_task_uuid)
+            .expect("read original status")
+            .expect("original exists");
+        assert_eq!(original_status, OPS_STATUS_INTERRUPTED);
+        let retry_task_count = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ops_task WHERE uuid != ?1 AND task_type = ?2",
+                params![original_task_uuid.as_str(), OPS_TASK_TYPE_VIDEO_SLICE],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("query retry task count");
+        assert_eq!(
+            retry_task_count, 0,
+            "legacy transcript-less video slice retry must not create a replacement task"
+        );
+    }
+
+    #[test]
     fn native_task_retry_rejects_processing_task_without_mutation() {
         let root = unique_temp_dir("sdkwork-autocut-native-retry-processing-root");
         let connection = prepared_connection();
@@ -8981,8 +11982,7 @@ mod tests {
             .expect("query task-scoped artifact storage metadata");
         let artifact_metadata: Value =
             serde_json::from_str(&artifact_metadata_json).expect("artifact metadata JSON");
-        let task_output: Value =
-            serde_json::from_str(&task_output_json).expect("task output JSON");
+        let task_output: Value = serde_json::from_str(&task_output_json).expect("task output JSON");
 
         assert_eq!(artifact_uri, result.artifact_path);
         assert_eq!(
@@ -9085,6 +12085,12 @@ mod tests {
         .expect("generate video GIF from imported asset");
 
         assert_eq!(gif_result.source_asset_uuid, import_result.asset_uuid);
+        assert_ops_task_input_has_source_name(
+            &connection,
+            &gif_result.task_uuid,
+            &import_result.asset_uuid,
+            &import_result.name,
+        );
         assert_eq!(gif_result.format, "gif");
         assert!(gif_result.byte_size > 0, "GIF artifact must be non-empty");
         assert!(
@@ -9171,11 +12177,33 @@ mod tests {
                         start_ms: 0,
                         duration_ms: 180,
                         label: "Opening".to_string(),
+                        output_file_name: Some("../01-Clear Product Hook.MP4".to_string()),
+                        source_start_ms: Some(0),
+                        source_end_ms: Some(180),
+                        transcript_text: Some(
+                            "Opening transcript survives native task output.".to_string(),
+                        ),
+                        transcript_segments: Some(vec![AutoCutSpeechTranscriptionSegment {
+                            start_ms: 10,
+                            end_ms: 160,
+                            text: "Opening transcript survives native task output.".to_string(),
+                            speaker: Some("Speaker 1".to_string()),
+                        }]),
+                        transcript_segment_count: Some(1),
+                        speech_start_ms: Some(10),
+                        speech_end_ms: Some(160),
+                        boundary_padding_before_ms: Some(10),
+                        boundary_padding_after_ms: Some(20),
+                        transcript_coverage_score: Some(0.96),
+                        speech_continuity_grade: Some("strong".to_string()),
+                        ..AutoCutVideoSliceClipRequest::default()
                     },
                     AutoCutVideoSliceClipRequest {
                         start_ms: 180,
                         duration_ms: 180,
                         label: "Moment".to_string(),
+                        output_file_name: None,
+                        ..smart_slice_test_clip(180, 180, "Moment")
                     },
                 ],
                 output_format: "mp4".to_string(),
@@ -9191,13 +12219,30 @@ mod tests {
         .expect("slice video from imported asset");
 
         assert_eq!(slice_result.source_asset_uuid, import_result.asset_uuid);
+        assert_ops_task_input_has_source_name(
+            &connection,
+            &slice_result.task_uuid,
+            &import_result.asset_uuid,
+            &import_result.name,
+        );
         assert_eq!(slice_result.slices.len(), 2);
+        assert!(
+            slice_result.slices[0]
+                .artifact_path
+                .replace('\\', "/")
+                .ends_with("/01-clear-product-hook.mp4"),
+            "requested smart slice outputFileName must be sanitized and used for the physical artifact path"
+        );
         let task_output_dir = root
             .join(AUTOCUT_MEDIA_TASK_DIR)
             .join(&slice_result.task_uuid)
             .join(AUTOCUT_MEDIA_TASK_OUTPUT_DIR)
             .canonicalize()
             .expect("canonical slice task output directory");
+        let task_cover_dir = task_output_dir
+            .join(AUTOCUT_MEDIA_TASK_COVER_DIR)
+            .canonicalize()
+            .expect("canonical slice task cover directory");
         assert_eq!(
             slice_result.task_output_dir,
             task_output_dir.display().to_string()
@@ -9216,6 +12261,10 @@ mod tests {
             assert!(
                 Path::new(&slice.thumbnail_artifact_path).starts_with(&task_output_dir),
                 "slice thumbnail must stay inside its task output directory"
+            );
+            assert!(
+                Path::new(&slice.thumbnail_artifact_path).starts_with(&task_cover_dir),
+                "slice thumbnail must stay inside the dedicated task cover directory"
             );
             assert!(
                 Path::new(&slice.thumbnail_artifact_path).is_file(),
@@ -9285,10 +12334,39 @@ mod tests {
         let task_output: Value =
             serde_json::from_str(&task_output_json).expect("parse slice task output JSON");
         assert_eq!(task_output["taskOutputDir"], slice_result.task_output_dir);
-        assert_eq!(task_output["sliceResults"].as_array().map(Vec::len), Some(2));
+        assert_eq!(
+            task_output["sliceResults"].as_array().map(Vec::len),
+            Some(2)
+        );
         assert!(
             task_output["sliceResults"][0]["thumbnailArtifactPath"].is_string(),
             "slice task output JSON must persist thumbnailArtifactPath"
+        );
+        assert!(
+            task_output["sliceResults"][0]["thumbnailArtifactPath"]
+                .as_str()
+                .unwrap_or_default()
+                .replace('\\', "/")
+                .contains("/outputs/cover/"),
+            "slice task output JSON must persist thumbnailArtifactPath inside the task cover directory"
+        );
+        assert_eq!(
+            task_output["sliceResults"][0]["transcriptText"],
+            "Opening transcript survives native task output.",
+            "slice task output JSON must persist slice-level speech-to-text transcript text"
+        );
+        assert_eq!(
+            task_output["sliceResults"][0]["transcriptSegments"][0]["text"],
+            "Opening transcript survives native task output.",
+            "slice task output JSON must persist structured slice-level transcript segments"
+        );
+        assert_eq!(
+            task_output["sliceResults"][0]["speechStartMs"], 10,
+            "slice task output JSON must persist unpadded speech start"
+        );
+        assert_eq!(
+            task_output["sliceResults"][0]["boundaryPaddingAfterMs"], 20,
+            "slice task output JSON must persist professional trailing speech padding"
         );
 
         let stage_count = connection
@@ -9300,6 +12378,49 @@ mod tests {
             .expect("query slice ops_stage_run row");
         assert_eq!(stage_count, 1);
         println!("autocut-video-slice-smoke=passed");
+    }
+
+    #[test]
+    fn video_slice_from_asset_preserves_audible_audio_stream() {
+        let root = unique_temp_dir("sdkwork-autocut-video-slice-audio-root");
+        let source_root = unique_temp_dir("sdkwork-autocut-video-slice-audio-source");
+        let source_path = source_root.join("clip-with-audio.mp4");
+        let toolchain = test_system_ffmpeg_toolchain();
+        run_ffmpeg_test_video_with_audio(&toolchain, &source_path)
+            .expect("create source video with audio fixture");
+        let connection = prepared_connection();
+        let import_result = import_autocut_media_file_in_root(
+            &connection,
+            &root,
+            AutoCutMediaImportRequest {
+                source_path: source_path.display().to_string(),
+                output_root_dir: None,
+            },
+            &toolchain,
+        )
+        .expect("import source video with audio");
+
+        let slice_result = slice_autocut_video_from_asset_in_root_with_toolchain(
+            &connection,
+            &root,
+            AutoCutVideoSliceRequest {
+                asset_uuid: import_result.asset_uuid.clone(),
+                clips: vec![smart_slice_test_clip(700, 800, "Audible")],
+                output_format: "mp4".to_string(),
+                output_root_dir: None,
+                render_profile: None,
+                subtitle_format: None,
+                subtitle_mode: None,
+                subtitle_style_id: None,
+                subtitle_segments: None,
+            },
+            &toolchain,
+        )
+        .expect("slice video from imported asset with audio");
+
+        let artifact_path = Path::new(&slice_result.slices[0].artifact_path);
+        assert_ffmpeg_video_has_audible_audio(&toolchain, artifact_path)
+            .expect("sliced video should preserve an audible audio stream");
     }
 
     #[test]
@@ -9326,11 +12447,7 @@ mod tests {
             &root,
             AutoCutVideoSliceRequest {
                 asset_uuid: import_result.asset_uuid.clone(),
-                clips: vec![AutoCutVideoSliceClipRequest {
-                    start_ms: 100,
-                    duration_ms: 300,
-                    label: "Opening".to_string(),
-                }],
+                clips: vec![smart_slice_test_clip(100, 300, "Opening")],
                 output_format: "mp4".to_string(),
                 output_root_dir: None,
                 render_profile: None,
@@ -9433,6 +12550,24 @@ mod tests {
             "slice task output JSON must persist subtitleArtifactPath"
         );
         assert_eq!(task_output["sliceResults"][0]["subtitleFormat"], "srt");
+        assert_eq!(
+            task_output["subtitleArtifactCount"], 1,
+            "slice task output JSON must count generated subtitle artifacts, not input subtitle segments"
+        );
+
+        let task_input_json = connection
+            .query_row(
+                "SELECT input_json FROM ops_task WHERE uuid = ?1",
+                params![slice_result.task_uuid.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("query slice subtitle ops_task input_json");
+        let task_input: Value =
+            serde_json::from_str(&task_input_json).expect("parse slice subtitle task input JSON");
+        assert!(
+            task_input.get("subtitleArtifactCount").is_none(),
+            "slice task input JSON must not report requested subtitle segment count as generated artifact count"
+        );
     }
 
     #[test]
@@ -9441,6 +12576,8 @@ mod tests {
             start_ms: 1_000,
             duration_ms: 2_000,
             label: "Boundary".to_string(),
+            output_file_name: None,
+            ..AutoCutVideoSliceClipRequest::default()
         };
         let subtitle_text = build_video_slice_srt(
             &clip,
@@ -9491,6 +12628,85 @@ mod tests {
     }
 
     #[test]
+    fn video_slice_subtitle_mode_rejects_contradictory_enabled_requests() {
+        let disabled_error = normalize_video_slice_subtitle_mode(Some("none"), Some("srt"), true)
+            .expect_err("subtitle segments with explicit none mode must fail closed");
+        assert!(
+            disabled_error.contains("subtitleMode none cannot be used with subtitle segments"),
+            "none-mode rejection should explain the contradictory subtitle request: {disabled_error}"
+        );
+
+        let sidecar_error = normalize_video_slice_subtitle_mode(Some("both"), None, true)
+            .expect_err("both mode without an SRT subtitle format must fail closed");
+        assert!(
+            sidecar_error.contains("subtitleMode both requires subtitleFormat srt"),
+            "both-mode rejection should explain the missing SRT subtitle sidecar contract: {sidecar_error}"
+        );
+    }
+
+    #[test]
+    fn video_slice_output_file_names_are_sanitized_and_indexed() {
+        let clips = normalize_video_slice_clips(&[
+            AutoCutVideoSliceClipRequest {
+                label: "Clear Product Hook".to_string(),
+                output_file_name: Some("../Clear Product Hook?.MP4".to_string()),
+                ..smart_slice_test_clip(0, 1_000, "Clear Product Hook")
+            },
+            AutoCutVideoSliceClipRequest {
+                label: "../../爆发原因".to_string(),
+                output_file_name: Some("../爆发原因?.mp4".to_string()),
+                ..smart_slice_test_clip(1_000, 1_000, "../../爆发原因")
+            },
+        ])
+        .expect("normalize requested smart slice file names");
+
+        assert_eq!(
+            clips[0].output_file_name.as_deref(),
+            Some("01-clear-product-hook.mp4")
+        );
+        assert_eq!(
+            clips[1].output_file_name.as_deref(),
+            Some("02-爆发原因.mp4")
+        );
+    }
+
+    #[test]
+    fn video_slice_rejects_clips_without_speech_to_text_evidence_before_rendering() {
+        let error = normalize_video_slice_clips(&[AutoCutVideoSliceClipRequest {
+            start_ms: 0,
+            duration_ms: 45_000,
+            label: "Fixed interval without STT".to_string(),
+            output_file_name: None,
+            ..AutoCutVideoSliceClipRequest::default()
+        }])
+        .expect_err("video slicing must fail closed before rendering clips without STT evidence");
+
+        assert!(
+            error.contains("speech-to-text transcript evidence"),
+            "missing STT evidence rejection should explain the transcript evidence contract: {error}"
+        );
+    }
+
+    #[test]
+    fn open_artifact_folder_validation_rejects_relative_and_missing_paths() {
+        let relative_error = ensure_existing_autocut_artifact_file_path(Path::new("relative.mp4"))
+            .expect_err("relative artifact paths must be rejected");
+        assert!(
+            relative_error.contains("absolute path"),
+            "relative path rejection should explain the absolute path contract: {relative_error}"
+        );
+
+        let missing_path =
+            unique_temp_dir("sdkwork-autocut-missing-open-folder").join("missing.mp4");
+        let missing_error = ensure_existing_autocut_artifact_file_path(&missing_path)
+            .expect_err("missing artifact files must be rejected");
+        assert!(
+            missing_error.contains("canonicalize AutoCut generated artifact path failed"),
+            "missing path rejection should happen before opening the system file manager: {missing_error}"
+        );
+    }
+
+    #[test]
     fn video_slice_burned_subtitle_mode_renders_without_srt_sidecar() {
         let root = unique_temp_dir("sdkwork-autocut-video-slice-burned-subtitle-root");
         let source_root = unique_temp_dir("sdkwork-autocut-video-slice-burned-subtitle-source");
@@ -9514,11 +12730,7 @@ mod tests {
             &root,
             AutoCutVideoSliceRequest {
                 asset_uuid: import_result.asset_uuid.clone(),
-                clips: vec![AutoCutVideoSliceClipRequest {
-                    start_ms: 0,
-                    duration_ms: 300,
-                    label: "Burned".to_string(),
-                }],
+                clips: vec![smart_slice_test_clip(0, 300, "Burned")],
                 output_format: "mp4".to_string(),
                 output_root_dir: None,
                 render_profile: None,
@@ -9584,16 +12796,8 @@ mod tests {
             AutoCutVideoSliceRequest {
                 asset_uuid: import_result.asset_uuid.clone(),
                 clips: vec![
-                    AutoCutVideoSliceClipRequest {
-                        start_ms: 0,
-                        duration_ms: 200,
-                        label: "Valid".to_string(),
-                    },
-                    AutoCutVideoSliceClipRequest {
-                        start_ms: 10_000,
-                        duration_ms: 200,
-                        label: "OutOfRange".to_string(),
-                    },
+                    smart_slice_test_clip(0, 200, "Valid"),
+                    smart_slice_test_clip(10_000, 200, "OutOfRange"),
                 ],
                 output_format: "mp4".to_string(),
                 output_root_dir: None,
@@ -9657,11 +12861,7 @@ mod tests {
             &root,
             AutoCutVideoSliceRequest {
                 asset_uuid: import_result.asset_uuid.clone(),
-                clips: vec![AutoCutVideoSliceClipRequest {
-                    start_ms: 10_000,
-                    duration_ms: 200,
-                    label: "OutOfRange".to_string(),
-                }],
+                clips: vec![smart_slice_test_clip(10_000, 200, "OutOfRange")],
                 output_format: "mp4".to_string(),
                 output_root_dir: None,
                 render_profile: None,
@@ -9750,6 +12950,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_whisper_transcript_json_accepts_comma_fraction_timestamps() {
+        let segments = parse_whisper_transcript_json(
+            r#"
+            {
+              "segments": [
+                { "timestamps": { "from": "00:00:02,500", "to": "00:00:05,250" }, "text": "comma timestamp" }
+              ]
+            }
+            "#,
+        )
+        .expect("parse whisper transcript JSON with comma timestamp fractions");
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].start_ms, 2500);
+        assert_eq!(segments[0].end_ms, 5250);
+        assert_eq!(segments[0].text, "comma timestamp");
+    }
+
+    #[test]
     fn parse_whisper_transcript_json_treats_direct_start_end_numbers_as_seconds() {
         let segments = parse_whisper_transcript_json(
             r#"
@@ -9786,6 +13005,192 @@ mod tests {
     }
 
     #[test]
+    fn parse_whisper_transcript_json_sorts_segments_by_start_time() {
+        let segments = parse_whisper_transcript_json(
+            r#"
+            {
+              "segments": [
+                { "start": 8, "end": 10, "text": "second" },
+                { "start": 1, "end": 3, "text": "first" },
+                { "start": 4, "end": 6, "text": "middle" }
+              ]
+            }
+            "#,
+        )
+        .expect("parse out-of-order whisper transcript JSON");
+
+        assert_eq!(
+            segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "middle", "second"]
+        );
+    }
+
+    #[test]
+    fn parse_whisper_transcript_json_accepts_explicit_millisecond_fields() {
+        let segments = parse_whisper_transcript_json(
+            r#"
+            {
+              "segments": [
+                { "start_ms": 1250, "end_ms": 3500, "text": "millisecond fields" }
+              ]
+            }
+            "#,
+        )
+        .expect("parse whisper transcript JSON with explicit millisecond fields");
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].start_ms, 1250);
+        assert_eq!(segments[0].end_ms, 3500);
+        assert_eq!(segments[0].text, "millisecond fields");
+    }
+
+    #[test]
+    fn parse_whisper_transcript_json_accepts_nested_result_segments() {
+        let segments = parse_whisper_transcript_json(
+            r#"
+            {
+              "result": {
+                "segments": [
+                  { "start": 1, "end": 2.5, "text": "nested result" }
+                ]
+              }
+            }
+            "#,
+        )
+        .expect("parse whisper transcript JSON with nested result segments");
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].start_ms, 1000);
+        assert_eq!(segments[0].end_ms, 2500);
+        assert_eq!(segments[0].text, "nested result");
+    }
+
+    #[test]
+    fn parse_whisper_transcript_json_accepts_chunk_timestamp_arrays() {
+        let segments = parse_whisper_transcript_json(
+            r#"
+            {
+              "chunks": [
+                { "timestamp": [1.0, 2.5], "text": " chunk one " },
+                { "timestamp": [2.5, 4.0], "text": "chunk two" }
+              ]
+            }
+            "#,
+        )
+        .expect("parse whisper transcript JSON with chunk timestamp arrays");
+
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].start_ms, 1000);
+        assert_eq!(segments[0].end_ms, 2500);
+        assert_eq!(segments[0].text, "chunk one");
+        assert_eq!(segments[1].start_ms, 2500);
+        assert_eq!(segments[1].end_ms, 4000);
+        assert_eq!(segments[1].text, "chunk two");
+    }
+
+    #[test]
+    fn parse_whisper_transcript_json_accepts_nested_result_chunks() {
+        let segments = parse_whisper_transcript_json(
+            r#"
+            {
+              "result": {
+                "chunks": [
+                  { "timestamp": [0.25, 1.75], "text": "nested chunk" }
+                ]
+              }
+            }
+            "#,
+        )
+        .expect("parse whisper transcript JSON with nested result chunks");
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].start_ms, 250);
+        assert_eq!(segments[0].end_ms, 1750);
+        assert_eq!(segments[0].text, "nested chunk");
+    }
+
+    #[test]
+    fn parse_whisper_transcript_json_rejects_oversized_payloads_before_deserialization() {
+        let oversized_source = format!(
+            "{{\"segments\":[{{\"start\":0,\"end\":1,\"text\":\"{}\"}}]}}",
+            "x".repeat(MAX_SPEECH_TRANSCRIPT_JSON_BYTES + 1),
+        );
+        let error = parse_whisper_transcript_json(&oversized_source)
+            .expect_err("oversized transcript JSON must fail before deserialization");
+
+        assert!(
+            error.contains("too large"),
+            "oversized transcript JSON error should explain the size limit: {error}"
+        );
+    }
+
+    #[test]
+    fn parse_whisper_transcript_json_rejects_excessive_segment_counts() {
+        let segments_json = (0..=MAX_SPEECH_TRANSCRIPT_SEGMENTS)
+            .map(|index| {
+                format!(
+                    "{{\"start\":{index},\"end\":{},\"text\":\"segment {index}\"}}",
+                    index + 1
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let source = format!("{{\"segments\":[{segments_json}]}}");
+        let error = parse_whisper_transcript_json(&source)
+            .expect_err("excessive transcript segment counts must fail closed");
+
+        assert!(
+            error.contains("too many"),
+            "excessive segment count error should explain the segment limit: {error}"
+        );
+    }
+
+    #[test]
+    fn read_whisper_transcript_json_file_rejects_oversized_files_before_loading() {
+        let transcript_dir = unique_temp_dir("sdkwork-autocut-oversized-speech-json");
+        fs::create_dir_all(&transcript_dir).expect("create oversized transcript fixture directory");
+        let transcript_path = transcript_dir.join("speech-transcript.json");
+        fs::write(
+            &transcript_path,
+            format!(
+                "{{\"segments\":[{{\"start\":0,\"end\":1,\"text\":\"{}\"}}]}}",
+                "x".repeat(MAX_SPEECH_TRANSCRIPT_JSON_BYTES + 1),
+            ),
+        )
+        .expect("write oversized transcript fixture");
+
+        let error = read_whisper_transcript_json_file(&transcript_path)
+            .expect_err("oversized transcript files must fail before read_to_string");
+
+        assert!(
+            error.contains("too large"),
+            "oversized transcript file error should explain the size limit: {error}"
+        );
+    }
+
+    #[test]
+    fn speech_transcription_language_rejects_unsafe_tokens_instead_of_sanitizing() {
+        let error = normalize_speech_transcription_language(Some("zh; rm -rf"))
+            .expect_err("unsafe language tokens must fail closed instead of being sanitized");
+
+        assert!(
+            error.contains("language"),
+            "language validation error should explain the invalid speech transcription language: {error}"
+        );
+    }
+
+    #[test]
+    fn speech_transcription_language_normalizes_bcp47_underscore_tags() {
+        let language = normalize_speech_transcription_language(Some(" ja_jp "))
+            .expect("common BCP-47 underscore language tags should normalize");
+
+        assert_eq!(language, "ja-JP");
+    }
+
+    #[test]
     fn speech_transcription_requires_local_toolchain_without_fake_transcript() {
         let root = unique_temp_dir("sdkwork-autocut-speech-missing-toolchain-root");
         let source_root = unique_temp_dir("sdkwork-autocut-speech-missing-toolchain-source");
@@ -9807,8 +13212,17 @@ mod tests {
             executable: String::new(),
             model_path: String::new(),
             source_kind: "env".to_string(),
+            executable_ready: false,
+            model_ready: false,
             ready: false,
-            diagnostics: vec!["AutoCut local speech transcription executablePath is not configured".to_string()],
+            diagnostics: vec![
+                "AutoCut local speech transcription executablePath is not configured".to_string(),
+            ],
+            default_executable_directory: String::new(),
+            default_executable_path: String::new(),
+            default_model_directory: String::new(),
+            default_model_path: String::new(),
+            executable_strategy: String::new(),
         };
 
         let error = transcribe_autocut_media_from_asset_in_root_with_toolchain(
@@ -9816,10 +13230,12 @@ mod tests {
             &root,
             AutoCutSpeechTranscriptionRequest {
                 asset_uuid: import_result.asset_uuid,
+                provider_id: Some("local-whisper-cli".to_string()),
                 language: Some("zh".to_string()),
                 output_root_dir: None,
                 executable_path: None,
                 model_path: None,
+                workflow_purpose: None,
             },
             &test_system_ffmpeg_toolchain(),
             &missing_speech_toolchain,
@@ -9854,12 +13270,14 @@ mod tests {
         let executable_path = model_root.join("whisper-cli.exe");
         let model_path = model_root.join("ggml-large-v3-turbo.bin");
         fs::write(&executable_path, b"tool").expect("write speech executable fixture");
-        fs::write(&model_path, b"model").expect("write model fixture");
+        write_minimal_valid_speech_model(&model_path);
 
         let toolchain = resolve_autocut_speech_toolchain_for_request(
             Some(executable_path.to_str().expect("executable path")),
             Some(model_path.to_str().expect("model path")),
             Some("settings"),
+            None,
+            None,
         );
 
         assert_eq!(toolchain.executable, executable_path.display().to_string());
@@ -9872,21 +13290,814 @@ mod tests {
     }
 
     #[test]
+    fn speech_toolchain_resolver_uses_bundled_whisper_sidecar_when_executable_is_not_configured() {
+        let manifest_root = unique_temp_dir("sdkwork-autocut-speech-bundled-sidecar");
+        let manifest_path = manifest_root.join("speech-transcription.toolchain.json");
+        let sidecar_path = manifest_root.join("whisper-cli.exe");
+        let sidecar_bytes = b"whisper cli sidecar fixture";
+        fs::write(&sidecar_path, sidecar_bytes).expect("write bundled speech sidecar fixture");
+        let sidecar_sha256 = sha256_hex(sidecar_bytes);
+        fs::write(
+            &manifest_path,
+            format!(
+                r#"{{
+                  "tool": "whisper-cli",
+                  "contractVersion": "2026-05-08.speech-toolchain.v1",
+                  "bundledReady": true,
+                  "requiredBinary": "whisper-cli",
+                  "license": {{
+                    "name": "whisper.cpp",
+                    "spdxExpression": "MIT",
+                    "notice": "Test manifest only."
+                  }},
+                  "platforms": {{
+                    "windows-x86_64": {{
+                      "relativePath": "whisper-cli.exe",
+                      "binaryName": "whisper-cli.exe",
+                      "integrity": {{
+                        "sha256": "{sidecar_sha256}",
+                        "byteSize": {}
+                      }}
+                    }}
+                  }}
+                }}"#,
+                sidecar_bytes.len()
+            ),
+        )
+        .expect("write speech toolchain manifest");
+        let model_path = manifest_root.join("ggml-large-v3-turbo.bin");
+        write_minimal_valid_speech_model(&model_path);
+
+        let toolchain = resolve_autocut_speech_toolchain_from_candidate_manifests(
+            None,
+            Some(model_path.to_str().expect("model path")),
+            Some("settings"),
+            &[manifest_path],
+            None,
+            None,
+            None,
+            "windows",
+            "x86_64",
+            None,
+            None,
+            &[],
+        );
+
+        assert_eq!(toolchain.executable, sidecar_path.display().to_string());
+        assert_eq!(toolchain.model_path, model_path.display().to_string());
+        assert_eq!(toolchain.source_kind, "bundled-sidecar");
+        assert_eq!(
+            toolchain.default_executable_path,
+            sidecar_path.display().to_string()
+        );
+        assert!(
+            toolchain.ready,
+            "bundled whisper-cli sidecar plus configured model should be execution ready: {:?}",
+            toolchain.diagnostics
+        );
+    }
+
+    #[test]
+    fn speech_toolchain_resolver_accepts_verified_platform_sidecar_without_global_manifest_readiness()
+     {
+        let manifest_root =
+            unique_temp_dir("sdkwork-autocut-speech-platform-bundled-sidecar");
+        let manifest_path = manifest_root.join("speech-transcription.toolchain.json");
+        let windows_sidecar_path = manifest_root.join("windows-x86_64").join("whisper-cli.exe");
+        fs::create_dir_all(windows_sidecar_path.parent().expect("sidecar parent"))
+            .expect("create speech sidecar dir");
+        let sidecar_bytes = b"windows whisper cli sidecar fixture";
+        fs::write(&windows_sidecar_path, sidecar_bytes)
+            .expect("write bundled speech sidecar fixture");
+        let sidecar_sha256 = sha256_hex(sidecar_bytes);
+        fs::write(
+            &manifest_path,
+            format!(
+                r#"{{
+                  "tool": "whisper-cli",
+                  "contractVersion": "2026-05-08.speech-toolchain.v1",
+                  "bundledReady": false,
+                  "requiredBinary": "whisper-cli",
+                  "license": {{
+                    "name": "whisper.cpp",
+                    "spdxExpression": "MIT",
+                    "notice": "Test manifest only."
+                  }},
+                  "platforms": {{
+                    "windows-x86_64": {{
+                      "relativePath": "windows-x86_64/whisper-cli.exe",
+                      "binaryName": "whisper-cli.exe",
+                      "integrity": {{
+                        "sha256": "{sidecar_sha256}",
+                        "byteSize": {}
+                      }}
+                    }},
+                    "linux-x86_64": {{
+                      "relativePath": "linux-x86_64/whisper-cli",
+                      "binaryName": "whisper-cli",
+                      "integrity": {{
+                        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                        "byteSize": 0
+                      }}
+                    }}
+                  }}
+                }}"#,
+                sidecar_bytes.len()
+            ),
+        )
+        .expect("write speech toolchain manifest");
+        let model_path = manifest_root.join("ggml-large-v3-turbo.bin");
+        write_minimal_valid_speech_model(&model_path);
+
+        let toolchain = resolve_autocut_speech_toolchain_from_candidate_manifests(
+            None,
+            Some(model_path.to_str().expect("model path")),
+            Some("settings"),
+            &[manifest_path],
+            None,
+            None,
+            None,
+            "windows",
+            "x86_64",
+            None,
+            None,
+            &[],
+        );
+
+        assert_eq!(
+            toolchain.executable,
+            windows_sidecar_path.display().to_string()
+        );
+        assert_eq!(toolchain.source_kind, "bundled-sidecar");
+        assert!(
+            toolchain.ready,
+            "verified current-platform sidecar should be execution ready even before all platform sidecars are bundled: {:?}",
+            toolchain.diagnostics
+        );
+    }
+
+    #[test]
+    fn speech_toolchain_resolver_rejects_missing_bundled_companion_files() {
+        let manifest_root = unique_temp_dir("sdkwork-autocut-speech-missing-companion");
+        let manifest_path = manifest_root.join("speech-transcription.toolchain.json");
+        let windows_sidecar_path = manifest_root.join("windows-x86_64").join("whisper-cli.exe");
+        fs::create_dir_all(windows_sidecar_path.parent().expect("sidecar parent"))
+            .expect("create speech sidecar dir");
+        let sidecar_bytes = b"windows whisper cli sidecar fixture";
+        fs::write(&windows_sidecar_path, sidecar_bytes)
+            .expect("write bundled speech sidecar fixture");
+        let sidecar_sha256 = sha256_hex(sidecar_bytes);
+        fs::write(
+            &manifest_path,
+            format!(
+                r#"{{
+                  "tool": "whisper-cli",
+                  "contractVersion": "2026-05-08.speech-toolchain.v1",
+                  "bundledReady": false,
+                  "requiredBinary": "whisper-cli",
+                  "license": {{
+                    "name": "whisper.cpp",
+                    "spdxExpression": "MIT",
+                    "notice": "Test manifest only."
+                  }},
+                  "platforms": {{
+                    "windows-x86_64": {{
+                      "relativePath": "windows-x86_64/whisper-cli.exe",
+                      "binaryName": "whisper-cli.exe",
+                      "integrity": {{
+                        "sha256": "{sidecar_sha256}",
+                        "byteSize": {}
+                      }},
+                      "companionFiles": [
+                        {{
+                          "relativePath": "windows-x86_64/whisper.dll",
+                          "integrity": {{
+                            "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                            "byteSize": 12
+                          }}
+                        }}
+                      ]
+                    }}
+                  }}
+                }}"#,
+                sidecar_bytes.len()
+            ),
+        )
+        .expect("write speech toolchain manifest");
+
+        let error = resolve_autocut_bundled_speech_executable_from_manifest(
+            &manifest_path,
+            "windows",
+            "x86_64",
+        )
+        .expect_err("bundled speech sidecar must reject missing companion DLLs");
+
+        assert!(
+            error.contains("companion"),
+            "missing companion diagnostics should explain the runtime dependency: {error}"
+        );
+    }
+
+    #[test]
+    fn speech_toolchain_resolver_discovers_whisper_cli_from_system_path_when_not_configured() {
+        let path_root = unique_temp_dir("sdkwork-autocut-speech-system-path");
+        let executable_path = path_root.join("whisper-cli.exe");
+        fs::write(&executable_path, b"tool").expect("write PATH speech executable fixture");
+        let model_path = path_root.join("ggml-large-v3-turbo.bin");
+        write_minimal_valid_speech_model(&model_path);
+
+        let toolchain = resolve_autocut_speech_toolchain_from_candidate_manifests(
+            None,
+            Some(model_path.to_str().expect("model path")),
+            Some("settings"),
+            &[],
+            None,
+            None,
+            None,
+            "windows",
+            "x86_64",
+            None,
+            Some(path_root.to_str().expect("PATH root")),
+            &[],
+        );
+
+        assert_eq!(toolchain.executable, executable_path.display().to_string());
+        assert_eq!(toolchain.source_kind, "system-path");
+        assert!(
+            toolchain.ready,
+            "system PATH whisper-cli plus configured model should be execution ready: {:?}",
+            toolchain.diagnostics
+        );
+    }
+
+    #[test]
+    fn speech_toolchain_resolver_discovers_whisper_cli_from_unix_common_candidates_when_not_configured()
+     {
+        let path_root = unique_temp_dir("sdkwork-autocut-speech-unix-common-candidates");
+        let executable_path = path_root.join("whisper-cli");
+        fs::write(&executable_path, b"tool").expect("write PATH speech executable fixture");
+        let model_path = path_root.join("ggml-large-v3-turbo.bin");
+        write_minimal_valid_speech_model(&model_path);
+
+        for os in ["linux", "macos"] {
+            let toolchain = resolve_autocut_speech_toolchain_from_candidate_manifests(
+                None,
+                Some(model_path.to_str().expect("model path")),
+                Some("settings"),
+                &[],
+                None,
+                None,
+                None,
+                os,
+                "x86_64",
+                None,
+                None,
+                &[executable_path.clone()],
+            );
+
+            assert_eq!(toolchain.executable, executable_path.display().to_string());
+            assert_eq!(toolchain.source_kind, "system-path");
+            assert!(
+                toolchain.ready,
+                "{os} PATH whisper-cli plus configured model should be execution ready: {:?}",
+                toolchain.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn speech_toolchain_system_path_split_preserves_windows_drive_letters() {
+        let paths = split_autocut_system_path_directories(
+            Some(r"C:\tools\whisper;D:\portable\whisper"),
+            "windows",
+        );
+
+        assert_eq!(paths[0], PathBuf::from(r"C:\tools\whisper"));
+        assert_eq!(paths[1], PathBuf::from(r"D:\portable\whisper"));
+    }
+
+    #[test]
+    fn speech_toolchain_resolver_uses_existing_default_model_path_when_model_is_not_configured() {
+        let model_root = unique_temp_dir("sdkwork-autocut-speech-default-model");
+        let executable_path = model_root.join("whisper-cli.exe");
+        fs::write(&executable_path, b"tool").expect("write speech executable fixture");
+        let default_model_path = model_root.join("ggml-large-v3-turbo-q5_0.bin");
+        write_minimal_valid_speech_model(&default_model_path);
+
+        let toolchain = resolve_autocut_speech_toolchain_from_candidate_manifests(
+            Some(executable_path.to_str().expect("executable path")),
+            None,
+            Some("settings"),
+            &[],
+            None,
+            None,
+            None,
+            "windows",
+            "x86_64",
+            Some(default_model_path.as_path()),
+            None,
+            &[],
+        );
+
+        assert_eq!(toolchain.model_path, default_model_path.display().to_string());
+        assert_eq!(toolchain.default_model_path, default_model_path.display().to_string());
+        assert!(toolchain.model_ready);
+        assert!(
+            toolchain.ready,
+            "existing default model path should be accepted without a saved modelPath: {:?}",
+            toolchain.diagnostics
+        );
+    }
+
+    #[test]
+    fn speech_toolchain_resolver_reports_default_bundled_whisper_target_without_fake_readiness() {
+        let manifest_root = unique_temp_dir("sdkwork-autocut-speech-default-sidecar-target");
+        let manifest_path = manifest_root.join("speech-transcription.toolchain.json");
+        fs::write(
+            &manifest_path,
+            r#"{
+              "tool": "whisper-cli",
+              "contractVersion": "2026-05-08.speech-toolchain.v1",
+              "bundledReady": false,
+              "requiredBinary": "whisper-cli",
+              "license": {
+                "name": "whisper.cpp",
+                "spdxExpression": "MIT",
+                "notice": "Test manifest only."
+              },
+              "platforms": {
+                "windows-x86_64": {
+                  "relativePath": "windows-x86_64/whisper-cli.exe",
+                  "binaryName": "whisper-cli.exe",
+                  "integrity": {
+                    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                    "byteSize": 0
+                  }
+                },
+                "linux-x86_64": {
+                  "relativePath": "linux-x86_64/whisper-cli",
+                  "binaryName": "whisper-cli",
+                  "integrity": {
+                    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                    "byteSize": 0
+                  }
+                },
+                "macos-x86_64": {
+                  "relativePath": "macos-x86_64/whisper-cli",
+                  "binaryName": "whisper-cli",
+                  "integrity": {
+                    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                    "byteSize": 0
+                  }
+                },
+                "macos-aarch64": {
+                  "relativePath": "macos-aarch64/whisper-cli",
+                  "binaryName": "whisper-cli",
+                  "integrity": {
+                    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                    "byteSize": 0
+                  }
+                }
+              }
+            }"#,
+        )
+        .expect("write speech sidecar target manifest");
+
+        for (os, arch, relative_path) in [
+            ("windows", "x86_64", "windows-x86_64/whisper-cli.exe"),
+            ("win32", "x64", "windows-x86_64/whisper-cli.exe"),
+            ("linux", "x86_64", "linux-x86_64/whisper-cli"),
+            ("linux", "x64", "linux-x86_64/whisper-cli"),
+            ("macos", "x86_64", "macos-x86_64/whisper-cli"),
+            ("darwin", "x64", "macos-x86_64/whisper-cli"),
+            ("macos", "aarch64", "macos-aarch64/whisper-cli"),
+            ("darwin", "arm64", "macos-aarch64/whisper-cli"),
+        ] {
+            let toolchain = resolve_autocut_speech_toolchain_from_candidate_manifests(
+                None,
+                None,
+                None,
+                &[manifest_path.clone()],
+                None,
+                None,
+                None,
+                os,
+                arch,
+                None,
+                None,
+                &[],
+            );
+
+            let expected_path = relative_path
+                .split('/')
+                .fold(manifest_root.clone(), |path, segment| path.join(segment));
+            assert_eq!(
+                toolchain.default_executable_path,
+                expected_path.display().to_string()
+            );
+            assert_eq!(toolchain.executable, "");
+            assert!(!toolchain.executable_ready);
+            assert!(!toolchain.ready);
+        }
+    }
+
+    #[test]
+    fn speech_bundled_sidecar_does_not_accept_unverified_existing_target() {
+        let manifest_root = unique_temp_dir("sdkwork-autocut-speech-existing-unverified");
+        let manifest_path = manifest_root.join("speech-transcription.toolchain.json");
+        let sidecar_path = manifest_root
+            .join("windows-x86_64")
+            .join("whisper-cli.exe");
+        fs::create_dir_all(sidecar_path.parent().expect("sidecar parent"))
+            .expect("create speech sidecar directory");
+        fs::write(&sidecar_path, b"unverified placeholder executable")
+            .expect("write existing unverified speech executable");
+        fs::write(
+            &manifest_path,
+            r#"{
+              "tool": "whisper-cli",
+              "contractVersion": "2026-05-08.speech-toolchain.v1",
+              "bundledReady": false,
+              "requiredBinary": "whisper-cli",
+              "license": {
+                "name": "whisper.cpp",
+                "spdxExpression": "MIT",
+                "notice": "Test manifest only."
+              },
+              "platforms": {
+                "windows-x86_64": {
+                  "relativePath": "windows-x86_64/whisper-cli.exe",
+                  "binaryName": "whisper-cli.exe",
+                  "integrity": {
+                    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                    "byteSize": 0
+                  }
+                }
+              }
+            }"#,
+        )
+        .expect("write placeholder speech executable manifest");
+
+        let error = resolve_autocut_bundled_speech_executable_from_manifest(
+            &manifest_path,
+            "windows",
+            "x86_64",
+        )
+        .expect_err("placeholder speech sidecar must not verify as bundled ready");
+
+        assert!(
+            error.contains("byteSize mismatch") ||
+                error.contains("checksum mismatch") ||
+                error.contains("placeholder integrity"),
+            "placeholder manifest integrity must not mark a packaged sidecar executable as verified: {error}"
+        );
+    }
+
+    #[test]
+    fn speech_toolchain_manifest_rejects_placeholder_integrity_when_bundled_ready() {
+        let manifest_root = unique_temp_dir("sdkwork-autocut-speech-placeholder-integrity");
+        let manifest_path = manifest_root.join("speech-transcription.toolchain.json");
+        let sidecar_path = manifest_root.join("whisper-cli.exe");
+        fs::write(&sidecar_path, b"placeholder speech sidecar")
+            .expect("write placeholder speech sidecar fixture");
+        fs::write(
+            &manifest_path,
+            r#"{
+              "tool": "whisper-cli",
+              "contractVersion": "2026-05-08.speech-toolchain.v1",
+              "bundledReady": true,
+              "requiredBinary": "whisper-cli",
+              "license": {
+                "name": "whisper.cpp",
+                "spdxExpression": "MIT",
+                "notice": "Test manifest only."
+              },
+              "platforms": {
+                "windows-x86_64": {
+                  "relativePath": "whisper-cli.exe",
+                  "binaryName": "whisper-cli.exe",
+                  "integrity": {
+                    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                    "byteSize": 0
+                  }
+                }
+              }
+            }"#,
+        )
+        .expect("write placeholder speech toolchain manifest");
+
+        let error = resolve_autocut_bundled_speech_executable_from_manifest(
+            &manifest_path,
+            "windows",
+            "x86_64",
+        )
+        .expect_err("placeholder bundled speech manifests must be rejected");
+
+        assert!(
+            error.contains("placeholder integrity"),
+            "placeholder manifest error should explain the integrity contract: {error}"
+        );
+    }
+
+    #[test]
+    fn speech_toolchain_rejects_relative_model_paths() {
+        let model_root = unique_temp_dir("sdkwork-autocut-speech-relative-model");
+        let executable_path = model_root.join("whisper-cli.exe");
+        fs::write(&executable_path, b"tool").expect("write speech executable fixture");
+
+        let toolchain = resolve_autocut_speech_toolchain_for_request(
+            Some(executable_path.to_str().expect("executable path")),
+            Some("models/ggml-large-v3-turbo.bin"),
+            Some("settings"),
+            None,
+            None,
+        );
+
+        assert!(!toolchain.ready);
+        assert!(
+            toolchain
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("absolute local model file path")),
+            "relative modelPath diagnostics should explain the absolute local model file path contract"
+        );
+    }
+
+    #[test]
+    fn speech_toolchain_rejects_relative_executable_paths() {
+        let model_root = unique_temp_dir("sdkwork-autocut-speech-relative-executable");
+        let model_path = model_root.join("ggml-large-v3-turbo.bin");
+        write_minimal_valid_speech_model(&model_path);
+
+        let toolchain = resolve_autocut_speech_toolchain_for_request(
+            Some("tools/whisper-cli.exe"),
+            Some(model_path.to_str().expect("model path")),
+            Some("settings"),
+            None,
+            None,
+        );
+
+        assert!(!toolchain.ready);
+        assert!(
+            toolchain
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("absolute local executable file path")),
+            "relative executablePath diagnostics should explain the absolute local executable file path contract"
+        );
+    }
+
+    #[test]
+    fn speech_toolchain_rejects_unsupported_model_extensions() {
+        let model_root = unique_temp_dir("sdkwork-autocut-speech-unsupported-model");
+        let executable_path = model_root.join("whisper-cli.exe");
+        let model_path = model_root.join("ggml-large-v3-turbo.txt");
+        fs::write(&executable_path, b"tool").expect("write speech executable fixture");
+        fs::write(&model_path, b"model").expect("write unsupported model fixture");
+
+        let toolchain = resolve_autocut_speech_toolchain_for_request(
+            Some(executable_path.to_str().expect("executable path")),
+            Some(model_path.to_str().expect("model path")),
+            Some("settings"),
+            None,
+            None,
+        );
+
+        assert!(!toolchain.ready);
+        assert!(
+            toolchain
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("supported model file extension")),
+            "unsupported model extension diagnostics should list the supported model file extension contract"
+        );
+    }
+
+    #[test]
+    fn speech_toolchain_rejects_partial_download_model_files() {
+        let model_root = unique_temp_dir("sdkwork-autocut-speech-partial-download-model");
+        let executable_path = model_root.join("whisper-cli.exe");
+        let model_path = model_root.join("ggml-large-v3-turbo.bin.download");
+        fs::write(&executable_path, b"tool").expect("write speech executable fixture");
+        fs::write(&model_path, b"partial").expect("write partial model fixture");
+
+        let toolchain = resolve_autocut_speech_toolchain_for_request(
+            Some(executable_path.to_str().expect("executable path")),
+            Some(model_path.to_str().expect("model path")),
+            Some("settings"),
+            None,
+            None,
+        );
+
+        assert!(!toolchain.ready);
+        assert!(
+            toolchain
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("partial .download file")),
+            "partial model diagnostics should explain that .download files must not be selected"
+        );
+    }
+
+    #[test]
+    fn speech_toolchain_rejects_too_small_model_files() {
+        let model_root = unique_temp_dir("sdkwork-autocut-speech-small-model");
+        let executable_path = model_root.join("whisper-cli.exe");
+        let model_path = model_root.join("ggml-large-v3-turbo.bin");
+        fs::write(&executable_path, b"tool").expect("write speech executable fixture");
+        fs::write(&model_path, b"incomplete").expect("write too-small model fixture");
+
+        let toolchain = resolve_autocut_speech_toolchain_for_request(
+            Some(executable_path.to_str().expect("executable path")),
+            Some(model_path.to_str().expect("model path")),
+            Some("settings"),
+            None,
+            None,
+        );
+
+        assert!(!toolchain.ready);
+        assert!(
+            toolchain
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("missing or incomplete")),
+            "too-small model diagnostics should guide users to download the offline Whisper model again"
+        );
+    }
+
+    #[test]
+    fn speech_model_download_progress_calculates_percent_for_known_total() {
+        assert_eq!(
+            calculate_autocut_speech_model_download_progress(50, Some(200)),
+            25
+        );
+        assert_eq!(
+            calculate_autocut_speech_model_download_progress(250, Some(200)),
+            100
+        );
+    }
+
+    #[test]
+    fn speech_model_download_progress_keeps_unknown_total_visible() {
+        assert_eq!(
+            calculate_autocut_speech_model_download_progress(50, None),
+            0
+        );
+        assert_eq!(
+            calculate_autocut_speech_model_download_progress(50, Some(0)),
+            0
+        );
+    }
+
+    #[test]
+    fn speech_model_download_request_accepts_vetted_hugging_face_mirror_urls() {
+        let request = AutoCutSpeechTranscriptionModelDownloadRequest {
+            provider_id: "local-whisper-cli".to_string(),
+            preset_id: "whisper-cpp-large-v3-turbo-q5".to_string(),
+            file_name: "ggml-large-v3-turbo-q5_0.bin".to_string(),
+            url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin".to_string(),
+            mirror_urls: Some(vec![
+                "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin".to_string(),
+            ]),
+            sha256: "edb2095566f2da8d5a5e8a14438ccd70a713fe75a3ec5f0899c47d22338755d4".to_string(),
+            output_root_dir: None,
+        };
+
+        validate_autocut_speech_transcription_model_download_request(&request)
+            .expect("vetted Hugging Face mirror should be accepted");
+        assert_eq!(
+            autocut_speech_transcription_model_download_urls(&request),
+            vec![
+                "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin".to_string(),
+                "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin".to_string(),
+            ],
+        );
+    }
+
+    #[test]
+    fn speech_model_download_request_rejects_untrusted_mirror_urls() {
+        let request = AutoCutSpeechTranscriptionModelDownloadRequest {
+            provider_id: "local-whisper-cli".to_string(),
+            preset_id: "whisper-cpp-large-v3-turbo-q5".to_string(),
+            file_name: "ggml-large-v3-turbo-q5_0.bin".to_string(),
+            url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin".to_string(),
+            mirror_urls: Some(vec![
+                "https://example.com/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin".to_string(),
+            ]),
+            sha256: "edb2095566f2da8d5a5e8a14438ccd70a713fe75a3ec5f0899c47d22338755d4".to_string(),
+            output_root_dir: None,
+        };
+
+        let error = validate_autocut_speech_transcription_model_download_request(&request)
+            .expect_err("untrusted model mirror URL should be rejected");
+        assert!(
+            error.contains("trusted HTTPS Hugging Face source"),
+            "untrusted mirror error should explain trusted source contract: {error}"
+        );
+    }
+
+    #[test]
+    fn speech_model_download_request_requires_pinned_sha256_digest() {
+        let request = AutoCutSpeechTranscriptionModelDownloadRequest {
+            provider_id: "local-whisper-cli".to_string(),
+            preset_id: "whisper-cpp-large-v3-turbo-q5".to_string(),
+            file_name: "ggml-large-v3-turbo-q5_0.bin".to_string(),
+            url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin".to_string(),
+            mirror_urls: None,
+            sha256: "not-a-real-digest".to_string(),
+            output_root_dir: None,
+        };
+
+        let error = validate_autocut_speech_transcription_model_download_request(&request)
+            .expect_err("model downloads must pin the model digest");
+        assert!(
+            error.contains("pinned SHA-256 model digest"),
+            "missing digest error should explain pinned model digest contract: {error}"
+        );
+    }
+
+    #[test]
     fn speech_transcription_probe_validates_model_path_without_fake_readiness() {
-        let probe = probe_autocut_speech_transcription(AutoCutSpeechTranscriptionProbeRequest {
+        let probe = probe_autocut_speech_transcription_for_request(AutoCutSpeechTranscriptionProbeRequest {
+            provider_id: Some("local-whisper-cli".to_string()),
             executable_path: Some("whisper-cli".to_string()),
             model_path: Some("Z:/missing/ggml-large-v3-turbo.bin".to_string()),
             source_kind: Some("settings".to_string()),
+            output_root_dir: None,
         });
 
         assert!(!probe.ready);
         assert_eq!(probe.source_kind, "settings");
         assert!(
-            probe.diagnostics
+            probe
+                .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.contains("modelPath")),
             "probe diagnostics should explain missing modelPath"
         );
+    }
+
+    #[test]
+    fn local_media_file_select_types_default_to_audio_and_video() {
+        let requested_types: Vec<String> = Vec::new();
+        assert_eq!(
+            normalize_autocut_media_file_select_types(&requested_types)
+                .expect("empty local media selector types should default"),
+            vec!["audio".to_string(), "video".to_string()]
+        );
+    }
+
+    #[test]
+    fn local_media_file_select_types_are_normalized_and_deduplicated() {
+        assert_eq!(
+            normalize_autocut_media_file_select_types(&[
+                " Video ".to_string(),
+                "audio".to_string(),
+                "VIDEO".to_string(),
+            ])
+            .expect("local media selector types should normalize"),
+            vec!["video".to_string(), "audio".to_string()]
+        );
+    }
+
+    #[test]
+    fn local_media_file_select_types_reject_unsupported_media() {
+        let error = normalize_autocut_media_file_select_types(&["image".to_string()])
+            .expect_err("unsupported local media selector types must be rejected");
+        assert!(
+            error.contains("audio or video"),
+            "unsupported selector media type error should explain the allowed media types"
+        );
+    }
+
+    #[test]
+    fn local_media_file_dialog_video_extensions_match_media_classification() {
+        for extension in SUPPORTED_VIDEO_FILE_DIALOG_EXTENSIONS {
+            assert_eq!(
+                classify_media_type(extension),
+                "video",
+                "video chooser extension {extension} must be classified as video"
+            );
+            assert!(
+                media_mime_type(extension, "video").starts_with("video/"),
+                "video chooser extension {extension} must expose a video MIME type"
+            );
+        }
+    }
+
+    #[test]
+    fn local_media_file_dialog_audio_extensions_match_media_classification() {
+        for extension in SUPPORTED_AUDIO_FILE_DIALOG_EXTENSIONS {
+            assert_eq!(
+                classify_media_type(extension),
+                "audio",
+                "audio chooser extension {extension} must be classified as audio"
+            );
+            assert!(
+                media_mime_type(extension, "audio").starts_with("audio/"),
+                "audio chooser extension {extension} must expose an audio MIME type"
+            );
+        }
     }
 
     #[test]
@@ -9921,6 +14132,12 @@ mod tests {
         .expect("compress video from imported asset");
 
         assert_eq!(compress_result.source_asset_uuid, import_result.asset_uuid);
+        assert_ops_task_input_has_source_name(
+            &connection,
+            &compress_result.task_uuid,
+            &import_result.asset_uuid,
+            &import_result.name,
+        );
         assert_eq!(compress_result.format, "mp4");
         assert_eq!(compress_result.original_byte_size, import_result.byte_size);
         assert!(
@@ -10020,6 +14237,12 @@ mod tests {
         .expect("convert video from imported asset");
 
         assert_eq!(convert_result.source_asset_uuid, import_result.asset_uuid);
+        assert_ops_task_input_has_source_name(
+            &connection,
+            &convert_result.task_uuid,
+            &import_result.asset_uuid,
+            &import_result.name,
+        );
         assert_eq!(convert_result.format, "webm");
         assert!(
             convert_result.byte_size > 0,
@@ -10114,6 +14337,12 @@ mod tests {
         .expect("enhance video from imported asset");
 
         assert_eq!(enhance_result.source_asset_uuid, import_result.asset_uuid);
+        assert_ops_task_input_has_source_name(
+            &connection,
+            &enhance_result.task_uuid,
+            &import_result.asset_uuid,
+            &import_result.name,
+        );
         assert_eq!(enhance_result.format, "mp4");
         assert!(
             enhance_result.byte_size > 0,

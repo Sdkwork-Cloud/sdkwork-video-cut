@@ -33,6 +33,8 @@ const releaseEvidence = JSON.parse(
   fs.readFileSync(path.join(root, report.paths.releaseEvidence), 'utf8'),
 );
 assert.equal(releaseEvidence.readiness.nativeVideoSliceSmokeReady, true);
+assert.equal(releaseEvidence.readiness.speechBundledReady, true);
+assert.equal(releaseEvidence.preflight.speechSidecar.bundledReady, true);
 assert.equal(releaseEvidence.nativeReleaseSmoke.videoSliceReady, true);
 assert.equal(report.summary.totalSlices, 2);
 assert.equal(report.summary.smartSliceQualityReady, true);

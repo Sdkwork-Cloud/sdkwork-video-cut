@@ -1,3 +1,5 @@
+export type { AutoCutSpeechTranscriptionModelDownloadProgressEvent } from '@sdkwork/autocut-types';
+
 export interface AutoCutHostCapabilities {
   contractVersion: string;
   hostKind: string;
@@ -7,8 +9,11 @@ export interface AutoCutHostCapabilities {
   ffmpegProbeCommandReady: boolean;
   mediaImportCommandReady: boolean;
   mediaFileDescribeCommandReady: boolean;
+  localMediaFileSelectCommandReady: boolean;
   localVideoFileSelectCommandReady: boolean;
   localDirectorySelectCommandReady: boolean;
+  localMediaPreviewDirectoryScopeCommandReady: boolean;
+  openArtifactInFolderCommandReady: boolean;
   audioExtractionCommandReady: boolean;
   audioExtractionFromAssetReady: boolean;
   videoGifCommandReady: boolean;
@@ -20,6 +25,8 @@ export interface AutoCutHostCapabilities {
   speechTranscriptionToolchainReady: boolean;
   speechTranscriptionProbeCommandReady: boolean;
   speechTranscriptionFileSelectCommandReady: boolean;
+  speechTranscriptionModelDownloadCommandReady: boolean;
+  speechTranscriptionExecutableDownloadCommandReady: boolean;
   llmHttpCommandReady: boolean;
   llmSecretStoreReady: boolean;
   nativeTaskQueryCommandReady: boolean;
@@ -79,6 +86,30 @@ export interface AutoCutLocalMediaFileDescription {
   durationMs?: number;
 }
 
+export interface AutoCutLocalMediaFileSelectRequest {
+  mediaTypes: Array<'audio' | 'video'>;
+}
+
+export interface AutoCutLocalMediaPreviewDirectoryRequest {
+  directoryPath: string;
+}
+
+export interface AutoCutLocalMediaPreviewDirectoryResult {
+  directoryPath: string;
+  allowed: boolean;
+}
+
+export interface AutoCutNativeArtifactInFolderRequest {
+  artifactPath: string;
+  taskOutputDir?: string;
+}
+
+export interface AutoCutNativeArtifactInFolderResult {
+  artifactPath: string;
+  containingDirectoryPath: string;
+  opened: boolean;
+}
+
 export interface AutoCutAudioExtractionRequest {
   assetUuid: string;
   outputFormat: string;
@@ -119,6 +150,18 @@ export interface AutoCutVideoSliceClipRequest {
   startMs: number;
   durationMs: number;
   label: string;
+  outputFileName?: string;
+  sourceStartMs?: number;
+  sourceEndMs?: number;
+  speechStartMs?: number;
+  speechEndMs?: number;
+  boundaryPaddingBeforeMs?: number;
+  boundaryPaddingAfterMs?: number;
+  transcriptText?: string;
+  transcriptSegments?: AutoCutSpeechTranscriptionSegment[];
+  transcriptSegmentCount?: number;
+  transcriptCoverageScore?: number;
+  speechContinuityGrade?: 'strong' | 'repaired' | 'weak';
 }
 
 export interface AutoCutVideoSliceRenderProfile {
@@ -154,6 +197,17 @@ export interface AutoCutVideoSliceArtifactResult {
   startMs: number;
   durationMs: number;
   label: string;
+  sourceStartMs?: number;
+  sourceEndMs?: number;
+  speechStartMs?: number;
+  speechEndMs?: number;
+  boundaryPaddingBeforeMs?: number;
+  boundaryPaddingAfterMs?: number;
+  transcriptText?: string;
+  transcriptSegments?: AutoCutSpeechTranscriptionSegment[];
+  transcriptSegmentCount?: number;
+  transcriptCoverageScore?: number;
+  speechContinuityGrade?: 'strong' | 'repaired' | 'weak';
 }
 
 export interface AutoCutVideoSliceResult {
@@ -173,10 +227,12 @@ export interface AutoCutSpeechTranscriptionSegment {
 
 export interface AutoCutSpeechTranscriptionRequest {
   assetUuid: string;
+  providerId?: string;
   language?: string;
   outputRootDir?: string;
   executablePath?: string;
   modelPath?: string;
+  workflowPurpose?: string;
 }
 
 export interface AutoCutSpeechTranscriptionResult {
@@ -193,22 +249,52 @@ export interface AutoCutSpeechTranscriptionResult {
 }
 
 export interface AutoCutSpeechTranscriptionProbeRequest {
+  providerId?: string;
   executablePath?: string;
   modelPath?: string;
   sourceKind?: string;
+  outputRootDir?: string;
 }
 
 export interface AutoCutSpeechTranscriptionProbe {
   ready: boolean;
+  executableReady?: boolean;
+  modelReady?: boolean;
   executablePath: string;
   modelPath: string;
   sourceKind: string;
   diagnostics: string[];
   versionLine?: string;
+  defaultExecutableDirectory?: string;
+  defaultExecutablePath?: string;
+  defaultModelDirectory?: string;
+  defaultModelPath?: string;
+  executableStrategy?: string;
 }
 
 export interface AutoCutSpeechTranscriptionFileSelectRequest {
   kind: 'executable' | 'model';
+}
+
+export interface AutoCutSpeechTranscriptionModelDownloadRequest {
+  providerId: string;
+  presetId: string;
+  fileName: string;
+  url: string;
+  mirrorUrls?: readonly string[];
+  sha256: string;
+  outputRootDir?: string;
+}
+
+export interface AutoCutSpeechTranscriptionModelDownloadResult {
+  providerId: string;
+  presetId: string;
+  fileName: string;
+  modelPath: string;
+  byteSize: number;
+  downloaded: boolean;
+  sourceUrl: string;
+  sha256: string;
 }
 
 export interface AutoCutVideoCompressRequest {
@@ -412,8 +498,11 @@ export type AutoCutNativeCommand =
   | 'autocut_ffmpeg_probe'
   | 'autocut_import_media_file'
   | 'autocut_describe_local_media_file'
+  | 'autocut_select_local_media_file'
   | 'autocut_select_local_video_file'
   | 'autocut_select_local_directory'
+  | 'autocut_allow_local_media_preview_directory'
+  | 'autocut_open_artifact_in_folder'
   | 'autocut_list_native_tasks'
   | 'autocut_cancel_native_task'
   | 'autocut_recover_native_tasks'
@@ -424,6 +513,7 @@ export type AutoCutNativeCommand =
   | 'autocut_transcribe_media'
   | 'autocut_probe_speech_transcription'
   | 'autocut_select_speech_transcription_file'
+  | 'autocut_download_speech_transcription_model'
   | 'autocut_compress_video'
   | 'autocut_convert_video'
   | 'autocut_enhance_video'
@@ -439,8 +529,11 @@ export interface AutoCutNativeHostClient {
   probeFfmpeg(): Promise<AutoCutFfmpegProbe>;
   importMediaFile(request: AutoCutMediaImportRequest): Promise<AutoCutMediaImportResult>;
   describeLocalMediaFile(request: AutoCutMediaImportRequest): Promise<AutoCutLocalMediaFileDescription>;
+  selectLocalMediaFile(request: AutoCutLocalMediaFileSelectRequest): Promise<AutoCutLocalMediaFileDescription | null>;
   selectLocalVideoFile(): Promise<AutoCutLocalMediaFileDescription | null>;
   selectLocalDirectory(): Promise<string | null>;
+  allowLocalMediaPreviewDirectory(request: AutoCutLocalMediaPreviewDirectoryRequest): Promise<AutoCutLocalMediaPreviewDirectoryResult>;
+  openArtifactInFolder(request: AutoCutNativeArtifactInFolderRequest): Promise<AutoCutNativeArtifactInFolderResult>;
   listNativeTasks(request: AutoCutNativeTaskQueryRequest): Promise<AutoCutNativeTaskSnapshot[]>;
   cancelNativeTask(request: AutoCutNativeTaskCancelRequest): Promise<AutoCutNativeTaskCancelResult>;
   recoverNativeTasks(request: AutoCutNativeTaskRecoveryRequest): Promise<AutoCutNativeTaskRecoveryResult>;
@@ -451,6 +544,7 @@ export interface AutoCutNativeHostClient {
   transcribeMedia(request: AutoCutSpeechTranscriptionRequest): Promise<AutoCutSpeechTranscriptionResult>;
   probeSpeechTranscription(request: AutoCutSpeechTranscriptionProbeRequest): Promise<AutoCutSpeechTranscriptionProbe>;
   selectSpeechTranscriptionFile(request: AutoCutSpeechTranscriptionFileSelectRequest): Promise<string | null>;
+  downloadSpeechTranscriptionModel(request: AutoCutSpeechTranscriptionModelDownloadRequest): Promise<AutoCutSpeechTranscriptionModelDownloadResult>;
   compressVideo(request: AutoCutVideoCompressRequest): Promise<AutoCutVideoCompressResult>;
   convertVideo(request: AutoCutVideoConvertRequest): Promise<AutoCutVideoConvertResult>;
   enhanceVideo(request: AutoCutVideoEnhanceRequest): Promise<AutoCutVideoEnhanceResult>;
@@ -471,8 +565,11 @@ const unsupportedCapabilities: AutoCutHostCapabilities = {
   ffmpegProbeCommandReady: false,
   mediaImportCommandReady: false,
   mediaFileDescribeCommandReady: false,
+  localMediaFileSelectCommandReady: false,
   localVideoFileSelectCommandReady: false,
   localDirectorySelectCommandReady: false,
+  localMediaPreviewDirectoryScopeCommandReady: false,
+  openArtifactInFolderCommandReady: false,
   audioExtractionCommandReady: false,
   audioExtractionFromAssetReady: false,
   videoGifCommandReady: false,
@@ -484,6 +581,8 @@ const unsupportedCapabilities: AutoCutHostCapabilities = {
   speechTranscriptionToolchainReady: false,
   speechTranscriptionProbeCommandReady: false,
   speechTranscriptionFileSelectCommandReady: false,
+  speechTranscriptionModelDownloadCommandReady: false,
+  speechTranscriptionExecutableDownloadCommandReady: false,
   llmHttpCommandReady: false,
   llmSecretStoreReady: false,
   nativeTaskQueryCommandReady: false,
@@ -501,6 +600,12 @@ const unsupportedCapabilities: AutoCutHostCapabilities = {
 
 let configuredNativeHostClient: AutoCutNativeHostClient = createUnsupportedNativeHostClient();
 
+const MIN_NATIVE_VIDEO_SLICE_TRANSCRIPT_COVERAGE_SCORE = 0.8;
+const ACCEPTED_NATIVE_VIDEO_SLICE_SPEECH_CONTINUITY_GRADES = new Set<AutoCutVideoSliceClipRequest['speechContinuityGrade']>([
+  'strong',
+  'repaired',
+]);
+
 export function createAutoCutNativeHostClient(
   invoke: AutoCutNativeInvoke,
   options: { createAssetUrl?: AutoCutNativeAssetUrlFactory } = {},
@@ -517,10 +622,22 @@ export function createAutoCutNativeHostClient(
       invoke<AutoCutLocalMediaFileDescription>('autocut_describe_local_media_file', {
         request,
       }),
+    selectLocalMediaFile: (request) =>
+      invoke<AutoCutLocalMediaFileDescription | null>('autocut_select_local_media_file', {
+        request,
+      }),
     selectLocalVideoFile: () =>
       invoke<AutoCutLocalMediaFileDescription | null>('autocut_select_local_video_file'),
     selectLocalDirectory: () =>
       invoke<string | null>('autocut_select_local_directory'),
+    allowLocalMediaPreviewDirectory: (request) =>
+      invoke<AutoCutLocalMediaPreviewDirectoryResult>('autocut_allow_local_media_preview_directory', {
+        request,
+      }),
+    openArtifactInFolder: (request) =>
+      invoke<AutoCutNativeArtifactInFolderResult>('autocut_open_artifact_in_folder', {
+        request,
+      }),
     listNativeTasks: (request) =>
       invoke<AutoCutNativeTaskSnapshot[]>('autocut_list_native_tasks', {
         request,
@@ -545,10 +662,12 @@ export function createAutoCutNativeHostClient(
       invoke<AutoCutVideoGifResult>('autocut_generate_gif', {
         request,
       }),
-    sliceVideo: (request) =>
-      invoke<AutoCutVideoSliceResult>('autocut_slice_video', {
+    sliceVideo: (request) => {
+      assertAutoCutNativeVideoSliceTranscriptEvidence(request);
+      return invoke<AutoCutVideoSliceResult>('autocut_slice_video', {
         request,
-      }),
+      });
+    },
     transcribeMedia: (request) =>
       invoke<AutoCutSpeechTranscriptionResult>('autocut_transcribe_media', {
         request,
@@ -559,6 +678,10 @@ export function createAutoCutNativeHostClient(
       }),
     selectSpeechTranscriptionFile: (request) =>
       invoke<string | null>('autocut_select_speech_transcription_file', {
+        request,
+      }),
+    downloadSpeechTranscriptionModel: (request) =>
+      invoke<AutoCutSpeechTranscriptionModelDownloadResult>('autocut_download_speech_transcription_model', {
         request,
       }),
     compressVideo: (request) =>
@@ -606,6 +729,120 @@ export function getAutoCutNativeHostClient() {
   return configuredNativeHostClient;
 }
 
+function assertAutoCutNativeVideoSliceTranscriptEvidence(request: AutoCutVideoSliceRequest) {
+  request.clips.forEach((clip, index) => {
+    assertAutoCutNativeVideoSliceClipTranscriptEvidence(clip, index + 1);
+  });
+}
+
+function assertAutoCutNativeVideoSliceClipTranscriptEvidence(
+  clip: AutoCutVideoSliceClipRequest,
+  clipNumber: number,
+) {
+  const transcriptSegments = clip.transcriptSegments?.filter((segment) => segment.text.trim());
+  if (!transcriptSegments?.length) {
+    throw new Error(
+      `AutoCut video slice clip ${clipNumber} requires speech-to-text transcript evidence before native rendering.`,
+    );
+  }
+
+  const transcriptText = clip.transcriptText?.trim();
+  if (!transcriptText) {
+    throw new Error(
+      `AutoCut video slice clip ${clipNumber} requires visible speech-to-text transcript evidence before native rendering.`,
+    );
+  }
+
+  const expectedTranscriptText = transcriptSegments.map((segment) => segment.text.trim()).join(' ');
+  if (
+    !expectedTranscriptText ||
+    normalizeAutoCutNativeVideoSliceTranscriptText(transcriptText) !==
+      normalizeAutoCutNativeVideoSliceTranscriptText(expectedTranscriptText)
+  ) {
+    throw new Error(
+      `AutoCut video slice clip ${clipNumber} transcriptText must match structured speech-to-text transcriptSegments.`,
+    );
+  }
+
+  if (clip.transcriptSegmentCount !== transcriptSegments.length) {
+    throw new Error(
+      `AutoCut video slice clip ${clipNumber} transcriptSegmentCount must match structured speech-to-text transcriptSegments.`,
+    );
+  }
+
+  const sourceStartMs = clip.sourceStartMs ?? clip.startMs;
+  const sourceEndMs = clip.sourceEndMs ?? clip.startMs + clip.durationMs;
+  if (!Number.isFinite(sourceStartMs) || !Number.isFinite(sourceEndMs) || sourceEndMs <= sourceStartMs) {
+    throw new Error(`AutoCut video slice clip ${clipNumber} sourceEndMs must be after sourceStartMs.`);
+  }
+  if (sourceStartMs < clip.startMs || sourceEndMs > clip.startMs + clip.durationMs) {
+    throw new Error(`AutoCut video slice clip ${clipNumber} source range must stay inside rendered clip timing.`);
+  }
+
+  const speechStartMs = clip.speechStartMs;
+  const speechEndMs = clip.speechEndMs;
+  if (typeof speechStartMs !== 'number' || !Number.isFinite(speechStartMs)) {
+    throw new Error(
+      `AutoCut video slice clip ${clipNumber} requires speechStartMs from speech-to-text evidence.`,
+    );
+  }
+  if (typeof speechEndMs !== 'number' || !Number.isFinite(speechEndMs)) {
+    throw new Error(`AutoCut video slice clip ${clipNumber} requires speechEndMs from speech-to-text evidence.`);
+  }
+  if (speechEndMs <= speechStartMs || speechStartMs < sourceStartMs || speechEndMs > sourceEndMs) {
+    throw new Error(`AutoCut video slice clip ${clipNumber} speech range must stay inside its source range.`);
+  }
+
+  if (transcriptSegments[0]?.startMs !== speechStartMs || transcriptSegments.at(-1)?.endMs !== speechEndMs) {
+    throw new Error(
+      `AutoCut video slice clip ${clipNumber} speech range must match transcript segment boundaries.`,
+    );
+  }
+
+  let previousEndMs: number | undefined;
+  transcriptSegments.forEach((segment, segmentIndex) => {
+    const segmentNumber = segmentIndex + 1;
+    if (!segment.text.trim()) {
+      throw new Error(
+        `AutoCut video slice clip ${clipNumber} transcript segment ${segmentNumber} must contain recognized speech text.`,
+      );
+    }
+    if (
+      !Number.isFinite(segment.startMs) ||
+      !Number.isFinite(segment.endMs) ||
+      segment.endMs <= segment.startMs ||
+      segment.startMs < sourceStartMs ||
+      segment.endMs > sourceEndMs
+    ) {
+      throw new Error(
+        `AutoCut video slice clip ${clipNumber} transcript segment ${segmentNumber} must stay inside the source range.`,
+      );
+    }
+    if (previousEndMs !== undefined && segment.startMs < previousEndMs) {
+      throw new Error(`AutoCut video slice clip ${clipNumber} transcript segments must be ordered and non-overlapping.`);
+    }
+    previousEndMs = segment.endMs;
+  });
+
+  if (
+    typeof clip.transcriptCoverageScore !== 'number' ||
+    !Number.isFinite(clip.transcriptCoverageScore) ||
+    clip.transcriptCoverageScore < MIN_NATIVE_VIDEO_SLICE_TRANSCRIPT_COVERAGE_SCORE
+  ) {
+    throw new Error(
+      `AutoCut video slice clip ${clipNumber} transcriptCoverageScore must be at least ${MIN_NATIVE_VIDEO_SLICE_TRANSCRIPT_COVERAGE_SCORE}.`,
+    );
+  }
+
+  if (!ACCEPTED_NATIVE_VIDEO_SLICE_SPEECH_CONTINUITY_GRADES.has(clip.speechContinuityGrade)) {
+    throw new Error(`AutoCut video slice clip ${clipNumber} speechContinuityGrade must be strong or repaired.`);
+  }
+}
+
+function normalizeAutoCutNativeVideoSliceTranscriptText(value: string) {
+  return value.split(/\s+/u).filter(Boolean).join(' ');
+}
+
 export async function selectAutoCutTrustedLocalVideoFile() {
   const nativeHostClient = getAutoCutNativeHostClient();
   const capabilities = await nativeHostClient.getCapabilities();
@@ -616,6 +853,18 @@ export async function selectAutoCutTrustedLocalVideoFile() {
   return nativeHostClient.selectLocalVideoFile();
 }
 
+export async function selectAutoCutTrustedLocalMediaFile(
+  mediaTypes: AutoCutLocalMediaFileSelectRequest['mediaTypes'] = ['audio', 'video'],
+) {
+  const nativeHostClient = getAutoCutNativeHostClient();
+  const capabilities = await nativeHostClient.getCapabilities();
+  if (!capabilities.localMediaFileSelectCommandReady) {
+    throw new Error('AutoCut trusted local media selection requires the Tauri desktop host.');
+  }
+
+  return nativeHostClient.selectLocalMediaFile({ mediaTypes });
+}
+
 export async function selectAutoCutTrustedLocalDirectory() {
   const nativeHostClient = getAutoCutNativeHostClient();
   const capabilities = await nativeHostClient.getCapabilities();
@@ -624,6 +873,29 @@ export async function selectAutoCutTrustedLocalDirectory() {
   }
 
   return nativeHostClient.selectLocalDirectory();
+}
+
+export async function allowAutoCutTrustedLocalMediaPreviewDirectory(directoryPath: string) {
+  const nativeHostClient = getAutoCutNativeHostClient();
+  const capabilities = await nativeHostClient.getCapabilities();
+  if (!capabilities.localMediaPreviewDirectoryScopeCommandReady) {
+    throw new Error('AutoCut local media preview directory authorization requires the Tauri desktop host.');
+  }
+
+  return nativeHostClient.allowLocalMediaPreviewDirectory({ directoryPath });
+}
+
+export async function openAutoCutNativeArtifactInFolder(artifactPath: string, taskOutputDir?: string) {
+  const nativeHostClient = getAutoCutNativeHostClient();
+  const capabilities = await nativeHostClient.getCapabilities();
+  if (!capabilities.openArtifactInFolderCommandReady) {
+    throw new Error('AutoCut generated artifact folder opening requires the Tauri desktop host.');
+  }
+
+  return nativeHostClient.openArtifactInFolder({
+    artifactPath,
+    ...(taskOutputDir ? { taskOutputDir } : {}),
+  });
 }
 
 export async function selectAutoCutSpeechTranscriptionFile(kind: AutoCutSpeechTranscriptionFileSelectRequest['kind']) {
@@ -665,17 +937,29 @@ function createUnsupportedNativeHostClient(): AutoCutNativeHostClient {
     describeLocalMediaFile: async () => {
       throw new Error('AutoCut native local file describe requires the Tauri desktop host.');
     },
+    selectLocalMediaFile: async () => {
+      throw new Error('AutoCut native local media file selection requires the Tauri desktop host.');
+    },
     selectLocalVideoFile: async () => {
       throw new Error('AutoCut native local video file selection requires the Tauri desktop host.');
     },
     selectLocalDirectory: async () => {
       throw new Error('AutoCut native local directory selection requires the Tauri desktop host.');
     },
+    allowLocalMediaPreviewDirectory: async () => {
+      throw new Error('AutoCut local media preview directory authorization requires the Tauri desktop host.');
+    },
+    openArtifactInFolder: async () => {
+      throw new Error('AutoCut generated artifact folder opening requires the Tauri desktop host.');
+    },
     probeSpeechTranscription: async () => {
       throw new Error('AutoCut native speech transcription probe requires the Tauri desktop host.');
     },
     selectSpeechTranscriptionFile: async () => {
       throw new Error('AutoCut native speech transcription file selection requires the Tauri desktop host.');
+    },
+    downloadSpeechTranscriptionModel: async () => {
+      throw new Error('AutoCut native speech transcription model download requires the Tauri desktop host.');
     },
     listNativeTasks: async () => {
       throw new Error('AutoCut native task query requires the Tauri desktop host.');

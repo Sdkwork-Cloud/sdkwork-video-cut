@@ -116,6 +116,36 @@ assert.equal(skippedEvidence.rustSmoke.success, false);
 assert.equal(skippedEvidence.videoSliceSmoke.skipped, true);
 assert.equal(skippedEvidence.videoSliceSmoke.success, false);
 
+const linuxEvidence = createAutoCutNativeReleaseSmokeEvidence({
+  rootDir: root,
+  generatedAt: '2026-05-05T00:00:00.000Z',
+  hostPlatform: 'linux',
+  runCommand(command, args) {
+    if (args.some((arg) => arg.includes('video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir'))) {
+      return {
+        status: 0,
+        stdout: 'autocut-video-slice-smoke=passed\ntest result: ok. 1 passed; 0 failed; 0 ignored',
+        stderr: '',
+      };
+    }
+    return {
+      status: 0,
+      stdout: 'test result: ok. 3 passed; 0 failed; 0 ignored',
+      stderr: '',
+    };
+  },
+});
+assert.equal(linuxEvidence.readiness.nativeReleaseSmokeReady, true);
+assert.equal(linuxEvidence.readiness.realLlmSecretStoreSmokeReady, true);
+assert.equal(linuxEvidence.llmSecretStoreSmoke.skipped, true);
+assert.equal(linuxEvidence.llmSecretStoreSmoke.success, true);
+assert.equal(linuxEvidence.llmSecretStoreSmoke.platformApplicable, false);
+assert.match(linuxEvidence.llmSecretStoreSmoke.reason, /only required on Windows/u);
+assert.deepEqual(
+  linuxEvidence.commandMatrix.filter((command) => command.command.includes('llm_secret')).map((command) => command.evidenceReady),
+  [true, true, true],
+);
+
 const realLlmSecretSmokeCalls = [];
 const realLlmSecretSmokeEvidence = createAutoCutNativeReleaseSmokeEvidence({
   rootDir: root,

@@ -4,7 +4,7 @@ import { Card, Button, FileUpload, TaskFailureState } from '@sdkwork/autocut-com
 
 import { Upload, Settings, Play, Image as ImageIcon, Activity, Download } from 'lucide-react';
 import { useToast } from '@sdkwork/autocut-commons';
-import { downloadAutoCutUrl, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic } from '@sdkwork/autocut-services';
+import { downloadAutoCutUrl, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic, selectAutoCutTrustedLocalMediaFile, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
 import { AUTOCUT_TASK_STATUS, isAutoCutTaskActiveStatus, type AppTask } from '@sdkwork/autocut-types';
 
 export function VideoGifPage() {
@@ -81,7 +81,12 @@ export function VideoGifPage() {
                 <Upload size={16} className="text-pink-500" />
                 源视频文件
               </h2>
-              <FileUpload file={file} onChange={setFile} accept="video/*" />
+              <FileUpload
+                file={file}
+                onChange={setFile}
+                accept="video/*"
+                trustedFileSourceSelector={() => selectAutoCutTrustedLocalMediaFile(['video'])}
+              />
             </Card>
 
             <div className="bg-pink-500/5 border border-pink-500/10 rounded-xl p-4 flex gap-3 text-sm text-pink-400">
@@ -176,7 +181,11 @@ export function VideoGifPage() {
                </Card>
              ) : (
                activeTask?.status === AUTOCUT_TASK_STATUS.failed ? (
-                  <TaskFailureState errorMessage={activeTask.errorMessage} onRetry={handleProcess} />
+                  <TaskFailureState
+                    errorMessage={activeTask.errorMessage}
+                    onCopyErrorMessage={writeAutoCutClipboardText}
+                    onRetry={handleProcess}
+                  />
                ) : activeTask?.status === AUTOCUT_TASK_STATUS.completed && activeTask.gifUrl ? (
                   <Card className="p-10 flex flex-col items-center justify-center border-[#222] bg-[#111]">
                     <div className="bg-[#1A1A1A] p-4 rounded-xl border border-[#333] shadow-xl max-w-xl w-full">

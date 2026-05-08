@@ -1,9 +1,12 @@
-import { AUTOCUT_TASK_STATUS, type AppTask, type VideoEnhanceParams } from '@sdkwork/autocut-types';
+import { resolveAutoCutTrustedSourcePath } from '@sdkwork/autocut-commons';
+import { AUTOCUT_TASK_STATUS, AUTOCUT_TASK_TYPE, type AppTask, type VideoEnhanceParams } from '@sdkwork/autocut-types';
 import {
   addAsset,
   addMessage,
   addTask,
+  assertAutoCutNativeArtifactInsideTaskOutputDir,
   createAutoCutId,
+  createAutoCutTaskName,
   createAutoCutTimestamp,
   failAutoCutProcessingTask,
   failAutoCutUnsupportedNativeProcessingTask,
@@ -12,21 +15,21 @@ import {
   updateTask,
   validateAutoCutProcessingSource,
 } from '@sdkwork/autocut-services';
-import { resolveAutoCutTrustedSourcePath } from '@sdkwork/autocut-commons';
 
 function resolveDesktopSourcePath(file: File | null | undefined) {
   return resolveAutoCutTrustedSourcePath(file);
 }
 
 function createVideoEnhanceTask(params: VideoEnhanceParams): AppTask {
+  const createdAt = createAutoCutTimestamp();
   return {
     id: createAutoCutId('newTask'),
-    name: params.file ? params.file.name : 'original_enhanced.mp4',
-    type: '视频高清化',
+    name: createAutoCutTaskName({ file: params.file, fallbackSourceName: 'source-video.mp4', createdAt }),
+    type: AUTOCUT_TASK_TYPE.videoEnhance,
     status: AUTOCUT_TASK_STATUS.pending,
     progress: 0,
-    progressMessage: '准备视频增强参数...',
-    createdAt: createAutoCutTimestamp(),
+    progressMessage: 'Preparing video enhancement task...',
+    createdAt,
     ...(params.fileId ? { sourceFileId: params.fileId } : {}),
   };
 }
@@ -37,7 +40,7 @@ async function finishVideoEnhanceTask(newTask: AppTask, videoUrl: string, size: 
 
   await addAsset({
     id: generatedAssetId,
-    name: `高清版_${newTask.name}`,
+    name: `enhanced-${newTask.name}`,
     type: 'video',
     size,
     url: videoUrl,
@@ -50,12 +53,12 @@ async function finishVideoEnhanceTask(newTask: AppTask, videoUrl: string, size: 
   await addMessage({
     id: createAutoCutId('msg'),
     type: 'success',
-    title: '视频高清化完成',
-    description: `视频画质已经完成增强处理。`,
+    title: 'Video enhancement completed',
+    description: `Enhanced video generated from "${newTask.name}".`,
     createdAt: createAutoCutTimestamp(),
     read: false,
     actionUrl: '/tasks/' + newTask.id,
-    actionLabel: '前往查看',
+    actionLabel: 'View task',
   });
 
   return {
@@ -82,7 +85,7 @@ export async function processVideoEnhance(params: VideoEnhanceParams) {
     await updateTask(newTask.id, {
       status: AUTOCUT_TASK_STATUS.processing,
       progress: 20,
-      progressMessage: '导入本地视频到桌面媒体沙箱...',
+      progressMessage: 'Importing local video into the desktop media sandbox...',
     });
 
     try {
@@ -94,7 +97,7 @@ export async function processVideoEnhance(params: VideoEnhanceParams) {
       await updateTask(newTask.id, {
         status: AUTOCUT_TASK_STATUS.processing,
         progress: 60,
-        progressMessage: '执行视频清晰度增强与标准编码...',
+        progressMessage: 'Running enhancement and standard video encoding...',
       });
       const enhancedVideo = await nativeHostClient.enhanceVideo({
         assetUuid: importedMedia.assetUuid,
@@ -103,13 +106,14 @@ export async function processVideoEnhance(params: VideoEnhanceParams) {
         frameRate: params.frameRate,
         ...(outputRootDir ? { outputRootDir } : {}),
       });
+      assertAutoCutNativeArtifactInsideTaskOutputDir(enhancedVideo, 'video enhancement output');
       const videoUrl = nativeHostClient.createAssetUrl(enhancedVideo.artifactPath);
       const completedData = await finishVideoEnhanceTask(newTask, videoUrl, enhancedVideo.byteSize);
 
       await updateTask(newTask.id, {
         status: AUTOCUT_TASK_STATUS.completed,
         progress: 100,
-        progressMessage: '视频高清化完成',
+        progressMessage: 'Video enhancement completed.',
         completedAt: createAutoCutTimestamp(),
         ...completedData,
       });

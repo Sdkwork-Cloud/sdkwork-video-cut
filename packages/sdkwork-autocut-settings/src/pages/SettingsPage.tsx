@@ -1,15 +1,37 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Card, Button, useToast } from '@sdkwork/autocut-commons';
-import { User, Bell, Shield, CreditCard, Key, Database, Crown, Zap, Monitor, BrainCircuit } from 'lucide-react';
+import {
+  Bell,
+  BrainCircuit,
+  Check,
+  Copy,
+  CreditCard,
+  Database,
+  FolderOpen,
+  Key,
+  Monitor,
+  Play,
+  RotateCcw,
+  Shield,
+  Trash2,
+  User,
+} from 'lucide-react';
 import {
   cancelAutoCutSubscription,
   clearAutoCutStorageCache,
   createAutoCutApiKey,
   deleteAutoCutAccount,
+  copyAutoCutLocalSpeechTranscriptionModelPresetUrl,
+  downloadAutoCutLocalSpeechTranscriptionModelPreset,
+  getAutoCutLocalSpeechTranscriptionModelPresets,
   getAutoCutSettings,
+  inspectAutoCutLocalSpeechTranscriptionSetup,
+  initializeAutoCutLocalSpeechTranscriptionSetup,
   listenAutoCutEvent,
   loadMoreAutoCutInvoices,
+  normalizeAutoCutLocale,
   openAutoCutSubscriptionManagement,
   requestAutoCutAvatarChange,
   requestAutoCutPasswordChange,
@@ -23,12 +45,65 @@ import {
   selectAutoCutSpeechTranscriptionFile,
   selectAutoCutTrustedLocalDirectory,
   setAutoCutTwoFactorEnabled,
+  setupAutoCutLocalSpeechTranscriptionModelPreset,
   testAutoCutLlmConnection,
-  testAutoCutSpeechTranscriptionToolchain,
+  testAutoCutSpeechTranscriptionProvider,
   writeAutoCutClipboardText,
 } from '@sdkwork/autocut-services';
-import { AUTOCUT_MODEL_VENDOR_PRESETS, getAutoCutModelPreset } from '@sdkwork/autocut-types';
-import type { AppSettings, AutoCutLlmSettings, ModelVendor } from '@sdkwork/autocut-types';
+import {
+  AUTOCUT_MODEL_VENDOR_PRESETS,
+  AUTOCUT_SPEECH_TRANSCRIPTION_LANGUAGE_OPTIONS,
+  AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS,
+  AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER_DEFINITIONS,
+  AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS,
+  getAutoCutModelPreset,
+  getAutoCutSpeechTranscriptionProviderDefinition,
+  isAutoCutSpeechTranscriptionModelDownloadTerminalPhase,
+} from '@sdkwork/autocut-types';
+import type {
+  AppSettings,
+  AutoCutAppLocale,
+  AutoCutLocalSpeechTranscriptionSetupStatus,
+  AutoCutLlmSettings,
+  AutoCutSpeechTranscriptionModelDownloadProgressEvent,
+  AutoCutSpeechTranscriptionProviderId,
+  ModelVendor,
+} from '@sdkwork/autocut-types';
+import {
+  AUTOCUT_SETTINGS_LOCALE_OPTIONS,
+  AUTOCUT_SETTINGS_TABS,
+  isAutoCutSettingsTabId,
+  type AutoCutSettingsIconId,
+  type AutoCutSettingsTabId,
+} from '../service/settings.registry';
+
+const AUTOCUT_SETTINGS_ICON: Record<AutoCutSettingsIconId, ReactNode> = {
+  bell: <Bell size={16} />,
+  brain: <BrainCircuit size={16} />,
+  'credit-card': <CreditCard size={16} />,
+  database: <Database size={16} />,
+  key: <Key size={16} />,
+  monitor: <Monitor size={16} />,
+  shield: <Shield size={16} />,
+  user: <User size={16} />,
+};
+
+const AUTOCUT_DEFAULT_SETTINGS_TAB = AUTOCUT_SETTINGS_TABS[0];
+
+if (!AUTOCUT_DEFAULT_SETTINGS_TAB) {
+  throw new Error('AutoCut Settings Center requires at least one settings tab.');
+}
+
+const AUTOCUT_NOTIFICATION_FIELDS: readonly {
+  key: keyof AppSettings['notifications'];
+  labelKey: string;
+}[] = [
+  { key: 'taskCompleted', labelKey: 'settings.notification.taskCompleted' },
+  { key: 'appUpdates', labelKey: 'settings.notification.appUpdates' },
+  { key: 'accountBilling', labelKey: 'settings.notification.accountBilling' },
+  { key: 'productAnnouncements', labelKey: 'settings.notification.productAnnouncements' },
+  { key: 'usageReports', labelKey: 'settings.notification.usageReports' },
+] as const;
 
 function getAutoCutAccountInitials(displayName: string) {
   const initials = displayName.trim().slice(0, 2).toUpperCase();
@@ -39,63 +114,214 @@ function formatAutoCutTokenCount(tokens: number) {
   return String(Math.round(tokens)).replace(/\B(?=(\d{3})+(?!\d))/gu, ',');
 }
 
+function formatAutoCutByteCount(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return '0 B';
+  }
+  const units = ['B', 'KB', 'MB', 'GB'] as const;
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value >= 10 || unitIndex === 0 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function FieldLabel({ children }: { children: ReactNode }) {
+  return (
+    <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+      {children}
+    </label>
+  );
+}
+
+function FieldHelp({ children }: { children: ReactNode }) {
+  return <p className="text-[11px] leading-relaxed text-gray-500">{children}</p>;
+}
+
+function SectionTitle({ title, description }: { title: ReactNode; description?: ReactNode }) {
+  return (
+    <div className="border-b border-[#222] pb-4">
+      <h3 className="text-lg font-semibold text-white">{title}</h3>
+      {description ? <p className="mt-1 text-xs leading-relaxed text-gray-500">{description}</p> : null}
+    </div>
+  );
+}
+
+function StatusBadge({ tone, children }: { tone: 'green' | 'yellow' | 'red'; children: ReactNode }) {
+  const toneClass = {
+    green: 'border-green-500/20 bg-green-500/10 text-green-500',
+    yellow: 'border-yellow-500/20 bg-yellow-500/10 text-yellow-500',
+    red: 'border-red-500/20 bg-red-500/10 text-red-500',
+  }[tone];
+
+  return (
+    <span className={`inline-flex min-h-6 items-center rounded border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${toneClass}`}>
+      {children}
+    </span>
+  );
+}
+
+function Toggle({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        className="peer sr-only"
+      />
+      <span className="h-6 w-11 rounded-full bg-[#222] transition-colors peer-checked:bg-blue-600" />
+      <span className="absolute left-0.5 top-0.5 h-5 w-5 rounded-full border border-gray-300 bg-gray-400 transition-transform peer-checked:translate-x-full peer-checked:bg-white" />
+    </label>
+  );
+}
+
+function SettingsRow({
+  title,
+  description,
+  children,
+}: {
+  title: ReactNode;
+  description?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-4 border-t border-[#111] py-5 first:border-t-0 first:pt-0 md:flex-row md:items-center md:justify-between">
+      <div className="min-w-0">
+        <h4 className="text-sm font-medium text-gray-200">{title}</h4>
+        {description ? <p className="mt-1 text-xs leading-relaxed text-gray-500">{description}</p> : null}
+      </div>
+      <div className="min-w-0 md:max-w-xl">{children}</div>
+    </div>
+  );
+}
+
 export function SettingsPage() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { t, i18n } = useTranslation();
   const { toast } = useToast();
   const queryParams = new URLSearchParams(location.search);
-  const tabFromUrl = queryParams.get('tab') || 'account';
+  const tabFromUrl = queryParams.get('tab');
+  const initialTab = isAutoCutSettingsTabId(tabFromUrl) ? tabFromUrl : 'account';
 
-  const [activeTab, setActiveTab] = useState(tabFromUrl);
+  const [activeTab, setActiveTab] = useState<AutoCutSettingsTabId>(initialTab);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [isTestingLlmConnection, setIsTestingLlmConnection] = useState(false);
   const [isTestingSpeechTranscription, setIsTestingSpeechTranscription] = useState(false);
+  const [isConfiguringSpeechModel, setIsConfiguringSpeechModel] = useState(false);
+  const [speechSetupStatus, setSpeechSetupStatus] = useState<AutoCutLocalSpeechTranscriptionSetupStatus | null>(null);
+  const [speechModelDownloadProgress, setSpeechModelDownloadProgress] =
+    useState<AutoCutSpeechTranscriptionModelDownloadProgressEvent | null>(null);
 
   useEffect(() => {
-    setActiveTab(tabFromUrl);
+    setActiveTab(isAutoCutSettingsTabId(tabFromUrl) ? tabFromUrl : 'account');
   }, [tabFromUrl]);
 
   useEffect(() => {
-    getAutoCutSettings().then(setSettings);
-    return listenAutoCutEvent('settingsUpdated', setSettings);
-  }, []);
+    getAutoCutSettings().then((loadedSettings) => {
+      setSettings(loadedSettings);
+      void i18n.changeLanguage(loadedSettings.workspace.language);
+    });
+    return listenAutoCutEvent('settingsUpdated', (nextSettings) => {
+      setSettings(nextSettings);
+      void i18n.changeLanguage(nextSettings.workspace.language);
+    });
+  }, [i18n]);
 
-  const handleTabChange = (tabId: string) => {
-    setActiveTab(tabId);
-    navigate(`/settings?tab=${tabId}`, { replace: true });
-  };
+  useEffect(() => {
+    if (!settings || activeTab !== 'speech') {
+      return;
+    }
+    const provider = getAutoCutSpeechTranscriptionProviderDefinition(settings.speechTranscription.providerId);
+    if (provider.kind !== 'local') {
+      setSpeechSetupStatus(null);
+      return;
+    }
+
+    let cancelled = false;
+    void inspectAutoCutLocalSpeechTranscriptionSetup()
+      .then((status) => {
+        if (!cancelled) {
+          setSpeechSetupStatus(status);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSpeechSetupStatus(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeTab,
+    settings?.speechTranscription.providerId,
+    settings?.speechTranscription.executablePath,
+    settings?.speechTranscription.modelPath,
+    settings?.speechTranscription.lastProbeReady,
+  ]);
+
+  useEffect(() => listenAutoCutEvent('speechTranscriptionModelDownloadProgress', (progress) => {
+    setSpeechModelDownloadProgress(progress);
+  }), []);
+
+  const activeTabDefinition = useMemo(
+    () => AUTOCUT_SETTINGS_TABS.find((tab) => tab.id === activeTab) ?? AUTOCUT_DEFAULT_SETTINGS_TAB,
+    [activeTab],
+  );
 
   const updateSettingsState = (nextSettings: AppSettings) => {
     setSettings(nextSettings);
+    void i18n.changeLanguage(nextSettings.workspace.language);
+  };
+
+  const handleTabChange = (tabId: AutoCutSettingsTabId) => {
+    setActiveTab(tabId);
+    navigate(`/settings?tab=${tabId}`, { replace: true });
   };
 
   const handleSaveAccount = async () => {
     if (!settings) return;
     updateSettingsState(await saveAutoCutAccountSettings(settings.account));
-    toast('账号信息已保存', 'success');
+    toast(t('settings.toast.accountSaved'), 'success');
   };
 
   const handleSaveWorkspace = async () => {
     if (!settings) return;
     updateSettingsState(await saveAutoCutWorkspaceSettings(settings.workspace));
-    toast('工作区偏好已保存', 'success');
+    toast(t('settings.toast.workspaceSaved'), 'success');
+  };
+
+  const handleWorkspacePreferenceChange = (workspace: AppSettings['workspace']) => {
+    if (!settings) return;
+    const nextSettings = { ...settings, workspace };
+    setSettings(nextSettings);
+    void saveAutoCutWorkspaceSettings(workspace).then(updateSettingsState);
+  };
+
+  const handleWorkspaceLanguageChange = (language: string) => {
+    if (!settings) return;
+    const normalizedLanguage: AutoCutAppLocale = normalizeAutoCutLocale(language);
+    const workspace = { ...settings.workspace, language: normalizedLanguage };
+    const nextSettings = { ...settings, workspace };
+    setSettings(nextSettings);
+    void i18n.changeLanguage(normalizedLanguage);
+    void saveAutoCutWorkspaceSettings(workspace).then(updateSettingsState);
   };
 
   const handleSaveNotifications = async () => {
     if (!settings) return;
     updateSettingsState(await saveAutoCutNotificationSettings(settings.notifications));
-    toast('通知设置已保存', 'success');
-  };
-
-  const handleChangeAvatar = async () => {
-    updateSettingsState(await requestAutoCutAvatarChange());
-    toast('头像更新流程已提交', 'info');
-  };
-
-  const handleWorkspacePreferenceChange = (workspace: AppSettings['workspace']) => {
-    if (!settings) return;
-    setSettings({ ...settings, workspace });
-    void saveAutoCutWorkspaceSettings(workspace).then(updateSettingsState);
+    toast(t('settings.toast.notificationsSaved'), 'success');
   };
 
   const handleNotificationPreferenceChange = (notifications: AppSettings['notifications']) => {
@@ -104,14 +330,14 @@ export function SettingsPage() {
     void saveAutoCutNotificationSettings(notifications).then(updateSettingsState);
   };
 
+  const handleChangeAvatar = async () => {
+    updateSettingsState(await requestAutoCutAvatarChange());
+    toast(t('settings.toast.avatarRequested'), 'info');
+  };
+
   const handleLlmSettingsChange = (llm: AutoCutLlmSettings) => {
     if (!settings) return;
     setSettings({ ...settings, llm });
-  };
-
-  const handleSpeechTranscriptionSettingsChange = (speechTranscription: AppSettings['speechTranscription']) => {
-    if (!settings) return;
-    setSettings({ ...settings, speechTranscription });
   };
 
   const handleLlmVendorChange = (modelVendor: ModelVendor) => {
@@ -130,13 +356,69 @@ export function SettingsPage() {
   const handleSaveLlmSettings = async () => {
     if (!settings) return;
     updateSettingsState(await saveAutoCutLlmSettings(settings.llm));
-    toast('LLM 配置已保存', 'success');
+    toast(t('settings.toast.llmSaved'), 'success');
+  };
+
+  const handleTestLlmConnection = async () => {
+    if (!settings || isTestingLlmConnection) return;
+    setIsTestingLlmConnection(true);
+    try {
+      updateSettingsState(await saveAutoCutLlmSettings(settings.llm));
+      const result = await testAutoCutLlmConnection();
+      toast(t('settings.toast.llmTestPassed', { model: result.model }), 'success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('settings.toast.llmTestFailed');
+      toast(message, 'error');
+    } finally {
+      setIsTestingLlmConnection(false);
+    }
+  };
+
+  const handleSpeechTranscriptionSettingsChange = (speechTranscription: AppSettings['speechTranscription']) => {
+    if (!settings) return;
+    setSettings({ ...settings, speechTranscription: resetSpeechTranscriptionProbeState(speechTranscription) });
+  };
+
+  const resetSpeechTranscriptionProbeState = (
+    speechTranscription: AppSettings['speechTranscription'],
+  ): AppSettings['speechTranscription'] => {
+    const nextSpeechTranscription = { ...speechTranscription };
+    delete nextSpeechTranscription.lastTestedAt;
+    delete nextSpeechTranscription.lastProbeReady;
+    delete nextSpeechTranscription.lastProbeDiagnostics;
+    return nextSpeechTranscription;
+  };
+
+  const handleSpeechTranscriptionProviderChange = (providerId: AutoCutSpeechTranscriptionProviderId) => {
+    if (!settings) return;
+    const provider = getAutoCutSpeechTranscriptionProviderDefinition(providerId);
+    const nextSpeechTranscription = resetSpeechTranscriptionProbeState({
+      ...settings.speechTranscription,
+      providerId: provider.id,
+      ...(provider.kind === 'api'
+        ? {
+            modelVendor: provider.modelVendor,
+            baseUrl: provider.modelVendor
+              ? AUTOCUT_MODEL_VENDOR_PRESETS[provider.modelVendor].baseUrl
+              : settings.speechTranscription.baseUrl,
+            model: provider.defaultModel ?? settings.speechTranscription.model,
+          }
+        : {}),
+    });
+    handleSpeechTranscriptionSettingsChange(nextSpeechTranscription);
+    void saveAutoCutSpeechTranscriptionSettings(nextSpeechTranscription)
+      .then(updateSettingsState)
+      .then(() => {
+        if (provider.kind === 'local') {
+          void handleSetupSpeechTranscriptionModelPreset();
+        }
+      });
   };
 
   const handleSaveSpeechTranscriptionSettings = async () => {
     if (!settings) return;
     updateSettingsState(await saveAutoCutSpeechTranscriptionSettings(settings.speechTranscription));
-    toast('Local speech-to-text settings saved', 'success');
+    toast(t('settings.toast.speechSaved'), 'success');
   };
 
   const handleSelectSpeechTranscriptionFile = async (kind: 'executable' | 'model') => {
@@ -147,37 +429,71 @@ export function SettingsPage() {
       ...settings.speechTranscription,
       ...(kind === 'executable' ? { executablePath: selectedPath } : { modelPath: selectedPath }),
     };
-    updateSettingsState(await saveAutoCutSpeechTranscriptionSettings(speechTranscription));
-    toast('Local speech-to-text path updated', 'success');
+    updateSettingsState(await saveAutoCutSpeechTranscriptionSettings(resetSpeechTranscriptionProbeState(speechTranscription)));
+    toast(t('settings.toast.speechPathUpdated'), 'success');
   };
 
-  const handleTestSpeechTranscriptionToolchain = async () => {
+  const handleDownloadSpeechTranscriptionModelPreset = (modelPresetId: string) => {
+    downloadAutoCutLocalSpeechTranscriptionModelPreset(modelPresetId);
+  };
+
+  const handleSetupSpeechTranscriptionModelPreset = async (modelPresetId?: string) => {
+    if (isConfiguringSpeechModel) return;
+    setIsConfiguringSpeechModel(true);
+    try {
+      const result = await setupAutoCutLocalSpeechTranscriptionModelPreset(modelPresetId);
+      updateSettingsState(result.settings);
+      toast(
+        result.nativeDownload
+          ? t('settings.toast.speechModelConfigured', { model: result.preset.label })
+          : t('settings.toast.speechModelDownloadStarted', { model: result.preset.label }),
+        result.nativeDownload ? 'success' : 'info',
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('settings.toast.speechModelConfigureFailed');
+      toast(message, 'error');
+    } finally {
+      setIsConfiguringSpeechModel(false);
+    }
+  };
+
+  const handleInitializeSpeechTranscriptionSetup = async () => {
+    if (isConfiguringSpeechModel) return;
+    setIsConfiguringSpeechModel(true);
+    try {
+      setSpeechModelDownloadProgress(null);
+      const result = await initializeAutoCutLocalSpeechTranscriptionSetup();
+      updateSettingsState(result.settings);
+      setSpeechSetupStatus(result.status);
+      toast(t('settings.toast.speechModelConfigured', { model: result.status.model.preset.label }), 'success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('settings.toast.speechModelConfigureFailed');
+      toast(message, 'error');
+      void inspectAutoCutLocalSpeechTranscriptionSetup()
+        .then(setSpeechSetupStatus)
+        .catch(() => setSpeechSetupStatus(null));
+    } finally {
+      setIsConfiguringSpeechModel(false);
+    }
+  };
+
+  const handleCopySpeechTranscriptionModelPresetUrl = async (modelPresetId: string) => {
+    await copyAutoCutLocalSpeechTranscriptionModelPresetUrl(modelPresetId);
+    toast(t('settings.toast.speechModelUrlCopied'), 'success');
+  };
+
+  const handleTestSpeechTranscriptionProvider = async () => {
     if (!settings || isTestingSpeechTranscription) return;
     setIsTestingSpeechTranscription(true);
     try {
       updateSettingsState(await saveAutoCutSpeechTranscriptionSettings(settings.speechTranscription));
-      const result = await testAutoCutSpeechTranscriptionToolchain();
-      toast(`Local speech-to-text test passed: ${result.sourceKind}`, 'success');
+      const result = await testAutoCutSpeechTranscriptionProvider();
+      toast(t('settings.toast.speechTestPassed', { sourceKind: result.sourceKind }), 'success');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Local speech-to-text test failed';
+      const message = error instanceof Error ? error.message : t('settings.toast.speechTestFailed');
       toast(message, 'error');
     } finally {
       setIsTestingSpeechTranscription(false);
-    }
-  };
-
-  const handleTestLlmConnection = async () => {
-    if (!settings || isTestingLlmConnection) return;
-    setIsTestingLlmConnection(true);
-    try {
-      updateSettingsState(await saveAutoCutLlmSettings(settings.llm));
-      const result = await testAutoCutLlmConnection();
-      toast(`LLM 测试连接成功：${result.model}`, 'success');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'LLM 测试连接失败';
-      toast(message, 'error');
-    } finally {
-      setIsTestingLlmConnection(false);
     }
   };
 
@@ -185,661 +501,976 @@ export function SettingsPage() {
     if (!settings) return;
     const selectedDirectory = await selectAutoCutTrustedLocalDirectory();
     if (!selectedDirectory) return;
-    updateSettingsState(await saveAutoCutWorkspaceSettings({ ...settings.workspace, defaultStoragePath: selectedDirectory }));
-    toast('默认目录已更新', 'success');
+    updateSettingsState(await saveAutoCutWorkspaceSettings({
+      ...settings.workspace,
+      defaultStoragePath: selectedDirectory,
+    }));
+    toast(t('settings.toast.defaultDirectoryUpdated'), 'success');
   };
 
   const handleChangeOutputDirectory = async () => {
     if (!settings) return;
     const selectedDirectory = await selectAutoCutTrustedLocalDirectory();
     if (!selectedDirectory) return;
-    updateSettingsState(await saveAutoCutWorkspaceSettings({ ...settings.workspace, outputDirectory: selectedDirectory }));
-    toast('输出目录已更新', 'success');
+    updateSettingsState(await saveAutoCutWorkspaceSettings({
+      ...settings.workspace,
+      outputDirectory: selectedDirectory,
+    }));
+    toast(t('settings.toast.outputDirectoryUpdated'), 'success');
   };
 
   const handleCreateApiKey = async () => {
     updateSettingsState(await createAutoCutApiKey());
-    toast('API Key 已创建', 'success');
+    toast(t('settings.toast.apiKeyCreated'), 'success');
   };
 
   const handleCopyApiKey = async (maskedKey: string) => {
     await writeAutoCutClipboardText(maskedKey);
-    toast('API Key 已复制', 'success');
+    toast(t('settings.toast.apiKeyCopied'), 'success');
   };
 
   const handleRevokeApiKey = async (apiKeyId: string) => {
     updateSettingsState(await revokeAutoCutApiKey(apiKeyId));
-    toast('API Key 已撤销', 'success');
+    toast(t('settings.toast.apiKeyRevoked'), 'success');
   };
 
   const handleClearCache = async () => {
     updateSettingsState(await clearAutoCutStorageCache());
-    toast('缓存已清理', 'success');
+    toast(t('settings.toast.cacheCleared'), 'success');
   };
 
   const handleLoadMoreInvoices = async () => {
     updateSettingsState(await loadMoreAutoCutInvoices());
-    toast('账单记录已加载', 'success');
+    toast(t('settings.toast.invoicesLoaded'), 'success');
   };
 
   const handleCancelSubscription = async () => {
     updateSettingsState(await cancelAutoCutSubscription());
-    toast('订阅状态已更新', 'info');
+    toast(t('settings.toast.subscriptionUpdated'), 'info');
   };
 
   const handleManageSubscription = async () => {
     updateSettingsState(await openAutoCutSubscriptionManagement());
     handleTabChange('billing');
-    toast('已打开订阅管理', 'info');
+    toast(t('settings.toast.subscriptionManagementOpened'), 'info');
   };
 
   const handleChangePassword = async () => {
     updateSettingsState(await requestAutoCutPasswordChange());
-    toast('密码更新流程已启动', 'info');
+    toast(t('settings.toast.passwordRequested'), 'info');
   };
 
   const handleToggleTwoFactor = async () => {
     if (!settings) return;
     updateSettingsState(await setAutoCutTwoFactorEnabled(!settings.security.twoFactorEnabled));
-    toast('两步验证状态已更新', 'success');
+    toast(t('settings.toast.twoFactorUpdated'), 'success');
   };
 
   const handleRevokeSessions = async () => {
     updateSettingsState(await revokeAutoCutSessions());
-    toast('其他设备会话已退出', 'success');
+    toast(t('settings.toast.sessionsRevoked'), 'success');
   };
 
   const handleDeleteAccount = async () => {
     updateSettingsState(await deleteAutoCutAccount());
-    toast('账号注销申请已记录', 'info');
+    toast(t('settings.toast.accountDeletionRequested'), 'info');
   };
 
   if (!settings) {
     return (
-      <div className="w-full h-full p-6 md:p-10 overflow-y-auto bg-gradient-to-br from-[#050505] to-[#0A0A0A] text-gray-200">
-        <div className="h-full min-h-[240px] flex items-center justify-center text-gray-500">加载配置...</div>
+      <div className="h-full w-full overflow-y-auto bg-[#050505] p-6 text-gray-200 md:p-10">
+        <div className="flex h-full min-h-[240px] items-center justify-center text-gray-500">
+          {t('settings.page.loading')}
+        </div>
       </div>
     );
   }
 
+  const activeLlmVendorPreset = AUTOCUT_MODEL_VENDOR_PRESETS[settings.llm.modelVendor];
   const activeLlmModelPreset = getAutoCutModelPreset(settings.llm.modelVendor, settings.llm.model);
-  const tabs = [
-    { id: 'speech', label: 'Local Speech-to-Text', icon: <Monitor size={16} /> },
-    { id: 'account', label: '账号设置', icon: <User size={16} /> },
-    { id: 'workspace', label: '工作区偏好', icon: <Monitor size={16} /> },
-    { id: 'billing', label: '订阅与账单', icon: <CreditCard size={16} /> },
-    { id: 'api', label: 'API Keys', icon: <Key size={16} /> },
-    { id: 'llm', label: 'LLM 配置', icon: <BrainCircuit size={16} /> },
-    { id: 'storage', label: '存储管理', icon: <Database size={16} /> },
-    { id: 'notifications', label: '通知设置', icon: <Bell size={16} /> },
-    { id: 'security', label: '安全与隐私', icon: <Shield size={16} /> },
-  ];
+  const activeSpeechTranscriptionProvider = getAutoCutSpeechTranscriptionProviderDefinition(
+    settings.speechTranscription.providerId,
+  );
+  const activeSpeechTranscriptionModelPresets = getAutoCutLocalSpeechTranscriptionModelPresets(
+    activeSpeechTranscriptionProvider.id,
+  );
+  const executableReady =
+    activeSpeechTranscriptionProvider.kind !== 'local' ||
+    speechSetupStatus?.executable.ready === true;
+  const modelReady =
+    activeSpeechTranscriptionProvider.kind !== 'local' ||
+    speechSetupStatus?.model.ready === true;
+  const testReady = speechSetupStatus?.test.ready === true || settings.speechTranscription.lastProbeReady === true;
+  const speechRuntimeReady =
+    activeSpeechTranscriptionProvider.kind === 'local' ? testReady : settings.speechTranscription.configured;
+  const readiness = (
+    speechModelDownloadProgress &&
+    !isAutoCutSpeechTranscriptionModelDownloadTerminalPhase(speechModelDownloadProgress.phase)
+  )
+    ? AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.downloading
+    : speechSetupStatus?.readiness;
+  const speechSetupStatusTone: 'green' | 'yellow' | 'red' =
+    readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready
+      ? 'green'
+      : readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.needsExecutable ||
+          readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.failed
+        ? 'red'
+        : 'yellow';
+  const speechSetupStatusLabel = readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.downloading
+    ? t('settings.speech.setupStatus.downloading')
+    : t(`settings.speech.setupStatus.${readiness ?? 'checking'}`);
+  const downloadedBytes = speechModelDownloadProgress?.downloadedBytes ?? 0;
+  const totalBytes = speechModelDownloadProgress?.totalBytes;
+  const speechDownloadProgressPercent = speechModelDownloadProgress?.progress ??
+    (totalBytes && totalBytes > 0 ? Math.round((downloadedBytes / totalBytes) * 100) : 0);
+  const speechSetupChecklist = [
+    {
+      id: 'executableReady',
+      ready: executableReady,
+      label: t('settings.speech.setup.executableReady'),
+    },
+    {
+      id: 'modelReady',
+      ready: modelReady,
+      label: t('settings.speech.setup.modelReady'),
+    },
+    {
+      id: 'testReady',
+      ready: testReady,
+      label: t('settings.speech.setup.testReady'),
+    },
+  ] as const;
+  const storageUsagePercent = Math.min(100, (settings.storage.usedGb / settings.storage.quotaGb) * 100);
 
   return (
-    <div className="w-full h-full p-6 md:p-10 overflow-y-auto bg-gradient-to-br from-[#050505] to-[#0A0A0A] text-gray-200">
+    <div className="h-full w-full overflow-y-auto bg-[#050505] p-6 text-gray-200 md:p-10">
       <div className="w-full space-y-8">
-
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-extrabold tracking-tight text-white mb-2">配置中心</h1>
-            <p className="text-gray-400 text-sm">管理您的账户偏好、订阅状态和工作区设置。</p>
+        <header className="flex flex-col gap-4 border-b border-[#151515] pb-6 lg:flex-row lg:items-end lg:justify-between">
+          <div className="min-w-0">
+            <h1 className="text-3xl font-extrabold tracking-normal text-white">{t('settings.page.title')}</h1>
+            <p className="mt-2 max-w-3xl text-sm leading-relaxed text-gray-400">{t('settings.page.description')}</p>
           </div>
-        </div>
+          <div className="flex min-w-[220px] flex-col gap-2">
+            <FieldLabel>{t('settings.field.language')}</FieldLabel>
+            <select
+              value={settings.workspace.language}
+              onChange={(event) => handleWorkspaceLanguageChange(event.target.value)}
+              className="h-10 rounded-md border border-[#333] bg-[#111] px-3 text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
+            >
+              {AUTOCUT_SETTINGS_LOCALE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {t(option.labelKey)}
+                </option>
+              ))}
+            </select>
+          </div>
+        </header>
 
-        <div className="flex flex-col md:flex-row gap-8">
-          {/* Sidebar */}
-          <div className="w-full md:w-64 shrink-0 space-y-1">
-            {tabs.map((tab) => (
+        <div className="flex flex-col gap-8 md:flex-row">
+          <nav className="w-full shrink-0 space-y-1 md:w-72">
+            {AUTOCUT_SETTINGS_TABS.map((tab) => (
               <button
                 key={tab.id}
+                type="button"
                 onClick={() => handleTabChange(tab.id)}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all ${
+                className={`flex min-h-14 w-full items-center gap-3 rounded-lg border px-4 py-3 text-left text-sm transition-all ${
                   activeTab === tab.id
-                    ? 'bg-blue-600/10 text-blue-500 border border-blue-500/20'
-                    : 'text-gray-400 hover:text-gray-200 hover:bg-[#111] border border-transparent'
+                    ? 'border-blue-500/20 bg-blue-600/10 text-blue-400'
+                    : 'border-transparent text-gray-400 hover:bg-[#111] hover:text-gray-200'
                 }`}
               >
-                {tab.icon}
-                {tab.label}
+                {AUTOCUT_SETTINGS_ICON[tab.icon]}
+                <span className="min-w-0">
+                  <span className="block font-medium">{t(tab.labelKey)}</span>
+                  <span className="mt-0.5 block truncate text-[11px] text-gray-500">{t(tab.descriptionKey)}</span>
+                </span>
               </button>
             ))}
-          </div>
+          </nav>
 
-          {/* Main Content */}
-          <div className="flex-1 space-y-6">
+          <main className="min-w-0 flex-1 space-y-6">
+            <div className="min-h-10">
+              <h2 className="text-xl font-semibold text-white">{t(activeTabDefinition.labelKey)}</h2>
+              <p className="mt-1 text-sm text-gray-500">{t(activeTabDefinition.descriptionKey)}</p>
+            </div>
+
             {activeTab === 'account' && (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                <Card className="p-6 md:p-8 bg-[#0A0A0A] border-[#222]">
-                  <h3 className="text-lg font-semibold text-white border-b border-[#222] pb-4 mb-6">个人信息</h3>
-                  <div className="flex items-center gap-6 mb-8">
-                    <div className="w-20 h-20 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-2xl font-bold text-white shadow-lg border-2 border-[#333]">
+              <Card className="border-[#222] bg-[#0A0A0A] p-6 md:p-8">
+                <div className="space-y-6">
+                  <SectionTitle title={t('settings.section.accountProfile')} />
+                  <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
+                    <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full border-2 border-[#333] bg-gradient-to-br from-blue-500 to-indigo-600 text-2xl font-bold text-white shadow-lg">
                       {getAutoCutAccountInitials(settings.account.displayName)}
                     </div>
-                    <div>
-                      <h4 className="text-xl font-bold text-gray-100 flex items-center gap-2">
-                        {settings.account.displayName}
-                        <span className="px-2 py-0.5 rounded text-[10px] bg-yellow-500/10 text-yellow-500 border border-yellow-500/20 flex items-center gap-1 font-mono uppercase tracking-wider">
-                          <Crown size={12} /> PRO
-                        </span>
-                      </h4>
-                      <p className="text-gray-500 text-sm mt-1">{settings.account.email}</p>
-                      <Button onClick={handleChangeAvatar} size="sm" variant="outline" className="mt-3 border-[#333] hover:border-gray-400 text-xs">
-                        更换头像
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h4 className="text-xl font-bold text-gray-100">{settings.account.displayName}</h4>
+                        <StatusBadge tone="yellow">{t('settings.status.pro')}</StatusBadge>
+                      </div>
+                      <p className="mt-1 text-sm text-gray-500">{settings.account.email}</p>
+                      <Button onClick={handleChangeAvatar} size="sm" variant="outline" className="mt-3 border-[#333] text-xs">
+                        {t('settings.action.changeAvatar')}
                       </Button>
                     </div>
                   </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
                     <div className="space-y-2">
-                      <label className="text-xs text-gray-500 uppercase tracking-wider font-semibold">昵称</label>
-                      <input type="text" value={settings.account.displayName} onChange={(event) => setSettings({ ...settings, account: { ...settings.account, displayName: event.target.value } })} className="w-full h-10 bg-[#111] border border-[#333] rounded-md px-3 text-sm focus:outline-none focus:border-blue-500 text-gray-200 transition-colors" />
+                      <FieldLabel>{t('settings.field.displayName')}</FieldLabel>
+                      <input
+                        type="text"
+                        value={settings.account.displayName}
+                        onChange={(event) => setSettings({
+                          ...settings,
+                          account: { ...settings.account, displayName: event.target.value },
+                        })}
+                        className="h-10 w-full rounded-md border border-[#333] bg-[#111] px-3 text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
+                      />
                     </div>
                     <div className="space-y-2">
-                      <label className="text-xs text-gray-500 uppercase tracking-wider font-semibold">联系邮箱</label>
-                      <input type="email" value={settings.account.email} onChange={(event) => setSettings({ ...settings, account: { ...settings.account, email: event.target.value } })} className="w-full h-10 bg-[#111] border border-[#333] rounded-md px-3 text-sm focus:outline-none focus:border-blue-500 text-gray-200 transition-colors" />
+                      <FieldLabel>{t('settings.field.email')}</FieldLabel>
+                      <input
+                        type="email"
+                        value={settings.account.email}
+                        onChange={(event) => setSettings({
+                          ...settings,
+                          account: { ...settings.account, email: event.target.value },
+                        })}
+                        className="h-10 w-full rounded-md border border-[#333] bg-[#111] px-3 text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
+                      />
                     </div>
                   </div>
-                  <div className="mt-6 flex justify-end">
-                    <Button onClick={handleSaveAccount} className="bg-blue-600 hover:bg-blue-500 text-white">保存修改</Button>
+                  <div className="flex justify-end">
+                    <Button onClick={handleSaveAccount} className="bg-blue-600 text-white hover:bg-blue-500">
+                      <Check size={16} />
+                      {t('settings.action.saveChanges')}
+                    </Button>
                   </div>
-                </Card>
-              </div>
-            )}
-
-            {activeTab === 'billing' && (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                <Card className="p-0 overflow-hidden border border-yellow-500/30 bg-gradient-to-br from-[#1A1A10] to-[#0A0A0A]">
-                  <div className="p-8 relative overflow-hidden">
-                    <div className="absolute top-0 right-0 w-64 h-64 bg-yellow-500/10 rounded-full blur-[80px]" />
-                    <div className="flex justify-between items-start relative z-10">
-                      <div>
-                        <div className="flex items-center gap-2 mb-2">
-                          <Crown size={24} className="text-yellow-500" />
-                          <h3 className="text-2xl font-bold text-white">{settings.billing.planName}</h3>
-                        </div>
-                        <p className="text-gray-400 text-sm">解锁极致渲染性能与全部高级切片权益</p>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-3xl font-extrabold text-white">￥{settings.billing.monthlyPrice}<span className="text-sm font-medium text-gray-400">/月</span></div>
-                        <p className="text-xs text-gray-500 mt-1">下次扣费日期: {settings.billing.nextBillingDate}</p>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-10 relative z-10">
-                      <div className="bg-[#111]/80 backdrop-blur rounded-lg p-5 border border-[#333]">
-                        <Zap size={20} className="text-yellow-500 mb-3" />
-                        <h4 className="font-semibold text-gray-200 mb-1">极速渲染列队</h4>
-                        <p className="text-xs text-gray-500 leading-relaxed">专享GPU推理集群，任务处理提速 400%</p>
-                      </div>
-                      <div className="bg-[#111]/80 backdrop-blur rounded-lg p-5 border border-[#333]">
-                        <Database size={20} className="text-blue-500 mb-3" />
-                        <h4 className="font-semibold text-gray-200 mb-1">超大云端空间</h4>
-                        <p className="text-xs text-gray-500 leading-relaxed">提供 500GB 极速云存，且不限速下载</p>
-                      </div>
-                      <div className="bg-[#111]/80 backdrop-blur rounded-lg p-5 border border-[#333]">
-                        <Shield size={20} className="text-green-500 mb-3" />
-                        <h4 className="font-semibold text-gray-200 mb-1">版权无忧保护</h4>
-                        <p className="text-xs text-gray-500 leading-relaxed">商用版权全面授权及独立溯源数字水印</p>
-                      </div>
-                    </div>
-
-                    <div className="mt-8 pt-8 border-t border-[#333] flex justify-between items-center relative z-10">
-                      <button onClick={handleCancelSubscription} className="text-sm text-gray-400 hover:text-white underline underline-offset-4">取消订阅</button>
-                      <Button onClick={handleManageSubscription} className="bg-yellow-500 hover:bg-yellow-400 text-black font-semibold border-0 shadow-[0_0_20px_rgba(234,179,8,0.2)]">
-                        管理订阅协议
-                      </Button>
-                    </div>
-                  </div>
-                </Card>
-
-                <Card className="p-8 bg-[#0A0A0A] border-[#222]">
-                  <h3 className="text-lg font-semibold text-white mb-6">历史账单</h3>
-                  <div className="space-y-4">
-                     {Array.from({ length: settings.billing.invoicesLoaded }).map((_, index) => (
-                       <div key={index} className="flex justify-between items-center py-3 border-b border-[#222] text-sm">
-                         <div className="text-gray-300">{index === 0 ? '2023-11-20' : '2023-10-20'}</div>
-                         <div className="text-gray-400">{settings.billing.planName}(包月)</div>
-                         <div className="font-medium text-gray-200">￥{settings.billing.monthlyPrice}.00</div>
-                         <div className="text-green-500">已支付</div>
-                       </div>
-                     ))}
-                  </div>
-                  <Button onClick={handleLoadMoreInvoices} variant="outline" className="w-full mt-6 border-[#333] text-gray-400 hover:text-gray-200">加载更多</Button>
-                </Card>
-              </div>
+                </div>
+              </Card>
             )}
 
             {activeTab === 'workspace' && (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                <Card className="p-6 md:p-8 bg-[#0A0A0A] border-[#222]">
-                  <h3 className="text-lg font-semibold text-white border-b border-[#222] pb-4 mb-6">工作区偏好设置</h3>
-
-                  <div className="space-y-6">
-                    <div className="flex items-center justify-between py-2">
-                       <div>
-                         <h4 className="font-medium text-gray-200">默认存储路径</h4>
-                         <p className="text-xs text-gray-500 mt-1">设置本地文件导出的默认位置</p>
-                       </div>
-                       <Button onClick={handleChangeDirectory} variant="outline" size="sm" className="border-[#333] hover:border-blue-500">
-                          更改目录
-                       </Button>
-                    </div>
-
-                    <div className="flex items-center justify-between gap-6 py-2 border-t border-[#111]">
-                       <div className="min-w-0">
-                         <h4 className="font-medium text-gray-200">默认输出目录</h4>
-                         <p className="text-xs text-gray-500 mt-1">媒体任务会写入该目录下的 tasks/任务ID/outputs</p>
-                       </div>
-                       <div className="flex items-center gap-3 min-w-0 w-full max-w-xl">
-                         <input
-                           type="text"
-                           value={settings.workspace.outputDirectory}
-                           onChange={(event) => setSettings({ ...settings, workspace: { ...settings.workspace, outputDirectory: event.target.value } })}
-                           onBlur={handleSaveWorkspace}
-                           className="min-w-0 flex-1 h-10 bg-[#111] border border-[#333] rounded-md px-3 text-sm focus:outline-none focus:border-blue-500 text-gray-200 transition-colors"
-                         />
-                         <Button onClick={handleChangeOutputDirectory} variant="outline" size="sm" className="border-[#333] hover:border-blue-500 shrink-0">
-                            更改目录
-                         </Button>
-                       </div>
-                    </div>
-
-                    <div className="flex items-center justify-between py-2 border-t border-[#111]">
-                       <div>
-                         <h4 className="font-medium text-gray-200">硬件加速</h4>
-                         <p className="text-xs text-gray-500 mt-1">利用本地显卡 (GPU) 加速素材解码和分析</p>
-                       </div>
-                       <div className="relative inline-flex items-center cursor-pointer">
-                          <input type="checkbox" checked={settings.workspace.hardwareAcceleration} onChange={(event) => handleWorkspacePreferenceChange({ ...settings.workspace, hardwareAcceleration: event.target.checked })} className="sr-only peer" />
-                          <div className="w-11 h-6 bg-[#222] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-gray-400 peer-checked:after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
-                       </div>
-                    </div>
-
-                    <div className="flex items-center justify-between py-2 border-t border-[#111]">
-                       <div>
-                         <h4 className="font-medium text-gray-200">完成时播放提示音</h4>
-                         <p className="text-xs text-gray-500 mt-1">漫长任务处理完毕时播放短提示音</p>
-                       </div>
-                       <div className="relative inline-flex items-center cursor-pointer">
-                          <input type="checkbox" checked={settings.workspace.completionSound} onChange={(event) => handleWorkspacePreferenceChange({ ...settings.workspace, completionSound: event.target.checked })} className="sr-only peer" />
-                          <div className="w-11 h-6 bg-[#222] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-gray-400 peer-checked:after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
-                       </div>
-                    </div>
-
-                    <div className="flex items-center justify-between py-2 border-t border-[#111]">
-                       <div>
-                         <h4 className="font-medium text-gray-200">语言设置</h4>
-                         <p className="text-xs text-gray-500 mt-1">应用界面的显示语言</p>
-                       </div>
-                       <select value={settings.workspace.language} onChange={(event) => handleWorkspacePreferenceChange({ ...settings.workspace, language: event.target.value })} onBlur={handleSaveWorkspace} className="bg-[#111] border border-[#333] rounded-md px-3 py-1.5 text-sm text-gray-200 outline-none focus:border-blue-500">
-                         <option value="zh">简体中文</option>
-                         <option value="en">English</option>
-                       </select>
-                    </div>
-                  </div>
-                </Card>
-              </div>
-            )}
-
-            {activeTab === 'api' && (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                <Card className="p-6 md:p-8 bg-[#0A0A0A] border-[#222]">
-                  <div className="flex justify-between items-center border-b border-[#222] pb-4 mb-6">
-                    <h3 className="text-lg font-semibold text-white">API 密钥管理</h3>
-                    <Button onClick={handleCreateApiKey} size="sm" className="bg-blue-600 hover:bg-blue-500 text-white shadow-md shadow-blue-900/20">
-                      创建新密钥
+              <Card className="border-[#222] bg-[#0A0A0A] p-6 md:p-8">
+                <div className="space-y-6">
+                  <SectionTitle title={t('settings.section.workspacePreferences')} />
+                  <SettingsRow
+                    title={t('settings.field.defaultStoragePath')}
+                    description={t('settings.help.defaultStoragePath')}
+                  >
+                    <Button onClick={handleChangeDirectory} variant="outline" size="sm" className="border-[#333]">
+                      <FolderOpen size={16} />
+                      {t('settings.action.changeDirectory')}
                     </Button>
-                  </div>
-
-                  <div className="bg-[#111] border border-[#222] rounded-lg p-5 mb-6 shadow-inner">
-                     <p className="text-sm text-gray-400 leading-relaxed">
-                       使用 API 密钥可将 SDKWork AutoCut 的推断能力通过 HTTP 请求接入您自己的应用或第三方服务中。请务必保护您的密钥，不要将其硬编码在客户端代码中。
-                     </p>
-                  </div>
-
-                  <div className="space-y-4">
-                    {settings.apiKeys.map((apiKey) => (
-                      <div key={apiKey.id} className="group border border-[#222] rounded-lg p-4 hover:border-[#333] transition-colors bg-[#0A0A0A]">
-                         <div className="flex justify-between items-start mb-4">
-                           <div>
-                             <h4 className="font-medium text-gray-200">{apiKey.name}</h4>
-                             <p className="text-xs text-gray-500 mt-1">创建于 {apiKey.createdAt}{apiKey.revokedAt ? ` / 已撤销 ${apiKey.revokedAt}` : ''}</p>
-                           </div>
-                           <div className="flex gap-2">
-                             <Button onClick={() => handleCopyApiKey(apiKey.maskedKey)} variant="outline" size="sm" className="h-8 border-[#333] text-gray-400 hover:text-white">复制</Button>
-                             <Button onClick={() => handleRevokeApiKey(apiKey.id)} variant="outline" size="sm" className="h-8 border-[#333] text-red-500 hover:text-red-400 hover:border-red-500/50 hover:bg-red-500/10">撤销</Button>
-                           </div>
-                         </div>
-                         <div className="font-mono text-sm bg-[#111] p-2.5 rounded border border-[#222] text-gray-400 flex items-center">
-                           {apiKey.maskedKey}
-                         </div>
-                      </div>
-                    ))}
-                  </div>
-                </Card>
-              </div>
+                  </SettingsRow>
+                  <SettingsRow
+                    title={t('settings.field.outputDirectory')}
+                    description={t('settings.help.outputDirectory')}
+                  >
+                    <div className="flex min-w-0 gap-3">
+                      <input
+                        type="text"
+                        value={settings.workspace.outputDirectory}
+                        onChange={(event) => setSettings({
+                          ...settings,
+                          workspace: { ...settings.workspace, outputDirectory: event.target.value },
+                        })}
+                        onBlur={handleSaveWorkspace}
+                        className="h-10 min-w-0 flex-1 rounded-md border border-[#333] bg-[#111] px-3 text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
+                      />
+                      <Button onClick={handleChangeOutputDirectory} variant="outline" size="sm" className="shrink-0 border-[#333]">
+                        <FolderOpen size={16} />
+                        {t('settings.action.changeDirectory')}
+                      </Button>
+                    </div>
+                  </SettingsRow>
+                  <SettingsRow
+                    title={t('settings.field.hardwareAcceleration')}
+                    description={t('settings.help.hardwareAcceleration')}
+                  >
+                    <Toggle
+                      checked={settings.workspace.hardwareAcceleration}
+                      onChange={(checked) => handleWorkspacePreferenceChange({
+                        ...settings.workspace,
+                        hardwareAcceleration: checked,
+                      })}
+                    />
+                  </SettingsRow>
+                  <SettingsRow title={t('settings.field.completionSound')} description={t('settings.help.completionSound')}>
+                    <Toggle
+                      checked={settings.workspace.completionSound}
+                      onChange={(checked) => handleWorkspacePreferenceChange({
+                        ...settings.workspace,
+                        completionSound: checked,
+                      })}
+                    />
+                  </SettingsRow>
+                  <SettingsRow title={t('settings.field.language')} description={t('settings.help.language')}>
+                    <select
+                      value={settings.workspace.language}
+                      onChange={(event) => handleWorkspaceLanguageChange(event.target.value)}
+                      onBlur={handleSaveWorkspace}
+                      className="h-10 w-full rounded-md border border-[#333] bg-[#111] px-3 text-sm text-gray-200 outline-none transition-colors focus:border-blue-500 md:w-56"
+                    >
+                      {AUTOCUT_SETTINGS_LOCALE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {t(option.labelKey)}
+                        </option>
+                      ))}
+                    </select>
+                  </SettingsRow>
+                </div>
+              </Card>
             )}
 
-            {activeTab === 'llm' && (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                <Card className="p-6 md:p-8 bg-[#0A0A0A] border-[#222]">
-                  <div className="flex justify-between items-center border-b border-[#222] pb-4 mb-6">
-                    <div>
-                      <h3 className="text-lg font-semibold text-white">LLM 推理配置</h3>
-                      <p className="text-xs text-gray-500 mt-1">使用 OpenAI 兼容接口接入不同模型供应商，默认采用 DeepSeek。</p>
-                    </div>
-                    <span className={`px-2.5 py-1 rounded text-[10px] border font-mono uppercase tracking-wider ${settings.llm.apiKeyConfigured ? 'bg-green-500/10 text-green-500 border-green-500/20' : 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20'}`}>
-                      {settings.llm.apiKeyConfigured ? 'KEY READY' : 'KEY REQUIRED'}
-                    </span>
+            {activeTab === 'speech' && (
+              <Card className="border-[#222] bg-[#0A0A0A] p-6 md:p-8">
+                <div className="space-y-6">
+                  <div className="flex flex-col gap-4 border-b border-[#222] pb-4 md:flex-row md:items-start md:justify-between">
+                    <SectionTitle
+                      title={t('settings.section.speechRuntime')}
+                      description={t(activeSpeechTranscriptionProvider.descriptionKey)}
+                    />
+                    <StatusBadge tone={speechRuntimeReady ? 'green' : 'yellow'}>
+                      {speechRuntimeReady ? t('settings.status.ready') : t('settings.status.required')}
+                    </StatusBadge>
                   </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                      <label className="text-xs text-gray-500 uppercase tracking-wider font-semibold">ModelVendor</label>
+                  <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                    <div className="space-y-2 md:col-span-2">
+                      <FieldLabel>{t('settings.field.provider')}</FieldLabel>
                       <select
-                        value={settings.llm.modelVendor}
-                        onChange={(event) => handleLlmVendorChange(event.target.value as ModelVendor)}
-                        className="w-full h-10 bg-[#111] border border-[#333] rounded-md px-3 text-sm text-gray-200 outline-none focus:border-blue-500 transition-colors"
+                        value={settings.speechTranscription.providerId}
+                        onChange={(event) =>
+                          handleSpeechTranscriptionProviderChange(event.target.value as AutoCutSpeechTranscriptionProviderId)}
+                        className="h-10 w-full rounded-md border border-[#333] bg-[#111] px-3 text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
                       >
-                        {Object.values(AUTOCUT_MODEL_VENDOR_PRESETS).map((preset) => (
-                          <option key={preset.vendor} value={preset.vendor}>{preset.label}</option>
+                        {AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER_DEFINITIONS.map((provider) => (
+                          <option key={provider.id} value={provider.id}>
+                            {t(provider.nameKey)}
+                          </option>
+                        ))}
+                      </select>
+                      <FieldHelp>{t(activeSpeechTranscriptionProvider.nameKey)}</FieldHelp>
+                    </div>
+
+                    {activeSpeechTranscriptionProvider.kind === 'local' && (
+                      <>
+                        <div className="space-y-3 rounded-md border border-[#222] bg-[#111] p-4 md:col-span-2">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <FieldLabel>{t('settings.speech.setupStatus.label')}</FieldLabel>
+                                <StatusBadge tone={speechSetupStatusTone}>
+                                  {speechSetupStatusLabel}
+                                </StatusBadge>
+                              </div>
+                              <div className="mt-2 grid gap-1 font-mono text-[11px] text-gray-500">
+                                <span className="truncate">{speechSetupStatus?.executable.path || settings.speechTranscription.executablePath || speechSetupStatus?.defaults.executablePath || t('settings.speech.setupStatus.executableMissing')}</span>
+                                <span className="truncate">{speechSetupStatus?.model.path || settings.speechTranscription.modelPath || t('settings.speech.setupStatus.modelMissing')}</span>
+                              </div>
+                            </div>
+                            <Button
+                              onClick={handleInitializeSpeechTranscriptionSetup}
+                              disabled={
+                                isConfiguringSpeechModel ||
+                                readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready ||
+                                readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.downloading
+                              }
+                              className="bg-blue-600 text-white hover:bg-blue-500"
+                            >
+                              <Check size={16} />
+                              {isConfiguringSpeechModel ? t('settings.speech.configuring') : t('settings.action.initializeSpeech')}
+                            </Button>
+                          </div>
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between gap-3 text-[11px] text-gray-500">
+                              <span className="truncate">
+                                Whisper CLI sidecar {speechSetupStatus?.executable.sourceKind || speechSetupStatus?.defaults.executableStrategy || t('settings.speech.setupStatus.executableMissing')}
+                              </span>
+                              <span className="font-mono">{speechSetupStatus?.executable.ready ? 'verified' : 'required'}</span>
+                            </div>
+                            <div className="h-2 w-full overflow-hidden rounded-full border border-[#222] bg-[#050505]">
+                              <div
+                                className="h-full min-w-[4px] rounded-full bg-emerald-500"
+                                style={{ width: speechSetupStatus?.executable.ready ? '100%' : '4%' }}
+                              />
+                            </div>
+                          </div>
+                          {speechModelDownloadProgress ? (
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between gap-3 text-[11px] text-gray-500">
+                                <span>{t('settings.speech.downloadProgress', {
+                                  downloaded: formatAutoCutByteCount(downloadedBytes),
+                                  total: totalBytes ? formatAutoCutByteCount(totalBytes) : t('settings.speech.setupStatus.unknownSize'),
+                                })}</span>
+                                <span className="font-mono">{speechDownloadProgressPercent}%</span>
+                              </div>
+                              <div className="h-2 w-full overflow-hidden rounded-full border border-[#222] bg-[#050505]">
+                                <div
+                                  className="h-full min-w-[4px] rounded-full bg-blue-500"
+                                  style={{ width: `${Math.max(4, Math.min(100, speechDownloadProgressPercent))}%` }}
+                                />
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="space-y-3 md:col-span-2">
+                          <FieldLabel>{t('settings.speech.setupChecklist')}</FieldLabel>
+                          <div className="grid grid-cols-1 gap-2 lg:grid-cols-3">
+                            {speechSetupChecklist.map((item) => (
+                              <div
+                                key={item.id}
+                                className={`flex min-h-10 items-center justify-between gap-3 rounded-md border px-3 py-2 ${
+                                  item.ready
+                                    ? 'border-green-500/20 bg-green-500/10 text-green-400'
+                                    : 'border-yellow-500/20 bg-yellow-500/10 text-yellow-400'
+                                }`}
+                              >
+                                <span className="min-w-0 text-xs font-medium">{item.label}</span>
+                                <StatusBadge tone={item.ready ? 'green' : 'yellow'}>
+                                  {item.ready ? t('settings.status.ready') : t('settings.status.required')}
+                                </StatusBadge>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="space-y-2 md:col-span-2">
+                          <FieldLabel>{t('settings.field.executablePath')}</FieldLabel>
+                          <div className="flex gap-3">
+                            <input
+                              type="text"
+                              value={settings.speechTranscription.executablePath}
+                              placeholder={speechSetupStatus?.defaults.executablePath || ''}
+                              onChange={(event) => handleSpeechTranscriptionSettingsChange({
+                                ...settings.speechTranscription,
+                                executablePath: event.target.value,
+                              })}
+                              onBlur={handleSaveSpeechTranscriptionSettings}
+                              className="h-10 min-w-0 flex-1 rounded-md border border-[#333] bg-[#111] px-3 font-mono text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
+                            />
+                            <Button onClick={() => handleSelectSpeechTranscriptionFile('executable')} variant="outline" className="border-[#333] text-white">
+                              <FolderOpen size={16} />
+                              {t('settings.action.browse')}
+                            </Button>
+                          </div>
+                          <FieldHelp>{t('settings.speech.local.executableHelp')}</FieldHelp>
+                          {speechSetupStatus?.defaults.executablePath ? (
+                            <FieldHelp>{speechSetupStatus.defaults.executablePath}</FieldHelp>
+                          ) : null}
+                          {speechSetupStatus?.defaults.executableStrategy ? (
+                            <FieldHelp>{speechSetupStatus.defaults.executableStrategy}</FieldHelp>
+                          ) : null}
+                        </div>
+                        <div className="space-y-2 md:col-span-2">
+                          <FieldLabel>{t('settings.field.modelPath')}</FieldLabel>
+                          <div className="flex gap-3">
+                            <input
+                              type="text"
+                              value={settings.speechTranscription.modelPath}
+                              onChange={(event) => handleSpeechTranscriptionSettingsChange({
+                                ...settings.speechTranscription,
+                                modelPath: event.target.value,
+                              })}
+                              onBlur={handleSaveSpeechTranscriptionSettings}
+                              className="h-10 min-w-0 flex-1 rounded-md border border-[#333] bg-[#111] px-3 font-mono text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
+                            />
+                            <Button onClick={() => handleSelectSpeechTranscriptionFile('model')} variant="outline" className="border-[#333] text-white">
+                              <FolderOpen size={16} />
+                              {t('settings.action.browse')}
+                            </Button>
+                          </div>
+                          <FieldHelp>
+                            {t('settings.speech.local.modelHelp', {
+                              extensions: AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS.join(', '),
+                            })}
+                          </FieldHelp>
+                          {speechSetupStatus?.defaults.modelPath ? (
+                            <FieldHelp>{speechSetupStatus.defaults.modelPath}</FieldHelp>
+                          ) : null}
+                        </div>
+                        <div className="space-y-3 md:col-span-2">
+                          <div className="flex flex-col gap-1">
+                            <FieldLabel>{t('settings.speech.modelCatalog')}</FieldLabel>
+                            <FieldHelp>{t('settings.speech.modelCatalogHelp')}</FieldHelp>
+                          </div>
+                          <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+                            {activeSpeechTranscriptionModelPresets
+                              .map((modelPreset) => (
+                                <div key={modelPreset.id} className="rounded-md border border-[#222] bg-[#111] p-3">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <div className="truncate text-sm font-semibold text-gray-100">{modelPreset.label}</div>
+                                      <div className="mt-1 truncate font-mono text-[11px] text-gray-500">{modelPreset.fileName}</div>
+                                    </div>
+                                    {modelPreset.recommended ? (
+                                      <StatusBadge tone="green">{t('settings.status.recommended')}</StatusBadge>
+                                    ) : null}
+                                  </div>
+                                  <div className="mt-3 space-y-1 text-[11px] leading-relaxed text-gray-500">
+                                    <div>{modelPreset.qualityLabel}</div>
+                                    <div>{modelPreset.speedLabel}</div>
+                                    <div>{modelPreset.sizeLabel} / {modelPreset.languageScope}</div>
+                                  </div>
+                                  <div className="mt-3 flex flex-wrap gap-2">
+                                    <Button
+                                      onClick={() => handleSetupSpeechTranscriptionModelPreset(modelPreset.id)}
+                                      disabled={isConfiguringSpeechModel}
+                                      size="sm"
+                                      className="h-8 bg-blue-600 text-white hover:bg-blue-500"
+                                    >
+                                      <Check size={14} />
+                                      {isConfiguringSpeechModel ? t('settings.speech.configuring') : t('settings.action.useAndDownloadModel')}
+                                    </Button>
+                                    <Button
+                                      onClick={() => handleDownloadSpeechTranscriptionModelPreset(modelPreset.id)}
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-8 border-[#333] text-gray-300"
+                                    >
+                                      <FolderOpen size={14} />
+                                      {t('settings.action.downloadModel')}
+                                    </Button>
+                                    <Button
+                                      onClick={() => handleCopySpeechTranscriptionModelPresetUrl(modelPreset.id)}
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-8 border-[#333] text-gray-400"
+                                    >
+                                      <Copy size={14} />
+                                      {t('settings.action.copyLink')}
+                                    </Button>
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    {activeSpeechTranscriptionProvider.kind === 'api' && (
+                      <>
+                        <div className="space-y-2">
+                          <FieldLabel>{t('settings.field.modelVendor')}</FieldLabel>
+                          <div className="flex h-10 items-center rounded-md border border-[#333] bg-[#111] px-3 font-mono text-sm text-gray-400">
+                            {settings.speechTranscription.modelVendor ?? activeSpeechTranscriptionProvider.modelVendor ?? 'custom'}
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <FieldLabel>{t('settings.field.model')}</FieldLabel>
+                          <input
+                            type="text"
+                            value={settings.speechTranscription.model ?? activeSpeechTranscriptionProvider.defaultModel ?? ''}
+                            onChange={(event) => handleSpeechTranscriptionSettingsChange({
+                              ...settings.speechTranscription,
+                              model: event.target.value,
+                            })}
+                            onBlur={handleSaveSpeechTranscriptionSettings}
+                            className="h-10 w-full rounded-md border border-[#333] bg-[#111] px-3 font-mono text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
+                          />
+                        </div>
+                        <div className="space-y-2 md:col-span-2">
+                          <FieldLabel>{t('settings.field.apiRuntime')}</FieldLabel>
+                          <div className="flex min-h-10 items-center rounded-md border border-[#333] bg-[#111] px-3 py-2 text-xs leading-relaxed text-gray-500">
+                            {t('settings.speech.api.runtimeHelp')}
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    <div className="space-y-2">
+                      <FieldLabel>{t('settings.field.transcriptionLanguage')}</FieldLabel>
+                      <select
+                        value={settings.speechTranscription.language}
+                        onChange={(event) => handleSpeechTranscriptionSettingsChange({
+                          ...settings.speechTranscription,
+                          language: event.target.value,
+                        })}
+                        onBlur={handleSaveSpeechTranscriptionSettings}
+                        className="h-10 w-full rounded-md border border-[#333] bg-[#111] px-3 text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
+                      >
+                        {AUTOCUT_SPEECH_TRANSCRIPTION_LANGUAGE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
                         ))}
                       </select>
                     </div>
-
                     <div className="space-y-2">
-                      <label className="text-xs text-gray-500 uppercase tracking-wider font-semibold">模型</label>
+                      <FieldLabel>{t('settings.field.lastTest')}</FieldLabel>
+                      <div className="flex h-10 items-center rounded-md border border-[#333] bg-[#111] px-3 font-mono text-sm text-gray-500">
+                        {settings.speechTranscription.lastTestedAt || t('settings.speech.notTested')}
+                      </div>
+                    </div>
+                    {settings.speechTranscription.lastProbeDiagnostics?.length ? (
+                      <div className="space-y-2 md:col-span-2">
+                        <FieldLabel>{t('settings.speech.diagnostics')}</FieldLabel>
+                        <div className="space-y-2 rounded-md border border-red-500/20 bg-red-500/10 p-3">
+                          {settings.speechTranscription.lastProbeDiagnostics.map((diagnostic) => (
+                            <div key={diagnostic} className="font-mono text-xs leading-relaxed text-red-300">
+                              {diagnostic}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap justify-end gap-3">
+                    <Button
+                      onClick={handleTestSpeechTranscriptionProvider}
+                      disabled={isTestingSpeechTranscription}
+                      variant="outline"
+                      className="text-white"
+                    >
+                      <Play size={16} />
+                      {isTestingSpeechTranscription ? t('settings.speech.testing') : t('settings.action.testProvider')}
+                    </Button>
+                    <Button onClick={handleSaveSpeechTranscriptionSettings} className="bg-blue-600 text-white hover:bg-blue-500">
+                      <Check size={16} />
+                      {t('settings.action.saveSpeech')}
+                    </Button>
+                  </div>
+                </div>
+              </Card>
+            )}
+
+            {activeTab === 'llm' && (
+              <Card className="border-[#222] bg-[#0A0A0A] p-6 md:p-8">
+                <div className="space-y-6">
+                  <div className="flex flex-col gap-4 border-b border-[#222] pb-4 md:flex-row md:items-start md:justify-between">
+                    <SectionTitle title={t('settings.section.llmRuntime')} description={t('settings.help.llmDescription')} />
+                    <StatusBadge tone={settings.llm.apiKeyConfigured ? 'green' : 'yellow'}>
+                      {settings.llm.apiKeyConfigured ? t('settings.status.keyReady') : t('settings.status.keyRequired')}
+                    </StatusBadge>
+                  </div>
+                  <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <FieldLabel>{t('settings.field.modelVendor')}</FieldLabel>
+                      <select
+                        value={settings.llm.modelVendor}
+                        onChange={(event) => handleLlmVendorChange(event.target.value as ModelVendor)}
+                        className="h-10 w-full rounded-md border border-[#333] bg-[#111] px-3 text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
+                      >
+                        {Object.values(AUTOCUT_MODEL_VENDOR_PRESETS).map((preset) => (
+                          <option key={preset.vendor} value={preset.vendor} title={t(preset.descriptionKey)}>
+                            {t(preset.labelKey)}
+                          </option>
+                        ))}
+                      </select>
+                      <FieldHelp>{t(activeLlmVendorPreset.descriptionKey)}</FieldHelp>
+                      <div className="flex flex-wrap gap-2 text-[11px] font-medium text-gray-500">
+                        <span className="rounded border border-[#222] bg-[#111] px-2 py-1">
+                          {t(`settings.llm.region.${activeLlmVendorPreset.region}`)}
+                        </span>
+                        <span className="rounded border border-[#222] bg-[#111] px-2 py-1">
+                          {t('settings.llm.runtime.openAiCompatible')}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <FieldLabel>{t('settings.field.model')}</FieldLabel>
                       <input
                         type="text"
                         value={settings.llm.model}
                         list="llm-model-options"
                         onChange={(event) => handleLlmSettingsChange({ ...settings.llm, model: event.target.value })}
                         onBlur={handleSaveLlmSettings}
-                        className="w-full h-10 bg-[#111] border border-[#333] rounded-md px-3 text-sm focus:outline-none focus:border-blue-500 text-gray-200 transition-colors"
+                        className="h-10 w-full rounded-md border border-[#333] bg-[#111] px-3 text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
                       />
                       <datalist id="llm-model-options">
                         {AUTOCUT_MODEL_VENDOR_PRESETS[settings.llm.modelVendor].models.map((model) => (
                           <option key={model.id} value={model.id}>{model.label}</option>
                         ))}
                       </datalist>
-                      <p className="text-[11px] text-gray-600">
-                        上下文 {formatAutoCutTokenCount(activeLlmModelPreset.contextWindowTokens)} tokens / 最大输出 {formatAutoCutTokenCount(activeLlmModelPreset.maxOutputTokens)} tokens
-                      </p>
+                      <FieldHelp>
+                        {t('settings.help.llmTokenLimits', {
+                          contextTokens: formatAutoCutTokenCount(activeLlmModelPreset.contextWindowTokens),
+                          maxTokens: formatAutoCutTokenCount(activeLlmModelPreset.maxOutputTokens),
+                        })}
+                      </FieldHelp>
                     </div>
-
                     <div className="space-y-2 md:col-span-2">
-                      <label className="text-xs text-gray-500 uppercase tracking-wider font-semibold">Base URL</label>
+                      <FieldLabel>{t('settings.field.baseUrl')}</FieldLabel>
                       <input
                         type="url"
                         value={settings.llm.baseUrl}
                         onChange={(event) => handleLlmSettingsChange({ ...settings.llm, baseUrl: event.target.value })}
                         onBlur={handleSaveLlmSettings}
-                        className="w-full h-10 bg-[#111] border border-[#333] rounded-md px-3 text-sm focus:outline-none focus:border-blue-500 text-gray-200 transition-colors font-mono"
+                        className="h-10 w-full rounded-md border border-[#333] bg-[#111] px-3 font-mono text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
                       />
                     </div>
-
                     <div className="space-y-2 md:col-span-2">
-                      <label className="text-xs text-gray-500 uppercase tracking-wider font-semibold">API Key</label>
+                      <FieldLabel>{t('settings.field.apiKey')}</FieldLabel>
                       <input
                         type="password"
                         value={settings.llm.apiKey ?? ''}
-                        placeholder={settings.llm.maskedApiKey || '输入供应商 API Key'}
+                        placeholder={settings.llm.maskedApiKey || t('settings.help.llmApiKeyPlaceholder')}
                         onChange={(event) => handleLlmSettingsChange({ ...settings.llm, apiKey: event.target.value })}
                         onBlur={handleSaveLlmSettings}
-                        className="w-full h-10 bg-[#111] border border-[#333] rounded-md px-3 text-sm focus:outline-none focus:border-blue-500 text-gray-200 transition-colors font-mono"
+                        className="h-10 w-full rounded-md border border-[#333] bg-[#111] px-3 font-mono text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
                       />
-                      <div className="font-mono text-xs bg-[#111] p-2.5 rounded border border-[#222] text-gray-500 flex items-center">
-                        {settings.llm.maskedApiKey || '尚未保存 API Key'}
+                      <div className="flex min-h-10 items-center rounded border border-[#222] bg-[#111] p-2.5 font-mono text-xs text-gray-500">
+                        {settings.llm.maskedApiKey || t('settings.help.llmMaskedKeyEmpty')}
                       </div>
                     </div>
-
                     <div className="space-y-2">
-                      <label className="text-xs text-gray-500 uppercase tracking-wider font-semibold">Temperature</label>
+                      <FieldLabel>{t('settings.field.temperature')}</FieldLabel>
                       <input
                         type="number"
                         min={activeLlmModelPreset.temperature.min}
                         max={activeLlmModelPreset.temperature.max}
                         step={activeLlmModelPreset.temperature.step}
                         value={settings.llm.temperature}
-                        onChange={(event) => handleLlmSettingsChange({ ...settings.llm, temperature: Number(event.target.value) })}
+                        onChange={(event) => handleLlmSettingsChange({
+                          ...settings.llm,
+                          temperature: Number(event.target.value),
+                        })}
                         onBlur={handleSaveLlmSettings}
-                        className="w-full h-10 bg-[#111] border border-[#333] rounded-md px-3 text-sm focus:outline-none focus:border-blue-500 text-gray-200 transition-colors"
+                        className="h-10 w-full rounded-md border border-[#333] bg-[#111] px-3 text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
                       />
                     </div>
-
                     <div className="space-y-2">
-                      <label className="text-xs text-gray-500 uppercase tracking-wider font-semibold">Max Tokens</label>
+                      <FieldLabel>{t('settings.field.maxTokens')}</FieldLabel>
                       <input
                         type="number"
                         min={activeLlmModelPreset.minOutputTokens}
                         max={activeLlmModelPreset.maxOutputTokens}
                         step={256}
                         value={settings.llm.maxTokens}
-                        onChange={(event) => handleLlmSettingsChange({ ...settings.llm, maxTokens: Number(event.target.value) })}
+                        onChange={(event) => handleLlmSettingsChange({
+                          ...settings.llm,
+                          maxTokens: Number(event.target.value),
+                        })}
                         onBlur={handleSaveLlmSettings}
-                        className="w-full h-10 bg-[#111] border border-[#333] rounded-md px-3 text-sm focus:outline-none focus:border-blue-500 text-gray-200 transition-colors"
+                        className="h-10 w-full rounded-md border border-[#333] bg-[#111] px-3 text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
                       />
-                      <p className="text-[11px] text-gray-600">
-                        推荐 {formatAutoCutTokenCount(activeLlmModelPreset.defaultMaxTokens)}，上限 {formatAutoCutTokenCount(activeLlmModelPreset.maxOutputTokens)}
-                      </p>
+                      <FieldHelp>
+                        {t('settings.help.llmMaxTokenHelp', {
+                          defaultTokens: formatAutoCutTokenCount(activeLlmModelPreset.defaultMaxTokens),
+                          maxTokens: formatAutoCutTokenCount(activeLlmModelPreset.maxOutputTokens),
+                        })}
+                      </FieldHelp>
                     </div>
                   </div>
-
-                  <div className="mt-6 flex flex-wrap justify-end gap-3">
-                    <Button
-                      onClick={handleTestLlmConnection}
-                      disabled={isTestingLlmConnection}
-                      variant="outline"
-                      className="text-white"
-                    >
-                      {isTestingLlmConnection ? '测试中...' : '测试连接'}
+                  <div className="flex flex-wrap justify-end gap-3">
+                    <Button onClick={handleTestLlmConnection} disabled={isTestingLlmConnection} variant="outline" className="text-white">
+                      <Play size={16} />
+                      {isTestingLlmConnection ? t('settings.speech.testing') : t('settings.action.testConnection')}
                     </Button>
-                    <Button onClick={handleSaveLlmSettings} className="bg-blue-600 hover:bg-blue-500 text-white">保存 LLM 配置</Button>
+                    <Button onClick={handleSaveLlmSettings} className="bg-blue-600 text-white hover:bg-blue-500">
+                      <Check size={16} />
+                      {t('settings.action.saveLlm')}
+                    </Button>
                   </div>
-                </Card>
-              </div>
+                </div>
+              </Card>
             )}
 
-            {activeTab === 'speech' && (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                <Card className="p-6 md:p-8 bg-[#0A0A0A] border-[#222]">
-                  <div className="flex justify-between items-center border-b border-[#222] pb-4 mb-6">
-                    <div>
-                      <h3 className="text-lg font-semibold text-white">Local Speech-to-Text</h3>
-                      <p className="text-xs text-gray-500 mt-1">Configure a local Whisper-compatible toolchain for transcript-assisted slicing.</p>
-                    </div>
-                    <span className={`px-2.5 py-1 rounded text-[10px] border font-mono uppercase tracking-wider ${settings.speechTranscription.configured ? 'bg-green-500/10 text-green-500 border-green-500/20' : 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20'}`}>
-                      {settings.speechTranscription.configured ? 'READY' : 'REQUIRED'}
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-2 md:col-span-2">
-                      <label className="text-xs text-gray-500 uppercase tracking-wider font-semibold">Executable Path</label>
-                      <div className="flex gap-3">
-                        <input
-                          type="text"
-                          value={settings.speechTranscription.executablePath}
-                          onChange={(event) => handleSpeechTranscriptionSettingsChange({ ...settings.speechTranscription, executablePath: event.target.value })}
-                          onBlur={handleSaveSpeechTranscriptionSettings}
-                          className="min-w-0 flex-1 h-10 bg-[#111] border border-[#333] rounded-md px-3 text-sm focus:outline-none focus:border-blue-500 text-gray-200 transition-colors font-mono"
-                        />
-                        <Button onClick={() => handleSelectSpeechTranscriptionFile('executable')} variant="outline" className="border-[#333] text-white">Browse</Button>
-                      </div>
-                    </div>
-
-                    <div className="space-y-2 md:col-span-2">
-                      <label className="text-xs text-gray-500 uppercase tracking-wider font-semibold">Model Path</label>
-                      <div className="flex gap-3">
-                        <input
-                          type="text"
-                          value={settings.speechTranscription.modelPath}
-                          onChange={(event) => handleSpeechTranscriptionSettingsChange({ ...settings.speechTranscription, modelPath: event.target.value })}
-                          onBlur={handleSaveSpeechTranscriptionSettings}
-                          className="min-w-0 flex-1 h-10 bg-[#111] border border-[#333] rounded-md px-3 text-sm focus:outline-none focus:border-blue-500 text-gray-200 transition-colors font-mono"
-                        />
-                        <Button onClick={() => handleSelectSpeechTranscriptionFile('model')} variant="outline" className="border-[#333] text-white">Browse</Button>
-                      </div>
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="text-xs text-gray-500 uppercase tracking-wider font-semibold">Language</label>
-                      <select
-                        value={settings.speechTranscription.language}
-                        onChange={(event) => handleSpeechTranscriptionSettingsChange({ ...settings.speechTranscription, language: event.target.value })}
-                        onBlur={handleSaveSpeechTranscriptionSettings}
-                        className="w-full h-10 bg-[#111] border border-[#333] rounded-md px-3 text-sm text-gray-200 outline-none focus:border-blue-500 transition-colors"
-                      >
-                        <option value="auto">Auto</option>
-                        <option value="zh">Chinese</option>
-                        <option value="en">English</option>
-                      </select>
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="text-xs text-gray-500 uppercase tracking-wider font-semibold">Last Test</label>
-                      <div className="h-10 bg-[#111] border border-[#333] rounded-md px-3 text-sm text-gray-500 flex items-center font-mono">
-                        {settings.speechTranscription.lastTestedAt || 'Not tested'}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mt-6 flex flex-wrap justify-end gap-3">
-                    <Button
-                      onClick={handleTestSpeechTranscriptionToolchain}
-                      disabled={isTestingSpeechTranscription}
-                      variant="outline"
-                      className="text-white"
-                    >
-                      {isTestingSpeechTranscription ? 'Testing...' : 'Test Toolchain'}
+            {activeTab === 'api' && (
+              <Card className="border-[#222] bg-[#0A0A0A] p-6 md:p-8">
+                <div className="space-y-6">
+                  <div className="flex flex-col gap-4 border-b border-[#222] pb-4 sm:flex-row sm:items-center sm:justify-between">
+                    <SectionTitle title={t('settings.section.apiKeys')} description={t('settings.help.apiKeys')} />
+                    <Button onClick={handleCreateApiKey} size="sm" className="bg-blue-600 text-white hover:bg-blue-500">
+                      <Key size={16} />
+                      {t('settings.action.createApiKey')}
                     </Button>
-                    <Button onClick={handleSaveSpeechTranscriptionSettings} className="bg-blue-600 hover:bg-blue-500 text-white">Save Speech-to-Text</Button>
+                  </div>
+                  <div className="space-y-4">
+                    {settings.apiKeys.map((apiKey) => (
+                      <div key={apiKey.id} className="rounded-lg border border-[#222] bg-[#0A0A0A] p-4 transition-colors hover:border-[#333]">
+                        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="min-w-0">
+                            <h4 className="font-medium text-gray-200">{apiKey.name}</h4>
+                            <p className="mt-1 text-xs text-gray-500">
+                              {apiKey.createdAt}{apiKey.revokedAt ? ` / ${apiKey.revokedAt}` : ''}
+                            </p>
+                          </div>
+                          <div className="flex gap-2">
+                            <Button onClick={() => handleCopyApiKey(apiKey.maskedKey)} variant="outline" size="sm" className="h-8 border-[#333] text-gray-400">
+                              <Copy size={14} />
+                              {t('settings.action.copy')}
+                            </Button>
+                            <Button onClick={() => handleRevokeApiKey(apiKey.id)} variant="outline" size="sm" className="h-8 border-[#333] text-red-500">
+                              <RotateCcw size={14} />
+                              {t('settings.action.revoke')}
+                            </Button>
+                          </div>
+                        </div>
+                        <div className="mt-4 flex items-center rounded border border-[#222] bg-[#111] p-2.5 font-mono text-sm text-gray-400">
+                          {apiKey.maskedKey}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </Card>
+            )}
+
+            {activeTab === 'billing' && (
+              <div className="space-y-6">
+                <Card className="overflow-hidden border border-yellow-500/30 bg-[#0A0A0A]">
+                  <div className="space-y-8 p-6 md:p-8">
+                    <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <CreditCard size={22} className="text-yellow-500" />
+                          <h3 className="text-2xl font-bold text-white">{settings.billing.planName}</h3>
+                        </div>
+                        <p className="mt-2 text-sm text-gray-400">{t('settings.help.billingDescription')}</p>
+                      </div>
+                      <div className="text-left md:text-right">
+                        <div className="text-3xl font-extrabold text-white">
+                          ${settings.billing.monthlyPrice}
+                          <span className="text-sm font-medium text-gray-400">/mo</span>
+                        </div>
+                        <p className="mt-1 text-xs text-gray-500">
+                          {t('settings.help.nextBillingDate', { date: settings.billing.nextBillingDate })}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex flex-col gap-3 border-t border-[#222] pt-6 sm:flex-row sm:items-center sm:justify-between">
+                      <button
+                        type="button"
+                        onClick={handleCancelSubscription}
+                        className="text-left text-sm text-gray-400 underline underline-offset-4 hover:text-white"
+                      >
+                        {t('settings.action.cancelSubscription')}
+                      </button>
+                      <Button onClick={handleManageSubscription} className="bg-yellow-500 font-semibold text-black hover:bg-yellow-400">
+                        {t('settings.action.manageSubscription')}
+                      </Button>
+                    </div>
+                  </div>
+                </Card>
+                <Card className="border-[#222] bg-[#0A0A0A] p-6 md:p-8">
+                  <div className="space-y-6">
+                    <SectionTitle title={t('settings.section.billingHistory')} />
+                    <div className="space-y-3">
+                      {Array.from({ length: settings.billing.invoicesLoaded }).map((_, index) => (
+                        <div key={index} className="grid grid-cols-2 gap-3 border-b border-[#222] py-3 text-sm md:grid-cols-4">
+                          <div className="text-gray-300"><span>{settings.billing.nextBillingDate}</span></div>
+                          <div className="text-gray-400">
+                            {t('settings.help.invoicePlan', { planName: settings.billing.planName })}
+                          </div>
+                          <div className="font-medium text-gray-200">${settings.billing.monthlyPrice}.00</div>
+                          <div className="text-green-500">{t('settings.status.paid')}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <Button onClick={handleLoadMoreInvoices} variant="outline" className="w-full border-[#333] text-gray-400">
+                      {t('settings.action.loadMore')}
+                    </Button>
                   </div>
                 </Card>
               </div>
             )}
 
             {activeTab === 'storage' && (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                <Card className="p-6 md:p-8 bg-[#0A0A0A] border-[#222]">
-                  <h3 className="text-lg font-semibold text-white border-b border-[#222] pb-4 mb-6">存储空间管理</h3>
-
-                  <div className="flex flex-col md:flex-row items-center gap-8 mb-8">
-                     <div className="w-full md:w-1/3">
-                        <div className="text-4xl font-extrabold text-blue-500">{settings.storage.usedGb} <span className="text-lg text-gray-500 font-medium tracking-wide">GB</span></div>
-                        <p className="text-sm text-gray-400 mt-2">已使用存储空间</p>
-                        <p className="text-xs text-gray-500 mt-1">配额 {settings.storage.quotaGb}GB (Pro 旗舰版)</p>
-                     </div>
-                     <div className="w-full md:w-2/3 space-y-4">
-                        <div className="w-full h-3 bg-[#111] rounded-full overflow-hidden border border-[#222]">
-                           <div className="h-full bg-blue-500 rounded-full min-w-[4px] shadow-[0_0_10px_rgba(59,130,246,0.6)]" style={{ width: `${Math.min(100, (settings.storage.usedGb / settings.storage.quotaGb) * 100)}%` }}></div>
-                        </div>
-                        <div className="flex justify-between text-xs text-gray-500 mt-2">
-                           <span className="flex items-center gap-1.5"><div className="w-2 h-2 bg-blue-500 rounded-sm"></div> 视频媒体 ({settings.storage.videoGb}GB)</span>
-                           <span className="flex items-center gap-1.5"><div className="w-2 h-2 bg-purple-500 rounded-sm"></div> 文档音频 ({settings.storage.documentGb}GB)</span>
-                           <span className="flex items-center gap-1.5"><div className="w-2 h-2 bg-orange-500 rounded-sm"></div> 数据缓存 ({settings.storage.cacheGb}GB)</span>
-                        </div>
-                     </div>
+              <Card className="border-[#222] bg-[#0A0A0A] p-6 md:p-8">
+                <div className="space-y-6">
+                  <SectionTitle title={t('settings.section.storageUsage')} />
+                  <div className="flex flex-col gap-8 md:flex-row md:items-center">
+                    <div className="w-full md:w-1/3">
+                      <div className="text-4xl font-extrabold text-blue-500">
+                        {settings.storage.usedGb}
+                        <span className="ml-2 text-lg font-medium text-gray-500">GB</span>
+                      </div>
+                      <p className="mt-2 text-sm text-gray-400">{t('settings.storage.used')}</p>
+                      <p className="mt-1 text-xs text-gray-500">
+                        {t('settings.help.storageQuota', { quotaGb: settings.storage.quotaGb })}
+                      </p>
+                    </div>
+                    <div className="w-full space-y-4 md:w-2/3">
+                      <div className="h-3 w-full overflow-hidden rounded-full border border-[#222] bg-[#111]">
+                        <div
+                          className="h-full min-w-[4px] rounded-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.6)]"
+                          style={{ width: `${storageUsagePercent}%` }}
+                        />
+                      </div>
+                      <div className="grid grid-cols-1 gap-3 text-xs text-gray-500 sm:grid-cols-3">
+                        <span>{t('settings.storage.video')} ({settings.storage.videoGb}GB)</span>
+                        <span>{t('settings.storage.document')} ({settings.storage.documentGb}GB)</span>
+                        <span>{t('settings.storage.cache')} ({settings.storage.cacheGb}GB)</span>
+                      </div>
+                    </div>
                   </div>
-
-                  <div className="bg-[#111] border border-[#222] rounded-xl p-5 flex flex-col sm:flex-row justify-between items-center gap-4">
-                     <div className="text-sm text-gray-400">系统保存了多达 {settings.storage.cachedItems} 项历史任务及其产生的源资产。清理旧缓存可释放海量空间。</div>
-                     <Button onClick={handleClearCache} className="bg-red-500/10 text-red-500 hover:bg-red-500/20 border border-red-500/20 whitespace-nowrap">
-                       一键清理极寒缓存
-                     </Button>
+                  <div className="flex flex-col gap-4 rounded-lg border border-[#222] bg-[#111] p-5 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="text-sm leading-relaxed text-gray-400">
+                      {t('settings.help.storageCache', { cachedItems: settings.storage.cachedItems })}
+                      <span className="sr-only">{settings.storage.cachedItems}</span>
+                    </div>
+                    <Button onClick={handleClearCache} className="border border-red-500/20 bg-red-500/10 text-red-500 hover:bg-red-500/20">
+                      <Trash2 size={16} />
+                      {t('settings.action.clearCache')}
+                    </Button>
                   </div>
-                </Card>
-              </div>
+                </div>
+              </Card>
             )}
 
             {activeTab === 'notifications' && (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                <Card className="p-6 md:p-8 bg-[#0A0A0A] border-[#222]">
-                  <h3 className="text-lg font-semibold text-white border-b border-[#222] pb-4 mb-6">通知设置</h3>
-
-                  <div className="space-y-6">
-                    <div>
-                       <h4 className="font-semibold text-gray-200 mb-4">系统消息通知</h4>
-                       <div className="space-y-3 pl-2 border-l-2 border-[#222] ml-1">
-                          <label className="flex items-center gap-3 cursor-pointer">
-                            <input type="checkbox" checked={settings.notifications.taskCompleted} onChange={(event) => handleNotificationPreferenceChange({ ...settings.notifications, taskCompleted: event.target.checked })} onBlur={handleSaveNotifications} className="w-4 h-4 rounded bg-[#111] border-[#333] text-blue-500 focus:ring-0" />
-                            <span className="text-sm text-gray-300">长时间任务处理完毕通知</span>
-                          </label>
-                          <label className="flex items-center gap-3 cursor-pointer">
-                            <input type="checkbox" checked={settings.notifications.appUpdates} onChange={(event) => handleNotificationPreferenceChange({ ...settings.notifications, appUpdates: event.target.checked })} onBlur={handleSaveNotifications} className="w-4 h-4 rounded bg-[#111] border-[#333] text-blue-500 focus:ring-0" />
-                            <span className="text-sm text-gray-300">应用版本更新提示</span>
-                          </label>
-                          <label className="flex items-center gap-3 cursor-pointer">
-                            <input type="checkbox" checked={settings.notifications.accountBilling} onChange={(event) => handleNotificationPreferenceChange({ ...settings.notifications, accountBilling: event.target.checked })} onBlur={handleSaveNotifications} className="w-4 h-4 rounded bg-[#111] border-[#333] text-blue-500 focus:ring-0" />
-                            <span className="text-sm text-gray-300">账户状态与扣费通知</span>
-                          </label>
-                       </div>
-                    </div>
-
-                    <div className="pt-4 border-t border-[#111]">
-                       <h4 className="font-semibold text-gray-200 mb-4">邮件营销与推送</h4>
-                       <div className="space-y-3 pl-2 border-l-2 border-[#222] ml-1">
-                          <label className="flex items-center gap-3 cursor-pointer">
-                            <input type="checkbox" checked={settings.notifications.productAnnouncements} onChange={(event) => handleNotificationPreferenceChange({ ...settings.notifications, productAnnouncements: event.target.checked })} onBlur={handleSaveNotifications} className="w-4 h-4 rounded bg-[#111] border-[#333] text-blue-500 focus:ring-0" />
-                            <span className="text-sm text-gray-300">接收 SDKWork 新产品发布邮件</span>
-                          </label>
-                          <label className="flex items-center gap-3 cursor-pointer">
-                            <input type="checkbox" checked={settings.notifications.usageReports} onChange={(event) => handleNotificationPreferenceChange({ ...settings.notifications, usageReports: event.target.checked })} onBlur={handleSaveNotifications} className="w-4 h-4 rounded bg-[#111] border-[#333] text-blue-500 focus:ring-0" />
-                            <span className="text-sm text-gray-300">发送使用简报与资产回顾</span>
-                          </label>
-                       </div>
-                    </div>
+              <Card className="border-[#222] bg-[#0A0A0A] p-6 md:p-8">
+                <div className="space-y-6">
+                  <SectionTitle title={t('settings.section.notificationSystem')} />
+                  {AUTOCUT_NOTIFICATION_FIELDS.map(({ key, labelKey }) => (
+                    <SettingsRow key={key} title={t(labelKey)}>
+                      <Toggle
+                        checked={settings.notifications[key]}
+                        onChange={(checked) => handleNotificationPreferenceChange({
+                          ...settings.notifications,
+                          [key]: checked,
+                        })}
+                      />
+                    </SettingsRow>
+                  ))}
+                  <div className="flex justify-end">
+                    <Button onClick={handleSaveNotifications} className="bg-blue-600 text-white hover:bg-blue-500">
+                      <Check size={16} />
+                      {t('settings.action.saveChanges')}
+                    </Button>
                   </div>
-                </Card>
-              </div>
+                </div>
+              </Card>
             )}
 
             {activeTab === 'security' && (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                <Card className="p-6 md:p-8 bg-[#0A0A0A] border-[#222]">
-                  <h3 className="text-lg font-semibold text-white border-b border-[#222] pb-4 mb-6">安全与隐私管理</h3>
-
-                  <div className="space-y-6">
-                    <div className="flex items-center justify-between py-2">
-                       <div>
-                         <h4 className="font-medium text-gray-200">更新密码</h4>
-                         <p className="text-xs text-gray-500 mt-1">定期更改密码以确保账户安全</p>
-                       </div>
-                        <Button onClick={handleChangePassword} variant="outline" size="sm" className="border-[#333]">
-                          修改密码
-                       </Button>
-                    </div>
-
-                    <div className="flex items-center justify-between py-2 border-t border-[#111]">
-                       <div>
-                         <h4 className="font-medium text-gray-200 flex items-center gap-2">两步验证 (2FA) <span className={`px-1.5 py-0.5 rounded text-[9px] border ${settings.security.twoFactorEnabled ? 'bg-green-500/10 text-green-500 border-green-500/20' : 'bg-red-500/10 text-red-500 border-red-500/20'}`}>{settings.security.twoFactorEnabled ? '已启用' : '未启用'}</span></h4>
-                         <p className="text-xs text-gray-500 mt-1">增加一层额外的安全防护屏障</p>
-                       </div>
-                       <Button onClick={handleToggleTwoFactor} size="sm" className="bg-[#222] hover:bg-[#333] text-white">
-                          开始设置
-                       </Button>
-                    </div>
-
-                    <div className="flex items-center justify-between py-2 border-t border-[#111]">
-                       <div>
-                         <h4 className="font-medium text-gray-200">活动会话管理</h4>
-                         <p className="text-xs text-gray-500 mt-1">注销在其他设备上已登录的账号</p>
-                       </div>
-                       <Button onClick={handleRevokeSessions} variant="outline" size="sm" className="border-[#333] text-red-500 hover:bg-red-500/10 hover:border-red-500/30">
-                          退出全部设备
-                       </Button>
-                    </div>
+              <Card className="border-[#222] bg-[#0A0A0A] p-6 md:p-8">
+                <div className="space-y-6">
+                  <SectionTitle title={t('settings.section.securityManagement')} />
+                  <SettingsRow title={t('settings.field.updatePassword')} description={t('settings.help.password')}>
+                    <Button onClick={handleChangePassword} variant="outline" size="sm" className="border-[#333]">
+                      {t('settings.action.changePassword')}
+                    </Button>
+                  </SettingsRow>
+                  <SettingsRow
+                    title={
+                      <span className="inline-flex items-center gap-2">
+                        {t('settings.field.twoFactor')}
+                        <StatusBadge tone={settings.security.twoFactorEnabled ? 'green' : 'red'}>
+                          {settings.security.twoFactorEnabled ? t('settings.status.enabled') : t('settings.status.disabled')}
+                        </StatusBadge>
+                      </span>
+                    }
+                    description={t('settings.help.twoFactor')}
+                  >
+                    <Button onClick={handleToggleTwoFactor} size="sm" className="bg-[#222] text-white hover:bg-[#333]">
+                      {t('settings.action.setupTwoFactor')}
+                    </Button>
+                  </SettingsRow>
+                  <SettingsRow title={t('settings.field.activeSessions')} description={t('settings.help.activeSessions')}>
+                    <Button onClick={handleRevokeSessions} variant="outline" size="sm" className="border-[#333] text-red-500">
+                      {t('settings.action.revokeSessions')}
+                    </Button>
+                  </SettingsRow>
+                  <div className="border-t border-red-500/20 pt-6">
+                    <h4 className="font-bold text-red-500">{t('settings.section.dangerZone')}</h4>
+                    <p className="mt-2 text-xs leading-relaxed text-gray-500">{t('settings.help.danger')}</p>
+                    <Button onClick={handleDeleteAccount} className="mt-4 bg-red-600 font-semibold text-white hover:bg-red-500">
+                      <Trash2 size={16} />
+                      {t('settings.action.deleteAccount')}
+                    </Button>
                   </div>
-
-                  <div className="mt-12 pt-6 border-t border-red-500/20">
-                     <h4 className="font-bold text-red-500 mb-2">危险区域</h4>
-                     <p className="text-xs text-gray-500 mb-4 leading-relaxed">一旦删除您的账户，与该账户关联的所有工作区、资产、任务记录和 API 请求日志都将被永久删除，此操作不可逆。</p>
-                     <Button onClick={handleDeleteAccount} className="bg-red-600 hover:bg-red-500 text-white font-semibold">永久注销账户</Button>
-                  </div>
-                </Card>
-              </div>
+                </div>
+              </Card>
             )}
-          </div>
+          </main>
         </div>
       </div>
     </div>

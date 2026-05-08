@@ -4,7 +4,7 @@ import { Card, Button, FileUpload, TaskFailureState } from '@sdkwork/autocut-com
 
 import { Upload, Settings, Play, Minimize2, Activity, ArrowRight, Download, Zap } from 'lucide-react';
 import { useToast } from '@sdkwork/autocut-commons';
-import { downloadAutoCutUrl, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent, openAutoCutPreviewUrl, reportAutoCutDiagnostic } from '@sdkwork/autocut-services';
+import { downloadAutoCutUrl, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent, openAutoCutPreviewUrl, reportAutoCutDiagnostic, selectAutoCutTrustedLocalMediaFile, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
 import { AUTOCUT_TASK_STATUS, isAutoCutTaskActiveStatus, type AppTask } from '@sdkwork/autocut-types';
 
 function formatBytes(bytes: number, decimals = 2) {
@@ -89,7 +89,13 @@ export function VideoCompressPage() {
                 <Upload size={16} className="text-green-500" />
                 需要压缩的视频
               </h2>
-              <FileUpload file={file} onChange={setFile} accept="video/*" maxSizeMB={5000} />
+              <FileUpload
+                file={file}
+                onChange={setFile}
+                accept="video/*"
+                maxSizeMB={5000}
+                trustedFileSourceSelector={() => selectAutoCutTrustedLocalMediaFile(['video'])}
+              />
             </Card>
 
             <div className="bg-green-500/5 border border-green-500/10 rounded-xl p-4 flex gap-3 text-sm text-green-400">
@@ -172,7 +178,11 @@ export function VideoCompressPage() {
                </Card>
              ) : (
                activeTask?.status === AUTOCUT_TASK_STATUS.failed ? (
-                 <TaskFailureState errorMessage={activeTask.errorMessage} onRetry={handleProcess} />
+                 <TaskFailureState
+                   errorMessage={activeTask.errorMessage}
+                   onCopyErrorMessage={writeAutoCutClipboardText}
+                   onRetry={handleProcess}
+                 />
                ) : activeTask?.status === AUTOCUT_TASK_STATUS.completed && activeTask.fileSizeStats && activeTask.videoUrl ? (
                  <Card className="p-10 flex flex-col items-center justify-center border-[#222] bg-[#111]">
                    <Zap size={48} className="text-yellow-500 mb-6" />

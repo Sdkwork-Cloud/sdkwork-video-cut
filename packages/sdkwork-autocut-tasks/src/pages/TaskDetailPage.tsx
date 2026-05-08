@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, PlayCircle, Play, Download, FolderOpen, Tag, CheckCircle2, Settings2, FileText, Music, Copy, ArrowRight, Activity, Zap, ShieldAlert } from 'lucide-react';
-import { createAutoCutTextObjectUrl, downloadAutoCutUrl, downloadExtractedTextFile, downloadSmartSliceTaskEvidenceFile, formatAutoCutDateTime, formatExtractedText, getTasks, listenAutoCutEvent, openAutoCutPreviewUrl, revokeAutoCutObjectUrl, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
+import { createAutoCutTaskTypeI18nKey, createAutoCutTextObjectUrl, downloadAutoCutUrl, downloadExtractedTextFile, downloadSmartSliceTaskEvidenceFile, formatAutoCutDateTime, formatExtractedText, getTasks, listenAutoCutEvent, openAutoCutNativeArtifactInFolder, openAutoCutPreviewUrl, reportAutoCutDiagnostic, revokeAutoCutObjectUrl, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
 import { Button, TaskFailureState } from '@sdkwork/autocut-commons';
-import { AUTOCUT_TASK_STATUS, type AppTask, type TaskType } from '@sdkwork/autocut-types';
+import { AUTOCUT_TASK_STATUS, AUTOCUT_TASK_TYPE, type AppTask, type TaskType } from '@sdkwork/autocut-types';
 
 type SliceResult = NonNullable<AppTask['sliceResults']>[number];
 
@@ -17,15 +18,15 @@ function formatBytes(bytes: number, decimals = 2) {
 }
 
 const REPROCESS_ROUTES: Record<TaskType, string> = {
-  '视频切片': '/slicer',
-  '文案提取': '/extractor-text',
-  '视频提音': '/extractor-audio',
-  '视频转gif': '/video-gif',
-  '视频压缩': '/video-compress',
-  '视频格式转换': '/video-convert',
-  '视频高清化': '/video-enhance',
-  '视频字幕翻译': '/subtitle-translate',
-  '视频人声翻译': '/voice-translate',
+  [AUTOCUT_TASK_TYPE.videoSlice]: '/slicer',
+  [AUTOCUT_TASK_TYPE.textExtraction]: '/extractor-text',
+  [AUTOCUT_TASK_TYPE.audioExtraction]: '/extractor-audio',
+  [AUTOCUT_TASK_TYPE.videoGif]: '/video-gif',
+  [AUTOCUT_TASK_TYPE.videoCompress]: '/video-compress',
+  [AUTOCUT_TASK_TYPE.videoConvert]: '/video-convert',
+  [AUTOCUT_TASK_TYPE.videoEnhance]: '/video-enhance',
+  [AUTOCUT_TASK_TYPE.subtitleTranslate]: '/subtitle-translate',
+  [AUTOCUT_TASK_TYPE.voiceTranslate]: '/voice-translate',
 };
 
 function getReprocessRoute(type: TaskType) {
@@ -34,6 +35,14 @@ function getReprocessRoute(type: TaskType) {
 
 function handleDownload(url: string | undefined, filename: string) {
   downloadAutoCutUrl(url, filename);
+}
+
+function createTaskReprocessState(task: AppTask) {
+  if (task.type === AUTOCUT_TASK_TYPE.videoSlice && task.sourceFileId) {
+    return { initialFileId: task.sourceFileId };
+  }
+
+  return undefined;
 }
 
 function formatSliceScore(score: number | undefined) {
@@ -164,11 +173,33 @@ function formatSliceSourceRange(startMs: number | undefined, endMs: number | und
   return `${Math.round(startMs / 1_000)}s - ${Math.round(endMs / 1_000)}s`;
 }
 
+function formatSliceTranscriptTimestamp(milliseconds: number | undefined) {
+  const safeMilliseconds = typeof milliseconds === 'number' && Number.isFinite(milliseconds)
+    ? Math.max(0, Math.round(milliseconds))
+    : 0;
+  const hours = Math.floor(safeMilliseconds / 3_600_000);
+  const minutes = Math.floor((safeMilliseconds % 3_600_000) / 60_000);
+  const seconds = Math.floor((safeMilliseconds % 60_000) / 1_000);
+  const millis = safeMilliseconds % 1_000;
+
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
+}
+
+function formatSliceRelativeTranscriptTimestamp(milliseconds: number | undefined) {
+  return formatSliceTranscriptTimestamp(milliseconds);
+}
+
+function formatSliceSourceTranscriptTimestamp(milliseconds: number | undefined) {
+  return formatSliceTranscriptTimestamp(milliseconds);
+}
+
 function hasSliceReviewMetadata(slice: SliceResult) {
   return Boolean(
     slice.summary ||
       slice.reason ||
       slice.transcriptText ||
+      slice.transcriptSegments?.length ||
+      slice.transcriptSegmentCount !== undefined ||
       slice.qualityScore !== undefined ||
       slice.continuityScore !== undefined ||
       slice.publishabilityScore !== undefined ||
@@ -192,7 +223,7 @@ function hasSliceReviewMetadata(slice: SliceResult) {
       slice.topicShiftCount !== undefined ||
       slice.topicKeywords?.length ||
       slice.transcriptCoverageScore !== undefined ||
-      slice.subtitleSegmentCount !== undefined ||
+      slice.transcriptSegmentCount !== undefined ||
       slice.speechContinuityGrade ||
       slice.storyShape ||
       slice.sourceStartMs !== undefined ||
@@ -203,10 +234,31 @@ function hasSliceReviewMetadata(slice: SliceResult) {
   );
 }
 
-function downloadTaskExecutionResultFile(task: AppTask) {
+function formatSliceTranscriptFile(slice: SliceResult) {
+  const header = [
+    `Slice: ${slice.title || slice.name}`,
+    `Source: ${formatSliceSourceRange(slice.sourceStartMs, slice.sourceEndMs)}`,
+    `Speech: ${formatSliceSourceRange(slice.speechStartMs, slice.speechEndMs)}`,
+    '',
+  ];
+  const segmentLines = slice.transcriptSegments?.length
+    ? slice.transcriptSegments.map((segment) => {
+        const speaker = segment.speaker?.trim() || 'Speaker';
+        const relativeStartMs = segment.startMs - (slice.sourceStartMs ?? 0);
+        const relativeEndMs = segment.endMs - (slice.sourceStartMs ?? 0);
+        return `[slice ${formatSliceRelativeTranscriptTimestamp(relativeStartMs)} - ${formatSliceRelativeTranscriptTimestamp(relativeEndMs)} | source ${formatSliceSourceTranscriptTimestamp(segment.startMs)} - ${formatSliceSourceTranscriptTimestamp(segment.endMs)}] ${speaker}: ${segment.text}`;
+      })
+    : slice.transcriptText
+      ? [slice.transcriptText]
+      : [];
+
+  return [...header, ...segmentLines].join('\n');
+}
+
+function downloadTaskExecutionResultFile(task: AppTask, taskTypeLabel: string) {
   const content = [
     `Task: ${task.name}`,
-    `Type: ${task.type}`,
+    `Type: ${taskTypeLabel}`,
     `Status: ${task.status}`,
     `Progress: ${task.progress}%`,
     task.progressMessage ? `Progress message: ${task.progressMessage}` : '',
@@ -226,9 +278,35 @@ function handleDownloadSmartSliceTaskEvidence(task: AppTask) {
   downloadSmartSliceTaskEvidenceFile(task, `${task.name}_smart-slice-task.json`);
 }
 
+function downloadSliceTranscriptFile(slice: SliceResult) {
+  const { url } = createAutoCutTextObjectUrl(formatSliceTranscriptFile(slice));
+  try {
+    downloadAutoCutUrl(url, `${slice.name}_transcript.txt`);
+  } finally {
+    revokeAutoCutObjectUrl(url);
+  }
+}
+
+function TaskVideoPreview({ src, title, videoKey }: { src: string; title: string; videoKey?: string }) {
+  return (
+    <div className="task-detail-video-preview-shell relative flex w-full flex-1 min-h-[260px] max-h-[62vh] items-center justify-center overflow-hidden bg-black">
+      <video
+        key={videoKey}
+        src={src}
+        aria-label={title}
+        className="task-detail-video-preview-media h-full w-full object-contain"
+        controls
+        autoPlay
+        playsInline
+      />
+    </div>
+  );
+}
+
 export function TaskDetailPage() {
   const { taskId } = useParams();
   const navigate = useNavigate();
+  const { t } = useTranslation();
 
   const [task, setTask] = useState<AppTask | null>(null);
   const [activePreviewUrl, setActivePreviewUrl] = useState<string | null>(null);
@@ -236,6 +314,33 @@ export function TaskDetailPage() {
 
   const handleSlicePreviewSelect = (sliceId: string) => {
     setActivePreviewUrl(sliceId);
+  };
+
+  const handleOpenSliceArtifactInFolder = async (slice: SliceResult) => {
+    if (!slice.artifactPath) {
+      return;
+    }
+
+    try {
+      await openAutoCutNativeArtifactInFolder(slice.artifactPath, slice.taskOutputDir);
+    } catch (error) {
+      reportAutoCutDiagnostic(
+        'warning',
+        'task-detail.open-slice-folder',
+        'Open generated slice containing folder failed.',
+        error,
+      );
+    }
+  };
+
+  const getTaskTypeLabel = (taskType: TaskType) =>
+    t(createAutoCutTaskTypeI18nKey(taskType), { defaultValue: taskType });
+
+  const handleReprocessTask = (taskToReprocess: AppTask) => {
+    const route = getReprocessRoute(taskToReprocess.type);
+    if (route) {
+      navigate(route, { state: createTaskReprocessState(taskToReprocess) });
+    }
   };
 
   useEffect(() => {
@@ -280,7 +385,14 @@ export function TaskDetailPage() {
 
   const renderContent = () => {
     if (task.status === AUTOCUT_TASK_STATUS.failed) {
-      return <TaskFailureState errorMessage={task.errorMessage} />;
+      return (
+        <TaskFailureState
+          errorMessage={task.errorMessage}
+          failureDiagnostics={task.failureDiagnostics}
+          onRetry={() => handleReprocessTask(task)}
+          onCopyErrorMessage={writeAutoCutClipboardText}
+        />
+      );
     }
 
     if (task.status !== AUTOCUT_TASK_STATUS.completed) {
@@ -298,7 +410,7 @@ export function TaskDetailPage() {
       );
     }
 
-    if (task.type === '视频切片') {
+    if (task.type === AUTOCUT_TASK_TYPE.videoSlice) {
       const sliceResults = task.sliceResults || [];
       const selectedSlice = sliceResults.find((slice) => slice.id === activePreviewUrl) ?? sliceResults[0] ?? null;
       return (
@@ -330,7 +442,7 @@ export function TaskDetailPage() {
                     onClick={() => handleSlicePreviewSelect(slice.id)}
                   >
                     <div className="w-24 h-16 bg-black rounded shadow-inner overflow-hidden relative shrink-0 border border-[#333]">
-                      <img src={slice.thumbnailUrl} alt="" className="w-full h-full object-cover opacity-60" />
+                      <img src={slice.thumbnailUrl} alt="" loading="lazy" decoding="async" className="task-detail-slice-thumbnail-media w-full h-full object-contain opacity-70" />
                       <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/40">
                          <PlayCircle size={24} className={activePreviewUrl === slice.id ? 'text-blue-400' : 'text-white'} />
                       </div>
@@ -363,7 +475,15 @@ export function TaskDetailPage() {
                         </div>
                       )}
                     </div>
-                    <div className="shrink-0 flex items-center">
+                    <div className="shrink-0 flex items-center gap-1">
+                      {slice.artifactPath && (
+                        <button className="w-8 h-8 rounded hover:bg-black/50 flex items-center justify-center text-gray-400 hover:text-white transition-colors" onClick={(e) => {
+                           e.stopPropagation();
+                           void handleOpenSliceArtifactInFolder(slice);
+                        }}>
+                          <FolderOpen size={14} />
+                        </button>
+                      )}
                       <button className="w-8 h-8 rounded hover:bg-black/50 flex items-center justify-center text-gray-400 hover:text-white transition-colors" onClick={(e) => {
                          e.stopPropagation();
                          handleDownload(slice.url, slice.name);
@@ -382,24 +502,18 @@ export function TaskDetailPage() {
             </div>
 
             {/* Right: Player Preview */}
-            <div className="flex-1 bg-[#111] rounded-xl border border-[#222] flex flex-col items-center justify-center relative overflow-hidden group">
+            <div className="flex-1 min-w-0 bg-[#111] rounded-xl border border-[#222] flex flex-col relative overflow-hidden group">
                {selectedSlice ? (
-                 <div className="w-full h-full flex flex-col">
-                   <div className="flex-1 bg-black w-full relative flex items-center justify-center">
-                     <div className="absolute top-4 left-4 z-10 px-3 py-1.5 bg-black/60 backdrop-blur-md rounded border border-white/10 flex items-center gap-2">
-                       <CheckCircle2 size={14} className="text-blue-400" />
+                 <div className="w-full h-full min-h-0 flex flex-col">
+                   <div className="shrink-0 border-b border-[#222] bg-[#151515] px-4 py-3 flex items-center gap-2">
+                     <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+                       <CheckCircle2 size={14} className="text-blue-400 shrink-0" />
                        <span className="text-[11px] text-white">正在预览: {selectedSlice.name}</span>
                      </div>
-                     <video
-                       key={selectedSlice.id}
-                       src={selectedSlice.url}
-                       className="w-full h-full max-h-full object-contain"
-                       controls
-                       autoPlay
-                     />
                    </div>
+                   <TaskVideoPreview src={selectedSlice.url} title={selectedSlice.title || selectedSlice.name} videoKey={selectedSlice.id} />
                    {hasSliceReviewMetadata(selectedSlice) && (
-                     <div className="shrink-0 border-t border-[#222] bg-[#151515] p-4 space-y-3">
+                    <div className="shrink-0 max-h-[34%] overflow-y-auto border-t border-[#222] bg-[#151515] p-4 space-y-3 custom-scrollbar">
                        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                          <div className="min-w-0">
                            <h3 className="text-sm font-semibold text-gray-100 truncate">{selectedSlice.title || selectedSlice.name}</h3>
@@ -449,12 +563,21 @@ export function TaskDetailPage() {
                            </span>
                          </div>
                        </div>
-                       {(selectedSlice.subtitleSegmentCount !== undefined || selectedSlice.subtitleUrl) && (
+                       {(selectedSlice.transcriptSegmentCount !== undefined || selectedSlice.subtitleUrl) && (
                          <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-400">
-                           {selectedSlice.subtitleSegmentCount !== undefined && (
+                           {selectedSlice.transcriptSegmentCount !== undefined && (
                              <span className="inline-flex items-center gap-1 rounded border border-[#333] bg-[#101010] px-2 py-1">
-                               <FileText size={12} /> {selectedSlice.subtitleSegmentCount} subtitle segments
+                               <FileText size={12} /> {selectedSlice.transcriptSegmentCount} transcript segments
                              </span>
+                           )}
+                           {(selectedSlice.transcriptSegments?.length || selectedSlice.transcriptText) && (
+                             <button
+                               type="button"
+                               className="inline-flex items-center gap-1 rounded border border-[#333] bg-[#101010] px-2 py-1 text-cyan-300 hover:border-cyan-500/40 hover:bg-cyan-500/10 transition-colors"
+                               onClick={() => downloadSliceTranscriptFile(selectedSlice)}
+                             >
+                               <Download size={12} /> Speech transcript TXT
+                             </button>
                            )}
                            {selectedSlice.subtitleUrl && (
                              <button
@@ -473,14 +596,35 @@ export function TaskDetailPage() {
                        {selectedSlice.reason && (
                          <p className="text-xs leading-relaxed text-gray-400">{selectedSlice.reason}</p>
                        )}
-                       {selectedSlice.transcriptText && (
+                       {(selectedSlice.transcriptSegments?.length || selectedSlice.transcriptText) && (
                          <div className="rounded border border-[#2A2A2A] bg-[#0F0F0F] p-3">
                            <div className="mb-2 flex items-center gap-2 text-[11px] font-medium text-gray-400">
                              <FileText size={12} /> Speech transcript
                            </div>
-                           <p className="max-h-24 overflow-y-auto pr-1 text-xs leading-relaxed text-gray-300 custom-scrollbar">
-                             {selectedSlice.transcriptText}
-                           </p>
+                           {selectedSlice.transcriptSegments?.length ? (
+                             <div className="max-h-32 space-y-2 overflow-y-auto pr-1 custom-scrollbar">
+                               {selectedSlice.transcriptSegments.map((segment, index) => (
+                                 <div key={`${segment.startMs}-${segment.endMs}-${index}`} className="grid grid-cols-[112px_1fr] gap-3 text-xs leading-relaxed">
+                                   <div className="font-mono text-[10px] text-gray-500">
+                                     {formatSliceRelativeTranscriptTimestamp(segment.startMs - (selectedSlice.sourceStartMs ?? 0))}
+                                     <span className="mt-0.5 block text-[9px] text-gray-600">
+                                       {formatSliceSourceTranscriptTimestamp(segment.startMs)}
+                                     </span>
+                                   </div>
+                                   <div className="text-gray-300">
+                                     {segment.speaker && (
+                                       <span className="mr-2 text-[10px] font-semibold uppercase text-cyan-300">{segment.speaker}</span>
+                                     )}
+                                     {segment.text}
+                                   </div>
+                                 </div>
+                               ))}
+                             </div>
+                           ) : (
+                             <p className="max-h-24 overflow-y-auto pr-1 text-xs leading-relaxed text-gray-300 custom-scrollbar">
+                               {selectedSlice.transcriptText}
+                             </p>
+                           )}
                          </div>
                        )}
                        {selectedSlice.risks?.length ? (
@@ -553,12 +697,12 @@ export function TaskDetailPage() {
       );
     }
 
-    if (task.type === '文案提取' && task.extractedText) {
+    if (task.type === AUTOCUT_TASK_TYPE.textExtraction && task.extractedText) {
       return (
         <div className="flex-1 flex flex-col bg-[#111] border border-[#222] rounded-xl overflow-hidden relative">
           <div className="absolute top-0 right-0 p-4 shrink-0 flex gap-2">
              <Button onClick={() => {
-               const text = formatExtractedText(task.extractedText);
+               const text = formatExtractedText(task);
                void writeAutoCutClipboardText(text);
                setCopied(true);
                setTimeout(() => setCopied(false), 2000);
@@ -566,7 +710,7 @@ export function TaskDetailPage() {
                <Copy size={14} className="mr-2" /> {copied ? '已复制' : '复制全文'}
              </Button>
              <Button onClick={() => {
-               downloadExtractedTextFile(task.extractedText, `${task.name}.txt`);
+               downloadExtractedTextFile(task, `${task.name}.txt`);
              }} className="text-xs bg-purple-600 hover:bg-purple-500">
                <Download size={14} className="mr-2" /> 导出 TXT
              </Button>
@@ -593,7 +737,7 @@ export function TaskDetailPage() {
       );
     }
 
-    if (task.type === '视频转gif' && task.gifUrl) {
+    if (task.type === AUTOCUT_TASK_TYPE.videoGif && task.gifUrl) {
       return (
         <div className="flex-1 flex flex-col items-center justify-center border border-[#222] rounded-xl bg-[#111]">
           <div className="bg-[#1A1A1A] p-4 rounded-xl border border-[#333] shadow-xl max-w-xl w-full">
@@ -606,7 +750,7 @@ export function TaskDetailPage() {
       );
     }
 
-    if (task.type === '视频提音' && task.audioUrl) {
+    if (task.type === AUTOCUT_TASK_TYPE.audioExtraction && task.audioUrl) {
       return (
         <div className="flex-1 flex flex-col items-center justify-center border border-[#222] rounded-xl bg-[#111]">
           <div className="w-20 h-20 bg-green-500/20 text-green-500 rounded-full flex items-center justify-center mb-8">
@@ -625,7 +769,7 @@ export function TaskDetailPage() {
       );
     }
 
-    if (task.type === '视频压缩' && task.fileSizeStats && task.videoUrl) {
+    if (task.type === AUTOCUT_TASK_TYPE.videoCompress && task.fileSizeStats && task.videoUrl) {
       const { originalSize, newSize, compressionRatio } = task.fileSizeStats;
       return (
         <div className="flex-1 flex flex-col items-center justify-center border border-[#222] rounded-xl bg-[#111]">
@@ -657,9 +801,7 @@ export function TaskDetailPage() {
     if (task.videoUrl) {
       return (
         <div className="flex-1 flex flex-col items-center justify-center border border-[#222] rounded-xl bg-[#111] overflow-hidden">
-          <div className="w-full h-full max-h-[60vh] bg-black flex items-center justify-center relative">
-            <video src={task.videoUrl} controls autoPlay className="w-full h-full object-contain" />
-          </div>
+          <TaskVideoPreview src={task.videoUrl} title={task.name} videoKey={task.id} />
           <div className="p-6 bg-[#151515] w-full border-t border-[#222] flex justify-center">
              <Button onClick={() => handleDownload(task.videoUrl, `${task.name}_output.mp4`)} size="lg">
                <Download size={18} className="mr-2" /> 下载输出文件
@@ -676,7 +818,7 @@ export function TaskDetailPage() {
             <FileText size={48} className="mx-auto mb-4 opacity-30" />
             <p>该任务暂无详细结果预览</p>
             {task.status === AUTOCUT_TASK_STATUS.completed && task.resultCount !== undefined && task.resultCount > 0 && (
-              <Button className="mt-4" variant="outline" onClick={() => downloadTaskExecutionResultFile(task)}>下载执行结果 ({task.resultCount})</Button>
+              <Button className="mt-4" variant="outline" onClick={() => downloadTaskExecutionResultFile(task, getTaskTypeLabel(task.type))}>下载执行结果 ({task.resultCount})</Button>
             )}
           </div>
       </div>
@@ -700,7 +842,7 @@ export function TaskDetailPage() {
               {task.name}
             </h1>
             <div className="flex items-center gap-4 text-xs text-gray-500 mt-1">
-              <span>任务类型: <span className="text-gray-300 font-bold">{task.type}</span></span>
+              <span>Task type: <span className="text-gray-300 font-bold">{getTaskTypeLabel(task.type)}</span></span>
               <span>创建时间: {formatAutoCutDateTime(task.createdAt)}</span>
               <span className={`px-2 py-0.5 rounded font-bold tracking-wider uppercase text-[10px] ${
                 task.status === AUTOCUT_TASK_STATUS.completed ? 'bg-green-500/10 text-green-500' :

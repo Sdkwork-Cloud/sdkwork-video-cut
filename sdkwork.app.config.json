@@ -1,0 +1,330 @@
+{
+  "schemaVersion": 3,
+  "kind": "sdkwork.app",
+  "app": {
+    "key": "sdkwork-video-cut",
+    "name": "SDKWork Video Cut",
+    "displayName": "SDKWork Video Cut",
+    "description": "SDKWork Video Cut SDKWork application.",
+    "vendor": "SDKWork",
+    "officialWebsiteUrl": "https://sdkwork.com/apps/sdkwork-video-cut",
+    "supportUrl": "https://sdkwork.com/support",
+    "privacyPolicyUrl": "https://sdkwork.com/privacy",
+    "termsOfServiceUrl": "https://sdkwork.com/terms",
+    "iconUrl": "https://cdn.sdkwork.com/apps/sdkwork-video-cut/assets/icon-1024.png",
+    "appType": "APP_HTML",
+    "versionSource": "package.json",
+    "identifiers": {
+      "packageName": null,
+      "bundleId": null,
+      "desktopAppId": "com.sdkwork.sdkwork.video.cut.desktop",
+      "containerImage": "registry.sdkwork.com/apps/sdkwork-video-cut"
+    }
+  },
+  "backend": {
+    "profileKey": "backend-root-admin",
+    "ownerMode": "tenant",
+    "grantMode": "current",
+    "platform": "WEB",
+    "appId": null,
+    "tenantId": "20001",
+    "organizationId": null
+  },
+  "runtime": {
+    "family": "desktop",
+    "framework": "tauri",
+    "runtimes": [
+      "TAURI"
+    ],
+    "deliveryModes": [
+      "DIRECT_DOWNLOAD"
+    ],
+    "defaultPlatform": "DESKTOP_WINDOWS",
+    "defaultArchitecture": "x64"
+  },
+  "media": {
+    "icons": {
+      "primary": {
+        "id": "sdkwork-video-cut-primary-icon",
+        "type": "ICON",
+        "purpose": "PRIMARY",
+        "url": "https://cdn.sdkwork.com/apps/sdkwork-video-cut/assets/icon-1024.png",
+        "platform": "APP",
+        "locale": "en-US",
+        "width": 1024,
+        "height": 1024,
+        "format": "PNG",
+        "fileSizeBytes": 524288,
+        "alphaChannel": false,
+        "sortOrder": 0,
+        "enabled": true,
+        "metadata": {
+          "generatedPlaceholder": true
+        }
+      },
+      "platform": [],
+      "metadata": {
+        "generatedBy": "apps/scripts/initialize-sdkwork-app-standard-v3.mjs"
+      }
+    },
+    "screenshots": [
+      {
+        "id": "sdkwork-video-cut-desktop_windows-screenshot",
+        "type": "SCREENSHOT",
+        "purpose": "CATALOG_SCREENSHOT",
+        "url": "https://cdn.sdkwork.com/apps/sdkwork-video-cut/media/desktop_windows-screenshot.png",
+        "platform": "DESKTOP_WINDOWS",
+        "locale": "en-US",
+        "deviceClass": "DESKTOP",
+        "displayType": "DESKTOP_16_10",
+        "width": 1920,
+        "height": 1080,
+        "format": "PNG",
+        "fileSizeBytes": 1048576,
+        "alphaChannel": false,
+        "caption": "SDKWork Video Cut product screenshot.",
+        "sortOrder": 0,
+        "enabled": true,
+        "metadata": {
+          "generatedPlaceholder": true,
+          "altText": "SDKWork Video Cut app screenshot."
+        }
+      }
+    ],
+    "previews": [
+      {
+        "id": "sdkwork-video-cut-catalog-preview",
+        "type": "PREVIEW_IMAGE",
+        "purpose": "CATALOG_PREVIEW",
+        "url": "https://cdn.sdkwork.com/apps/sdkwork-video-cut/media/preview-cover.png",
+        "platform": "DESKTOP_WINDOWS",
+        "locale": "en-US",
+        "width": 1600,
+        "height": 900,
+        "format": "PNG",
+        "fileSizeBytes": 786432,
+        "alphaChannel": false,
+        "caption": "SDKWork Video Cut preview.",
+        "sortOrder": 0,
+        "enabled": true,
+        "metadata": {
+          "generatedPlaceholder": true,
+          "altText": "SDKWork Video Cut preview cover."
+        }
+      }
+    ],
+    "metadata": {
+      "assetVersion": "0.1.1",
+      "defaultLocale": "en-US"
+    }
+  },
+  "publish": {
+    "status": "INACTIVE",
+    "installSkill": {
+      "name": "sdkwork-skills-app"
+    },
+    "platforms": [
+      "DESKTOP",
+      "DESKTOP_WINDOWS",
+      "DESKTOP_MACOS",
+      "DESKTOP_LINUX"
+    ],
+    "installPlatforms": [
+      "DESKTOP_WINDOWS",
+      "DESKTOP_MACOS",
+      "DESKTOP_LINUX"
+    ],
+    "defaultPackageId": "desktop-windows-msi",
+    "storeUrl": "https://sdkwork.com/apps/sdkwork-video-cut",
+    "stores": [],
+    "config": {
+      "workspaceRoot": "apps/sdkwork-video-cut",
+      "framework": "tauri",
+      "managedBy": "apps/scripts/initialize-sdkwork-app-standard-v3.mjs"
+    }
+  },
+  "environments": {
+    "development": {
+      "accessUrl": "https://api-dev.sdkwork.com/apps/sdkwork-video-cut",
+      "deployUrl": "https://api-dev.sdkwork.com/apps/sdkwork-video-cut",
+      "deployEnv": "dev"
+    },
+    "test": {
+      "accessUrl": "https://api-test.sdkwork.com/apps/sdkwork-video-cut",
+      "deployUrl": "https://api-test.sdkwork.com/apps/sdkwork-video-cut",
+      "deployEnv": "test"
+    },
+    "production": {
+      "accessUrl": "https://api.sdkwork.com/apps/sdkwork-video-cut",
+      "deployUrl": "https://api.sdkwork.com/apps/sdkwork-video-cut",
+      "deployEnv": "production"
+    }
+  },
+  "artifacts": {
+    "installConfig": {
+      "defaultPackageId": "desktop-windows-msi",
+      "installCommand": "sdkwork install sdkwork-video-cut",
+      "launchCommand": "sdkwork open sdkwork-video-cut",
+      "uninstallCommand": "sdkwork uninstall sdkwork-video-cut",
+      "packages": [
+        {
+          "id": "desktop-windows-msi",
+          "name": "SDKWork Video Cut Windows MSI Installer",
+          "sourceType": "BINARY_URL",
+          "packageFormat": "MSI",
+          "platform": "DESKTOP_WINDOWS",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.1/SDKWork%20Video%20Cut_0.1.1_x64_en-US.msi",
+          "enabled": false,
+          "metadata": {
+            "releaseAsset": true,
+            "commercialActivationRequired": "Enable only after GitHub Release asset digest, Authenticode signature evidence, and SBOM evidence are recorded."
+          },
+          "architecture": "x64"
+        },
+        {
+          "id": "desktop-windows-nsis",
+          "name": "SDKWork Video Cut Windows NSIS Installer",
+          "sourceType": "BINARY_URL",
+          "packageFormat": "EXE",
+          "platform": "DESKTOP_WINDOWS",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.1/SDKWork%20Video%20Cut_0.1.1_x64-setup.exe",
+          "enabled": false,
+          "metadata": {
+            "releaseAsset": true,
+            "commercialActivationRequired": "Enable only after GitHub Release asset digest, Authenticode signature evidence, and SBOM evidence are recorded."
+          },
+          "architecture": "x64"
+        },
+        {
+          "id": "desktop-linux-deb",
+          "name": "SDKWork Video Cut Linux DEB Package",
+          "sourceType": "BINARY_URL",
+          "packageFormat": "DEB",
+          "platform": "DESKTOP_LINUX",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.1/SDKWork%20Video%20Cut_0.1.1_amd64.deb",
+          "enabled": false,
+          "metadata": {
+            "releaseAsset": true,
+            "commercialActivationRequired": "Enable only after GitHub Release asset digest, Linux package trust evidence, and SBOM evidence are recorded.",
+            "linux": {
+              "distro": "debian-compatible"
+            }
+          },
+          "architecture": "x64"
+        },
+        {
+          "id": "desktop-linux-appimage",
+          "name": "SDKWork Video Cut Linux AppImage",
+          "sourceType": "BINARY_URL",
+          "packageFormat": "APPIMAGE",
+          "platform": "DESKTOP_LINUX",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.1/SDKWork%20Video%20Cut_0.1.1_amd64.AppImage",
+          "enabled": false,
+          "metadata": {
+            "releaseAsset": true,
+            "commercialActivationRequired": "Enable only after GitHub Release asset digest, Linux package trust evidence, and SBOM evidence are recorded.",
+            "linux": {
+              "distro": "generic"
+            }
+          },
+          "architecture": "x64"
+        },
+        {
+          "id": "desktop-macos-x64-dmg",
+          "name": "SDKWork Video Cut macOS Intel DMG",
+          "sourceType": "BINARY_URL",
+          "packageFormat": "DMG",
+          "platform": "DESKTOP_MACOS",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.1/SDKWork%20Video%20Cut_0.1.1_x64.dmg",
+          "enabled": false,
+          "metadata": {
+            "releaseAsset": true,
+            "commercialActivationRequired": "Enable only after GitHub Release asset digest, Developer ID signing, notarization, and SBOM evidence are recorded."
+          },
+          "architecture": "x64"
+        },
+        {
+          "id": "desktop-macos-aarch64-dmg",
+          "name": "SDKWork Video Cut macOS Apple Silicon DMG",
+          "sourceType": "BINARY_URL",
+          "packageFormat": "DMG",
+          "platform": "DESKTOP_MACOS",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.1/SDKWork%20Video%20Cut_0.1.1_aarch64.dmg",
+          "enabled": false,
+          "metadata": {
+            "releaseAsset": true,
+            "commercialActivationRequired": "Enable only after GitHub Release asset digest, Developer ID signing, notarization, and SBOM evidence are recorded."
+          },
+          "architecture": "aarch64"
+        }
+      ],
+      "metadata": {
+        "workspaceRoot": "apps/sdkwork-video-cut",
+        "framework": "tauri",
+        "packageManager": "pnpm@10.30.2",
+        "migratedFromLegacyConfig": true
+      }
+    }
+  },
+  "release": {
+    "currentVersion": "0.1.1",
+    "defaultChannel": "STABLE",
+    "latest": {
+      "STABLE": "0.1.1"
+    },
+    "notes": [
+      {
+        "version": "0.1.1",
+        "releaseChannel": "STABLE",
+        "title": "SDKWork Video Cut 0.1.1",
+        "summary": "Multiplatform unsigned preview release metadata for the hardened intelligent slicing desktop application.",
+        "content": "Version 0.1.1 carries forward the unreleased 0.1.0 baseline and adds hardened smart slicing, mandatory offline speech-to-text evidence, transcript-backed recovery, subtitle opt-in behavior, multiplatform release workflow governance, and commercial release blockers for signing, checksums, and SBOM evidence.",
+        "highlights": [
+          "Smart slicing requires speech-to-text evidence for every generated clip",
+          "Recovered native slice artifacts without transcript evidence fail closed",
+          "Subtitle rendering remains disabled by default and must be explicitly enabled",
+          "Install package metadata points to GitHub Release assets but stays disabled until real digest, signature, and SBOM evidence is recorded",
+          "Commercial release policy requires checksums, installer signatures, and SBOM evidence"
+        ],
+        "packageIds": [
+          "desktop-windows-msi",
+          "desktop-windows-nsis",
+          "desktop-linux-deb",
+          "desktop-linux-appimage",
+          "desktop-macos-x64-dmg",
+          "desktop-macos-aarch64-dmg"
+        ],
+        "publishedAt": "2026-05-08T00:00:00Z",
+        "current": true,
+        "forceUpdate": false,
+        "minSupportedVersion": "0.1.1",
+        "metadata": {
+          "previewRelease": true,
+          "commercialActivationRequired": [
+            "GitHub Release assets uploaded for every package",
+            "SHA-256 checksum recorded for every enabled package",
+            "Windows Authenticode signature evidence recorded",
+            "macOS Developer ID signing and notarization evidence recorded",
+            "Linux package trust evidence recorded",
+            "SBOM evidence recorded"
+          ]
+        }
+      }
+    ]
+  },
+  "security": {
+    "checksumRequired": true,
+    "signatureRequired": true,
+    "sbomRequired": true
+  },
+  "devApp": {
+    "build": {
+      "targets": []
+    },
+    "sourceRoot": "apps/sdkwork-video-cut"
+  },
+  "metadata": {
+    "standardOwner": "sdkwork-platform",
+    "initializedAt": "2026-05-07T00:00:00Z"
+  }
+}

@@ -4,7 +4,7 @@ import { Card, Button, FileUpload, TaskFailureState } from '@sdkwork/autocut-com
 
 import { Upload, Settings, Play, RefreshCcw, Activity, Download, CheckCircle2 } from 'lucide-react';
 import { useToast } from '@sdkwork/autocut-commons';
-import { downloadAutoCutUrl, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic } from '@sdkwork/autocut-services';
+import { downloadAutoCutUrl, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic, selectAutoCutTrustedLocalMediaFile, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
 import { AUTOCUT_TASK_STATUS, isAutoCutTaskActiveStatus, type AppTask } from '@sdkwork/autocut-types';
 
 export function VideoConvertPage() {
@@ -80,7 +80,13 @@ export function VideoConvertPage() {
                 <Upload size={16} className="text-orange-500" />
                 需要转码的源文件
               </h2>
-              <FileUpload file={file} onChange={setFile} accept="video/*" maxSizeMB={5000} />
+              <FileUpload
+                file={file}
+                onChange={setFile}
+                accept="video/*"
+                maxSizeMB={5000}
+                trustedFileSourceSelector={() => selectAutoCutTrustedLocalMediaFile(['video'])}
+              />
             </Card>
 
             <div className="bg-orange-500/5 border border-orange-500/10 rounded-xl p-4 flex gap-3 text-sm text-orange-400">
@@ -151,7 +157,11 @@ export function VideoConvertPage() {
                </Card>
              ) : (
                activeTask?.status === AUTOCUT_TASK_STATUS.failed ? (
-                  <TaskFailureState errorMessage={activeTask.errorMessage} onRetry={handleProcess} />
+                  <TaskFailureState
+                    errorMessage={activeTask.errorMessage}
+                    onCopyErrorMessage={writeAutoCutClipboardText}
+                    onRetry={handleProcess}
+                  />
                ) : activeTask?.status === AUTOCUT_TASK_STATUS.completed && activeTask.videoUrl ? (
                   <Card className="flex flex-col items-center justify-center border-[#222] bg-[#111] overflow-hidden">
                     <div className="p-4 bg-[#151515] w-full border-b border-[#222] flex justify-between items-center">

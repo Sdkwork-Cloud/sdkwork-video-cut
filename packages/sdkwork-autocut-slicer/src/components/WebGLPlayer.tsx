@@ -930,3 +930,5 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
     </div>
   );
 });
+
+export default WebGLPlayer;

@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { Music, Download, PlayCircle, Waves, Activity } from 'lucide-react';
 import { FileUpload, Button, TaskFailureState } from '@sdkwork/autocut-commons';
 import { useToast } from '@sdkwork/autocut-commons';
-import { downloadAutoCutUrl, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent } from '@sdkwork/autocut-services';
+import { downloadAutoCutUrl, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent, selectAutoCutTrustedLocalMediaFile, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
 import { AUTOCUT_TASK_STATUS, isAutoCutTaskActiveStatus, type AppTask } from '@sdkwork/autocut-types';
 
 export function AudioExtractorPage() {
@@ -77,7 +77,13 @@ export function AudioExtractorPage() {
                选择源视频
             </h2>
 
-            <FileUpload file={file} onChange={setFile} accept="video/*" maxSizeMB={500} />
+            <FileUpload
+              file={file}
+              onChange={setFile}
+              accept="video/*"
+              maxSizeMB={500}
+              trustedFileSourceSelector={() => selectAutoCutTrustedLocalMediaFile(['video'])}
+            />
           </div>
 
           <div className="p-6">
@@ -207,7 +213,11 @@ export function AudioExtractorPage() {
           )}
 
           {activeTask?.status === AUTOCUT_TASK_STATUS.failed && (
-            <TaskFailureState errorMessage={activeTask.errorMessage} onRetry={handleStartProcess} />
+            <TaskFailureState
+              errorMessage={activeTask.errorMessage}
+              onCopyErrorMessage={writeAutoCutClipboardText}
+              onRetry={handleStartProcess}
+            />
           )}
         </div>
       </div>

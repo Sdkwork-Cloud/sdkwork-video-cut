@@ -47,7 +47,9 @@ fn send_autocut_llm_http_request_with_client(
 ) -> Result<AutoCutLlmHttpResponse, String> {
     let method = reqwest::Method::from_bytes(request.method.as_bytes())
         .map_err(|error| format!("Invalid AutoCut LLM HTTP method: {error}"))?;
-    let mut request_builder = client.request(method, request.url).headers(to_header_map(&request.headers)?);
+    let mut request_builder = client
+        .request(method, request.url)
+        .headers(to_header_map(&request.headers)?);
 
     if let Some(body_text) = request.body_text {
         request_builder = request_builder.body(body_text);
@@ -99,8 +101,9 @@ fn to_header_map(headers: &BTreeMap<String, String>) -> Result<HeaderMap, String
     for (name, value) in headers {
         let header_name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|error| format!("Invalid AutoCut LLM HTTP header name {name}: {error}"))?;
-        let header_value = HeaderValue::from_str(value)
-            .map_err(|error| format!("Invalid AutoCut LLM HTTP header value for {name}: {error}"))?;
+        let header_value = HeaderValue::from_str(value).map_err(|error| {
+            format!("Invalid AutoCut LLM HTTP header value for {name}: {error}")
+        })?;
         header_map.insert(header_name, header_value);
     }
     Ok(header_map)

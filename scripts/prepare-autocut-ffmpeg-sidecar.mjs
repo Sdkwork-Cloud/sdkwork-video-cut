@@ -10,14 +10,11 @@ import {
   normalizeAutoCutCliArgs,
   readAutoCutCliOptionValue,
 } from './autocut-cli-args.mjs';
+import {
+  normalizeAutoCutReleasePlatform,
+} from './autocut-release-platforms.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
-const allowedPlatforms = new Set([
-  'windows-x86_64',
-  'linux-x86_64',
-  'macos-x86_64',
-  'macos-aarch64',
-]);
 const defaultManifestPath = path.join(
   process.cwd(),
   'packages',
@@ -63,11 +60,11 @@ export function createAutoCutFfmpegSidecarPlan({
   const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
   const byteSize = bytes.length;
   const nextManifest = structuredClone(manifest);
-  nextManifest.bundledReady = true;
   nextManifest.platforms[normalizedPlatform].integrity = {
     sha256,
     byteSize,
   };
+  nextManifest.bundledReady = allPlatformsIntegrityReady(nextManifest);
 
   return {
     manifestPath: resolvedManifestPath,
@@ -79,6 +76,9 @@ export function createAutoCutFfmpegSidecarPlan({
     sha256,
     byteSize,
     bundledReady: true,
+    platformBundledReady: true,
+    manifestBundledReady: Boolean(nextManifest.bundledReady),
+    allPlatformsBundledReady: Boolean(nextManifest.bundledReady),
     dryRun,
     manifest: nextManifest,
     writes: dryRun ? [] : [destinationPath, resolvedManifestPath],
@@ -126,12 +126,36 @@ function validateManifest(manifest) {
   }
 }
 
+function normalizeIntegrity(integrity) {
+  return {
+    sha256: String(integrity?.sha256 ?? '').toLowerCase(),
+    byteSize: Number(integrity?.byteSize ?? 0),
+  };
+}
+
+function isPlaceholderIntegrity(integrity) {
+  return integrity.byteSize <= 0 ||
+    integrity.sha256 === '0000000000000000000000000000000000000000000000000000000000000000';
+}
+
+function allPlatformsIntegrityReady(manifest) {
+  const platforms = Object.values(manifest.platforms ?? {});
+  return platforms.length > 0 && platforms.every((platform) => {
+    const integrity = normalizeIntegrity(platform?.integrity);
+    return !isPlaceholderIntegrity(integrity);
+  });
+}
+
 function normalizePlatform(platform) {
   const value = requiredString(platform, '--platform');
-  if (!allowedPlatforms.has(value)) {
+  try {
+    return normalizeAutoCutReleasePlatform(value);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('is ambiguous; use macos-x86_64 or macos-aarch64')) {
+      throw error;
+    }
     throw new Error(`Unsupported AutoCut FFmpeg sidecar platform: ${value}`);
   }
-  return value;
 }
 
 function validateRelativePath(relativePath) {

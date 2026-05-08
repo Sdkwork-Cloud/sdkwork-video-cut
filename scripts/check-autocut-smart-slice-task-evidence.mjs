@@ -9,13 +9,18 @@ import {
   normalizeAutoCutCliArgs,
   readAutoCutCliOptionValue,
 } from './autocut-cli-args.mjs';
+import {
+  AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD,
+} from '../packages/sdkwork-autocut-types/src/index.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const validationSchemaVersion = '2026-05-06.autocut-smart-slice-task-evidence-validation.v1';
 const taskEvidenceSchemaVersion = '2026-05-06.autocut-smart-slice-task-evidence.v1';
 const defaultTaskRelativePath = 'artifacts/smart-slice/smart-slice-task.json';
 const minimumContinuityScore = 0.78;
-const minimumTranscriptCoverageScore = 0.8;
+const minimumTranscriptCoverageScore = AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.minTranscriptCoverageScore;
+const maximumLeadingSilenceMs = AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.maxLeadingSilenceMs;
+const maximumTrailingSilenceMs = AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.maxTrailingSilenceMs;
 
 export function createAutoCutSmartSliceTaskEvidenceValidationReport({
   rootDir = process.cwd(),
@@ -121,7 +126,9 @@ function createSliceValidationSnapshot(slice, index) {
   const speechStartMs = normalizeNonNegativeInteger(slice?.speechStartMs);
   const speechEndMs = normalizeNonNegativeInteger(slice?.speechEndMs);
   const transcriptText = normalizeString(slice?.transcriptText);
-  const subtitleSegmentCount = normalizeNonNegativeInteger(slice?.subtitleSegmentCount) ?? 0;
+  const transcriptSegmentCount = normalizeNonNegativeInteger(slice?.transcriptSegmentCount) ?? 0;
+  const transcriptSegments = normalizeTranscriptSegments(slice?.transcriptSegments);
+  const transcriptStructuredSegmentCount = transcriptSegments.length;
   const durationMs = normalizeDurationMs(slice?.duration);
   const size = normalizeNonNegativeInteger(slice?.size) ?? 0;
   const continuityScore = normalizeScore(slice?.continuityScore);
@@ -138,9 +145,38 @@ function createSliceValidationSnapshot(slice, index) {
   const sourceRangeDurationMs = sourceEndMs !== undefined && sourceStartMs !== undefined
     ? sourceEndMs - sourceStartMs
     : undefined;
+  const transcriptSegmentCountMatches =
+    transcriptSegmentCount > 0 &&
+    transcriptSegmentCount === transcriptStructuredSegmentCount;
+  const transcriptTextFromSegments = createTranscriptTextFromSegments(transcriptSegments);
+  const transcriptTextMatchesSegments =
+    transcriptText.length > 0 &&
+    transcriptText === transcriptTextFromSegments;
+  const transcriptSegmentsOrdered = areTranscriptSegmentsOrdered(transcriptSegments);
+  const transcriptSpeechBoundaryMatches = doTranscriptSegmentsMatchSpeechBoundary(
+    transcriptSegments,
+    speechStartMs,
+    speechEndMs,
+  );
+  const transcriptSegmentsSourceRangeReady =
+    sourceStartMs !== undefined &&
+    sourceEndMs !== undefined &&
+    sourceEndMs > sourceStartMs &&
+    transcriptStructuredSegmentCount > 0 &&
+    transcriptSegments.every((segment) =>
+      segment.startMs >= sourceStartMs &&
+      segment.endMs <= sourceEndMs &&
+      segment.endMs > segment.startMs
+    );
   const transcriptReady =
     transcriptText.length > 0 &&
-    subtitleSegmentCount > 0 &&
+    transcriptSegmentCount > 0 &&
+    transcriptStructuredSegmentCount > 0 &&
+    transcriptSegmentCountMatches &&
+    transcriptTextMatchesSegments &&
+    transcriptSegmentsOrdered &&
+    transcriptSpeechBoundaryMatches &&
+    transcriptSegmentsSourceRangeReady &&
     transcriptCoverageScore >= minimumTranscriptCoverageScore;
   const continuityReady =
     continuityScore >= minimumContinuityScore &&
@@ -154,6 +190,12 @@ function createSliceValidationSnapshot(slice, index) {
     speechEndMs >= speechStartMs &&
     speechStartMs >= sourceStartMs &&
     speechEndMs <= sourceEndMs;
+  const boundaryPaddingBeforeMs = sourceRangeReady ? speechStartMs - sourceStartMs : undefined;
+  const boundaryPaddingAfterMs = sourceRangeReady ? sourceEndMs - speechEndMs : undefined;
+  const silenceBoundaryReady =
+    sourceRangeReady &&
+    boundaryPaddingBeforeMs <= maximumLeadingSilenceMs &&
+    boundaryPaddingAfterMs <= maximumTrailingSilenceMs;
   const renderArtifactReady =
     url.length > 0 &&
     thumbnailUrl.length > 0 &&
@@ -187,7 +229,8 @@ function createSliceValidationSnapshot(slice, index) {
     thumbnailUrl,
     resolution,
     transcriptTextLength: transcriptText.length,
-    subtitleSegmentCount,
+    transcriptSegmentCount,
+    transcriptStructuredSegmentCount,
     scores: {
       continuityScore,
       transcriptCoverageScore,
@@ -202,8 +245,14 @@ function createSliceValidationSnapshot(slice, index) {
     },
     gates: {
       transcriptReady,
+      transcriptSegmentCountMatches,
+      transcriptTextMatchesSegments,
+      transcriptSegmentsOrdered,
+      transcriptSpeechBoundaryMatches,
+      transcriptSegmentsSourceRangeReady,
       continuityReady,
       sourceRangeReady,
+      silenceBoundaryReady,
       renderArtifactReady,
       renderDurationReady,
       publishabilityReady,
@@ -211,6 +260,40 @@ function createSliceValidationSnapshot(slice, index) {
       sentenceBoundaryReady,
     },
   };
+}
+
+function doTranscriptSegmentsMatchSpeechBoundary(segments, speechStartMs, speechEndMs) {
+  if (
+    segments.length === 0 ||
+    speechStartMs === undefined ||
+    speechEndMs === undefined
+  ) {
+    return false;
+  }
+
+  return Math.abs(segments[0].startMs - speechStartMs) <= 80 &&
+    Math.abs(segments.at(-1).endMs - speechEndMs) <= 80;
+}
+
+function createTranscriptTextFromSegments(segments) {
+  return segments
+    .map((segment) => segment.text)
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+function areTranscriptSegmentsOrdered(segments) {
+  let previousEndMs;
+  for (const segment of segments) {
+    if (previousEndMs !== undefined && segment.startMs < previousEndMs) {
+      return false;
+    }
+    previousEndMs = segment.endMs;
+  }
+
+  return true;
 }
 
 function createValidationSummary(slices) {
@@ -260,7 +343,7 @@ function createSliceSetBlockers(task, summary, slices) {
   if (transcriptMissingIndexes.length > 0) {
     blockers.push({
       code: 'SMART_SLICE_TASK_TRANSCRIPT_MISSING',
-      message: 'One or more smart slices are missing complete transcript text or subtitle segments.',
+      message: 'One or more smart slices are missing complete transcript text or transcript segments.',
       remediation: 'Regenerate local STT and export Quality JSON only after every slice carries transcript coverage.',
       sliceIndexes: transcriptMissingIndexes,
     });
@@ -299,6 +382,22 @@ function createSliceSetBlockers(task, summary, slices) {
       message: 'One or more smart slices are missing rendered video artifact metadata.',
       remediation: 'Re-run native slicing and export Quality JSON only after every slice has url, thumbnailUrl, size, and resolution.',
       sliceIndexes: renderArtifactMissingIndexes,
+    });
+  }
+
+  const excessiveSilenceBoundaryIndexes = slices
+    .filter((slice) => slice.gates.sourceRangeReady && !slice.gates.silenceBoundaryReady)
+    .map((slice) => slice.index);
+  if (excessiveSilenceBoundaryIndexes.length > 0) {
+    blockers.push({
+      code: 'SMART_SLICE_TASK_EXCESSIVE_SILENCE_BOUNDARY',
+      message: 'One or more smart slices include excessive leading or trailing silence around speech.',
+      remediation: `Re-run smart slicing so each rendered slice keeps no more than ${maximumLeadingSilenceMs}ms leading and ${maximumTrailingSilenceMs}ms trailing speech boundary padding.`,
+      sliceIndexes: excessiveSilenceBoundaryIndexes,
+      expected: {
+        maximumLeadingSilenceMs,
+        maximumTrailingSilenceMs,
+      },
     });
   }
 
@@ -351,6 +450,25 @@ function normalizeDurationMs(value) {
     return undefined;
   }
   return Math.max(0, Math.round(Number(numericValue) * 1_000));
+}
+
+function normalizeTranscriptSegments(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((segment) => {
+      const startMs = normalizeNonNegativeInteger(segment?.startMs);
+      const endMs = normalizeNonNegativeInteger(segment?.endMs);
+      const text = normalizeString(segment?.text).replace(/\s+/gu, ' ');
+      if (startMs === undefined || endMs === undefined || endMs <= startMs || !text) {
+        return undefined;
+      }
+      return { startMs, endMs, text };
+    })
+    .filter(Boolean)
+    .slice(0, 1_000);
 }
 
 function normalizeString(value) {

@@ -6,8 +6,10 @@ export const AUTO_CUT_STORAGE_NAMESPACE = 'autocut';
 export const AUTO_CUT_STORAGE_KEYS = {
   assets: 'assets',
   tasks: 'tasks',
+  dismissedNativeTasks: 'dismissed_native_tasks',
   messages: 'messages',
   settings: 'settings',
+  workflowPreferences: 'workflow_preferences',
 } as const;
 
 export type AutoCutStorageKey = keyof typeof AUTO_CUT_STORAGE_KEYS;

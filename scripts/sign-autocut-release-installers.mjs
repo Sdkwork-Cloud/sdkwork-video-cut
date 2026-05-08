@@ -10,9 +10,11 @@ import {
   normalizeAutoCutCliArgs,
   readAutoCutCliOptionValue,
 } from './autocut-cli-args.mjs';
+import {
+  createAutoCutReleaseInstallerSpecs,
+} from './autocut-release-platforms.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
-const bundleRelativeRoot = 'packages/sdkwork-autocut-desktop/src-tauri/target/release/bundle';
 const defaultTimestampUrl = 'http://timestamp.digicert.com';
 const defaultSignToolPath = 'signtool.exe';
 
@@ -177,17 +179,13 @@ function createSignToolArgs({
 }
 
 function installerSpecs(rootDir) {
-  const bundleRoot = path.join(rootDir, bundleRelativeRoot);
-  return [
-    {
-      kind: 'msi',
-      path: path.join(bundleRoot, 'msi', 'SDKWork Video Cut_0.1.0_x64_en-US.msi'),
-    },
-    {
-      kind: 'nsis',
-      path: path.join(bundleRoot, 'nsis', 'SDKWork Video Cut_0.1.0_x64-setup.exe'),
-    },
-  ];
+  return createAutoCutReleaseInstallerSpecs({
+    rootDir,
+    platform: 'windows-x86_64',
+  }).map((spec) => ({
+    kind: spec.kind,
+    path: spec.absolutePath,
+  }));
 }
 
 function normalizeOptionalString(value) {

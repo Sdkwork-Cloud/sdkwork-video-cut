@@ -7,11 +7,13 @@ import {
   configureAutoCutRuntimeEnvironment,
   configureAutoCutVercelAiSdkBridge,
   initializeAutoCutDefaultLlmSettingsFromEnvironment,
+  initializeAutoCutI18n,
 } from '@sdkwork/autocut-services';
 
 configureAutoCutRuntimeEnvironment(import.meta.env.DEV ? 'dev' : 'release');
 configureDesktopNativeHostClient();
 configureAutoCutVercelAiSdkBridge();
+initializeAutoCutI18n();
 void initializeAutoCutDefaultLlmSettingsFromEnvironment().catch(() => undefined);
 
 const rootElement = document.getElementById('root');

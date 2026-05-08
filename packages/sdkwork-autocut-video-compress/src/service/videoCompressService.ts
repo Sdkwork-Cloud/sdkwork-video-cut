@@ -1,9 +1,12 @@
-import { AUTOCUT_TASK_STATUS, type AppTask, type VideoCompressParams } from '@sdkwork/autocut-types';
+import { resolveAutoCutTrustedSourcePath } from '@sdkwork/autocut-commons';
+import { AUTOCUT_TASK_STATUS, AUTOCUT_TASK_TYPE, type AppTask, type VideoCompressParams } from '@sdkwork/autocut-types';
 import {
   addAsset,
   addMessage,
   addTask,
+  assertAutoCutNativeArtifactInsideTaskOutputDir,
   createAutoCutId,
+  createAutoCutTaskName,
   createAutoCutTimestamp,
   failAutoCutProcessingTask,
   failAutoCutUnsupportedNativeProcessingTask,
@@ -12,21 +15,21 @@ import {
   updateTask,
   validateAutoCutProcessingSource,
 } from '@sdkwork/autocut-services';
-import { resolveAutoCutTrustedSourcePath } from '@sdkwork/autocut-commons';
 
 function resolveDesktopSourcePath(file: File | null | undefined) {
   return resolveAutoCutTrustedSourcePath(file);
 }
 
 function createVideoCompressTask(params: VideoCompressParams): AppTask {
+  const createdAt = createAutoCutTimestamp();
   return {
     id: createAutoCutId('newTask'),
-    name: params.file ? params.file.name : 'original_compressed.mp4',
-    type: '视频压缩',
+    name: createAutoCutTaskName({ file: params.file, fallbackSourceName: 'source-video.mp4', createdAt }),
+    type: AUTOCUT_TASK_TYPE.videoCompress,
     status: AUTOCUT_TASK_STATUS.pending,
     progress: 0,
-    progressMessage: '准备分析视频编码参数...',
-    createdAt: createAutoCutTimestamp(),
+    progressMessage: 'Preparing video compression task...',
+    createdAt,
     ...(params.fileId ? { sourceFileId: params.fileId } : {}),
   };
 }
@@ -50,7 +53,7 @@ async function finishVideoCompressTask(
 
   await addAsset({
     id: generatedAssetId,
-    name: `压缩后_${newTask.name}`,
+    name: `compressed-${newTask.name}`,
     type: 'video',
     size: newSize,
     url: videoUrl,
@@ -63,12 +66,12 @@ async function finishVideoCompressTask(
   await addMessage({
     id: createAutoCutId('msg'),
     type: 'success',
-    title: '视频压缩完成',
-    description: `视频体积已减小，并保持了可交付画质。`,
+    title: 'Video compression completed',
+    description: `Compressed video generated from "${newTask.name}".`,
     createdAt: createAutoCutTimestamp(),
     read: false,
     actionUrl: '/tasks/' + newTask.id,
-    actionLabel: '前往查看',
+    actionLabel: 'View task',
   });
 
   return {
@@ -100,7 +103,7 @@ export async function processVideoCompress(params: VideoCompressParams) {
     await updateTask(newTask.id, {
       status: AUTOCUT_TASK_STATUS.processing,
       progress: 20,
-      progressMessage: '导入本地视频到桌面媒体沙箱...',
+      progressMessage: 'Importing local video into the desktop media sandbox...',
     });
 
     try {
@@ -112,13 +115,14 @@ export async function processVideoCompress(params: VideoCompressParams) {
       await updateTask(newTask.id, {
         status: AUTOCUT_TASK_STATUS.processing,
         progress: 60,
-        progressMessage: '执行视频压缩编码并写入标准产物...',
+        progressMessage: 'Running video compression and writing the standard artifact...',
       });
       const compressedVideo = await nativeHostClient.compressVideo({
         assetUuid: importedMedia.assetUuid,
         compressionMode: params.compressionMode,
         ...(outputRootDir ? { outputRootDir } : {}),
       });
+      assertAutoCutNativeArtifactInsideTaskOutputDir(compressedVideo, 'video compression output');
       const videoUrl = nativeHostClient.createAssetUrl(compressedVideo.artifactPath);
       const completedData = await finishVideoCompressTask(
         newTask,
@@ -130,7 +134,7 @@ export async function processVideoCompress(params: VideoCompressParams) {
       await updateTask(newTask.id, {
         status: AUTOCUT_TASK_STATUS.completed,
         progress: 100,
-        progressMessage: '视频压缩完成',
+        progressMessage: 'Video compression completed.',
         completedAt: createAutoCutTimestamp(),
         ...completedData,
       });

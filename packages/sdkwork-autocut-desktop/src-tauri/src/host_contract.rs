@@ -1,8 +1,11 @@
-use std::path::Path;
-
 use serde::Serialize;
 
 use crate::database_contract::{AutoCutDatabaseContract, autocut_database_contract};
+use crate::media_runtime::{
+    autocut_speech_transcription_toolchain_ready,
+    autocut_speech_transcription_toolchain_ready_for_app,
+};
+use tauri::AppHandle;
 
 pub const AUTOCUT_HOST_CONTRACT_VERSION: &str = "2026-05-05.native-host-contract.v1";
 
@@ -23,10 +26,16 @@ pub struct AutoCutHostCapabilities {
     pub media_import_command_ready: bool,
     #[serde(rename = "mediaFileDescribeCommandReady")]
     pub media_file_describe_command_ready: bool,
+    #[serde(rename = "localMediaFileSelectCommandReady")]
+    pub local_media_file_select_command_ready: bool,
     #[serde(rename = "localVideoFileSelectCommandReady")]
     pub local_video_file_select_command_ready: bool,
     #[serde(rename = "localDirectorySelectCommandReady")]
     pub local_directory_select_command_ready: bool,
+    #[serde(rename = "localMediaPreviewDirectoryScopeCommandReady")]
+    pub local_media_preview_directory_scope_command_ready: bool,
+    #[serde(rename = "openArtifactInFolderCommandReady")]
+    pub open_artifact_in_folder_command_ready: bool,
     #[serde(rename = "nativeTaskQueryCommandReady")]
     pub native_task_query_command_ready: bool,
     #[serde(rename = "nativeTaskCancelCommandReady")]
@@ -61,6 +70,10 @@ pub struct AutoCutHostCapabilities {
     pub speech_transcription_probe_command_ready: bool,
     #[serde(rename = "speechTranscriptionFileSelectCommandReady")]
     pub speech_transcription_file_select_command_ready: bool,
+    #[serde(rename = "speechTranscriptionModelDownloadCommandReady")]
+    pub speech_transcription_model_download_command_ready: bool,
+    #[serde(rename = "speechTranscriptionExecutableDownloadCommandReady")]
+    pub speech_transcription_executable_download_command_ready: bool,
     #[serde(rename = "llmHttpCommandReady")]
     pub llm_http_command_ready: bool,
     #[serde(rename = "llmSecretStoreReady")]
@@ -77,8 +90,10 @@ pub struct AutoCutHostCapabilities {
     pub database: &'static AutoCutDatabaseContract,
 }
 
-pub fn autocut_host_capabilities() -> AutoCutHostCapabilities {
-    let speech_transcription_toolchain_ready = autocut_speech_transcription_toolchain_ready();
+pub fn autocut_host_capabilities(app: Option<&AppHandle>) -> AutoCutHostCapabilities {
+    let speech_transcription_toolchain_ready = app
+        .map(autocut_speech_transcription_toolchain_ready_for_app)
+        .unwrap_or_else(autocut_speech_transcription_toolchain_ready);
 
     AutoCutHostCapabilities {
         contract_version: AUTOCUT_HOST_CONTRACT_VERSION,
@@ -89,8 +104,11 @@ pub fn autocut_host_capabilities() -> AutoCutHostCapabilities {
         ffmpeg_probe_command_ready: true,
         media_import_command_ready: true,
         media_file_describe_command_ready: true,
+        local_media_file_select_command_ready: true,
         local_video_file_select_command_ready: true,
         local_directory_select_command_ready: true,
+        local_media_preview_directory_scope_command_ready: true,
+        open_artifact_in_folder_command_ready: true,
         native_task_query_command_ready: true,
         native_task_cancel_command_ready: true,
         native_task_recovery_command_ready: true,
@@ -108,6 +126,8 @@ pub fn autocut_host_capabilities() -> AutoCutHostCapabilities {
         speech_transcription_toolchain_ready,
         speech_transcription_probe_command_ready: true,
         speech_transcription_file_select_command_ready: true,
+        speech_transcription_model_download_command_ready: true,
+        speech_transcription_executable_download_command_ready: false,
         llm_http_command_ready: true,
         llm_secret_store_ready: true,
         ffmpeg_toolchain_manifest_ready: true,
@@ -120,8 +140,11 @@ pub fn autocut_host_capabilities() -> AutoCutHostCapabilities {
             "autocut_ffmpeg_probe",
             "autocut_import_media_file",
             "autocut_describe_local_media_file",
+            "autocut_select_local_media_file",
             "autocut_select_local_video_file",
             "autocut_select_local_directory",
+            "autocut_allow_local_media_preview_directory",
+            "autocut_open_artifact_in_folder",
             "autocut_list_native_tasks",
             "autocut_cancel_native_task",
             "autocut_recover_native_tasks",
@@ -132,6 +155,7 @@ pub fn autocut_host_capabilities() -> AutoCutHostCapabilities {
             "autocut_transcribe_media",
             "autocut_probe_speech_transcription",
             "autocut_select_speech_transcription_file",
+            "autocut_download_speech_transcription_model",
             "autocut_compress_video",
             "autocut_convert_video",
             "autocut_enhance_video",
@@ -145,34 +169,34 @@ pub fn autocut_host_capabilities() -> AutoCutHostCapabilities {
     }
 }
 
-fn autocut_speech_transcription_toolchain_ready() -> bool {
-    let executable_ready = std::env::var("SDKWORK_AUTOCUT_WHISPER_EXECUTABLE")
-        .ok()
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
-    let model_ready = std::env::var("SDKWORK_AUTOCUT_WHISPER_MODEL")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(|value| Path::new(&value).is_file())
-        .unwrap_or(false);
-
-    executable_ready && model_ready
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media_runtime::{
+        MIN_SPEECH_TRANSCRIPTION_MODEL_BYTES, SUPPORTED_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS,
+    };
+    use std::fs;
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn write_minimal_valid_speech_model(path: &Path) {
+        let file = fs::File::create(path).expect("create speech readiness model");
+        file.set_len(MIN_SPEECH_TRANSCRIPTION_MODEL_BYTES)
+            .expect("size speech readiness model");
+    }
 
     #[test]
     fn capabilities_report_ffmpeg_toolchain_contract_without_claiming_execution() {
-        let capabilities = autocut_host_capabilities();
+        let capabilities = autocut_host_capabilities(None);
 
         assert!(capabilities.ffmpeg_toolchain_manifest_ready);
         assert!(capabilities.ffmpeg_toolchain_resolver_ready);
         assert!(capabilities.media_file_describe_command_ready);
         assert!(capabilities.local_video_file_select_command_ready);
         assert!(capabilities.local_directory_select_command_ready);
+        assert!(capabilities.open_artifact_in_folder_command_ready);
         assert!(capabilities.native_task_query_command_ready);
         assert!(capabilities.native_task_cancel_command_ready);
         assert!(capabilities.native_task_recovery_command_ready);
@@ -187,6 +211,8 @@ mod tests {
         assert!(capabilities.speech_transcription_command_ready);
         assert!(capabilities.speech_transcription_probe_command_ready);
         assert!(capabilities.speech_transcription_file_select_command_ready);
+        assert!(capabilities.speech_transcription_model_download_command_ready);
+        assert!(!capabilities.speech_transcription_executable_download_command_ready);
         assert_eq!(
             capabilities.speech_transcription_toolchain_ready,
             autocut_speech_transcription_toolchain_ready()
@@ -195,5 +221,156 @@ mod tests {
         assert!(capabilities.llm_secret_store_ready);
         assert!(!capabilities.ffmpeg_bundled_ready);
         assert!(!capabilities.ffmpeg_execution_ready);
+    }
+
+    #[test]
+    fn speech_toolchain_readiness_rejects_missing_executable_files() {
+        let _env_guard = TEST_ENV_LOCK
+            .lock()
+            .expect("env lock should not be poisoned");
+        let temp_dir = std::env::temp_dir().join(format!(
+            "sdkwork-autocut-host-contract-speech-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_dir).expect("create speech readiness temp dir");
+        let model_path = temp_dir.join("ggml-large-v3-turbo.bin");
+        write_minimal_valid_speech_model(&model_path);
+        let missing_executable_path = temp_dir.join("missing-whisper-cli.exe");
+
+        unsafe {
+            std::env::set_var(
+                "SDKWORK_AUTOCUT_WHISPER_EXECUTABLE",
+                &missing_executable_path,
+            );
+            std::env::set_var("SDKWORK_AUTOCUT_WHISPER_MODEL", &model_path);
+        }
+
+        let ready = autocut_speech_transcription_toolchain_ready();
+
+        unsafe {
+            std::env::remove_var("SDKWORK_AUTOCUT_WHISPER_EXECUTABLE");
+            std::env::remove_var("SDKWORK_AUTOCUT_WHISPER_MODEL");
+        }
+        let _ = fs::remove_dir_all(&temp_dir);
+
+        assert!(
+            !ready,
+            "speech transcription readiness must not claim ready when the configured executable file is missing"
+        );
+    }
+
+    #[test]
+    fn speech_toolchain_readiness_rejects_relative_executable_files() {
+        let _env_guard = TEST_ENV_LOCK
+            .lock()
+            .expect("env lock should not be poisoned");
+        let relative_executable_path = "target/sdkwork-autocut-relative-whisper-cli.exe";
+        let relative_executable_file = Path::new(relative_executable_path);
+        if let Some(parent) = relative_executable_file.parent() {
+            fs::create_dir_all(parent).expect("create relative executable parent");
+        }
+        fs::write(relative_executable_file, b"tool").expect("write relative executable fixture");
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "sdkwork-autocut-host-contract-speech-relative-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_dir).expect("create speech readiness temp dir");
+        let model_path = temp_dir.join("ggml-large-v3-turbo.bin");
+        write_minimal_valid_speech_model(&model_path);
+
+        unsafe {
+            std::env::set_var(
+                "SDKWORK_AUTOCUT_WHISPER_EXECUTABLE",
+                relative_executable_path,
+            );
+            std::env::set_var("SDKWORK_AUTOCUT_WHISPER_MODEL", &model_path);
+        }
+
+        let ready = autocut_speech_transcription_toolchain_ready();
+
+        unsafe {
+            std::env::remove_var("SDKWORK_AUTOCUT_WHISPER_EXECUTABLE");
+            std::env::remove_var("SDKWORK_AUTOCUT_WHISPER_MODEL");
+        }
+        let _ = fs::remove_file(relative_executable_file);
+        let _ = fs::remove_dir_all(&temp_dir);
+
+        assert!(
+            !ready,
+            "speech transcription readiness must not claim ready from a relative executablePath"
+        );
+    }
+
+    #[test]
+    fn speech_toolchain_readiness_rejects_unsupported_model_extensions() {
+        let _env_guard = TEST_ENV_LOCK
+            .lock()
+            .expect("env lock should not be poisoned");
+        assert!(
+            !SUPPORTED_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS.contains(&"txt"),
+            "host readiness tests must share the native speech model extension contract"
+        );
+        let temp_dir = std::env::temp_dir().join(format!(
+            "sdkwork-autocut-host-contract-speech-extension-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_dir).expect("create speech readiness temp dir");
+        let executable_path = temp_dir.join("whisper-cli.exe");
+        let model_path = temp_dir.join("ggml-large-v3-turbo.txt");
+        fs::write(&executable_path, b"tool").expect("write speech readiness executable");
+        fs::write(&model_path, b"model").expect("write unsupported speech readiness model");
+
+        unsafe {
+            std::env::set_var("SDKWORK_AUTOCUT_WHISPER_EXECUTABLE", &executable_path);
+            std::env::set_var("SDKWORK_AUTOCUT_WHISPER_MODEL", &model_path);
+        }
+
+        let ready = autocut_speech_transcription_toolchain_ready();
+
+        unsafe {
+            std::env::remove_var("SDKWORK_AUTOCUT_WHISPER_EXECUTABLE");
+            std::env::remove_var("SDKWORK_AUTOCUT_WHISPER_MODEL");
+        }
+        let _ = fs::remove_dir_all(&temp_dir);
+
+        assert!(
+            !ready,
+            "speech transcription readiness must not claim ready from an unsupported model extension"
+        );
+    }
+
+    #[test]
+    fn speech_toolchain_readiness_rejects_too_small_model_files() {
+        let _env_guard = TEST_ENV_LOCK
+            .lock()
+            .expect("env lock should not be poisoned");
+        let temp_dir = std::env::temp_dir().join(format!(
+            "sdkwork-autocut-host-contract-speech-small-model-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_dir).expect("create speech readiness temp dir");
+        let executable_path = temp_dir.join("whisper-cli.exe");
+        let model_path = temp_dir.join("ggml-large-v3-turbo.bin");
+        fs::write(&executable_path, b"tool").expect("write speech readiness executable");
+        fs::write(&model_path, b"incomplete").expect("write incomplete speech readiness model");
+
+        unsafe {
+            std::env::set_var("SDKWORK_AUTOCUT_WHISPER_EXECUTABLE", &executable_path);
+            std::env::set_var("SDKWORK_AUTOCUT_WHISPER_MODEL", &model_path);
+        }
+
+        let ready = autocut_speech_transcription_toolchain_ready();
+
+        unsafe {
+            std::env::remove_var("SDKWORK_AUTOCUT_WHISPER_EXECUTABLE");
+            std::env::remove_var("SDKWORK_AUTOCUT_WHISPER_MODEL");
+        }
+        let _ = fs::remove_dir_all(&temp_dir);
+
+        assert!(
+            !ready,
+            "speech transcription readiness must not claim ready from an incomplete model file"
+        );
     }
 }

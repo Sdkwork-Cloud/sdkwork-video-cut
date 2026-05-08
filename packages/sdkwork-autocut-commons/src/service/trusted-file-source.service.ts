@@ -25,6 +25,7 @@ interface AutoCutFilePathCandidate {
 }
 
 const trustedFileSourceDropHandlers = new Set<AutoCutTrustedFileSourceDropHandler>();
+const trustedLocalFiles = new WeakSet<File>();
 
 export function createAutoCutTrustedLocalFile(
   descriptor: AutoCutTrustedFileSourceDescriptor,
@@ -73,12 +74,16 @@ export function createAutoCutTrustedLocalFile(
       value: byteSize,
     },
   });
+  trustedLocalFiles.add(trustedFile);
 
   return trustedFile;
 }
 
 export function resolveAutoCutTrustedSourcePath(file: File | null | undefined) {
   if (!file) {
+    return null;
+  }
+  if (!trustedLocalFiles.has(file)) {
     return null;
   }
 

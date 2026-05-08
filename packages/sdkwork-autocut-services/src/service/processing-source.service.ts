@@ -4,10 +4,13 @@ import { updateTask } from './tasks.service';
 export class AutoCutProcessingTaskError extends Error {
   readonly taskId: string;
 
-  constructor(message: string, taskId: string) {
+  constructor(message: string, taskId: string, options: { cause?: unknown } = {}) {
     super(message);
     this.name = 'AutoCutProcessingTaskError';
     this.taskId = taskId;
+    if (options.cause !== undefined) {
+      this.cause = options.cause;
+    }
   }
 }
 
@@ -27,13 +30,19 @@ export async function failAutoCutUnsupportedNativeProcessingTask(
   return await failAutoCutProcessingTask(task.id, errorMessage);
 }
 
-export async function failAutoCutProcessingTask(taskId: string, errorMessage: string): Promise<never> {
+export async function failAutoCutProcessingTask(
+  taskId: string,
+  errorMessage: string,
+  failureDiagnostics?: string,
+  cause?: unknown,
+): Promise<never> {
   await updateTask(taskId, {
     status: AUTOCUT_TASK_STATUS.failed,
     progressMessage: 'Task failed.',
     errorMessage,
+    ...(failureDiagnostics ? { failureDiagnostics } : {}),
   });
-  throw new AutoCutProcessingTaskError(errorMessage, taskId);
+  throw new AutoCutProcessingTaskError(errorMessage, taskId, { cause });
 }
 
 export function getAutoCutProcessingTaskErrorTaskId(error: unknown) {

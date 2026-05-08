@@ -9,6 +9,9 @@ import {
   normalizeAutoCutCliArgs,
   readAutoCutCliOptionValue,
 } from './autocut-cli-args.mjs';
+import {
+  AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD,
+} from '../packages/sdkwork-autocut-types/src/index.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const evidenceSchemaVersion = '2026-05-06.autocut-smart-slice-quality-evidence.v1';
@@ -21,8 +24,10 @@ const QUALITY_THRESHOLDS = {
   minReadyOrReviewRatio: 0.8,
   minAveragePublishabilityScore: 0.68,
   minAverageContinuityScore: 0.78,
-  minAverageTranscriptCoverageScore: 0.8,
+  minAverageTranscriptCoverageScore: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.minTranscriptCoverageScore,
   minPlatformReadyOrReviewRatio: 0.8,
+  maxLeadingSilenceMs: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.maxLeadingSilenceMs,
+  maxTrailingSilenceMs: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.maxTrailingSilenceMs,
 };
 
 export function createAutoCutSmartSliceQualityEvidence({
@@ -98,7 +103,9 @@ function createSliceQualityEvidence(slice, index) {
   const platformReadinessScore = normalizeScore(slice.platformReadinessScore);
   const sentenceBoundaryIntegrityScore = normalizeScore(slice.sentenceBoundaryIntegrityScore);
   const boundaryQualityScore = normalizeScore(slice.boundaryQualityScore);
-  const subtitleSegmentCount = normalizeNonNegativeInteger(slice.subtitleSegmentCount);
+  const transcriptSegmentCount = normalizeNonNegativeInteger(slice.transcriptSegmentCount);
+  const transcriptSegments = normalizeTranscriptSegments(slice.transcriptSegments);
+  const transcriptStructuredSegmentCount = transcriptSegments.length;
   const sourceStartMs = normalizeNonNegativeInteger(slice.sourceStartMs);
   const sourceEndMs = normalizeNonNegativeInteger(slice.sourceEndMs);
   const speechStartMs = normalizeNonNegativeInteger(slice.speechStartMs);
@@ -124,9 +131,40 @@ function createSliceQualityEvidence(slice, index) {
   const speechContinuityReady =
     continuityScore >= QUALITY_THRESHOLDS.minAverageContinuityScore &&
     (speechContinuityGrade === 'strong' || speechContinuityGrade === 'repaired');
+  const transcriptSegmentCountMatches =
+    transcriptSegmentCount !== undefined &&
+    transcriptSegmentCount > 0 &&
+    transcriptSegmentCount === transcriptStructuredSegmentCount;
+  const transcriptTextFromSegments = createTranscriptTextFromSegments(transcriptSegments);
+  const transcriptTextMatchesSegments =
+    transcriptText.length > 0 &&
+    transcriptText === transcriptTextFromSegments;
+  const transcriptSegmentsOrdered = areTranscriptSegmentsOrdered(transcriptSegments);
+  const transcriptSpeechBoundaryMatches = doTranscriptSegmentsMatchSpeechBoundary(
+    transcriptSegments,
+    speechStartMs,
+    speechEndMs,
+  );
+  const transcriptSegmentsSourceRangeReady =
+    sourceStartMs !== undefined &&
+    sourceEndMs !== undefined &&
+    sourceEndMs > sourceStartMs &&
+    transcriptStructuredSegmentCount > 0 &&
+    transcriptSegments.every((segment) =>
+      segment.startMs >= sourceStartMs &&
+      segment.endMs <= sourceEndMs &&
+      segment.endMs > segment.startMs
+    );
   const transcriptReady =
     transcriptCoverageScore >= QUALITY_THRESHOLDS.minAverageTranscriptCoverageScore &&
-    subtitleSegmentCount > 0 &&
+    transcriptSegmentCount !== undefined &&
+    transcriptSegmentCount > 0 &&
+    transcriptStructuredSegmentCount > 0 &&
+    transcriptSegmentCountMatches &&
+    transcriptTextMatchesSegments &&
+    transcriptSegmentsOrdered &&
+    transcriptSpeechBoundaryMatches &&
+    transcriptSegmentsSourceRangeReady &&
     Boolean(transcriptText);
   const sentenceBoundaryReady =
     sentenceBoundaryIntegrityGrade === 'clean' ||
@@ -143,6 +181,12 @@ function createSliceQualityEvidence(slice, index) {
     speechEndMs >= speechStartMs &&
     speechStartMs >= sourceStartMs &&
     speechEndMs <= sourceEndMs;
+  const boundaryPaddingBeforeMs = sourceRangeReady ? speechStartMs - sourceStartMs : undefined;
+  const boundaryPaddingAfterMs = sourceRangeReady ? sourceEndMs - speechEndMs : undefined;
+  const silenceBoundaryReady =
+    sourceRangeReady &&
+    boundaryPaddingBeforeMs <= QUALITY_THRESHOLDS.maxLeadingSilenceMs &&
+    boundaryPaddingAfterMs <= QUALITY_THRESHOLDS.maxTrailingSilenceMs;
 
   return {
     index,
@@ -170,11 +214,17 @@ function createSliceQualityEvidence(slice, index) {
       sourceEndMs,
       speechStartMs,
       speechEndMs,
-      boundaryPaddingBeforeMs: normalizeNonNegativeInteger(slice.boundaryPaddingBeforeMs) ?? 0,
-      boundaryPaddingAfterMs: normalizeNonNegativeInteger(slice.boundaryPaddingAfterMs) ?? 0,
+      boundaryPaddingBeforeMs: boundaryPaddingBeforeMs ?? normalizeNonNegativeInteger(slice.boundaryPaddingBeforeMs) ?? 0,
+      boundaryPaddingAfterMs: boundaryPaddingAfterMs ?? normalizeNonNegativeInteger(slice.boundaryPaddingAfterMs) ?? 0,
     },
     transcript: {
-      subtitleSegmentCount,
+      transcriptSegmentCount,
+      transcriptStructuredSegmentCount,
+      transcriptSegmentCountMatches,
+      transcriptTextMatchesSegments,
+      transcriptSegmentsOrdered,
+      transcriptSpeechBoundaryMatches,
+      transcriptSegmentsSourceRangeReady,
       transcriptTextLength: transcriptText.length,
     },
     issues: {
@@ -190,8 +240,43 @@ function createSliceQualityEvidence(slice, index) {
       sentenceBoundaryReady,
       platformReady,
       sourceRangeReady,
+      silenceBoundaryReady,
     },
   };
+}
+
+function doTranscriptSegmentsMatchSpeechBoundary(segments, speechStartMs, speechEndMs) {
+  if (
+    segments.length === 0 ||
+    speechStartMs === undefined ||
+    speechEndMs === undefined
+  ) {
+    return false;
+  }
+
+  return Math.abs(segments[0].startMs - speechStartMs) <= 80 &&
+    Math.abs(segments.at(-1).endMs - speechEndMs) <= 80;
+}
+
+function createTranscriptTextFromSegments(segments) {
+  return segments
+    .map((segment) => segment.text)
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+function areTranscriptSegmentsOrdered(segments) {
+  let previousEndMs;
+  for (const segment of segments) {
+    if (previousEndMs !== undefined && segment.startMs < previousEndMs) {
+      return false;
+    }
+    previousEndMs = segment.endMs;
+  }
+
+  return true;
 }
 
 function validateSmartSliceTaskEvidence(task) {
@@ -230,6 +315,7 @@ function createSmartSliceQualitySummary(slices) {
     slice.qualityGates.transcriptReady &&
     slice.qualityGates.sentenceBoundaryReady &&
     slice.qualityGates.sourceRangeReady &&
+    slice.qualityGates.silenceBoundaryReady &&
     (slice.grades.platformReadinessGrade === 'ready' || slice.grades.platformReadinessGrade === 'review'),
   ).length;
   const platformReadyOrReviewSlices = slices.filter((slice) => slice.qualityGates.platformReady).length;
@@ -305,6 +391,22 @@ function createSmartSliceQualityBlockers(summary, slices) {
     });
   }
 
+  const excessiveSilenceSlices = slices
+    .filter((slice) => slice.qualityGates.sourceRangeReady && !slice.qualityGates.silenceBoundaryReady)
+    .map((slice) => slice.index);
+  if (excessiveSilenceSlices.length > 0) {
+    blockers.push({
+      code: 'SMART_SLICE_EXCESSIVE_SILENCE_BOUNDARY',
+      message: 'Smart slice outputs include excessive leading or trailing silence around speech.',
+      remediation: `Re-run smart slicing so each rendered slice keeps no more than ${QUALITY_THRESHOLDS.maxLeadingSilenceMs}ms leading and ${QUALITY_THRESHOLDS.maxTrailingSilenceMs}ms trailing speech boundary padding.`,
+      actual: excessiveSilenceSlices,
+      expected: {
+        maxLeadingSilenceMs: QUALITY_THRESHOLDS.maxLeadingSilenceMs,
+        maxTrailingSilenceMs: QUALITY_THRESHOLDS.maxTrailingSilenceMs,
+      },
+    });
+  }
+
   return blockers;
 }
 
@@ -344,6 +446,25 @@ function normalizeStringArray(value) {
     .map((item) => normalizeString(item))
     .filter(Boolean)
     .slice(0, 24);
+}
+
+function normalizeTranscriptSegments(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((segment) => {
+      const startMs = normalizeNonNegativeInteger(segment?.startMs);
+      const endMs = normalizeNonNegativeInteger(segment?.endMs);
+      const text = normalizeString(segment?.text).replace(/\s+/gu, ' ');
+      if (startMs === undefined || endMs === undefined || endMs <= startMs || !text) {
+        return undefined;
+      }
+      return { startMs, endMs, text };
+    })
+    .filter(Boolean)
+    .slice(0, 1_000);
 }
 
 function averageScore(values) {
