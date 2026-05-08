@@ -18,13 +18,46 @@ function tempRoot(name) {
 function writeFixture(root) {
   const tauriDir = path.join(root, 'packages', 'sdkwork-autocut-desktop', 'src-tauri');
   const targetDir = path.join(tauriDir, 'target');
+  const binariesDir = path.join(tauriDir, 'binaries');
+  const windowsSidecarPath = path.join(binariesDir, 'windows-x86_64', 'ffmpeg.exe');
+  const linuxSidecarPath = path.join(binariesDir, 'linux-x86_64', 'ffmpeg');
   fs.mkdirSync(targetDir, { recursive: true });
+  fs.mkdirSync(path.dirname(windowsSidecarPath), { recursive: true });
+  fs.mkdirSync(path.dirname(linuxSidecarPath), { recursive: true });
   fs.writeFileSync(path.join(tauriDir, 'Cargo.toml'), '[package]\nname = "sdkwork-video-cut-desktop"\nversion = "0.1.0"\nedition = "2024"\n');
   fs.writeFileSync(path.join(targetDir, '.keep'), '');
+  fs.writeFileSync(windowsSidecarPath, 'ffmpeg windows fixture');
+  fs.writeFileSync(linuxSidecarPath, 'ffmpeg linux fixture');
+  fs.writeFileSync(
+    path.join(binariesDir, 'ffmpeg.toolchain.json'),
+    JSON.stringify(
+      {
+        tool: 'ffmpeg',
+        contractVersion: '2026-05-05.ffmpeg-toolchain.v1',
+        bundledReady: false,
+        requiredBinary: 'ffmpeg',
+        platforms: {
+          'windows-x86_64': {
+            relativePath: 'windows-x86_64/ffmpeg.exe',
+            binaryName: 'ffmpeg.exe',
+            integrity: { sha256: '0'.repeat(64), byteSize: 0 },
+          },
+          'linux-x86_64': {
+            relativePath: 'linux-x86_64/ffmpeg',
+            binaryName: 'ffmpeg',
+            integrity: { sha256: '0'.repeat(64), byteSize: 0 },
+          },
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  return { windowsSidecarPath, linuxSidecarPath };
 }
 
 const root = tempRoot('autocut-native-release-smoke');
-writeFixture(root);
+const fixture = writeFixture(root);
 
 const runCommandCalls = [];
 const evidence = createAutoCutNativeReleaseSmokeEvidence({
@@ -32,6 +65,7 @@ const evidence = createAutoCutNativeReleaseSmokeEvidence({
   generatedAt: '2026-05-05T00:00:00.000Z',
   skipRustSmoke: false,
   hostPlatform: 'win32',
+  hostArch: 'x64',
   runRealLlmSecretSmoke: false,
   runCommand(command, args, options) {
     runCommandCalls.push({ command, args, cwd: options.cwd, env: options.env });
@@ -54,12 +88,9 @@ assert.equal(evidence.schemaVersion, '2026-05-05.autocut-native-release-smoke.v1
 assert.equal(evidence.generatedAt, '2026-05-05T00:00:00.000Z');
 assert.equal(evidence.nativeHost.packageName, 'sdkwork-video-cut-desktop');
 assert.equal(evidence.nativeHost.manifestPath, 'packages/sdkwork-autocut-desktop/src-tauri/Cargo.toml');
-assert.match(evidence.nativeHost.cargoTargetDirs.rustSmoke, /sdkwork-autocut-native-smoke-target-rust-/u);
-assert.match(evidence.nativeHost.cargoTargetDirs.videoSliceSmoke, /sdkwork-autocut-native-smoke-target-video-slice-/u);
-assert.match(evidence.nativeHost.cargoTargetDirs.llmSecretStoreSmoke, /sdkwork-autocut-native-smoke-target-llm-secret-/u);
-assert.notEqual(evidence.nativeHost.cargoTargetDirs.rustSmoke, evidence.nativeHost.cargoTargetDirs.videoSliceSmoke);
-assert.notEqual(evidence.nativeHost.cargoTargetDirs.rustSmoke, evidence.nativeHost.cargoTargetDirs.llmSecretStoreSmoke);
-assert.notEqual(evidence.nativeHost.cargoTargetDirs.videoSliceSmoke, evidence.nativeHost.cargoTargetDirs.llmSecretStoreSmoke);
+assert.match(evidence.nativeHost.cargoTargetDirs.rustSmoke, /sdkwork-autocut-native-smoke-target-/u);
+assert.equal(evidence.nativeHost.cargoTargetDirs.rustSmoke, evidence.nativeHost.cargoTargetDirs.videoSliceSmoke);
+assert.equal(evidence.nativeHost.cargoTargetDirs.rustSmoke, evidence.nativeHost.cargoTargetDirs.llmSecretStoreSmoke);
 assert.equal(evidence.readiness.nativeReleaseSmokeReady, false);
 assert.equal(evidence.readiness.ffmpegExecutionReady, false);
 assert.equal(evidence.readiness.videoSliceSmokeReady, true);
@@ -96,16 +127,18 @@ assert.match(evidence.videoSliceSmoke.stdout, /autocut-video-slice-smoke=passed/
 assert.equal(runCommandCalls.length, 2);
 assert.equal(runCommandCalls[0].command, 'cargo');
 assert.deepEqual(runCommandCalls[0].args.slice(0, 2), ['+1.90.0', 'test']);
-assert.match(runCommandCalls[0].env.CARGO_TARGET_DIR, /sdkwork-autocut-native-smoke-target-rust-/u);
+assert.match(runCommandCalls[0].env.CARGO_TARGET_DIR, /sdkwork-autocut-native-smoke-target-/u);
 assert.equal(runCommandCalls[0].env.CARGO_TARGET_DIR.includes(path.join(root, 'packages')), false);
+assert.equal(runCommandCalls[0].env.SDKWORK_AUTOCUT_FFMPEG, fixture.windowsSidecarPath);
 assert.equal(runCommandCalls[1].command, 'cargo');
 assert.deepEqual(runCommandCalls[1].args.slice(0, 2), ['+1.90.0', 'test']);
 assert.equal(
   runCommandCalls[1].args.some((arg) => arg.includes('video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir')),
   true,
 );
-assert.match(runCommandCalls[1].env.CARGO_TARGET_DIR, /sdkwork-autocut-native-smoke-target-video-slice-/u);
+assert.equal(runCommandCalls[1].env.CARGO_TARGET_DIR, runCommandCalls[0].env.CARGO_TARGET_DIR);
 assert.equal(runCommandCalls[1].env.CARGO_TARGET_DIR.includes(path.join(root, 'packages')), false);
+assert.equal(runCommandCalls[1].env.SDKWORK_AUTOCUT_FFMPEG, fixture.windowsSidecarPath);
 
 const skippedEvidence = createAutoCutNativeReleaseSmokeEvidence({
   rootDir: root,
@@ -123,6 +156,7 @@ const linuxEvidence = createAutoCutNativeReleaseSmokeEvidence({
   rootDir: root,
   generatedAt: '2026-05-05T00:00:00.000Z',
   hostPlatform: 'linux',
+  hostArch: 'x64',
   runRealLlmSecretSmoke: true,
   runCommand(command, args) {
     if (args.some((arg) => arg.includes('video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir'))) {
@@ -150,11 +184,39 @@ assert.deepEqual(
   [true, true, true],
 );
 
+const linuxSmokeCalls = [];
+createAutoCutNativeReleaseSmokeEvidence({
+  rootDir: root,
+  generatedAt: '2026-05-05T00:00:00.000Z',
+  hostPlatform: 'linux',
+  hostArch: 'x64',
+  runRealLlmSecretSmoke: false,
+  runCommand(command, args, options) {
+    linuxSmokeCalls.push({ command, args, cwd: options.cwd, env: options.env });
+    if (args.some((arg) => arg.includes('video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir'))) {
+      return {
+        status: 0,
+        stdout: 'autocut-video-slice-smoke=passed\ntest result: ok. 1 passed; 0 failed; 0 ignored',
+        stderr: '',
+      };
+    }
+    return {
+      status: 0,
+      stdout: 'test result: ok. 3 passed; 0 failed; 0 ignored',
+      stderr: '',
+    };
+  },
+});
+assert.equal(linuxSmokeCalls.length, 2);
+assert.equal(linuxSmokeCalls[0].env.SDKWORK_AUTOCUT_FFMPEG, fixture.linuxSidecarPath);
+assert.equal(linuxSmokeCalls[1].env.SDKWORK_AUTOCUT_FFMPEG, fixture.linuxSidecarPath);
+
 const realLlmSecretSmokeCalls = [];
 const realLlmSecretSmokeEvidence = createAutoCutNativeReleaseSmokeEvidence({
   rootDir: root,
   generatedAt: '2026-05-05T00:00:00.000Z',
   hostPlatform: 'win32',
+  hostArch: 'x64',
   runRealLlmSecretSmoke: true,
   runCommand(command, args, options) {
     realLlmSecretSmokeCalls.push({ command, args, cwd: options.cwd, env: options.env });
@@ -188,16 +250,51 @@ assert.equal(realLlmSecretSmokeEvidence.llmSecretStoreSmoke.skipped, false);
 assert.equal(realLlmSecretSmokeEvidence.llmSecretStoreSmoke.success, true);
 assert.match(realLlmSecretSmokeEvidence.llmSecretStoreSmoke.command, /--ignored --exact --test-threads=1 --nocapture/u);
 assert.equal(realLlmSecretSmokeCalls.length, 3);
-assert.match(realLlmSecretSmokeCalls[0].env.CARGO_TARGET_DIR, /sdkwork-autocut-native-smoke-target-rust-/u);
-assert.match(realLlmSecretSmokeCalls[1].env.CARGO_TARGET_DIR, /sdkwork-autocut-native-smoke-target-video-slice-/u);
-assert.match(realLlmSecretSmokeCalls[2].env.CARGO_TARGET_DIR, /sdkwork-autocut-native-smoke-target-llm-secret-/u);
-assert.notEqual(realLlmSecretSmokeCalls[1].env.CARGO_TARGET_DIR, realLlmSecretSmokeCalls[0].env.CARGO_TARGET_DIR);
-assert.notEqual(realLlmSecretSmokeCalls[2].env.CARGO_TARGET_DIR, realLlmSecretSmokeCalls[0].env.CARGO_TARGET_DIR);
+assert.match(realLlmSecretSmokeCalls[0].env.CARGO_TARGET_DIR, /sdkwork-autocut-native-smoke-target-/u);
+assert.equal(realLlmSecretSmokeCalls[1].env.CARGO_TARGET_DIR, realLlmSecretSmokeCalls[0].env.CARGO_TARGET_DIR);
+assert.equal(realLlmSecretSmokeCalls[2].env.CARGO_TARGET_DIR, realLlmSecretSmokeCalls[0].env.CARGO_TARGET_DIR);
 assert.equal(realLlmSecretSmokeCalls[2].env.SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE, 'true');
+assert.equal(realLlmSecretSmokeCalls[0].env.SDKWORK_AUTOCUT_FFMPEG, fixture.windowsSidecarPath);
+assert.equal(realLlmSecretSmokeCalls[1].env.SDKWORK_AUTOCUT_FFMPEG, fixture.windowsSidecarPath);
+assert.equal(realLlmSecretSmokeCalls[2].env.SDKWORK_AUTOCUT_FFMPEG, fixture.windowsSidecarPath);
 assert.deepEqual(
   realLlmSecretSmokeEvidence.commandMatrix.filter((command) => command.command.includes('llm_secret')).map((command) => command.evidenceReady),
   [true, true, true],
 );
+
+const retryCalls = [];
+const retryEvidence = createAutoCutNativeReleaseSmokeEvidence({
+  rootDir: root,
+  generatedAt: '2026-05-05T00:00:00.000Z',
+  runRealLlmSecretSmoke: false,
+  runCommand(command, args, options) {
+    retryCalls.push({ command, args, cwd: options.cwd, env: options.env });
+    if (retryCalls.length === 1) {
+      return {
+        status: 101,
+        stdout: '',
+        stderr: 'error: the compiler unexpectedly panicked. STATUS_ACCESS_VIOLATION',
+      };
+    }
+    if (args.some((arg) => arg.includes('video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir'))) {
+      return {
+        status: 0,
+        stdout: 'autocut-video-slice-smoke=passed\ntest result: ok. 1 passed; 0 failed; 0 ignored',
+        stderr: '',
+      };
+    }
+    return {
+      status: 0,
+      stdout: 'test result: ok. 3 passed; 0 failed; 0 ignored',
+      stderr: '',
+    };
+  },
+});
+assert.equal(retryEvidence.rustSmoke.success, true);
+assert.equal(retryEvidence.rustSmoke.attempts, 2);
+assert.match(retryEvidence.rustSmoke.retryDiagnostics[0], /compiler unexpectedly panicked/u);
+assert.equal(retryCalls.length, 3);
+assert.equal(retryCalls[1].env.CARGO_TARGET_DIR, retryCalls[0].env.CARGO_TARGET_DIR);
 
 assert.throws(
   () =>

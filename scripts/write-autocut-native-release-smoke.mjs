@@ -16,13 +16,10 @@ const __filename = fileURLToPath(import.meta.url);
 const evidenceSchemaVersion = '2026-05-05.autocut-native-release-smoke.v1';
 const desktopTauriRelativePath = 'packages/sdkwork-autocut-desktop/src-tauri';
 const cargoManifestRelativePath = `${desktopTauriRelativePath}/Cargo.toml`;
+const ffmpegToolchainManifestRelativePath = `${desktopTauriRelativePath}/binaries/ffmpeg.toolchain.json`;
 const defaultOutputRelativePath = 'artifacts/release/autocut-native-release-smoke.json';
 const rustToolchain = '1.90.0';
-const nativeSmokeCargoTargetDirPrefixes = {
-  rust: 'sdkwork-autocut-native-smoke-target-rust-',
-  videoSlice: 'sdkwork-autocut-native-smoke-target-video-slice-',
-  llmSecret: 'sdkwork-autocut-native-smoke-target-llm-secret-',
-};
+const nativeSmokeCargoTargetDirPrefix = 'sdkwork-autocut-native-smoke-target-';
 
 export function createAutoCutNativeReleaseSmokeEvidence({
   rootDir = process.cwd(),
@@ -30,6 +27,7 @@ export function createAutoCutNativeReleaseSmokeEvidence({
   outputPath,
   skipRustSmoke = false,
   hostPlatform = process.platform,
+  hostArch = process.arch,
   runRealLlmSecretSmoke = isAutoCutTruthyFlag(process.env.SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE),
   runCommand = runAutoCutNativeReleaseSmokeCommand,
 } = {}) {
@@ -41,40 +39,37 @@ export function createAutoCutNativeReleaseSmokeEvidence({
 
   const cargoManifestSource = fs.readFileSync(cargoManifestPath, 'utf8');
   const packageName = parseCargoPackageName(cargoManifestSource);
-  const rustSmokeCargoTargetDir = createAutoCutNativeSmokeCargoTargetDir(
+  const ffmpegExecutablePath = resolveAutoCutNativeSmokeFfmpegExecutablePath({
+    rootDir: resolvedRootDir,
+    hostPlatform,
+    hostArch,
+  });
+  const cargoTargetDir = createAutoCutNativeSmokeCargoTargetDir(
     resolvedRootDir,
     generatedAt,
-    nativeSmokeCargoTargetDirPrefixes.rust,
-  );
-  const llmSecretCargoTargetDir = createAutoCutNativeSmokeCargoTargetDir(
-    resolvedRootDir,
-    generatedAt,
-    nativeSmokeCargoTargetDirPrefixes.llmSecret,
-  );
-  const videoSliceCargoTargetDir = createAutoCutNativeSmokeCargoTargetDir(
-    resolvedRootDir,
-    generatedAt,
-    nativeSmokeCargoTargetDirPrefixes.videoSlice,
   );
   const rustSmoke = createRustSmokeEvidence({
     rootDir: resolvedRootDir,
     cargoManifestPath,
-    cargoTargetDir: rustSmokeCargoTargetDir,
+    cargoTargetDir,
+    ffmpegExecutablePath,
     skipRustSmoke,
     runCommand,
   });
   const videoSliceSmoke = createVideoSliceSmokeEvidence({
     rootDir: resolvedRootDir,
     cargoManifestPath,
-    cargoTargetDir: videoSliceCargoTargetDir,
+    cargoTargetDir,
+    ffmpegExecutablePath,
     skipRustSmoke,
     runCommand,
   });
   const llmSecretStoreSmoke = createRealLlmSecretStoreSmokeEvidence({
     rootDir: resolvedRootDir,
     cargoManifestPath,
-    cargoTargetDir: llmSecretCargoTargetDir,
+    cargoTargetDir,
     hostPlatform,
+    ffmpegExecutablePath,
     runRealLlmSecretSmoke,
     runCommand,
   });
@@ -95,10 +90,13 @@ export function createAutoCutNativeReleaseSmokeEvidence({
       manifestPath: toPosixRelative(resolvedRootDir, cargoManifestPath),
       desktopTauriPath: desktopTauriRelativePath,
       toolchain: rustToolchain,
+      ffmpegExecutablePath: ffmpegExecutablePath
+        ? toPosixRelative(resolvedRootDir, ffmpegExecutablePath)
+        : undefined,
       cargoTargetDirs: {
-        rustSmoke: rustSmokeCargoTargetDir,
-        videoSliceSmoke: videoSliceCargoTargetDir,
-        llmSecretStoreSmoke: llmSecretCargoTargetDir,
+        rustSmoke: cargoTargetDir,
+        videoSliceSmoke: cargoTargetDir,
+        llmSecretStoreSmoke: cargoTargetDir,
       },
     },
     readiness: {
@@ -172,6 +170,7 @@ function createRealLlmSecretStoreSmokeEvidence({
   cargoManifestPath,
   cargoTargetDir,
   hostPlatform,
+  ffmpegExecutablePath,
   runRealLlmSecretSmoke,
   runCommand,
 }) {
@@ -218,12 +217,16 @@ function createRealLlmSecretStoreSmokeEvidence({
     };
   }
 
-  const result = runCommand(command, args, {
-    cwd: rootDir,
+  const result = runAutoCutNativeReleaseSmokeCargoCommand({
+    command,
+    args,
+    rootDir,
+    cargoTargetDir,
     env: {
-      CARGO_TARGET_DIR: cargoTargetDir,
+      ...(ffmpegExecutablePath ? { SDKWORK_AUTOCUT_FFMPEG: ffmpegExecutablePath } : {}),
       SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE: 'true',
     },
+    runCommand,
   });
   const status = Number.isInteger(result.status) ? result.status : 1;
   const stdout = String(result.stdout ?? '');
@@ -256,7 +259,14 @@ function isLlmSecretStoreSmokeReady(smoke) {
   return smoke?.skipped === false && smoke.success === true;
 }
 
-function createRustSmokeEvidence({ rootDir, cargoManifestPath, cargoTargetDir, skipRustSmoke, runCommand }) {
+function createRustSmokeEvidence({
+  rootDir,
+  cargoManifestPath,
+  cargoTargetDir,
+  ffmpegExecutablePath,
+  skipRustSmoke,
+  runCommand,
+}) {
   const command = 'cargo';
   const args = [
     `+${rustToolchain}`,
@@ -278,11 +288,13 @@ function createRustSmokeEvidence({ rootDir, cargoManifestPath, cargoTargetDir, s
     };
   }
 
-  const result = runCommand(command, args, {
-    cwd: rootDir,
-    env: {
-      CARGO_TARGET_DIR: cargoTargetDir,
-    },
+  const result = runAutoCutNativeReleaseSmokeCargoCommand({
+    command,
+    args,
+    rootDir,
+    cargoTargetDir,
+    env: ffmpegExecutablePath ? { SDKWORK_AUTOCUT_FFMPEG: ffmpegExecutablePath } : {},
+    runCommand,
   });
   const status = Number.isInteger(result.status) ? result.status : 1;
   const stdout = String(result.stdout ?? '');
@@ -296,13 +308,22 @@ function createRustSmokeEvidence({ rootDir, cargoManifestPath, cargoTargetDir, s
     skipped: false,
     success: true,
     status,
+    attempts: result.attempts,
+    retryDiagnostics: result.retryDiagnostics,
     command: commandLine,
     stdout: trimReleaseSmokeOutput(stdout),
     stderr: trimReleaseSmokeOutput(stderr),
   };
 }
 
-function createVideoSliceSmokeEvidence({ rootDir, cargoManifestPath, cargoTargetDir, skipRustSmoke, runCommand }) {
+function createVideoSliceSmokeEvidence({
+  rootDir,
+  cargoManifestPath,
+  cargoTargetDir,
+  ffmpegExecutablePath,
+  skipRustSmoke,
+  runCommand,
+}) {
   const testName = 'media_runtime::tests::video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir';
   const command = 'cargo';
   const args = [
@@ -328,11 +349,13 @@ function createVideoSliceSmokeEvidence({ rootDir, cargoManifestPath, cargoTarget
     };
   }
 
-  const result = runCommand(command, args, {
-    cwd: rootDir,
-    env: {
-      CARGO_TARGET_DIR: cargoTargetDir,
-    },
+  const result = runAutoCutNativeReleaseSmokeCargoCommand({
+    command,
+    args,
+    rootDir,
+    cargoTargetDir,
+    env: ffmpegExecutablePath ? { SDKWORK_AUTOCUT_FFMPEG: ffmpegExecutablePath } : {},
+    runCommand,
   });
   const status = Number.isInteger(result.status) ? result.status : 1;
   const stdout = String(result.stdout ?? '');
@@ -350,16 +373,60 @@ function createVideoSliceSmokeEvidence({ rootDir, cargoManifestPath, cargoTarget
     skipped: false,
     success: true,
     status,
+    attempts: result.attempts,
+    retryDiagnostics: result.retryDiagnostics,
     command: commandLine,
     stdout: trimReleaseSmokeOutput(stdout),
     stderr: trimReleaseSmokeOutput(stderr),
   };
 }
 
-function createAutoCutNativeSmokeCargoTargetDir(rootDir, generatedAt, targetDirPrefix) {
+function runAutoCutNativeReleaseSmokeCargoCommand({
+  command,
+  args,
+  rootDir,
+  cargoTargetDir,
+  env,
+  runCommand,
+}) {
+  const maxAttempts = 2;
+  const retryDiagnostics = [];
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const result = runCommand(command, args, {
+      cwd: rootDir,
+      env: {
+        CARGO_TARGET_DIR: cargoTargetDir,
+        ...(env ?? {}),
+      },
+    });
+    const status = Number.isInteger(result.status) ? result.status : 1;
+    const stdout = String(result.stdout ?? '');
+    const stderr = String(result.stderr ?? '');
+    if (status === 0 || attempt === maxAttempts || !isRustCompilerCrash({ stdout, stderr })) {
+      return {
+        ...result,
+        attempts: attempt,
+        retryDiagnostics,
+      };
+    }
+    retryDiagnostics.push(trimReleaseSmokeOutput(stderr.trim() || stdout.trim() || `exit ${status}`));
+  }
+  throw new Error('unreachable AutoCut native release smoke retry state');
+}
+
+function isRustCompilerCrash({ stdout, stderr }) {
+  const output = `${stderr}\n${stdout}`;
+  return (
+    /the compiler unexpectedly panicked/u.test(output) ||
+    /STATUS_ACCESS_VIOLATION/u.test(output) ||
+    /exit code: 0xc0000005/u.test(output)
+  );
+}
+
+function createAutoCutNativeSmokeCargoTargetDir(rootDir, generatedAt) {
   const sanitizedTimestamp = generatedAt.replace(/[^0-9A-Za-z]+/gu, '');
   const suffix = sanitizedTimestamp || String(Date.now());
-  const targetDir = path.join(os.tmpdir(), `${targetDirPrefix}${suffix}`);
+  const targetDir = path.join(os.tmpdir(), `${nativeSmokeCargoTargetDirPrefix}${suffix}`);
   const resolvedTargetDir = path.resolve(targetDir);
   const resolvedRootDir = path.resolve(rootDir);
   if (resolvedTargetDir.startsWith(`${resolvedRootDir}${path.sep}`)) {
@@ -367,6 +434,40 @@ function createAutoCutNativeSmokeCargoTargetDir(rootDir, generatedAt, targetDirP
   }
   fs.mkdirSync(resolvedTargetDir, { recursive: true });
   return resolvedTargetDir;
+}
+
+function resolveAutoCutNativeSmokeFfmpegExecutablePath({ rootDir, hostPlatform, hostArch }) {
+  const manifestPath = path.join(rootDir, ffmpegToolchainManifestRelativePath);
+  if (!fs.existsSync(manifestPath) || !fs.statSync(manifestPath).isFile()) {
+    return undefined;
+  }
+
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const platformKey = createAutoCutNativeSmokePlatformKey(hostPlatform, hostArch);
+  const relativePath = manifest.platforms?.[platformKey]?.relativePath;
+  if (typeof relativePath !== 'string' || relativePath.trim() === '') {
+    return undefined;
+  }
+
+  const executablePath = path.resolve(path.dirname(manifestPath), relativePath);
+  if (!fs.existsSync(executablePath) || !fs.statSync(executablePath).isFile()) {
+    return undefined;
+  }
+
+  return executablePath;
+}
+
+function createAutoCutNativeSmokePlatformKey(hostPlatform, hostArch) {
+  const osKey = {
+    darwin: 'macos',
+    linux: 'linux',
+    win32: 'windows',
+  }[hostPlatform] ?? hostPlatform;
+  const archKey = {
+    arm64: 'aarch64',
+    x64: 'x86_64',
+  }[hostArch] ?? hostArch;
+  return `${osKey}-${archKey}`;
 }
 
 function createNativeCommandMatrix({ rustSmokeReady, videoSliceSmokeReady, llmSecretStoreSmokeReady }) {

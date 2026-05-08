@@ -6,7 +6,7 @@ on:
       release_tag:
         description: GitHub Release tag to upload assets to
         required: true
-        default: v0.1.3
+        default: v0.1.4
       upload_assets:
         description: Upload built assets to the GitHub Release
         required: true
@@ -66,12 +66,17 @@ jobs:
       - name: Write Windows release evidence
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           pnpm release:smoke-preflight -- --platform windows-x86_64 --require-bundled
           pnpm release:native-smoke -- --run-real-llm-secret-smoke
           pnpm release:smart-slice-sample
           pnpm release:installer-signature -- --platform windows-x86_64
           pnpm release:evidence -- --platform windows-x86_64 --output artifacts/release/autocut-release-evidence-windows-x86_64.json
           pnpm release:package-sbom -- --platform windows-x86_64
+          if (-not (Test-Path -LiteralPath "artifacts/release/autocut-release-evidence-windows-x86_64.json")) {
+            throw "missing Windows release evidence artifact"
+          }
 
       - uses: actions/upload-artifact@v4
         with:

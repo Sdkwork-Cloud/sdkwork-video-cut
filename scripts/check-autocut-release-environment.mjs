@@ -14,14 +14,15 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const defaultRepository = 'Sdkwork-Cloud/sdkwork-video-cut';
-const defaultReleaseTag = 'v0.1.3';
+const defaultReleaseTag = 'v0.1.4';
 
 export function createAutoCutReleaseEnvironmentReport({
   rootDir = process.cwd(),
   releaseTag = defaultReleaseTag,
   repository = defaultRepository,
   requireCleanWorktree = true,
-  includeWindowsInstallerService = process.platform === 'win32',
+  hostPlatform = process.platform,
+  includeWindowsInstallerService = hostPlatform === 'win32',
   runCommand = runAutoCutReleaseEnvironmentCommand,
   probeGitMetadataWrite = probeAutoCutGitMetadataWrite,
 } = {}) {
@@ -55,6 +56,7 @@ export function createAutoCutReleaseEnvironmentReport({
     windowsInstallerServiceReady: includeWindowsInstallerService
       ? checkWindowsInstallerServiceReady({
         rootDir: resolvedRootDir,
+        hostPlatform,
         runCommand,
       })
       : createSkippedCheck(
@@ -251,8 +253,8 @@ function checkNodeSpawnReady({ rootDir, runCommand }) {
   });
 }
 
-function checkWindowsInstallerServiceReady({ rootDir, runCommand }) {
-  if (process.platform !== 'win32') {
+function checkWindowsInstallerServiceReady({ rootDir, hostPlatform, runCommand }) {
+  if (hostPlatform !== 'win32') {
     return createSkippedCheck(
       'windowsInstallerServiceReady',
       'Windows Installer Service check is skipped on non-Windows hosts.',
@@ -342,7 +344,7 @@ function normalizeReleaseTag(releaseTag) {
   }
   const normalized = releaseTag.trim();
   if (!/^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u.test(normalized)) {
-    throw new Error(`AutoCut release environment check requires a semver tag like v0.1.3, got ${normalized}.`);
+    throw new Error(`AutoCut release environment check requires a semver tag like v0.1.4, got ${normalized}.`);
   }
   return normalized;
 }

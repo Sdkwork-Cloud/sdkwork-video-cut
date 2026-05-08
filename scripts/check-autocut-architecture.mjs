@@ -1385,7 +1385,7 @@ for (const [relativePath, sourceText] of [
   );
 }
 assertRule(indexHtmlSource.includes('<title>SDKWork Video Cut</title>'), 'desktop index.html title matches the Tauri product name');
-assertRule(rootPackage.version === '0.1.3', 'AutoCut desktop application version matches the v0.1.3 release line');
+assertRule(rootPackage.version === '0.1.4', 'AutoCut desktop application version matches the v0.1.4 release line');
 assertRule(desktopPackage.scripts?.dev?.includes('--host 127.0.0.1'), 'desktop dev binds to loopback for desktop-local development');
 assertRule(desktopPackage.scripts?.dev?.includes('--port 3000'), 'desktop dev uses the standard AutoCut web port 3000');
 assertRule(desktopPackage.scripts?.dev?.includes('--strictPort'), 'desktop dev uses strictPort for deterministic desktop-local startup');
@@ -2325,9 +2325,10 @@ for (const marker of [
   'SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE',
   'CARGO_TARGET_DIR',
   'createAutoCutNativeSmokeCargoTargetDir',
-  'sdkwork-autocut-native-smoke-target-rust-',
-  'sdkwork-autocut-native-smoke-target-video-slice-',
-  'sdkwork-autocut-native-smoke-target-llm-secret-',
+  'sdkwork-autocut-native-smoke-target-',
+  'runAutoCutNativeReleaseSmokeCargoCommand',
+  'isRustCompilerCrash',
+  'STATUS_ACCESS_VIOLATION',
   'cargoTargetDirs',
   'videoSliceSmoke',
   'videoSliceSmokeReady',

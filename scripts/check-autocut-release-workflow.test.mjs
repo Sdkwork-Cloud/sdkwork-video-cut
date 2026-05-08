@@ -73,6 +73,16 @@ assert.match(
   /prepare:ffmpeg-sidecar -- --platform windows-x86_64 --source "\$sidecarSource\/ffmpeg\.exe" --accept-license/u,
   'workflow re-verifies the approved Windows FFmpeg LFS sidecar before native packaging',
 );
+assert.match(
+  workflow,
+  /\$PSNativeCommandUseErrorActionPreference = \$true[\s\S]*pnpm release:native-smoke -- --run-real-llm-secret-smoke/u,
+  'Windows release evidence step fails immediately when native smoke exits nonzero',
+);
+assert.match(
+  workflow,
+  /if \(-not \(Test-Path -LiteralPath "artifacts\/release\/autocut-release-evidence-windows-x86_64\.json"\)\)/u,
+  'workflow validates the expected Windows release evidence file before uploading assets',
+);
 assert.equal(
   workflow.includes('Copy-Item -LiteralPath packages/sdkwork-autocut-desktop/src-tauri/binaries/windows-x86_64/*'),
   false,
