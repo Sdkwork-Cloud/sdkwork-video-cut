@@ -1267,10 +1267,10 @@ const nativeHostClientCommandNames = Array.from(
   (match) => match[1],
 ).filter((command) => command.startsWith('autocut_'));
 const workspaceCatalogNames = new Set(
-  [...workspaceSource.matchAll(/^\s{2}['"]?([^:'"\s][^:'"]*?)['"]?:\s*[^\s]+/gmu)].map((match) => match[1].trim()),
+  [...workspaceSource.matchAll(/^ {2}['"]?([^:'"\s][^:'"]*?)['"]?:\s*[^\s]+/gmu)].map((match) => match[1].trim()),
 );
 const workspaceCatalogVersions = Object.fromEntries(
-  [...workspaceSource.matchAll(/^\s{2}['"]?([^:'"\s][^:'"]*?)['"]?:\s*([^\s]+)/gmu)].map((match) => [
+  [...workspaceSource.matchAll(/^ {2}['"]?([^:'"\s][^:'"]*?)['"]?:\s*([^\s]+)/gmu)].map((match) => [
     match[1].trim(),
     match[2].trim(),
   ]),

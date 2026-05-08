@@ -31,6 +31,7 @@ const evidence = createAutoCutNativeReleaseSmokeEvidence({
   rootDir: root,
   generatedAt: '2026-05-05T00:00:00.000Z',
   skipRustSmoke: false,
+  hostPlatform: 'win32',
   runCommand(command, args, options) {
     runCommandCalls.push({ command, args, cwd: options.cwd, env: options.env });
     if (args.some((arg) => arg.includes('video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir'))) {
@@ -150,6 +151,7 @@ const realLlmSecretSmokeCalls = [];
 const realLlmSecretSmokeEvidence = createAutoCutNativeReleaseSmokeEvidence({
   rootDir: root,
   generatedAt: '2026-05-05T00:00:00.000Z',
+  hostPlatform: 'win32',
   runRealLlmSecretSmoke: true,
   runCommand(command, args, options) {
     realLlmSecretSmokeCalls.push({ command, args, cwd: options.cwd, env: options.env });
