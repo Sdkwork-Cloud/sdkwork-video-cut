@@ -36,7 +36,7 @@ function writeManifest(root) {
     release: {
       notes: [
         {
-          version: '0.1.2',
+          version: '0.1.3',
           current: true,
           metadata: {
             previewRelease: true,
@@ -146,19 +146,19 @@ function installersForPlatform(platform) {
   }[platform];
   if (platform === 'windows-x86_64') {
     return [
-      { kind: 'msi', path: 'release/SDKWork.Video.Cut_0.1.2_x64_en-US.msi', byteSize: 10, sha256: sha256[0] },
-      { kind: 'nsis', path: 'release/SDKWork.Video.Cut_0.1.2_x64-setup.exe', byteSize: 11, sha256: sha256[1] },
+      { kind: 'msi', path: 'release/SDKWork.Video.Cut_0.1.3_x64_en-US.msi', byteSize: 10, sha256: sha256[0] },
+      { kind: 'nsis', path: 'release/SDKWork.Video.Cut_0.1.3_x64-setup.exe', byteSize: 11, sha256: sha256[1] },
     ];
   }
   if (platform === 'linux-x86_64') {
     return [
-      { kind: 'deb', path: 'release/SDKWork.Video.Cut_0.1.2_amd64.deb', byteSize: 12, sha256: sha256[0] },
-      { kind: 'appimage', path: 'release/SDKWork.Video.Cut_0.1.2_amd64.AppImage', byteSize: 13, sha256: sha256[1] },
+      { kind: 'deb', path: 'release/SDKWork.Video.Cut_0.1.3_amd64.deb', byteSize: 12, sha256: sha256[0] },
+      { kind: 'appimage', path: 'release/SDKWork.Video.Cut_0.1.3_amd64.AppImage', byteSize: 13, sha256: sha256[1] },
     ];
   }
   return [
-    { kind: 'dmg', path: `release/SDKWork.Video.Cut_0.1.2_${platform}.dmg`, byteSize: 14, sha256: sha256[0] },
-    { kind: 'app', path: `release/SDKWork.Video.Cut_0.1.2_${platform}.app.tar.gz`, byteSize: 15, sha256: sha256[1] },
+    { kind: 'dmg', path: `release/SDKWork.Video.Cut_0.1.3_${platform}.dmg`, byteSize: 14, sha256: sha256[0] },
+    { kind: 'app', path: `release/SDKWork.Video.Cut_0.1.3_${platform}.app.tar.gz`, byteSize: 15, sha256: sha256[1] },
   ];
 }
 
@@ -174,14 +174,14 @@ function writeSbomEvidence(root, overrides = {}) {
     packageId,
     format,
     path: `artifacts/release/sbom/${fileName}`,
-    url: `https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.2/${fileName}`,
+    url: `https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.3/${fileName}`,
     byteSize: 100,
     sha256,
   }));
   writeJson(path.join(root, 'artifacts', 'release', 'autocut-sbom-evidence.json'), {
     schemaVersion: '2026-05-08.autocut-sbom-evidence.v1',
     generatedAt: '2026-05-08T00:00:00.000Z',
-    releaseTag: 'v0.1.2',
+    releaseTag: 'v0.1.3',
     readiness: {
       sbomReady: true,
       ...overrides.readiness,
@@ -200,7 +200,7 @@ function writeSbomEvidence(root, overrides = {}) {
 function readyEnvironmentReport() {
   return {
     schemaVersion: '2026-05-08.autocut-release-environment.v1',
-    releaseTag: 'v0.1.2',
+    releaseTag: 'v0.1.3',
     repository: 'Sdkwork-Cloud/sdkwork-video-cut',
     ready: true,
     checks: {},
@@ -220,13 +220,13 @@ writeSbomEvidence(readyRoot);
 
 const readyReport = createAutoCutReleaseEvidenceStatusReport({
   rootDir: readyRoot,
-  releaseTag: 'v0.1.2',
+  releaseTag: 'v0.1.3',
   releaseEnvironmentReport: readyEnvironmentReport(),
   generatedAt: '2026-05-08T00:00:00.000Z',
 });
 
 assert.equal(readyReport.schemaVersion, '2026-05-08.autocut-release-evidence-status.v1');
-assert.equal(readyReport.releaseTag, 'v0.1.2');
+assert.equal(readyReport.releaseTag, 'v0.1.3');
 assert.equal(readyReport.releaseEvidenceStatusReady, true);
 assert.equal(readyReport.summary.readyDomainCount, 7);
 assert.equal(readyReport.summary.domainCount, 7);
@@ -245,7 +245,7 @@ assert.deepEqual(
 );
 assert.equal(
   formatAutoCutReleaseEvidenceStatusMessage(readyReport),
-  'ok - autocut release evidence status domains=7/7 blockers=0 releaseTag=v0.1.2',
+  'ok - autocut release evidence status domains=7/7 blockers=0 releaseTag=v0.1.3',
 );
 
 const blockedRoot = tempRoot('autocut-release-evidence-status-blocked');
@@ -273,7 +273,7 @@ writeSbomEvidence(blockedRoot, {
 
 const blockedReport = createAutoCutReleaseEvidenceStatusReport({
   rootDir: blockedRoot,
-  releaseTag: 'v0.1.2',
+  releaseTag: 'v0.1.3',
   releaseEnvironmentReport: {
     ...readyEnvironmentReport(),
     ready: false,
@@ -333,7 +333,7 @@ assert.ok(
   blockedReport.nextActions.some(
     (action) =>
       action.domain === 'release-environment' &&
-      action.command.includes('pnpm release:environment -- --release-tag v0.1.2 --json'),
+      action.command.includes('pnpm release:environment -- --release-tag v0.1.3 --json'),
   ),
 );
 assert.ok(
@@ -345,7 +345,7 @@ assert.ok(
 );
 assert.equal(
   formatAutoCutReleaseEvidenceStatusMessage(blockedReport),
-  `blocked - autocut release evidence status domains=1/7 blockers=${blockedReport.summary.blockerCount} releaseTag=v0.1.2`,
+  `blocked - autocut release evidence status domains=1/7 blockers=${blockedReport.summary.blockerCount} releaseTag=v0.1.3`,
 );
 
 console.log('ok - autocut release evidence status contract');

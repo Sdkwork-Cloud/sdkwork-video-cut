@@ -74,6 +74,11 @@ assert.match(
   'workflow re-verifies the approved Windows FFmpeg LFS sidecar before native packaging',
 );
 assert.equal(
+  workflow.includes('Copy-Item -LiteralPath packages/sdkwork-autocut-desktop/src-tauri/binaries/windows-x86_64/*'),
+  false,
+  'workflow does not use -LiteralPath with a wildcard when staging Windows sidecars',
+);
+assert.equal(
   workflow.includes('prepare:speech-sidecar -- --platform windows_x86_64'),
   false,
   'workflow never uses misspelled Windows platform spelling for speech sidecars',
