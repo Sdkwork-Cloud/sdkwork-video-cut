@@ -27,6 +27,10 @@ function assertIncludes(source, marker, message) {
   assertRule(source.includes(marker), message);
 }
 
+function normalizeLineEndings(source) {
+  return source.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+}
+
 function assertMatches(source, pattern, message) {
   assertRule(pattern.test(source), message);
 }
@@ -1146,6 +1150,8 @@ const settingsZhMessages = settingsZhMessagesStart >= 0 && settingsEnMessagesSta
 const settingsEnMessages = settingsEnMessagesStart >= 0
   ? i18nResources.slice(settingsEnMessagesStart)
   : '';
+const normalizedSettingsZhMessages = normalizeLineEndings(settingsZhMessages);
+const normalizedSettingsEnMessages = normalizeLineEndings(settingsEnMessages);
 assertRule(exists(processingSourceServicePath), '@sdkwork/autocut-services owns processing-source.service.ts');
 if (exists(processingSourceServicePath)) {
   const processingSourceService = read(processingSourceServicePath);
@@ -1657,11 +1663,11 @@ assertRule(
   !/[\u00c0-\u00ff]\u0080?|�/u.test(i18nResources),
   'AutoCut i18n resources do not contain mojibake or replacement characters',
 );
-assertIncludes(settingsZhMessages, "setupChecklist: '本地配置清单'", 'zh-CN i18n resources localize the local STT setup checklist in Chinese');
-assertIncludes(settingsZhMessages, "setupStatus: {\n      label: '本地运行时'", 'zh-CN i18n resources localize local STT setup status in Chinese');
-assertIncludes(settingsZhMessages, "modelCatalog: '本地模型下载'", 'zh-CN i18n resources localize the local STT model catalog in Chinese');
-assertRule(!settingsZhMessages.includes("setupChecklist: 'Local setup checklist'"), 'zh-CN settings resources do not fall back to English local STT setup copy');
-assertIncludes(settingsEnMessages, "setupChecklist: 'Local setup checklist'", 'en-US i18n resources localize the local STT setup checklist in English');
+assertIncludes(normalizedSettingsZhMessages, "setupChecklist: '本地配置清单'", 'zh-CN i18n resources localize the local STT setup checklist in Chinese');
+assertIncludes(normalizedSettingsZhMessages, "setupStatus: {\n      label: '本地运行时'", 'zh-CN i18n resources localize local STT setup status in Chinese');
+assertIncludes(normalizedSettingsZhMessages, "modelCatalog: '本地模型下载'", 'zh-CN i18n resources localize the local STT model catalog in Chinese');
+assertRule(!normalizedSettingsZhMessages.includes("setupChecklist: 'Local setup checklist'"), 'zh-CN settings resources do not fall back to English local STT setup copy');
+assertIncludes(normalizedSettingsEnMessages, "setupChecklist: 'Local setup checklist'", 'en-US i18n resources localize the local STT setup checklist in English');
 assertIncludes(typesSource, 'AUTOCUT_SPEECH_TRANSCRIPTION_LANGUAGE_OPTIONS', 'AutoCut types centralize supported speech transcription language options');
 assertIncludes(typesSource, 'AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS', 'AutoCut types centralize supported local speech model file extensions');
 const workflowPreferencesService = read('packages/sdkwork-autocut-services/src/service/workflow-preferences.service.ts');

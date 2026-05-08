@@ -7,12 +7,14 @@ directory. If a previous version was not successfully released, its change log
 must be folded into the next successful release instead of leaving orphaned
 release notes.
 
-## v0.1.1 - 2026-05-09
+## v0.1.2 - 2026-05-09
 
 Multiplatform unsigned preview release hardening for Phase 1, with Phase 2
 commercial release standards documented and enforced as blockers. This release
 also folds in the unreleased smart slicing, speech-to-text, subtitle, recovery,
-and release-governance work completed after the `v0.1.0` tag.
+and release-governance work completed after the `v0.1.0` tag, plus the failed
+`v0.1.1` multiplatform release attempt that created a GitHub Release without
+assets.
 
 ### Release Scope
 
@@ -26,15 +28,16 @@ and release-governance work completed after the `v0.1.0` tag.
   Linux and macOS use the standardized CI sidecar preparation script to fetch
   or build the approved platform-native FFmpeg and Whisper CLI tools before
   Tauri packaging.
-- Keeps `v0.1.0` as the existing Windows unsigned preview and uses `v0.1.1` for
+- Keeps `v0.1.0` as the existing Windows unsigned preview and uses `v0.1.2` for
   the first four-platform preview release line.
 - Updates the root workspace, every AutoCut package manifest, the Tauri app
-  version, and the Rust desktop crate version to `0.1.1` so Git tags,
+  version, and the Rust desktop crate version to `0.1.2` so Git tags,
   installer metadata, application metadata, and release notes all describe the
   same version.
-- Includes all post-`v0.1.0` fixes because `v0.1.1` has not yet been
-  successfully tagged and published from this repository. No orphaned
-  intermediate release notes are left outside this release entry.
+- Includes all post-`v0.1.0` fixes and the failed `v0.1.1` release attempt.
+  `v0.1.1` was tagged and a GitHub Release was created, but the multiplatform
+  workflow failed before uploading release assets. No orphaned intermediate
+  release notes are left outside this release entry.
 
 ### Post-Preview Product Hardening Folded Into This Release
 
@@ -169,7 +172,7 @@ and release-governance work completed after the `v0.1.0` tag.
 - Keeps local AutoCut package dependencies as `workspace:*` for development.
 - Keeps release distribution through the GitHub repository and GitHub Release
   assets instead of publishing the internal AutoCut packages to npm central.
-- Updates `sdkwork.app.config.json` to the `v0.1.1` release line and points the
+- Updates `sdkwork.app.config.json` to the `v0.1.2` release line and points the
   desktop package matrix at the GitHub Release asset names for Windows MSI/NSIS,
   Linux DEB/AppImage, and macOS Intel/Apple Silicon DMG packages.
 - Keeps all install packages disabled in the app manifest until real GitHub
@@ -181,6 +184,13 @@ and release-governance work completed after the `v0.1.0` tag.
 - Confirms this repository does not declare direct source dependencies on
   `sdkwork-core`, `sdkwork-ui`, `sdkwork-appbase`, or `sdkwork-im-sdk` at this
   release point.
+- Fixes release workflow test isolation so CI jobs with
+  `SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE=true` do not accidentally force
+  unrelated release-smoke contract fixtures through the real Windows credential
+  store path.
+- Makes the local STT i18n governance check line-ending tolerant so Windows
+  checkout newline conversion cannot fail an otherwise valid Chinese resource
+  localization check.
 - Centralizes release installer discovery by platform so release evidence and
   signing scripts derive installer paths from the current application version
   instead of hard-coded historical filenames.
@@ -301,8 +311,8 @@ before the GitHub workflow is used:
 - `pnpm test`
 
 The GitHub workflow must then complete all native build jobs and the aggregate
-`pnpm release:multiplatform-ready` and `pnpm release:evidence-status -- --release-tag v0.1.1 --allow-blocked`
-jobs before `v0.1.1` assets are considered a complete multiplatform unsigned
+`pnpm release:multiplatform-ready` and `pnpm release:evidence-status -- --release-tag v0.1.2 --allow-blocked`
+jobs before `v0.1.2` assets are considered a complete multiplatform unsigned
 preview release.
 
 ## v0.1.0 - 2026-05-05

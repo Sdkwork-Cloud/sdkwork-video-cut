@@ -114,7 +114,7 @@
       }
     ],
     "metadata": {
-      "assetVersion": "0.1.1",
+      "assetVersion": "0.1.2",
       "defaultLocale": "en-US"
     }
   },
@@ -173,7 +173,7 @@
           "sourceType": "BINARY_URL",
           "packageFormat": "MSI",
           "platform": "DESKTOP_WINDOWS",
-          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.1/SDKWork%20Video%20Cut_0.1.1_x64_en-US.msi",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.2/SDKWork%20Video%20Cut_0.1.2_x64_en-US.msi",
           "enabled": false,
           "metadata": {
             "releaseAsset": true,
@@ -187,7 +187,7 @@
           "sourceType": "BINARY_URL",
           "packageFormat": "EXE",
           "platform": "DESKTOP_WINDOWS",
-          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.1/SDKWork%20Video%20Cut_0.1.1_x64-setup.exe",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.2/SDKWork%20Video%20Cut_0.1.2_x64-setup.exe",
           "enabled": false,
           "metadata": {
             "releaseAsset": true,
@@ -201,7 +201,7 @@
           "sourceType": "BINARY_URL",
           "packageFormat": "DEB",
           "platform": "DESKTOP_LINUX",
-          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.1/SDKWork%20Video%20Cut_0.1.1_amd64.deb",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.2/SDKWork%20Video%20Cut_0.1.2_amd64.deb",
           "enabled": false,
           "metadata": {
             "releaseAsset": true,
@@ -218,7 +218,7 @@
           "sourceType": "BINARY_URL",
           "packageFormat": "APPIMAGE",
           "platform": "DESKTOP_LINUX",
-          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.1/SDKWork%20Video%20Cut_0.1.1_amd64.AppImage",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.2/SDKWork%20Video%20Cut_0.1.2_amd64.AppImage",
           "enabled": false,
           "metadata": {
             "releaseAsset": true,
@@ -235,7 +235,7 @@
           "sourceType": "BINARY_URL",
           "packageFormat": "DMG",
           "platform": "DESKTOP_MACOS",
-          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.1/SDKWork%20Video%20Cut_0.1.1_x64.dmg",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.2/SDKWork%20Video%20Cut_0.1.2_x64.dmg",
           "enabled": false,
           "metadata": {
             "releaseAsset": true,
@@ -249,7 +249,7 @@
           "sourceType": "BINARY_URL",
           "packageFormat": "DMG",
           "platform": "DESKTOP_MACOS",
-          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.1/SDKWork%20Video%20Cut_0.1.1_aarch64.dmg",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.2/SDKWork%20Video%20Cut_0.1.2_aarch64.dmg",
           "enabled": false,
           "metadata": {
             "releaseAsset": true,
@@ -267,18 +267,18 @@
     }
   },
   "release": {
-    "currentVersion": "0.1.1",
+    "currentVersion": "0.1.2",
     "defaultChannel": "STABLE",
     "latest": {
-      "STABLE": "0.1.1"
+      "STABLE": "0.1.2"
     },
     "notes": [
       {
-        "version": "0.1.1",
+        "version": "0.1.2",
         "releaseChannel": "STABLE",
-        "title": "SDKWork Video Cut 0.1.1",
+        "title": "SDKWork Video Cut 0.1.2",
         "summary": "Multiplatform unsigned preview release metadata for the hardened intelligent slicing desktop application.",
-        "content": "Version 0.1.1 carries forward the unreleased 0.1.0 baseline and adds hardened smart slicing, mandatory offline speech-to-text evidence, transcript-backed recovery, subtitle opt-in behavior, multiplatform release workflow governance, and commercial release blockers for signing, checksums, and SBOM evidence.",
+        "content": "Version 0.1.2 carries forward the failed assetless v0.1.1 multiplatform attempt and adds hardened smart slicing, mandatory offline speech-to-text evidence, transcript-backed recovery, subtitle opt-in behavior, multiplatform release workflow governance, and commercial release blockers for signing, checksums, and SBOM evidence.",
         "highlights": [
           "Smart slicing requires speech-to-text evidence for every generated clip",
           "Recovered native slice artifacts without transcript evidence fail closed",
@@ -297,7 +297,7 @@
         "publishedAt": "2026-05-08T00:00:00Z",
         "current": true,
         "forceUpdate": false,
-        "minSupportedVersion": "0.1.1",
+        "minSupportedVersion": "0.1.2",
         "metadata": {
           "previewRelease": true,
           "commercialActivationRequired": [

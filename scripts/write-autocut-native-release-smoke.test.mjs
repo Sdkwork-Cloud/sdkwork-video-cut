@@ -32,6 +32,7 @@ const evidence = createAutoCutNativeReleaseSmokeEvidence({
   generatedAt: '2026-05-05T00:00:00.000Z',
   skipRustSmoke: false,
   hostPlatform: 'win32',
+  runRealLlmSecretSmoke: false,
   runCommand(command, args, options) {
     runCommandCalls.push({ command, args, cwd: options.cwd, env: options.env });
     if (args.some((arg) => arg.includes('video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir'))) {
@@ -110,6 +111,7 @@ const skippedEvidence = createAutoCutNativeReleaseSmokeEvidence({
   rootDir: root,
   generatedAt: '2026-05-05T00:00:00.000Z',
   skipRustSmoke: true,
+  runRealLlmSecretSmoke: false,
 });
 assert.equal(skippedEvidence.readiness.nativeReleaseSmokeReady, false);
 assert.equal(skippedEvidence.rustSmoke.skipped, true);
@@ -121,6 +123,7 @@ const linuxEvidence = createAutoCutNativeReleaseSmokeEvidence({
   rootDir: root,
   generatedAt: '2026-05-05T00:00:00.000Z',
   hostPlatform: 'linux',
+  runRealLlmSecretSmoke: true,
   runCommand(command, args) {
     if (args.some((arg) => arg.includes('video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir'))) {
       return {
@@ -201,6 +204,7 @@ assert.throws(
     createAutoCutNativeReleaseSmokeEvidence({
       rootDir: root,
       generatedAt: '2026-05-05T00:00:00.000Z',
+      runRealLlmSecretSmoke: false,
       runCommand(command, args) {
         if (args.some((arg) => arg.includes('video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir'))) {
           return {
@@ -224,6 +228,7 @@ assert.throws(
     createAutoCutNativeReleaseSmokeEvidence({
       rootDir: tempRoot('autocut-native-release-smoke-missing'),
       skipRustSmoke: true,
+      runRealLlmSecretSmoke: false,
     }),
   /missing AutoCut native host Cargo manifest/u,
 );
@@ -234,6 +239,7 @@ const written = writeAutoCutNativeReleaseSmokeEvidence({
   generatedAt: '2026-05-05T00:00:00.000Z',
   outputPath,
   skipRustSmoke: true,
+  runRealLlmSecretSmoke: false,
 });
 const persisted = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
 

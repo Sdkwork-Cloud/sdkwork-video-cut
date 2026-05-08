@@ -218,10 +218,6 @@ function createRealLlmSecretStoreSmokeEvidence({
     };
   }
 
-  if (process.platform !== 'win32') {
-    throw new Error('AutoCut real LLM secret store smoke can only run on Windows.');
-  }
-
   const result = runCommand(command, args, {
     cwd: rootDir,
     env: {

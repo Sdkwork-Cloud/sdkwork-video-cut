@@ -29,7 +29,7 @@ const __filename = fileURLToPath(import.meta.url);
 const statusSchemaVersion = '2026-05-08.autocut-release-evidence-status.v1';
 const defaultEvidenceDirRelativePath = 'artifacts/release';
 const defaultSbomEvidenceRelativePath = 'artifacts/release/autocut-sbom-evidence.json';
-const defaultReleaseTag = 'v0.1.1';
+const defaultReleaseTag = 'v0.1.2';
 const defaultRepository = 'Sdkwork-Cloud/sdkwork-video-cut';
 
 export function createAutoCutReleaseEvidenceStatusReport({
@@ -424,7 +424,7 @@ function normalizeReleaseTag(releaseTag) {
     throw new Error('AutoCut release evidence status requires a release tag.');
   }
   if (!/^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u.test(normalized)) {
-    throw new Error(`AutoCut release evidence status requires a semver tag like v0.1.1, got ${normalized}.`);
+    throw new Error(`AutoCut release evidence status requires a semver tag like v0.1.2, got ${normalized}.`);
   }
   return normalized;
 }

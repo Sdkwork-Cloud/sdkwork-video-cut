@@ -9,7 +9,7 @@ import {
 
 const healthyReport = createAutoCutReleaseEnvironmentReport({
   rootDir: 'D:/repo',
-  releaseTag: 'v0.1.1',
+  releaseTag: 'v0.1.2',
   runCommand(command, args) {
     if (command === 'git' && args.join(' ') === 'status --porcelain=v1') {
       return { status: 0, stdout: '', stderr: '' };
@@ -21,13 +21,13 @@ const healthyReport = createAutoCutReleaseEnvironmentReport({
         stderr: '',
       };
     }
-    if (command === 'git' && args.join(' ') === 'ls-remote --tags origin v0.1.1') {
+    if (command === 'git' && args.join(' ') === 'ls-remote --tags origin v0.1.2') {
       return { status: 0, stdout: '', stderr: '' };
     }
     if (command === 'gh' && args.join(' ') === 'auth status') {
       return { status: 0, stdout: 'Logged in to github.com account Sdkwork-Cloud', stderr: '' };
     }
-    if (command === 'gh' && args.join(' ') === 'release view v0.1.1 --repo Sdkwork-Cloud/sdkwork-video-cut') {
+    if (command === 'gh' && args.join(' ') === 'release view v0.1.2 --repo Sdkwork-Cloud/sdkwork-video-cut') {
       return { status: 1, stdout: '', stderr: 'release not found' };
     }
     if (command === 'node') {
@@ -52,12 +52,12 @@ assert.equal(healthyReport.checks.nodeSpawnReady.ready, true);
 assert.equal(healthyReport.checks.windowsInstallerServiceReady.ready, true);
 assert.equal(
   formatAutoCutReleaseEnvironmentMessage(healthyReport),
-  'ok - autocut release environment releaseTag=v0.1.1 checks=6 blockers=0',
+  'ok - autocut release environment releaseTag=v0.1.2 checks=6 blockers=0',
 );
 
 const blockedReport = createAutoCutReleaseEnvironmentReport({
   rootDir: 'D:/repo',
-  releaseTag: 'v0.1.1',
+  releaseTag: 'v0.1.2',
   runCommand(command, args) {
     if (command === 'git' && args.join(' ') === 'status --porcelain=v1') {
       return { status: 0, stdout: ' M package.json\n', stderr: '' };
@@ -69,7 +69,7 @@ const blockedReport = createAutoCutReleaseEnvironmentReport({
         stderr: "ssh.exe: *** fatal error - couldn't create signal pipe, Win32 error 5",
       };
     }
-    if (command === 'git' && args.join(' ') === 'ls-remote --tags origin v0.1.1') {
+    if (command === 'git' && args.join(' ') === 'ls-remote --tags origin v0.1.2') {
       return {
         status: 1,
         stdout: '',
@@ -83,7 +83,7 @@ const blockedReport = createAutoCutReleaseEnvironmentReport({
         stderr: 'The token in default is invalid.',
       };
     }
-    if (command === 'gh' && args.join(' ') === 'release view v0.1.1 --repo Sdkwork-Cloud/sdkwork-video-cut') {
+    if (command === 'gh' && args.join(' ') === 'release view v0.1.2 --repo Sdkwork-Cloud/sdkwork-video-cut') {
       return {
         status: 1,
         stdout: '',

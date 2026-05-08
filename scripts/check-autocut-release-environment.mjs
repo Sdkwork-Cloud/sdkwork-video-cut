@@ -14,7 +14,7 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const defaultRepository = 'Sdkwork-Cloud/sdkwork-video-cut';
-const defaultReleaseTag = 'v0.1.1';
+const defaultReleaseTag = 'v0.1.2';
 
 export function createAutoCutReleaseEnvironmentReport({
   rootDir = process.cwd(),
@@ -342,7 +342,7 @@ function normalizeReleaseTag(releaseTag) {
   }
   const normalized = releaseTag.trim();
   if (!/^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u.test(normalized)) {
-    throw new Error(`AutoCut release environment check requires a semver tag like v0.1.1, got ${normalized}.`);
+    throw new Error(`AutoCut release environment check requires a semver tag like v0.1.2, got ${normalized}.`);
   }
   return normalized;
 }

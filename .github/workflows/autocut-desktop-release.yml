@@ -6,7 +6,7 @@ on:
       release_tag:
         description: GitHub Release tag to upload assets to
         required: true
-        default: v0.1.1
+        default: v0.1.2
       upload_assets:
         description: Upload built assets to the GitHub Release
         required: true

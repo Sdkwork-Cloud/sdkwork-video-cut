@@ -1385,7 +1385,7 @@ for (const [relativePath, sourceText] of [
   );
 }
 assertRule(indexHtmlSource.includes('<title>SDKWork Video Cut</title>'), 'desktop index.html title matches the Tauri product name');
-assertRule(rootPackage.version === '0.1.1', 'AutoCut desktop application version matches the v0.1.1 release line');
+assertRule(rootPackage.version === '0.1.2', 'AutoCut desktop application version matches the v0.1.2 release line');
 assertRule(desktopPackage.scripts?.dev?.includes('--host 127.0.0.1'), 'desktop dev binds to loopback for desktop-local development');
 assertRule(desktopPackage.scripts?.dev?.includes('--port 3000'), 'desktop dev uses the standard AutoCut web port 3000');
 assertRule(desktopPackage.scripts?.dev?.includes('--strictPort'), 'desktop dev uses strictPort for deterministic desktop-local startup');
