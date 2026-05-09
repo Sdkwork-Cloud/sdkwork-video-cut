@@ -175,6 +175,7 @@ export interface AutoCutVideoSliceRequest {
   outputFormat: 'mp4';
   outputRootDir?: string;
   renderProfile?: AutoCutVideoSliceRenderProfile;
+  noiseReduction?: boolean;
   subtitleFormat?: 'srt';
   subtitleMode?: 'none' | 'srt' | 'burned' | 'both';
   subtitleStyleId?: string;

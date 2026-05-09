@@ -432,6 +432,65 @@ assertRule(
   shortPhraseDuplicateCandidates.some((candidate) => candidate.risks?.includes('transcript-repeat-filtered')),
   'transcript repeat filter records filtered short one-sentence paraphrases for review',
 );
+const semanticDuplicateCandidates = buildTranscriptSliceCandidates(
+  {
+    ...baseParams,
+    minDuration: 5,
+    maxDuration: 25,
+    targetSliceCount: 3,
+    sliceCountMode: 'qualityFirst',
+    enableRepeatFilter: true,
+    continuityLevel: 'strict',
+  },
+  [
+    { startMs: 0, endMs: 9_000, text: 'Refund fix improves retention.', speaker: 'Speaker 1' },
+    { startMs: 15_000, endMs: 24_000, text: 'Return repair boosts retention.', speaker: 'Speaker 1' },
+    { startMs: 34_000, endMs: 44_000, text: 'Pricing setup explains invoice pain.', speaker: 'Speaker 1' },
+  ],
+);
+assertEqual(
+  semanticDuplicateCandidates.filter((candidate) =>
+    candidate.transcriptText?.includes('retention') &&
+      /Refund fix|Return repair/u.test(candidate.transcriptText)
+  ).length,
+  1,
+  'transcript repeat filter removes semantically equivalent short windows even when the duplicate uses different words',
+);
+assertRule(
+  semanticDuplicateCandidates.some((candidate) => candidate.risks?.includes('transcript-repeat-filtered')),
+  'transcript repeat filter records semantically equivalent short-window removals for review',
+);
+const noiseInterruptedTranscriptCandidates = buildTranscriptSliceCandidates({
+  ...baseParams,
+  minDuration: 15,
+  maxDuration: 45,
+  continuityLevel: 'standard',
+  highlightEngine: 'keyword',
+  customKeywords: ['activation', 'payoff'],
+}, [
+  { startMs: 0, endMs: 9_000, text: 'Watch the onboarding setup and activation pain.', speaker: 'Speaker 1' },
+  { startMs: 9_100, endMs: 10_000, text: '[coughing]', speaker: 'Speaker 1' },
+  { startMs: 10_100, endMs: 11_000, text: '哈哈哈', speaker: 'Speaker 1' },
+  { startMs: 11_100, endMs: 12_000, text: '[Music]', speaker: 'Speaker 1' },
+  { startMs: 12_100, endMs: 25_000, text: 'So the complete payoff is the activation fix viewers can apply.', speaker: 'Speaker 1' },
+]);
+const noiseInterruptedTranscriptCandidate = noiseInterruptedTranscriptCandidates.find((candidate) =>
+  candidate.transcriptText?.includes('onboarding setup') &&
+    candidate.transcriptText.includes('activation fix')
+);
+assertRule(
+  Boolean(noiseInterruptedTranscriptCandidate),
+  'speech-to-text noise cleanup keeps one continuous setup-to-payoff window across removed cough, laugh, and music markers',
+);
+assertRule(
+  !/\b(?:coughing|music)\b|哈哈/u.test(noiseInterruptedTranscriptCandidate?.transcriptText ?? ''),
+  'speech-to-text noise cleanup removes cough, laugh, and music-only transcript fragments from planned clip text',
+);
+assertEqual(
+  noiseInterruptedTranscriptCandidate?.transcriptSegmentCount,
+  2,
+  'speech-to-text noise cleanup excludes noise-only fragments from transcript segment evidence',
+);
 
 const englishConnectorChainCandidates = buildTranscriptSliceCandidates(
   {

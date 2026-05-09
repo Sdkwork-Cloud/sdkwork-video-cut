@@ -55,6 +55,47 @@ const TRANSCRIPT_PLANNING_FILLER_ONLY_EDGE_PATTERN = new RegExp(
   String.raw`^${TRANSCRIPT_PLANNING_FILLER_SEPARATOR_CLASS}+|${TRANSCRIPT_PLANNING_FILLER_SEPARATOR_CLASS}+$`,
   'gu',
 );
+const TRANSCRIPT_PLANNING_NOISE_ONLY_PATTERN = new RegExp(
+  String.raw`^(?:[\[\(\uFF08\u3010]?\s*(?:cough(?:ing)?|coughs?|laugh(?:ing)?|laughter|applause|music|silence|noise|breath(?:ing)?|sigh|inaudible|background noise|bgm|\u54b3\u55fd|\u7b11\u58f0|\u5927\u7b11|\u638c\u58f0|\u97f3\u4e50|\u9759\u97f3|\u566a\u58f0|\u6742\u97f3|\u547c\u5438|\u5598\u6c14|\u53f9\u6c14|\u542c\u4e0d\u6e05|\u65e0\u58f0)\s*[\]\)\uFF09\u3011]?|(?:ha|haha|hahaha|[\u54c8\u5475\u563f]{2,})+)$`,
+  'iu',
+);
+const TRANSCRIPT_SEMANTIC_REPEAT_TOKEN_MAP: ReadonlyMap<string, string> = new Map([
+  ['returns', 'refund'],
+  ['return', 'refund'],
+  ['refunds', 'refund'],
+  ['repair', 'fix'],
+  ['repairs', 'fix'],
+  ['repaired', 'fix'],
+  ['fixes', 'fix'],
+  ['fixed', 'fix'],
+  ['solution', 'fix'],
+  ['solutions', 'fix'],
+  ['boost', 'improve'],
+  ['boosts', 'improve'],
+  ['boosted', 'improve'],
+  ['improv', 'improve'],
+  ['improves', 'improve'],
+  ['improved', 'improve'],
+  ['increase', 'improve'],
+  ['increas', 'improve'],
+  ['increases', 'improve'],
+  ['increased', 'improve'],
+  ['retains', 'retention'],
+  ['retained', 'retention'],
+  ['viewer', 'audience'],
+  ['viewers', 'audience'],
+  ['customer', 'user'],
+  ['customers', 'user'],
+  ['users', 'user'],
+  ['client', 'user'],
+  ['clients', 'user'],
+  ['price', 'pricing'],
+  ['prices', 'pricing'],
+  ['invoice', 'billing'],
+  ['invoices', 'billing'],
+  ['launches', 'launch'],
+  ['onboarding', 'activation'],
+]);
 
 export type SliceContentArcStage = typeof CONTENT_ARC_STAGES[number];
 export type SliceContentArcGrade = 'complete' | 'partial' | 'thin';
@@ -138,6 +179,10 @@ export interface TranscriptSliceCandidate extends NormalizedSlicePlanClip {
   score: number;
   anchorSegmentIndex: number;
 }
+
+type TranscriptPlanningSegment = AutoCutSpeechTranscriptionSegment & {
+  noiseBridgeBeforeMs?: number;
+};
 
 interface NormalizeSlicePlanOptions {
   fillPrecedingGaps?: boolean;
@@ -276,7 +321,7 @@ function sortSliceClipsByEndMs(clips: NormalizedSlicePlanClip[]) {
   );
 }
 
-function sortTranscriptSegmentsByStartMs(segments: AutoCutSpeechTranscriptionSegment[]) {
+function sortTranscriptSegmentsByStartMs<T extends AutoCutSpeechTranscriptionSegment>(segments: readonly T[]) {
   return segments.slice().sort((firstSegment, secondSegment) => firstSegment.startMs - secondSegment.startMs);
 }
 
@@ -958,13 +1003,21 @@ const TRANSCRIPT_REPEAT_TOKEN_STOPWORDS = new Set([
   'your',
 ]);
 
+function normalizeTranscriptRepeatTextSemantics(text: string) {
+  return text.replace(/\b[a-z][a-z0-9']{2,}\b/giu, (token) => {
+    const normalizedToken = normalizeTranscriptRepeatToken(token);
+    return normalizedToken || token.toLowerCase();
+  });
+}
+
 function normalizeTranscriptRepeatToken(token: string) {
   const lowerToken = token.toLowerCase().replace(/'s$/u, '');
   const normalizedToken = lowerToken
     .replace(/ies$/u, 'y')
     .replace(/(?:ing|ed|es|s)$/u, '');
-  return normalizedToken.length >= 3 && !TRANSCRIPT_REPEAT_TOKEN_STOPWORDS.has(normalizedToken)
-    ? normalizedToken
+  const semanticToken = TRANSCRIPT_SEMANTIC_REPEAT_TOKEN_MAP.get(normalizedToken) ?? normalizedToken;
+  return semanticToken.length >= 3 && !TRANSCRIPT_REPEAT_TOKEN_STOPWORDS.has(semanticToken)
+    ? semanticToken
     : '';
 }
 
@@ -1028,8 +1081,12 @@ function areTranscriptSliceClipsRepeated(
   firstClip: Partial<NormalizedSlicePlanClip>,
   secondClip: Partial<NormalizedSlicePlanClip>,
 ) {
-  const firstText = normalizeTranscriptTextForRepeatDetection(firstClip.transcriptText);
-  const secondText = normalizeTranscriptTextForRepeatDetection(secondClip.transcriptText);
+  const firstText = normalizeTranscriptRepeatTextSemantics(
+    normalizeTranscriptTextForRepeatDetection(firstClip.transcriptText),
+  );
+  const secondText = normalizeTranscriptRepeatTextSemantics(
+    normalizeTranscriptTextForRepeatDetection(secondClip.transcriptText),
+  );
   if (!firstText || !secondText) {
     return false;
   }
@@ -1646,6 +1703,14 @@ function isLowInformationTranscriptFillerSegment(text: string) {
   if (!normalizedText) {
     return true;
   }
+  const noiseCandidate = trimTranscriptPlanningEdgePunctuation(
+    normalizedText
+      .replace(/^[\[\(（【]\s*/u, '')
+      .replace(/\s*[\]\)）】]$/u, ''),
+  ).replace(/\s+/gu, ' ');
+  if (TRANSCRIPT_PLANNING_NOISE_ONLY_PATTERN.test(noiseCandidate)) {
+    return true;
+  }
 
   const withoutFiller = trimTranscriptPlanningEdgePunctuation(
     normalizedText.replace(TRANSCRIPT_PLANNING_FILLER_TOKEN_PATTERN, ' '),
@@ -1656,30 +1721,53 @@ function isLowInformationTranscriptFillerSegment(text: string) {
 
 function normalizeTranscriptSegments(
   transcriptSegments: readonly AutoCutSpeechTranscriptionSegment[],
-): AutoCutSpeechTranscriptionSegment[] {
-  return sortTranscriptSegmentsByStartMs(transcriptSegments
-    .map((segment) => ({
-      ...segment,
-      text: normalizeTranscriptSegmentTextForPlanning(segment.text),
-    }))
-    .filter((segment) => segment.text && !isLowInformationTranscriptFillerSegment(segment.text))
+): TranscriptPlanningSegment[] {
+  const normalizedSegments = sortTranscriptSegmentsByStartMs(transcriptSegments
     .filter((segment) => Number.isFinite(segment.startMs) && Number.isFinite(segment.endMs))
     .map((segment) => ({
       ...segment,
       startMs: Math.max(0, Math.round(segment.startMs)),
       endMs: Math.max(0, Math.round(segment.endMs)),
-      text: segment.text,
+      text: normalizeTranscriptSegmentTextForPlanning(segment.text),
     }))
     .filter((segment) => segment.endMs > segment.startMs));
+  const speechSegments: TranscriptPlanningSegment[] = [];
+  let pendingNoiseBridgeDurationMs = 0;
+  let pendingNoiseBridgeEndMs: number | undefined;
+
+  for (const segment of normalizedSegments) {
+    if (!segment.text || isLowInformationTranscriptFillerSegment(segment.text)) {
+      const bridgeStartMs = pendingNoiseBridgeEndMs === undefined
+        ? segment.startMs
+        : Math.max(segment.startMs, pendingNoiseBridgeEndMs);
+      pendingNoiseBridgeDurationMs += Math.max(0, segment.endMs - bridgeStartMs);
+      pendingNoiseBridgeEndMs = pendingNoiseBridgeEndMs === undefined
+        ? segment.endMs
+        : Math.max(pendingNoiseBridgeEndMs, segment.endMs);
+      continue;
+    }
+
+    const previousSpeechSegment = speechSegments.at(-1);
+    const noiseBridgeBeforeMs = previousSpeechSegment ? pendingNoiseBridgeDurationMs : 0;
+    speechSegments.push({
+      ...segment,
+      ...(noiseBridgeBeforeMs > 0 ? { noiseBridgeBeforeMs } : {}),
+    });
+    pendingNoiseBridgeDurationMs = 0;
+    pendingNoiseBridgeEndMs = undefined;
+  }
+
+  return speechSegments;
 }
 
 function canJoinTranscriptSegments(
-  current: AutoCutSpeechTranscriptionSegment,
-  next: AutoCutSpeechTranscriptionSegment,
+  current: TranscriptPlanningSegment,
+  next: TranscriptPlanningSegment,
   policy: VideoSlicePlanningPolicy,
 ) {
   const gapMs = next.startMs - current.endMs;
-  return gapMs >= -policy.continuityOverlapToleranceMs && gapMs <= policy.continuityJoinGapMs;
+  const effectiveGapMs = Math.max(0, gapMs - (next.noiseBridgeBeforeMs ?? 0));
+  return gapMs >= -policy.continuityOverlapToleranceMs && effectiveGapMs <= policy.continuityJoinGapMs;
 }
 
 function clampTranscriptBoundaryPaddingToMaxDuration(
@@ -2301,6 +2389,7 @@ const NON_PUBLISHABILITY_PENALTY_RISKS = new Set([
   'open-sentence-extended',
   'transcript-repeat-filtered',
   'transcript-overlap-repaired',
+  'transcript-noise-bridge-repaired',
   'sparse-transcript-speech',
   'short-transcript-window',
   'llm-timing-snapped-to-transcript',
@@ -2826,10 +2915,12 @@ function createTranscriptSliceMetadata(
   const hasConnectorRepair = risks.includes('connector-repaired');
   const hasTrailingExtension = risks.includes('trailing-connector-extended');
   const hasOpenSentenceExtension = risks.includes('open-sentence-extended');
+  const hasNoiseBridgeRepair = risks.includes('transcript-noise-bridge-repaired');
   const continuityPenalty =
     (hasConnectorRepair ? 0.05 : 0) +
     (hasTrailingExtension ? 0.03 : 0) +
-    (hasOpenSentenceExtension ? 0.04 : 0);
+    (hasOpenSentenceExtension ? 0.04 : 0) +
+    (hasNoiseBridgeRepair ? 0.02 : 0);
   const normalizedRisks = mergePlanRisks(risks);
   const storyShape = inferTranscriptStoryShape(text);
   const boundaryMetadata = createBoundaryQualityMetadata(text, risks);
@@ -2857,7 +2948,11 @@ function createTranscriptSliceMetadata(
   const speechContinuityGrade: NonNullable<NormalizedSlicePlanClip['speechContinuityGrade']> =
     transcriptSegmentCount <= 0 || transcriptCoverageScore < 0.5
       ? 'weak'
-      : hasConnectorRepair || hasTrailingExtension || hasOpenSentenceExtension || transcriptCoverageScore < 0.85
+      : hasConnectorRepair ||
+          hasTrailingExtension ||
+          hasOpenSentenceExtension ||
+          hasNoiseBridgeRepair ||
+          transcriptCoverageScore < 0.85
         ? 'repaired'
         : 'strong';
 
@@ -3132,6 +3227,9 @@ export function buildTranscriptSliceCandidates(
       ...(extendedTrailingConnector ? ['trailing-connector-extended'] : []),
       ...(extendedOpenSentence ? ['open-sentence-extended'] : []),
       ...(hasTranscriptSegmentOverlapRepair(candidateSegments, policy) ? ['transcript-overlap-repaired'] : []),
+      ...(candidateSegments.some((segment) => (segment.noiseBridgeBeforeMs ?? 0) > 0)
+        ? ['transcript-noise-bridge-repaired']
+        : []),
       ...(candidateSegments.length <= 1 || durationMs < minDurationMs ? ['sparse-transcript-speech'] : []),
       ...(durationMs < minDurationMs ? ['short-transcript-window'] : []),
     ];

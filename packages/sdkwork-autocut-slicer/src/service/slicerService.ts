@@ -1478,6 +1478,7 @@ export async function processVideoSlice(params: VideoSliceParams) {
             taskId: newTask.id,
             sourceAssetUuid: sourceMedia.assetUuid,
             clipCount: nativeClips.length,
+            noiseReduction: params.enableNoiseReduction === true,
             subtitleMode: subtitleRequest.subtitleMode,
             subtitleSegmentCount: subtitleRequest.subtitleSegments?.length ?? 0,
           });
@@ -1487,6 +1488,7 @@ export async function processVideoSlice(params: VideoSliceParams) {
             outputFormat: 'mp4',
             ...(outputRootDir ? { outputRootDir } : {}),
             ...(renderProfile ? { renderProfile } : {}),
+            noiseReduction: params.enableNoiseReduction === true,
             ...subtitleRequest,
           });
           reportVideoSliceStageDiagnostic('native render completed', {
@@ -1501,6 +1503,7 @@ export async function processVideoSlice(params: VideoSliceParams) {
         {
           sourceAssetUuid: sourceMedia.assetUuid,
           plannedClipCount: plannedClips.length,
+          noiseReduction: params.enableNoiseReduction === true,
           subtitleMode: subtitleRequest.subtitleMode,
         },
       );

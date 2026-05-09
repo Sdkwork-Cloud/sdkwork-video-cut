@@ -359,6 +359,8 @@ pub struct AutoCutVideoSliceRequest {
     pub output_format: String,
     pub output_root_dir: Option<String>,
     pub render_profile: Option<AutoCutVideoSliceRenderProfile>,
+    #[serde(default)]
+    pub noise_reduction: bool,
     pub subtitle_format: Option<String>,
     pub subtitle_mode: Option<String>,
     pub subtitle_style_id: Option<String>,
@@ -3821,6 +3823,8 @@ fn slice_autocut_video_from_asset_in_root_with_toolchain(
         !subtitle_segments.is_empty(),
     )?;
     let source_duration_ms = read_ffmpeg_media_duration_millis(toolchain, &input_path).ok();
+    let apply_audio_noise_reduction =
+        request.noise_reduction && ffmpeg_media_has_audio_stream(toolchain, &input_path);
     let task_uuid = autocut_uuid("ops-task")?;
     let task_output_dir = autocut_task_output_dir(&root, &task_uuid)?;
     let output_root_dir =
@@ -3830,6 +3834,7 @@ fn slice_autocut_video_from_asset_in_root_with_toolchain(
         json!({
             "outputFormat": output_format.clone(),
             "renderProfile": render_profile.clone(),
+            "noiseReduction": request.noise_reduction,
             "clips": clips,
             "requestedClips": clips,
             "subtitleFormat": subtitle_format,
@@ -3896,6 +3901,7 @@ fn slice_autocut_video_from_asset_in_root_with_toolchain(
         &clips,
         &output_format,
         render_profile.as_ref(),
+        apply_audio_noise_reduction,
         subtitle_format.as_deref(),
         subtitle_mode,
         &subtitle_segments,
@@ -5342,6 +5348,7 @@ fn run_ffmpeg_video_slices(
     clips: &[AutoCutVideoSliceClipRequest],
     output_format: &str,
     render_profile: Option<&AutoCutVideoSliceRenderProfile>,
+    apply_audio_noise_reduction: bool,
     subtitle_format: Option<&str>,
     subtitle_mode: AutoCutVideoSliceSubtitleMode,
     subtitle_segments: &[AutoCutSpeechTranscriptionSegment],
@@ -5377,6 +5384,7 @@ fn run_ffmpeg_video_slices(
             &output_path,
             clip,
             render_profile,
+            apply_audio_noise_reduction,
             burned_subtitle_path.as_deref(),
             index,
             total_clips,
@@ -5767,6 +5775,10 @@ fn append_ffmpeg_video_slice_encoder_args(
     command.args(["-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"]);
 }
 
+fn ffmpeg_video_slice_audio_noise_reduction_filter() -> &'static str {
+    "highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11"
+}
+
 fn video_slice_filter_chain_for_encoder_candidate(
     render_profile: Option<&AutoCutVideoSliceRenderProfile>,
     burned_subtitle_path: Option<&Path>,
@@ -5838,6 +5850,7 @@ fn build_ffmpeg_video_slice_command(
     output_path: &Path,
     clip: &AutoCutVideoSliceClipRequest,
     render_profile: Option<&AutoCutVideoSliceRenderProfile>,
+    apply_audio_noise_reduction: bool,
     burned_subtitle_path: Option<&Path>,
     candidate: &AutoCutVideoSliceEncoderCandidate,
 ) -> Command {
@@ -5859,6 +5872,9 @@ fn build_ffmpeg_video_slice_command(
     if let Some(filter_chain) = filter_chain {
         command.args(["-vf", filter_chain.as_str()]);
     }
+    if apply_audio_noise_reduction {
+        command.args(["-af", ffmpeg_video_slice_audio_noise_reduction_filter()]);
+    }
     append_ffmpeg_video_slice_encoder_args(&mut command, candidate);
     append_ffmpeg_progress_output_args(&mut command);
     command.arg(output_path);
@@ -5873,6 +5889,7 @@ fn run_ffmpeg_video_slice_with_encoder_fallback(
     output_path: &Path,
     clip: &AutoCutVideoSliceClipRequest,
     render_profile: Option<&AutoCutVideoSliceRenderProfile>,
+    apply_audio_noise_reduction: bool,
     burned_subtitle_path: Option<&Path>,
     clip_index: usize,
     total_clips: usize,
@@ -5910,6 +5927,7 @@ fn run_ffmpeg_video_slice_with_encoder_fallback(
             output_path,
             clip,
             render_profile,
+            apply_audio_noise_reduction,
             burned_subtitle_path,
             candidate,
         );
@@ -5959,6 +5977,7 @@ fn run_ffmpeg_video_slice(
     output_path: &Path,
     clip: &AutoCutVideoSliceClipRequest,
     render_profile: Option<&AutoCutVideoSliceRenderProfile>,
+    apply_audio_noise_reduction: bool,
     burned_subtitle_path: Option<&Path>,
     clip_index: usize,
     total_clips: usize,
@@ -5972,6 +5991,7 @@ fn run_ffmpeg_video_slice(
         output_path,
         clip,
         render_profile,
+        apply_audio_noise_reduction,
         burned_subtitle_path,
         clip_index,
         total_clips,
@@ -6990,6 +7010,18 @@ fn read_ffmpeg_media_duration_millis(
             input_path.display()
         )
     })
+}
+
+fn ffmpeg_media_has_audio_stream(toolchain: &AutoCutFfmpegToolchain, input_path: &Path) -> bool {
+    let Ok(output) = Command::new(&toolchain.executable)
+        .args(["-hide_banner", "-nostdin", "-i"])
+        .arg(input_path)
+        .output()
+    else {
+        return false;
+    };
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    stderr.lines().any(|line| line.contains("Stream #") && line.contains("Audio:"))
 }
 
 pub(crate) fn autocut_speech_transcription_toolchain_ready() -> bool {
@@ -8101,6 +8133,7 @@ fn read_video_slice_retry_request(
                 })
             })
             .transpose()?,
+        noise_reduction: retry_bool_field(task, "noiseReduction", false)?,
         subtitle_format: retry_optional_string_field(task, "subtitleFormat")?,
         subtitle_mode: retry_optional_string_field(task, "subtitleMode")?,
         subtitle_style_id: retry_optional_string_field(task, "subtitleStyleId")?,
@@ -9718,6 +9751,55 @@ mod tests {
                 .encoder_args
                 .windows(2)
                 .any(|args| args == ["-pix_fmt", "yuv420p"])
+        );
+    }
+
+    #[test]
+    fn video_slice_noise_reduction_adds_audio_filter_only_when_requested() {
+        let toolchain = test_system_ffmpeg_toolchain();
+        let clip = smart_slice_test_clip(0, 1_000, "Denoised");
+        let candidate = autocut_video_slice_cpu_encoder_candidate();
+        let output_path = Path::new("slice.mp4");
+        let input_path = Path::new("source.mp4");
+
+        let command = build_ffmpeg_video_slice_command(
+            &toolchain,
+            input_path,
+            output_path,
+            &clip,
+            None,
+            true,
+            None,
+            &candidate,
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert!(
+            args.windows(2).any(|items| {
+                items[0] == "-af" && items[1] == ffmpeg_video_slice_audio_noise_reduction_filter()
+            }),
+            "enabled smart-slice noise reduction must add the professional audio filter chain"
+        );
+
+        let command = build_ffmpeg_video_slice_command(
+            &toolchain,
+            input_path,
+            output_path,
+            &clip,
+            None,
+            false,
+            None,
+            &candidate,
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert!(
+            !args.iter().any(|arg| arg == "-af"),
+            "disabled smart-slice noise reduction must not alter audio"
         );
     }
 
@@ -12265,6 +12347,7 @@ mod tests {
                 output_format: "mp4".to_string(),
                 output_root_dir: None,
                 render_profile: None,
+                noise_reduction: false,
                 subtitle_format: None,
                 subtitle_mode: None,
                 subtitle_style_id: None,
@@ -12465,6 +12548,7 @@ mod tests {
                 output_format: "mp4".to_string(),
                 output_root_dir: None,
                 render_profile: None,
+                noise_reduction: true,
                 subtitle_format: None,
                 subtitle_mode: None,
                 subtitle_style_id: None,
@@ -12507,6 +12591,7 @@ mod tests {
                 output_format: "mp4".to_string(),
                 output_root_dir: None,
                 render_profile: None,
+                noise_reduction: false,
                 subtitle_format: Some("srt".to_string()),
                 subtitle_mode: None,
                 subtitle_style_id: Some("clean-default".to_string()),
@@ -12790,6 +12875,7 @@ mod tests {
                 output_format: "mp4".to_string(),
                 output_root_dir: None,
                 render_profile: None,
+                noise_reduction: false,
                 subtitle_format: Some("srt".to_string()),
                 subtitle_mode: Some("burned".to_string()),
                 subtitle_style_id: Some("clean-default".to_string()),
@@ -12858,6 +12944,7 @@ mod tests {
                 output_format: "mp4".to_string(),
                 output_root_dir: None,
                 render_profile: None,
+                noise_reduction: false,
                 subtitle_format: None,
                 subtitle_mode: None,
                 subtitle_style_id: None,
@@ -12921,6 +13008,7 @@ mod tests {
                 output_format: "mp4".to_string(),
                 output_root_dir: None,
                 render_profile: None,
+                noise_reduction: false,
                 subtitle_format: None,
                 subtitle_mode: None,
                 subtitle_style_id: None,
