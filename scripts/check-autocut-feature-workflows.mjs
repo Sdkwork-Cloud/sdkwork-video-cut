@@ -521,6 +521,16 @@ assertIncludes(
 );
 assertIncludes(
   slicerPage,
+  'speechModelDownloadCompleted',
+  'Slicer preserves completed local STT model downloads as a success state when the final availability check still needs attention',
+);
+assertIncludes(
+  slicerPage,
+  '模型已下载、校验并保存',
+  'Slicer explains completed local STT model download and verification in user-facing language',
+);
+assertIncludes(
+  slicerPage,
   '本机识别程序',
   'Slicer local STT setup dialog renders visible packaged speech recognition app status',
 );
@@ -1549,6 +1559,9 @@ assertIncludes(settingsPage, "listenAutoCutEvent('speechTranscriptionModelDownlo
 assertRule(!settingsPage.includes("listenAutoCutEvent('speechTranscriptionExecutableDownloadProgress'"), 'SettingsPage does not listen for executable download progress because whisper-cli is packaged as a sidecar');
 assertIncludes(settingsPage, 'speechSetupStatus', 'SettingsPage renders a productized local STT setup status object');
 assertIncludes(settingsPage, 'speechModelDownloadProgress', 'SettingsPage stores visible local STT model download progress state');
+assertIncludes(settingsPage, 'speechModelDownloadCompleted', 'SettingsPage separates completed local STT model downloads from the final availability check');
+assertIncludes(settingsPage, 'settings.speech.modelSavedNeedsCheckDescription', 'SettingsPage explains that a saved model can still need a final availability check');
+assertIncludes(settingsPage, 'createSettingsSpeechSetupFriendlyError', 'SettingsPage converts technical local STT setup failures into user-facing toast messages');
 assertIncludes(settingsPage, 'settings.speech.readinessTitle', 'SettingsPage renders a user-facing local STT readiness summary');
 assertIncludes(settingsPage, 'downloadedBytes', 'SettingsPage displays local STT model download byte progress');
 assertIncludes(settingsPage, 'totalBytes', 'SettingsPage displays local STT model download total byte progress when available');
@@ -1609,6 +1622,9 @@ assertIncludes(i18nResources, 'setupChecklist', 'i18n resources include the loca
 assertIncludes(i18nResources, 'initializeSpeech', 'i18n resources include the one-click local speech-to-text initialize action label');
 assertIncludes(i18nResources, 'setupStatus', 'i18n resources include local speech-to-text setup status labels');
 assertIncludes(i18nResources, 'downloadProgress', 'i18n resources include local speech-to-text model download progress labels');
+assertIncludes(i18nResources, 'modelDownloadCompleted', 'i18n resources include a friendly completed local STT model download label');
+assertIncludes(i18nResources, 'modelSavedNeedsCheckDescription', 'i18n resources explain completed model download separately from readiness checks');
+assertIncludes(i18nResources, 'speechSetupAvailabilityFailed', 'i18n resources include a user-facing local STT availability check failure toast');
 assertIncludes(i18nResources, 'diagnostics', 'i18n resources include the local speech-to-text diagnostics label');
 assertIncludes(settingsPage, "t('settings.speech.local.executableHelp')", 'SettingsPage explains the local speech executable path contract through i18n');
 assertIncludes(settingsPage, "t('settings.speech.local.modelHelp'", 'SettingsPage explains the local speech model path contract through i18n');

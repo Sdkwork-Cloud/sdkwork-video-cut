@@ -52,6 +52,7 @@ import {
 } from '@sdkwork/autocut-services';
 import {
   AUTOCUT_MODEL_VENDOR_PRESETS,
+  AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE,
   AUTOCUT_SPEECH_TRANSCRIPTION_LANGUAGE_OPTIONS,
   AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS,
   AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER_DEFINITIONS,
@@ -137,6 +138,46 @@ function formatAutoCutSpeechSetupPath(path: string | undefined) {
   const normalized = value.replace(/\\/gu, '/');
   const fileName = normalized.split('/').filter(Boolean).at(-1);
   return fileName || value;
+}
+
+function createSettingsSpeechSetupFriendlyError(
+  error: unknown,
+  translate: (key: string) => string,
+) {
+  const rawMessage = error instanceof Error ? error.message : String(error ?? '');
+  const message = rawMessage.toLowerCase();
+  if (
+    message.includes('checksum') ||
+    message.includes('integrity') ||
+    message.includes('sha-256')
+  ) {
+    return translate('settings.toast.speechModelIntegrityFailed');
+  }
+  if (
+    message.includes('incomplete') ||
+    message.includes('did not finish') ||
+    message.includes('download') ||
+    message.includes('network') ||
+    message.includes('http status')
+  ) {
+    return translate('settings.speech.modelDownloadFailedDescription');
+  }
+  if (
+    message.includes('final availability check') ||
+    message.includes('provider validation') ||
+    message.includes('probe') ||
+    message.includes('availability')
+  ) {
+    return translate('settings.toast.speechSetupAvailabilityFailed');
+  }
+  if (
+    message.includes('executable') ||
+    message.includes('whisper-cli') ||
+    message.includes('sidecar')
+  ) {
+    return translate('settings.toast.speechSetupNeedsRecognitionApp');
+  }
+  return translate('settings.toast.speechModelConfigureFailed');
 }
 
 function FieldLabel({ children }: { children: ReactNode }) {
@@ -461,8 +502,7 @@ export function SettingsPage() {
         result.nativeDownload ? 'success' : 'info',
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : t('settings.toast.speechModelConfigureFailed');
-      toast(message, 'error');
+      toast(createSettingsSpeechSetupFriendlyError(error, t), 'error');
     } finally {
       setIsConfiguringSpeechModel(false);
     }
@@ -478,8 +518,7 @@ export function SettingsPage() {
       setSpeechSetupStatus(result.status);
       toast(t('settings.toast.speechModelConfigured', { model: result.status.model.preset.label }), 'success');
     } catch (error) {
-      const message = error instanceof Error ? error.message : t('settings.toast.speechModelConfigureFailed');
-      toast(message, 'error');
+      toast(createSettingsSpeechSetupFriendlyError(error, t), 'error');
       void inspectAutoCutLocalSpeechTranscriptionSetup()
         .then(setSpeechSetupStatus)
         .catch(() => setSpeechSetupStatus(null));
@@ -608,12 +647,21 @@ export function SettingsPage() {
   const executableReady =
     activeSpeechTranscriptionProvider.kind !== 'local' ||
     speechSetupStatus?.executable.ready === true;
-  const modelReady =
-    activeSpeechTranscriptionProvider.kind !== 'local' ||
-    speechSetupStatus?.model.ready === true;
   const testReady = speechSetupStatus?.test.ready === true || settings.speechTranscription.lastProbeReady === true;
   const speechRuntimeReady =
     activeSpeechTranscriptionProvider.kind === 'local' ? testReady : settings.speechTranscription.configured;
+  const speechModelDownloadPhase = speechModelDownloadProgress?.phase;
+  const speechModelDownloadCompleted =
+    speechModelDownloadPhase === AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE.completed;
+  const speechModelDownloadFailed =
+    speechModelDownloadPhase === AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE.failed;
+  const speechModelDownloadActive =
+    speechModelDownloadPhase === AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE.started ||
+    speechModelDownloadPhase === AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE.downloading;
+  const modelReady =
+    activeSpeechTranscriptionProvider.kind !== 'local' ||
+    speechSetupStatus?.model.ready === true ||
+    speechModelDownloadCompleted;
   const readiness = (
     speechModelDownloadProgress &&
     !isAutoCutSpeechTranscriptionModelDownloadTerminalPhase(speechModelDownloadProgress.phase)
@@ -640,11 +688,17 @@ export function SettingsPage() {
     failed: 'settings.speech.failedDescription',
     checking: 'settings.speech.checkingDescription',
   } satisfies Record<AutoCutLocalSpeechTranscriptionSetupReadiness | 'checking', string>;
-  const speechReadinessDescription = t(speechReadinessDescriptionKey[readiness ?? 'checking']);
+  const speechReadinessDescription = speechModelDownloadCompleted && readiness !== AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready
+    ? t('settings.speech.modelSavedNeedsCheckDescription')
+    : speechModelDownloadFailed
+      ? t('settings.speech.modelDownloadFailedDescription')
+      : t(speechReadinessDescriptionKey[readiness ?? 'checking']);
   const downloadedBytes = speechModelDownloadProgress?.downloadedBytes ?? 0;
   const totalBytes = speechModelDownloadProgress?.totalBytes;
-  const speechDownloadProgressPercent = speechModelDownloadProgress?.progress ??
-    (totalBytes && totalBytes > 0 ? Math.round((downloadedBytes / totalBytes) * 100) : 0);
+  const speechDownloadProgressPercent = speechModelDownloadCompleted
+    ? 100
+    : speechModelDownloadProgress?.progress ??
+      (totalBytes && totalBytes > 0 ? Math.round((downloadedBytes / totalBytes) * 100) : 0);
   const speechExecutablePath = speechSetupStatus?.executable.path ||
     settings.speechTranscription.executablePath ||
     speechSetupStatus?.defaults.executablePath ||
@@ -657,6 +711,16 @@ export function SettingsPage() {
     t('settings.speech.setupStatus.executableMissing');
   const speechDisplayModelPath = formatAutoCutSpeechSetupPath(speechModelPath) ||
     t('settings.speech.setupStatus.modelMissing');
+  const speechDownloadProgressLabel = speechModelDownloadCompleted
+    ? t('settings.speech.modelDownloadCompleted')
+    : speechModelDownloadFailed
+      ? t('settings.speech.modelDownloadNeedsRetry')
+      : speechModelDownloadActive
+        ? t('settings.speech.modelDownloadActive')
+        : t('settings.speech.downloadProgress', {
+          downloaded: formatAutoCutByteCount(downloadedBytes),
+          total: totalBytes ? formatAutoCutByteCount(totalBytes) : t('settings.speech.setupStatus.unknownSize'),
+        });
   const speechSetupChecklist = [
     {
       id: 'executableReady',
@@ -948,18 +1012,26 @@ export function SettingsPage() {
                           {speechModelDownloadProgress ? (
                             <div className="space-y-2">
                               <div className="flex items-center justify-between gap-3 text-[11px] text-gray-500">
-                                <span>{t('settings.speech.downloadProgress', {
-                                  downloaded: formatAutoCutByteCount(downloadedBytes),
-                                  total: totalBytes ? formatAutoCutByteCount(totalBytes) : t('settings.speech.setupStatus.unknownSize'),
-                                })}</span>
+                                <span>{speechDownloadProgressLabel}</span>
                                 <span className="font-mono">{speechDownloadProgressPercent}%</span>
                               </div>
                               <div className="h-2 w-full overflow-hidden rounded-full border border-[#222] bg-[#050505]">
                                 <div
-                                  className="h-full min-w-[4px] rounded-full bg-blue-500"
+                                  className={`h-full min-w-[4px] rounded-full ${
+                                    speechModelDownloadFailed
+                                      ? 'bg-red-500'
+                                      : speechModelDownloadCompleted
+                                        ? 'bg-emerald-500'
+                                        : 'bg-blue-500'
+                                  }`}
                                   style={{ width: `${Math.max(4, Math.min(100, speechDownloadProgressPercent))}%` }}
                                 />
                               </div>
+                              {speechModelDownloadCompleted && readiness !== AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready ? (
+                                <p className="text-[11px] leading-relaxed text-gray-500">
+                                  {t('settings.speech.modelSavedNeedsCheckDescription')}
+                                </p>
+                              ) : null}
                             </div>
                           ) : null}
                         </div>

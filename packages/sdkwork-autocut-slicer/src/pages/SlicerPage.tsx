@@ -3,7 +3,7 @@ import React, { Suspense, useState, useEffect, useMemo, useRef, useImperativeHan
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowLeft, Play, Pause, Settings2, Scissors, CheckCircle2, MicOff, Waves, Video, RefreshCcw, XCircle, ChevronRight, Type, Download, AlertTriangle, ExternalLink, Loader2 } from "lucide-react";
 import { Button, useToast, TaskFailureState, createAutoCutTrustedLocalFile, resolveAutoCutTrustedSourcePath, type AutoCutTrustedFileSourceDescriptor } from "@sdkwork/autocut-commons";
-import { AUTOCUT_MODEL_VENDOR_PRESETS, AUTOCUT_SLICE_LLM_MODEL_OPTIONS, AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS, AUTOCUT_TASK_STATUS, AUTOCUT_TASK_TYPE, type AutoCutLocalSpeechTranscriptionSetupStatus, type AutoCutSpeechTranscriptionModelDownloadProgressEvent, type ModelVendor, type SliceMode, type SliceAlgorithm, type SliceHighlightEngine, type SliceLLM, type SliceTargetPlatform, type SliceTargetAspectRatio, type SliceVideoObjectFit, type SliceCountMode, type SliceContinuityLevel, type SliceSubtitleMode, type AppTask, type VideoSliceParams } from "@sdkwork/autocut-types";
+import { AUTOCUT_MODEL_VENDOR_PRESETS, AUTOCUT_SLICE_LLM_MODEL_OPTIONS, AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE, AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS, AUTOCUT_TASK_STATUS, AUTOCUT_TASK_TYPE, type AutoCutLocalSpeechTranscriptionSetupStatus, type AutoCutSpeechTranscriptionModelDownloadProgressEvent, type ModelVendor, type SliceMode, type SliceAlgorithm, type SliceHighlightEngine, type SliceLLM, type SliceTargetPlatform, type SliceTargetAspectRatio, type SliceVideoObjectFit, type SliceCountMode, type SliceContinuityLevel, type SliceSubtitleMode, type AppTask, type VideoSliceParams } from "@sdkwork/autocut-types";
 import { createAutoCutObjectUrl, formatAutoCutTimeOfDay, getAutoCutNativeHostClient, getAutoCutProcessingTaskErrorTaskId, getAutoCutWorkflowPreferences, getTasks, initializeAutoCutLocalSpeechTranscriptionSetup, inspectAutoCutLocalSpeechTranscriptionSetup, listenAutoCutEvent, reportAutoCutDiagnostic, resolveAutoCutLlmRuntimeConfig, revokeAutoCutObjectUrl, saveAutoCutVideoSlicePreferences, selectAutoCutTrustedLocalVideoFile, writeAutoCutClipboardText } from "@sdkwork/autocut-services";
 import type { WebGLPlayerRef, TextEffectStyle, TextEffectDragPayload } from "../components/WebGLPlayer";
 
@@ -287,6 +287,12 @@ function getSmartSliceSpeechSetupProgressLabel(progress: AutoCutSpeechTranscript
   if (!progress) {
     return '等待离线模型准备';
   }
+  if (progress.phase === AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE.completed) {
+    return '模型已下载、校验并保存';
+  }
+  if (progress.phase === AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE.skipped) {
+    return '请手动下载后在设置中选择模型文件';
+  }
   if (progress.errorMessage) {
     return createSmartSliceSpeechSetupFriendlyError(progress.errorMessage);
   }
@@ -299,8 +305,12 @@ function getSmartSliceSpeechSetupProgressLabel(progress: AutoCutSpeechTranscript
 function createSmartSliceSpeechSetupStatusText(
   status: AutoCutLocalSpeechTranscriptionSetupStatus | null,
   errorMessage: string,
+  modelDownloadCompleted = false,
 ) {
   if (errorMessage) {
+    if (modelDownloadCompleted) {
+      return '离线模型已完成下载和校验。还需要完成最后一次可用性检测，智能切片才能继续。';
+    }
     return createSmartSliceSpeechSetupFriendlyError(errorMessage);
   }
   if (!status) {
@@ -380,6 +390,25 @@ export function SlicerPage() {
   const [enableOverlayEditor, setEnableOverlayEditor] = useState(false);
   const webGlPlayerRef = playerRef as React.MutableRefObject<WebGLPlayerRef | null>;
   const shouldUseWebGlOverlayEditor = enableOverlayEditor && videoSrc;
+  const speechModelDownloadPhase = speechModelDownloadProgress?.phase;
+  const speechModelDownloadCompleted =
+    speechModelDownloadPhase === AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE.completed;
+  const speechModelDownloadFailed =
+    speechModelDownloadPhase === AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE.failed;
+  const speechModelDownloadActive =
+    speechModelDownloadPhase === AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE.started ||
+    speechModelDownloadPhase === AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE.downloading;
+  const speechModelProgressPercent = speechModelDownloadCompleted
+    ? 100
+    : Math.min(100, Math.max(0, speechModelDownloadProgress?.progress ?? 0));
+  const speechModelReadyForDisplay = speechSetupStatus?.model.ready === true || speechModelDownloadCompleted;
+  const speechModelDetailForDisplay = formatSmartSliceSpeechSetupPath(
+    speechModelDownloadProgress?.modelPath ||
+      speechSetupStatus?.model.path ||
+      speechSetupStatus?.defaults.modelPath,
+  ) || speechSetupStatus?.model.preset.label || '推荐模型';
+  const speechFinalCheckNeedsAttention =
+    Boolean(speechSetupErrorMessage) && speechModelDownloadCompleted;
 
   const TEXT_EFFECTS: TextEffectPreset[] = [
     {
@@ -1743,7 +1772,7 @@ export function SlicerPage() {
                 </div>
                 <div>
                   <h2 id="smart-slice-speech-setup-title" className="text-sm font-semibold text-gray-100">准备语音识别能力</h2>
-                  <p className="mt-1 text-xs leading-5 text-gray-400">{createSmartSliceSpeechSetupStatusText(speechSetupStatus, speechSetupErrorMessage)}</p>
+                  <p className="mt-1 text-xs leading-5 text-gray-400">{createSmartSliceSpeechSetupStatusText(speechSetupStatus, speechSetupErrorMessage, speechModelDownloadCompleted)}</p>
                 </div>
               </div>
               <button
@@ -1761,13 +1790,13 @@ export function SlicerPage() {
               <div className="grid grid-cols-3 gap-2">
                 {[
                   { label: '识别程序', ready: speechSetupStatus?.executable.ready, detail: formatSmartSliceSpeechSetupPath(speechSetupStatus?.executable.path || speechSetupStatus?.defaults.executablePath) || (speechSetupStatus?.executable.ready ? '已检测' : '待准备') },
-                  { label: '离线模型', ready: speechSetupStatus?.model.ready, detail: formatSmartSliceSpeechSetupPath(speechSetupStatus?.model.path || speechSetupStatus?.defaults.modelPath) || speechSetupStatus?.model.preset.label || '推荐模型' },
-                  { label: '可用性检测', ready: speechSetupStatus?.test.ready, detail: speechSetupStatus?.test.ready ? '已通过' : '待检测' },
+                  { label: '离线模型', ready: speechModelReadyForDisplay, detail: speechModelDownloadCompleted ? '已校验并保存' : speechModelDetailForDisplay },
+                  { label: '可用性检测', ready: speechSetupStatus?.test.ready, detail: speechSetupStatus?.test.ready ? '已通过' : speechFinalCheckNeedsAttention ? '需要处理' : '待检测' },
                 ].map((item) => (
                   <div key={item.label} className="rounded-md border border-[#252525] bg-[#151515] p-3">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{item.label}</span>
-                      {item.ready ? <CheckCircle2 size={14} className="text-green-400" /> : <AlertTriangle size={14} className="text-amber-400" />}
+                      {item.ready ? <CheckCircle2 size={14} className="text-green-400" /> : <AlertTriangle size={14} className={speechFinalCheckNeedsAttention && item.label === '可用性检测' ? 'text-red-400' : 'text-amber-400'} />}
                     </div>
                     <div className="mt-2 truncate text-xs leading-4 text-gray-300" title={item.detail}>{item.detail}</div>
                   </div>
@@ -1803,16 +1832,18 @@ export function SlicerPage() {
                     <div className="text-xs font-semibold text-gray-200">离线识别模型</div>
                     <div className="mt-1 text-[11px] text-gray-500">{getSmartSliceSpeechSetupProgressLabel(speechModelDownloadProgress)}</div>
                   </div>
-                  <div className="text-xs font-bold text-blue-300">{speechModelDownloadProgress?.progress ?? 0}%</div>
+                  <div className={`text-xs font-bold ${speechModelDownloadFailed ? 'text-red-300' : speechModelDownloadCompleted ? 'text-emerald-300' : 'text-blue-300'}`}>
+                    {speechModelProgressPercent}%
+                  </div>
                 </div>
                 <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#252525]">
                   <div
-                    className="h-full rounded-full bg-blue-500 transition-all"
-                    style={{ width: `${Math.min(100, Math.max(0, speechModelDownloadProgress?.progress ?? 0))}%` }}
+                    className={`h-full rounded-full transition-all ${speechModelDownloadFailed ? 'bg-red-500' : speechModelDownloadCompleted ? 'bg-emerald-500' : 'bg-blue-500'}`}
+                    style={{ width: `${speechModelDownloadFailed ? Math.max(8, speechModelProgressPercent) : speechModelProgressPercent}%` }}
                   />
                 </div>
                 <div className="mt-2 flex justify-between text-[10px] text-gray-600">
-                  <span>{speechModelDownloadProgress ? '下载进度' : '等待准备'}</span>
+                  <span>{speechModelDownloadCompleted ? '已完成' : speechModelDownloadFailed ? '需要重试' : speechModelDownloadActive ? '正在下载' : '等待准备'}</span>
                   <span>
                     {formatSmartSliceSpeechSetupBytes(speechModelDownloadProgress?.downloadedBytes)}
                     {speechModelDownloadProgress?.totalBytes ? ` / ${formatSmartSliceSpeechSetupBytes(speechModelDownloadProgress.totalBytes)}` : ''}

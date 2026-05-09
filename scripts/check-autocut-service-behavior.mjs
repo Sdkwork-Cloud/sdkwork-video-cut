@@ -12570,7 +12570,7 @@ async function run() {
     const missingExecutableSetupEvents = captureEvents(services, 'speechTranscriptionModelDownloadProgress');
     await assertRejects(
       () => services.initializeAutoCutLocalSpeechTranscriptionSetup(),
-      'whisper-cli executable',
+      'final availability check, not a model download failure',
       'initializeAutoCutLocalSpeechTranscriptionSetup auto-installs the default local STT model before blocking on a missing executable',
     );
     missingExecutableSetupEvents.stop();
@@ -12593,6 +12593,10 @@ async function run() {
       missingExecutableSetupEvents.details.some((event) => event.phase === 'started') &&
         missingExecutableSetupEvents.details.some((event) => event.phase === 'completed' && event.progress === 100),
       'initializeAutoCutLocalSpeechTranscriptionSetup keeps the model download visible when the executable is still missing',
+    );
+    assertRule(
+      !missingExecutableSetupEvents.details.some((event) => event.phase === 'failed'),
+      'initializeAutoCutLocalSpeechTranscriptionSetup does not report the model download as failed after the download completed and only executable readiness is blocked',
     );
     const settingsAfterMissingExecutableSetup = await services.getAutoCutSettings();
     assertEqual(

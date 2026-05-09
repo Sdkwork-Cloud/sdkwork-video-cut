@@ -1220,13 +1220,16 @@ function createAutoCutLocalSpeechTranscriptionSetupGuidance(
   nativeModelDownloadAvailable: boolean,
   status?: AutoCutLocalSpeechTranscriptionSetupStatus,
 ) {
-  const defaultGuidance = status
-    ? ` Default executable target: ${status.defaults.executablePath || status.defaults.executableDirectory}. Default model path: ${status.defaults.modelPath || status.defaults.modelDirectory}. Executable discovery: ${status.defaults.executableStrategy}.`
+  const setupGuidance = nativeModelDownloadAvailable
+    ? 'Run automatic setup again from Speech-to-Text settings. The app will reuse the verified model that is already saved, and only download the model again if the saved file is missing or fails integrity verification. You can also choose "Use and download the recommended offline Whisper model" from the model list.'
+    : 'Open the desktop app, download the recommended offline model, select the completed local file, then run the availability check again.';
+  const modelGuidance = status?.model.ready
+    ? 'The offline speech model is already saved; the remaining step is the final availability check.'
+    : 'The recommended offline speech model still needs to be saved before Smart Slice can use local recognition.';
+  const technicalDetails = status
+    ? ` Details: recognition app target ${status.defaults.executablePath || status.defaults.executableDirectory || 'not available'}; model target ${status.defaults.modelPath || status.defaults.modelDirectory || 'not available'}; discovery route ${status.defaults.executableStrategy}.`
     : '';
-  const downloadGuidance = nativeModelDownloadAvailable
-    ? 'Use Initialize in Settings > Speech-to-Text to download the recommended offline Whisper model, then run provider validation again. Use and download the recommended offline Whisper model if the file was removed or failed checksum validation. The whisper-cli executable must come from the packaged sidecar or an existing verified local installation.'
-    : 'Open the desktop app, download the recommended offline Whisper model, select the local model file, then run the provider test again.';
-  return `${reason}${defaultGuidance} ${downloadGuidance}`;
+  return `${reason} ${modelGuidance} ${setupGuidance}${technicalDetails}`;
 }
 
 function createAutoCutLocalSpeechTranscriptionInitializationFailureReason(
@@ -1236,13 +1239,18 @@ function createAutoCutLocalSpeechTranscriptionInitializationFailureReason(
   if (probe.executableReady === false || status.executable.ready === false) {
     const diagnostic = probe.diagnostics[0]?.trim();
     return [
-      'AutoCut local speech-to-text still needs a verified whisper-cli executable.',
-      diagnostic || 'AutoCut automatically checked Settings, SDKWORK_AUTOCUT_WHISPER_EXECUTABLE, verified bundled sidecar, PATH, and common local installation directories.',
+      'Speech recognition needs the local recognition app before Smart Slice can continue.',
+      'If the model step just reached 100%, the model is saved; this is the final availability check, not a model download failure.',
+      'Select a verified whisper-cli executable in Speech-to-Text settings or use an app build that includes the packaged recognition app.',
+      diagnostic ? `Details: ${diagnostic}` : 'Details: AutoCut checked Settings, SDKWORK_AUTOCUT_WHISPER_EXECUTABLE, packaged sidecar, PATH, and common local installation directories.',
       createAutoCutUnsupportedLocalSpeechTranscriptionExecutablePresetReason(status.providerId),
     ].join(' ');
   }
 
-  return probe.diagnostics[0] ?? 'AutoCut local speech-to-text setup did not pass provider validation.';
+  const diagnostic = probe.diagnostics[0]?.trim();
+  return diagnostic
+    ? `Speech recognition saved the model, but the final availability check did not pass. Details: ${diagnostic}`
+    : 'Speech recognition saved the model, but the final availability check did not pass. Run automatic setup again or open Speech-to-Text settings.';
 }
 
 function createAutoCutApiSpeechTranscriptionSetupGuidance(
