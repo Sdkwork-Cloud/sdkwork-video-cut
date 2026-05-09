@@ -44,7 +44,7 @@ const allowedDesktopTauriEntries = new Set([
   'target',
   'tauri.conf.json',
 ]);
-const allowedDesktopTauriIconEntries = new Set(['icon.ico']);
+const allowedDesktopTauriIconEntries = new Set(['icon.ico', 'icon.png']);
 const allowedDesktopTauriBinariesEntries = new Set([
   'ffmpeg.toolchain.json',
   'speech-transcription.toolchain.json',
@@ -1771,6 +1771,16 @@ for (const entry of fs.readdirSync(path.join(desktopTauriDir, 'icons'), { withFi
   assertRule(
     allowedDesktopTauriIconEntries.has(entry.name),
     `desktop src-tauri icon entry ${entry.name} is an approved bundle icon`,
+  );
+}
+assertRule(
+  Array.isArray(tauriConfig.bundle?.icon) && tauriConfig.bundle.icon.length > 0,
+  'desktop Tauri bundle declares explicit installer and runtime icons',
+);
+for (const iconPath of tauriConfig.bundle?.icon ?? []) {
+  assertRule(
+    fs.existsSync(path.join(desktopTauriDir, iconPath)),
+    `desktop Tauri bundle icon ${iconPath} exists for generate_context`,
   );
 }
 const desktopTauriBinariesDir = path.join(desktopTauriDir, 'binaries');

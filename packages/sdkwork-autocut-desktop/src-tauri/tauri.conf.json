@@ -44,7 +44,8 @@
       "binaries/macos-aarch64": "binaries/macos-aarch64"
     },
     "icon": [
-      "icons/icon.ico"
+      "icons/icon.ico",
+      "icons/icon.png"
     ]
   }
 }
