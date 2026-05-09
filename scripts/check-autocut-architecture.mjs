@@ -3186,6 +3186,12 @@ assertRule(
   'SettingsPage delegates guided local STT model acquisition actions to speech-transcription.service.ts instead of directly trusting preset URLs',
 );
 assertRule(
+  settingsPageSource.includes('const refreshedStatus = await inspectAutoCutLocalSpeechTranscriptionSetup();') &&
+    settingsPageSource.includes('setSpeechSetupStatus(refreshedStatus);') &&
+    settingsPageSource.includes('refreshedStatus.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready'),
+  'SettingsPage refreshes local STT readiness immediately after guided model setup so a saved model does not leave a stale failed status visible',
+);
+assertRule(
   nativeHostClientServiceSource.includes('speechTranscriptionModelDownloadCommandReady') &&
     nativeHostClientServiceSource.includes('speechTranscriptionExecutableDownloadCommandReady') &&
     nativeHostClientServiceSource.includes('downloadSpeechTranscriptionModel') &&

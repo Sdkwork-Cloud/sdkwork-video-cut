@@ -554,6 +554,26 @@ assertEqual(
   'speech-to-text evidence cleanup drops cough-only transcript fragments before native rendering',
 );
 assertEqual(
+  normalizeSmartSliceTranscriptEvidenceText('[MUSIC PLAYING]'),
+  '',
+  'speech-to-text evidence cleanup drops descriptive music-only STT tags before native rendering',
+);
+assertEqual(
+  normalizeSmartSliceTranscriptEvidenceText('[BLANK_AUDIO]'),
+  '',
+  'speech-to-text evidence cleanup drops blank-audio STT tags before native rendering',
+);
+assertEqual(
+  normalizeSmartSliceTranscriptEvidenceText('\u3010\u97f3\u4e50\u3011'),
+  '',
+  'speech-to-text evidence cleanup drops CJK bracketed music tags before native rendering',
+);
+assertEqual(
+  normalizeSmartSliceTranscriptEvidenceText('\uff08\u54b3\u55fd\uff09'),
+  '',
+  'speech-to-text evidence cleanup drops full-width bracketed cough tags before native rendering',
+);
+assertEqual(
   normalizeSmartSliceTranscriptEvidenceText('um, What works is this.'),
   'What works is this.',
   'speech-to-text evidence cleanup removes edge filler before native rendering',

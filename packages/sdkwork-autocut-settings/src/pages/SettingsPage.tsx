@@ -495,14 +495,26 @@ export function SettingsPage() {
     try {
       const result = await setupAutoCutLocalSpeechTranscriptionModelPreset(modelPresetId);
       updateSettingsState(result.settings);
+      const refreshedStatus = await inspectAutoCutLocalSpeechTranscriptionSetup();
+      setSpeechSetupStatus(refreshedStatus);
       toast(
-        result.nativeDownload
+        result.nativeDownload && refreshedStatus.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready
           ? t('settings.toast.speechModelConfigured', { model: result.preset.label })
-          : t('settings.toast.speechModelDownloadStarted', { model: result.preset.label }),
-        result.nativeDownload ? 'success' : 'info',
+          : result.nativeDownload
+            ? createSettingsSpeechSetupFriendlyError(
+                new Error(refreshedStatus.diagnostics[0] ?? 'final availability check'),
+                t,
+              )
+            : t('settings.toast.speechModelDownloadStarted', { model: result.preset.label }),
+        result.nativeDownload && refreshedStatus.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready
+          ? 'success'
+          : 'info',
       );
     } catch (error) {
       toast(createSettingsSpeechSetupFriendlyError(error, t), 'error');
+      void inspectAutoCutLocalSpeechTranscriptionSetup()
+        .then(setSpeechSetupStatus)
+        .catch(() => setSpeechSetupStatus(null));
     } finally {
       setIsConfiguringSpeechModel(false);
     }

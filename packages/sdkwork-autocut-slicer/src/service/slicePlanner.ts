@@ -60,7 +60,7 @@ const TRANSCRIPT_PLANNING_FILLER_ONLY_EDGE_PATTERN = new RegExp(
   'gu',
 );
 const TRANSCRIPT_PLANNING_NOISE_ONLY_PATTERN = new RegExp(
-  String.raw`^(?:[\[\(\uFF08\u3010]?\s*(?:cough(?:ing)?|coughs?|laugh(?:ing)?|laughter|applause|music|silence|noise|breath(?:ing)?|sigh|inaudible|background noise|bgm|\u54b3\u55fd|\u7b11\u58f0|\u5927\u7b11|\u638c\u58f0|\u97f3\u4e50|\u9759\u97f3|\u566a\u58f0|\u6742\u97f3|\u547c\u5438|\u5598\u6c14|\u53f9\u6c14|\u542c\u4e0d\u6e05|\u65e0\u58f0)\s*[\]\)\uFF09\u3011]?|(?:ha|haha|hahaha|[\u54c8\u5475\u563f]{2,})+)$`,
+  String.raw`^(?:[\[\(\uFF08\u3010]?\s*(?:cough(?:ing)?|coughs?|laugh(?:ing)?|laughter|applause|music(?:\s+(?:playing|continues?))?|background music|silence|silent|noise|background noise|ambient noise|blank[\s_-]*audio|no[\s_-]*(?:speech|audio|sound)|non[\s_-]*speech|breath(?:ing)?|sigh|inaudible|unintelligible|bgm|\u54b3\u55fd|\u7b11\u58f0|\u5927\u7b11|\u638c\u58f0|\u97f3\u4e50|\u9759\u97f3|\u566a\u58f0|\u6742\u97f3|\u547c\u5438|\u5598\u6c14|\u53f9\u6c14|\u542c\u4e0d\u6e05|\u65e0\u58f0)\s*[\]\)\uFF09\u3011]?|(?:ha|haha|hahaha|[\u54c8\u5475\u563f]{2,})+)$`,
   'iu',
 );
 const TRANSCRIPT_SEMANTIC_REPEAT_TOKEN_MAP: ReadonlyMap<string, string> = new Map([
@@ -1842,8 +1842,8 @@ function isLowInformationTranscriptFillerSegment(text: string) {
   }
   const noiseCandidate = trimTranscriptPlanningEdgePunctuation(
     normalizedText
-      .replace(/^[\[\(（【]\s*/u, '')
-      .replace(/\s*[\]\)）】]$/u, ''),
+      .replace(/^[\[\(\uFF08\u3010\s]*/u, '')
+      .replace(/[\]\)\uFF09\u3011\s]*$/u, ''),
   ).replace(/\s+/gu, ' ');
   if (TRANSCRIPT_PLANNING_NOISE_ONLY_PATTERN.test(noiseCandidate)) {
     return true;
