@@ -21,7 +21,8 @@ GitHub Releases without complete assets.
 - Adds `.github/workflows/autocut-desktop-release.yml` as the native
   multiplatform desktop release workflow backed by repository-root `pnpm
   tauri:build` commands so Linux and macOS builds use the same workspace
-  scripts and sidecar validation path as Windows.
+  scripts and sidecar validation path as Windows, with target triples passed to
+  the Tauri CLI instead of through the cargo runner argument separator.
 - Builds Windows x86_64 on `windows-latest`, Ubuntu/Linux x86_64 on
   `ubuntu-22.04`, and macOS Intel plus Apple Silicon on `macos-latest` using
   `x86_64-apple-darwin` and `aarch64-apple-darwin`.

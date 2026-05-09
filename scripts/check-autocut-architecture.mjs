@@ -2722,8 +2722,9 @@ assertRule(
     desktopReleaseWorkflowSource.includes('windows-latest') &&
     desktopReleaseWorkflowSource.includes('ubuntu-22.04') &&
     desktopReleaseWorkflowSource.includes('macos-latest') &&
-    desktopReleaseWorkflowSource.includes('pnpm tauri:build -- --target x86_64-unknown-linux-gnu') &&
-    desktopReleaseWorkflowSource.includes('pnpm tauri:build -- --target ${{ matrix.rust_target }}') &&
+    desktopReleaseWorkflowSource.includes('pnpm tauri:build --target x86_64-unknown-linux-gnu') &&
+    desktopReleaseWorkflowSource.includes('pnpm tauri:build --target ${{ matrix.rust_target }}') &&
+    !desktopReleaseWorkflowSource.includes('pnpm tauri:build -- --target') &&
     !desktopReleaseWorkflowSource.includes('tauri-apps/tauri-action') &&
     desktopReleaseWorkflowSource.includes('pnpm release:package-sbom -- --platform windows-x86_64') &&
     desktopReleaseWorkflowSource.includes('pnpm release:package-sbom -- --platform linux-x86_64') &&

@@ -74,13 +74,18 @@ assert.match(
 );
 assert.match(
   workflow,
-  /pnpm tauri:build -- --target x86_64-unknown-linux-gnu/u,
+  /pnpm tauri:build --target x86_64-unknown-linux-gnu/u,
   'workflow builds Linux from the repository-root pnpm Tauri command',
 );
 assert.match(
   workflow,
-  /pnpm tauri:build -- --target \$\{\{ matrix\.rust_target \}\}/u,
+  /pnpm tauri:build --target \$\{\{ matrix\.rust_target \}\}/u,
   'workflow builds macOS matrix targets from the repository-root pnpm Tauri command',
+);
+assert.equal(
+  workflow.includes('pnpm tauri:build -- --target'),
+  false,
+  'workflow passes release target triples to the Tauri CLI instead of cargo runner args',
 );
 assert.equal(
   workflow.includes('tauri-apps/tauri-action'),

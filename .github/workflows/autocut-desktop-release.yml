@@ -152,7 +152,7 @@ jobs:
           pnpm prepare:release-sidecars -- --platform linux-x86_64 --accept-license
 
       - name: Build desktop bundle
-        run: pnpm tauri:build -- --target x86_64-unknown-linux-gnu
+        run: pnpm tauri:build --target x86_64-unknown-linux-gnu
 
       - name: Write Linux release evidence
         run: |
@@ -235,7 +235,7 @@ jobs:
           pnpm prepare:release-sidecars -- --platform ${{ matrix.platform }} --accept-license
 
       - name: Build desktop bundle
-        run: pnpm tauri:build -- --target ${{ matrix.rust_target }}
+        run: pnpm tauri:build --target ${{ matrix.rust_target }}
 
       - name: Write macOS release evidence
         run: |
