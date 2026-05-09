@@ -7,19 +7,21 @@ directory. If a previous version was not successfully released, its change log
 must be folded into the next successful release instead of leaving orphaned
 release notes.
 
-## v0.1.4 - 2026-05-09
+## v0.1.5 - 2026-05-09
 
 Multiplatform unsigned preview release hardening for Phase 1, with Phase 2
 commercial release standards documented and enforced as blockers. This release
 also folds in the unreleased smart slicing, speech-to-text, subtitle, recovery,
 and release-governance work completed after the `v0.1.0` tag, plus the failed
-`v0.1.1`, `v0.1.2`, and `v0.1.3` multiplatform release attempts that created
+`v0.1.1`, `v0.1.2`, `v0.1.3`, and `v0.1.4` multiplatform release attempts that created
 GitHub Releases without complete assets.
 
 ### Release Scope
 
 - Adds `.github/workflows/autocut-desktop-release.yml` as the native
-  multiplatform desktop release workflow backed by `tauri-apps/tauri-action`.
+  multiplatform desktop release workflow backed by repository-root `pnpm
+  tauri:build` commands so Linux and macOS builds use the same workspace
+  scripts and sidecar validation path as Windows.
 - Builds Windows x86_64 on `windows-latest`, Ubuntu/Linux x86_64 on
   `ubuntu-22.04`, and macOS Intel plus Apple Silicon on `macos-latest` using
   `x86_64-apple-darwin` and `aarch64-apple-darwin`.
@@ -28,14 +30,15 @@ GitHub Releases without complete assets.
   Linux and macOS use the standardized CI sidecar preparation script to fetch
   or build the approved platform-native FFmpeg and Whisper CLI tools before
   Tauri packaging.
-- Keeps `v0.1.0` as the existing Windows unsigned preview and uses `v0.1.4` for
+- Keeps `v0.1.0` as the existing Windows unsigned preview and uses `v0.1.5` for
   the first four-platform preview release line.
 - Updates the root workspace, every AutoCut package manifest, the Tauri app
-  version, and the Rust desktop crate version to `0.1.4` so Git tags,
+  version, and the Rust desktop crate version to `0.1.5` so Git tags,
   installer metadata, application metadata, and release notes all describe the
   same version.
-- Includes all post-`v0.1.0` fixes and the failed `v0.1.1`, `v0.1.2`, and
-  `v0.1.3` release attempts. `v0.1.1`, `v0.1.2`, and `v0.1.3` were tagged and
+- Includes all post-`v0.1.0` fixes and the failed `v0.1.1`, `v0.1.2`,
+  `v0.1.3`, and `v0.1.4` release attempts. `v0.1.1`, `v0.1.2`, `v0.1.3`,
+  and `v0.1.4` were tagged and
   GitHub Releases were created, but their multiplatform workflows failed before
   uploading complete release assets. No orphaned intermediate release notes are
   left outside this release entry.
@@ -173,7 +176,7 @@ GitHub Releases without complete assets.
 - Keeps local AutoCut package dependencies as `workspace:*` for development.
 - Keeps release distribution through the GitHub repository and GitHub Release
   assets instead of publishing the internal AutoCut packages to npm central.
-- Updates `sdkwork.app.config.json` to the `v0.1.4` release line and points the
+- Updates `sdkwork.app.config.json` to the `v0.1.5` release line and points the
   desktop package matrix at the GitHub Release asset names for Windows MSI/NSIS,
   Linux DEB/AppImage, and macOS Intel/Apple Silicon DMG packages.
 - Keeps all install packages disabled in the app manifest until real GitHub
@@ -226,6 +229,13 @@ GitHub Releases without complete assets.
   record that the Windows-only secret-store smoke is not applicable and keep
   native video slicing plus common native command evidence as the cross-platform
   release gate.
+- Folds in the failed `v0.1.4` release attempt by fixing the three observed CI
+  blockers: macOS workspace verification now serializes native smoke evidence
+  without an explicit `undefined` field, Linux and macOS build through the
+  repository-root Tauri command instead of the package-path action wrapper, and
+  Rust media smoke tests honor `SDKWORK_AUTOCUT_FFMPEG` so Windows release
+  evidence uses the prepared bundled FFmpeg sidecar instead of relying on
+  runner `PATH`.
 
 ### Phase 1 Preview Release Gate
 
@@ -333,8 +343,8 @@ before the GitHub workflow is used:
 - `pnpm test`
 
 The GitHub workflow must then complete all native build jobs and the aggregate
-`pnpm release:multiplatform-ready` and `pnpm release:evidence-status -- --release-tag v0.1.4 --allow-blocked`
-jobs before `v0.1.4` assets are considered a complete multiplatform unsigned
+`pnpm release:multiplatform-ready` and `pnpm release:evidence-status -- --release-tag v0.1.5 --allow-blocked`
+jobs before `v0.1.5` assets are considered a complete multiplatform unsigned
 preview release.
 
 ## v0.1.0 - 2026-05-05

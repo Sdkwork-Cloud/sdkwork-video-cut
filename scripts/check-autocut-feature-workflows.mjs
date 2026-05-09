@@ -1119,7 +1119,7 @@ assertIncludes(releaseChangelog, 'autocut-release-evidence-linux-x86_64.json', '
 assertIncludes(releaseChangelog, 'autocut-release-evidence-macos-x86_64.json', 'release notes document the Intel macOS release evidence file');
 assertIncludes(releaseChangelog, 'autocut-release-evidence-macos-aarch64.json', 'release notes document the Apple Silicon macOS release evidence file');
 assertIncludes(releaseChangelog, 'ubuntu-22.04', 'release notes document the Ubuntu/Linux native release runner');
-assertIncludes(releaseChangelog, 'tauri-apps/tauri-action', 'release notes document the Tauri GitHub Action release workflow');
+assertIncludes(releaseChangelog, 'repository-root `pnpm', 'release notes document the repository-root Tauri release workflow');
 assertIncludes(releaseChangelog, 'Phase 1', 'release notes document the Phase 1 preview release scope');
 assertIncludes(releaseChangelog, 'Phase 2', 'release notes document the Phase 2 commercial release standard');
 

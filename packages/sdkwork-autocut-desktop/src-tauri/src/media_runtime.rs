@@ -9542,6 +9542,23 @@ mod tests {
     }
 
     fn test_system_ffmpeg_toolchain() -> AutoCutFfmpegToolchain {
+        test_system_ffmpeg_toolchain_from_env(std::env::var("SDKWORK_AUTOCUT_FFMPEG").ok())
+    }
+
+    fn test_system_ffmpeg_toolchain_from_env(env_override: Option<String>) -> AutoCutFfmpegToolchain {
+        if let Some(executable) = env_override.map(|value| value.trim().to_string()) {
+            if !executable.is_empty() {
+                return AutoCutFfmpegToolchain {
+                    executable,
+                    source_kind: "environment".to_string(),
+                    manifest_ready: true,
+                    bundled_ready: false,
+                    diagnostics: vec![
+                        "SDKWORK_AUTOCUT_FFMPEG overrides the test FFmpeg toolchain".to_string(),
+                    ],
+                };
+            }
+        }
         AutoCutFfmpegToolchain {
             executable: DEFAULT_FFMPEG_EXECUTABLE.to_string(),
             source_kind: "system-path".to_string(),
@@ -9549,6 +9566,17 @@ mod tests {
             bundled_ready: false,
             diagnostics: Vec::new(),
         }
+    }
+
+    #[test]
+    fn test_system_ffmpeg_toolchain_uses_release_smoke_environment_override() {
+        let expected = "D:/release-sidecars/ffmpeg.exe";
+        let toolchain = test_system_ffmpeg_toolchain_from_env(Some(expected.to_string()));
+
+        assert_eq!(toolchain.executable, expected);
+        assert_eq!(toolchain.source_kind, "environment");
+        assert!(toolchain.manifest_ready);
+        assert!(!toolchain.bundled_ready);
     }
 
     fn run_ffmpeg_test_video(

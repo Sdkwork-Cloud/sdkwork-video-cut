@@ -27,7 +27,6 @@ for (const marker of [
   'libayatana-appindicator3-dev',
   'librsvg2-dev',
   'pnpm/action-setup',
-  'tauri-apps/tauri-action',
   'Prepare release sidecars',
   'prepare:release-sidecars',
   'prepare:ffmpeg-sidecar',
@@ -72,6 +71,21 @@ assert.match(
   workflow,
   /prepare:ffmpeg-sidecar -- --platform windows-x86_64 --source "\$sidecarSource\/ffmpeg\.exe" --accept-license/u,
   'workflow re-verifies the approved Windows FFmpeg LFS sidecar before native packaging',
+);
+assert.match(
+  workflow,
+  /pnpm tauri:build -- --target x86_64-unknown-linux-gnu/u,
+  'workflow builds Linux from the repository-root pnpm Tauri command',
+);
+assert.match(
+  workflow,
+  /pnpm tauri:build -- --target \$\{\{ matrix\.rust_target \}\}/u,
+  'workflow builds macOS matrix targets from the repository-root pnpm Tauri command',
+);
+assert.equal(
+  workflow.includes('tauri-apps/tauri-action'),
+  false,
+  'workflow avoids package-path Tauri action builds so release sidecar checks and workspace scripts stay consistent',
 );
 assert.match(
   workflow,

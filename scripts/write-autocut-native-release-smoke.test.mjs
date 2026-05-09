@@ -335,6 +335,8 @@ const written = writeAutoCutNativeReleaseSmokeEvidence({
   rootDir: root,
   generatedAt: '2026-05-05T00:00:00.000Z',
   outputPath,
+  hostPlatform: 'darwin',
+  hostArch: 'arm64',
   skipRustSmoke: true,
   runRealLlmSecretSmoke: false,
 });

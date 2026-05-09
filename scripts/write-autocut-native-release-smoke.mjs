@@ -90,9 +90,9 @@ export function createAutoCutNativeReleaseSmokeEvidence({
       manifestPath: toPosixRelative(resolvedRootDir, cargoManifestPath),
       desktopTauriPath: desktopTauriRelativePath,
       toolchain: rustToolchain,
-      ffmpegExecutablePath: ffmpegExecutablePath
-        ? toPosixRelative(resolvedRootDir, ffmpegExecutablePath)
-        : undefined,
+      ...(ffmpegExecutablePath
+        ? { ffmpegExecutablePath: toPosixRelative(resolvedRootDir, ffmpegExecutablePath) }
+        : {}),
       cargoTargetDirs: {
         rustSmoke: cargoTargetDir,
         videoSliceSmoke: cargoTargetDir,

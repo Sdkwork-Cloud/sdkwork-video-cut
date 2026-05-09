@@ -1385,7 +1385,7 @@ for (const [relativePath, sourceText] of [
   );
 }
 assertRule(indexHtmlSource.includes('<title>SDKWork Video Cut</title>'), 'desktop index.html title matches the Tauri product name');
-assertRule(rootPackage.version === '0.1.4', 'AutoCut desktop application version matches the v0.1.4 release line');
+assertRule(rootPackage.version === '0.1.5', 'AutoCut desktop application version matches the v0.1.5 release line');
 assertRule(desktopPackage.scripts?.dev?.includes('--host 127.0.0.1'), 'desktop dev binds to loopback for desktop-local development');
 assertRule(desktopPackage.scripts?.dev?.includes('--port 3000'), 'desktop dev uses the standard AutoCut web port 3000');
 assertRule(desktopPackage.scripts?.dev?.includes('--strictPort'), 'desktop dev uses strictPort for deterministic desktop-local startup');
@@ -2712,7 +2712,9 @@ assertRule(
     desktopReleaseWorkflowSource.includes('windows-latest') &&
     desktopReleaseWorkflowSource.includes('ubuntu-22.04') &&
     desktopReleaseWorkflowSource.includes('macos-latest') &&
-    desktopReleaseWorkflowSource.includes('tauri-apps/tauri-action') &&
+    desktopReleaseWorkflowSource.includes('pnpm tauri:build -- --target x86_64-unknown-linux-gnu') &&
+    desktopReleaseWorkflowSource.includes('pnpm tauri:build -- --target ${{ matrix.rust_target }}') &&
+    !desktopReleaseWorkflowSource.includes('tauri-apps/tauri-action') &&
     desktopReleaseWorkflowSource.includes('pnpm release:package-sbom -- --platform windows-x86_64') &&
     desktopReleaseWorkflowSource.includes('pnpm release:package-sbom -- --platform linux-x86_64') &&
     desktopReleaseWorkflowSource.includes('pnpm release:package-sbom -- --platform ${{ matrix.platform }}') &&
