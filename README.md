@@ -3,6 +3,21 @@
 SDKWork Video Cut is a Tauri desktop shell for the AutoCut frontend modules in
 `packages/sdkwork-autocut-*`.
 
+## License
+
+This project is source-available for non-commercial use under the repository
+`LICENSE` notice, which applies `AGPL-3.0-or-later` terms with an explicit
+non-commercial limitation. Commercial use is not permitted unless you purchase
+or obtain a separate commercial license from SDKWork.
+
+Commercial use includes production use by a company or revenue-generating
+organization, SaaS or hosted service use, customer projects, paid consulting
+deliverables, proprietary redistribution, closed-source integration, and any
+other use intended to obtain commercial advantage or monetary compensation.
+
+See `LICENSE` for the repository license notice and `COMMERCIAL-LICENSE.md`
+for commercial authorization requirements.
+
 The desktop application is defined inside
 `packages/sdkwork-autocut-desktop`, matching the package-local desktop
 architecture used by `sdkwork-birdcoder`. The repository root only

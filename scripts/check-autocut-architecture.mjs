@@ -200,7 +200,9 @@ const allowedRootEntries = new Set([
   '.gitattributes',
   '.gitignore',
   'ARCHITECT.md',
+  'COMMERCIAL-LICENSE.md',
   'DATABASE_SPEC.md',
+  'LICENSE',
   'README.md',
   'artifacts',
   'docs',
@@ -1125,6 +1127,9 @@ const architectSource = fs.existsSync(path.join(rootDir, 'ARCHITECT.md'))
 const readmeSource = fs.existsSync(path.join(rootDir, 'README.md'))
   ? fs.readFileSync(path.join(rootDir, 'README.md'), 'utf8')
   : '';
+const licenseSource = fs.existsSync(path.join(rootDir, 'LICENSE'))
+  ? fs.readFileSync(path.join(rootDir, 'LICENSE'), 'utf8')
+  : '';
 const frontendStandardSource = fs.existsSync(path.join(rootDir, 'docs/architecture/16-autocut-frontend-module-standard.md'))
   ? fs.readFileSync(path.join(rootDir, 'docs/architecture/16-autocut-frontend-module-standard.md'), 'utf8')
   : '';
@@ -1323,6 +1328,25 @@ assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-smart
 
 assertRule(rootPackage.packageManager?.startsWith('pnpm@'), 'root package.json declares pnpm packageManager');
 assertRule(rootPackage.workspaces?.length === 1 && rootPackage.workspaces[0] === 'packages/*', 'root package.json workspace list only includes packages/*');
+assertRule(exists('LICENSE'), 'root LICENSE declares the repository source license notice');
+assertRule(exists('COMMERCIAL-LICENSE.md'), 'root COMMERCIAL-LICENSE.md declares commercial authorization terms');
+assertRule(rootPackage.license === 'SEE LICENSE IN LICENSE', 'root package.json points license tools to the repository license notice');
+assertRule(desktopPackage.license === 'SEE LICENSE IN LICENSE', 'desktop package.json points license tools to the repository license notice');
+assertRule(cargoTomlSource.includes('license-file = "../../../LICENSE"'), 'desktop Tauri Cargo.toml points cargo metadata to the repository license notice');
+assertRule(
+  licenseSource.includes('AGPL-3.0-or-later') &&
+    licenseSource.includes('non-commercial') &&
+    licenseSource.includes('Commercial use is not permitted') &&
+    licenseSource.includes('separate commercial license'),
+  'root LICENSE declares AGPL-3.0-or-later non-commercial use with separate commercial authorization',
+);
+assertRule(
+  readmeSource.includes('AGPL-3.0-or-later') &&
+    readmeSource.includes('non-commercial') &&
+    readmeSource.includes('commercial license') &&
+    readmeSource.includes('COMMERCIAL-LICENSE.md'),
+  'README documents the AGPL non-commercial source license and commercial authorization requirement',
+);
 assertRule(workspaceSource.includes("  - 'packages/*'"), 'pnpm-workspace.yaml includes only the packages/* workspace');
 assertRule(exists('.gitattributes'), 'root .gitattributes defines repository binary storage policy');
 assertRule(

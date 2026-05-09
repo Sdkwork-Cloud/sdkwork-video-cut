@@ -1,0 +1,53 @@
+SDKWork Video Cut Non-Commercial Source License Notice
+
+Copyright (C) 2026 SDKWork
+
+This repository is source-available under AGPL-3.0-or-later for
+non-commercial use only.
+
+Non-commercial use means use for personal study, research, evaluation,
+education, internal proof-of-concept work, or other activity that is not
+intended to obtain commercial advantage, paid service revenue, customer-facing
+business value, or other monetary compensation.
+
+Commercial use is not permitted under this repository notice. Commercial use
+includes, without limitation:
+
+- selling, licensing, sublicensing, renting, hosting, or otherwise monetizing
+  the software;
+- using the software to provide paid services, SaaS, managed services,
+  consulting deliverables, customer projects, or commercial internal tooling;
+- distributing modified or unmodified builds as part of a commercial product
+  or service;
+- using the software in production for a company, organization, or other
+  commercial activity.
+
+If you want to use SDKWork Video Cut commercially, you must purchase or obtain
+a separate commercial license from SDKWork before that use. A commercial
+license can grant rights that are not available under this notice, including
+commercial deployment, closed-source integration, proprietary redistribution,
+support, warranty terms, and other paid authorization features.
+
+AGPL-3.0-or-later Terms
+-----------------------
+
+Subject to the non-commercial limitation above, you may use, study, modify,
+copy, and distribute this software under version 3 of the GNU Affero General
+Public License, or any later version published by the Free Software Foundation.
+
+The AGPL-3.0-or-later license text is available from the Free Software
+Foundation at:
+
+https://www.gnu.org/licenses/agpl-3.0.txt
+
+You should treat the SPDX expression for this repository as:
+
+AGPL-3.0-or-later
+
+No Warranty
+-----------
+
+This software is provided without warranty of any kind, to the maximum extent
+permitted by applicable law. See the AGPL-3.0-or-later terms for the standard
+free software warranty disclaimer, and see any separate commercial license
+agreement for the commercial terms that apply to licensed commercial use.

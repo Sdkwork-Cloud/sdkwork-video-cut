@@ -1,6 +1,7 @@
 {
   "name": "@sdkwork/autocut-video-gif",
   "version": "0.1.5",
+  "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "type": "module",
   "main": "./src/index.ts",
