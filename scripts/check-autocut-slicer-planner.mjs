@@ -4,6 +4,7 @@ import {
   createDeterministicSlicePlan,
   createTranscriptAssistedSlicePlan,
   getVideoSlicePlanningPolicy,
+  normalizeSmartSliceTranscriptEvidenceText,
   normalizeCandidateSlicePlan,
   parseLlmSlicePlan,
   validateVideoSliceParams,
@@ -490,6 +491,35 @@ assertEqual(
   noiseInterruptedTranscriptCandidate?.transcriptSegmentCount,
   2,
   'speech-to-text noise cleanup excludes noise-only fragments from transcript segment evidence',
+);
+assertEqual(
+  normalizeSmartSliceTranscriptEvidenceText('[coughing]'),
+  '',
+  'speech-to-text evidence cleanup drops cough-only transcript fragments before native rendering',
+);
+assertEqual(
+  normalizeSmartSliceTranscriptEvidenceText('um, What works is this.'),
+  'What works is this.',
+  'speech-to-text evidence cleanup removes edge filler before native rendering',
+);
+const longNoiseBridgeCandidates = buildTranscriptSliceCandidates({
+  ...baseParams,
+  minDuration: 15,
+  maxDuration: 45,
+  continuityLevel: 'standard',
+  highlightEngine: 'keyword',
+  customKeywords: ['activation', 'payoff'],
+}, [
+  { startMs: 0, endMs: 9_000, text: 'Watch the onboarding setup and activation pain.', speaker: 'Speaker 1' },
+  { startMs: 9_100, endMs: 18_000, text: '[Music]', speaker: 'Speaker 1' },
+  { startMs: 18_100, endMs: 30_000, text: 'So the complete payoff is the activation fix viewers can apply.', speaker: 'Speaker 1' },
+]);
+assertRule(
+  !longNoiseBridgeCandidates.some((candidate) =>
+    candidate.transcriptText?.includes('onboarding setup') &&
+      candidate.transcriptText.includes('activation fix')
+  ),
+  'speech-to-text noise cleanup does not bridge long audible interruptions that would still remain inside a continuous rendered clip',
 );
 
 const englishConnectorChainCandidates = buildTranscriptSliceCandidates(

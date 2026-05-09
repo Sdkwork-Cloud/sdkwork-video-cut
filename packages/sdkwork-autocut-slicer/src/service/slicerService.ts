@@ -38,6 +38,7 @@ import {
   createDeterministicSlicePlan,
   createTranscriptAssistedSlicePlan,
   getVideoSlicePlanningPolicy,
+  normalizeSmartSliceTranscriptEvidenceText,
   normalizeSliceDurationMs,
   parseLlmSlicePlan,
   validateVideoSliceParams,
@@ -480,12 +481,12 @@ function createVideoSliceTranscriptSegments(
     .filter((segment) =>
       segment.endMs > sourceStartMs &&
       segment.startMs < sourceEndMs &&
-      segment.text.trim().length > 0
+      normalizeSmartSliceTranscriptEvidenceText(segment.text).length > 0
     )
     .map((segment) => ({
       startMs: Math.max(sourceStartMs, Math.round(segment.startMs)),
       endMs: Math.min(sourceEndMs, Math.round(segment.endMs)),
-      text: segment.text.trim().replace(/\s+/gu, ' '),
+      text: normalizeSmartSliceTranscriptEvidenceText(segment.text),
       ...(segment.speaker?.trim() ? { speaker: segment.speaker.trim() } : {}),
     }))
     .filter((segment) => segment.endMs > segment.startMs && segment.text.length > 0)
@@ -1154,7 +1155,7 @@ function createVideoSliceSubtitleSegments(
     .map((segment) => ({
       startMs: Math.round(segment.startMs),
       endMs: Math.round(segment.endMs),
-      text: segment.text.trim().replace(/\s+/gu, ' '),
+      text: normalizeSmartSliceTranscriptEvidenceText(segment.text),
       ...(segment.speaker?.trim() ? { speaker: segment.speaker.trim() } : {}),
     }))
     .filter((segment) =>

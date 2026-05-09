@@ -18,6 +18,7 @@ const STANDARD_TRANSCRIPT_SEGMENT_JOIN_GAP_MS = 2_500;
 const STRICT_TRANSCRIPT_SEGMENT_JOIN_GAP_MS = 800;
 const STANDARD_TRANSCRIPT_SEGMENT_OVERLAP_TOLERANCE_MS = 250;
 const STRICT_TRANSCRIPT_SEGMENT_OVERLAP_TOLERANCE_MS = 80;
+const MAX_TRANSCRIPT_NOISE_BRIDGE_MS = 3_000;
 const MAX_PLAN_RISK_TAGS = 12;
 const MAX_LLM_PLAN_ITEMS_TO_INSPECT = MAX_TARGET_SLICE_COUNT * 4;
 const {
@@ -1698,6 +1699,13 @@ function normalizeTranscriptSegmentTextForPlanning(text: string) {
   return normalizedText;
 }
 
+export function normalizeSmartSliceTranscriptEvidenceText(text: string) {
+  const normalizedText = normalizeTranscriptSegmentTextForPlanning(text);
+  return normalizedText && !isLowInformationTranscriptFillerSegment(normalizedText)
+    ? normalizedText
+    : '';
+}
+
 function isLowInformationTranscriptFillerSegment(text: string) {
   const normalizedText = text.trim().replace(/\s+/gu, ' ');
   if (!normalizedText) {
@@ -1766,7 +1774,10 @@ function canJoinTranscriptSegments(
   policy: VideoSlicePlanningPolicy,
 ) {
   const gapMs = next.startMs - current.endMs;
-  const effectiveGapMs = Math.max(0, gapMs - (next.noiseBridgeBeforeMs ?? 0));
+  const noiseBridgeBeforeMs = next.noiseBridgeBeforeMs ?? 0;
+  const effectiveGapMs = noiseBridgeBeforeMs > MAX_TRANSCRIPT_NOISE_BRIDGE_MS
+    ? gapMs
+    : Math.max(0, gapMs - noiseBridgeBeforeMs);
   return gapMs >= -policy.continuityOverlapToleranceMs && effectiveGapMs <= policy.continuityJoinGapMs;
 }
 

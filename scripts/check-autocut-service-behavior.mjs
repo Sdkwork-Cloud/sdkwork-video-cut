@@ -5891,6 +5891,11 @@ async function run() {
       'video slice native workflow embeds transcript segment counts in each native clip request',
     );
     assertEqual(
+      nativeVideoSliceWorkflowCommands[2]?.request?.noiseReduction,
+      true,
+      'video slice native workflow forwards the user-selected audio noise reduction setting to native rendering',
+    );
+    assertEqual(
       nativeVideoSliceWorkflowCommands[2]?.request?.clips?.[0]?.speechStartMs,
       22000,
       'video slice native workflow embeds unpadded speech start in each native clip request',
@@ -5909,6 +5914,198 @@ async function run() {
       nativeVideoSliceWorkflowTask?.sliceResults?.[0]?.transcriptSegments?.[0]?.text,
       'Why viewers scroll is simple. Because the opening hides the problem, people do not know why they should care. So lead with the result and the retention payoff works.',
       'video slice native workflow records slice-level structured transcript segments when subtitles are disabled',
+    );
+
+    resetStorage();
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    const noiseCleanupSliceCommands = [];
+    services.configureAutoCutNativeHostClient({
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        noiseCleanupSliceCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'noise-cleanup-slice-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/noise-cleanup-source.mp4',
+          byteSize: 654000,
+          name: 'noise-cleanup-source.mp4',
+          mediaType: 'video',
+          mimeType: 'video/mp4',
+          durationMs: 40_000,
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'noise cleanup smart slice contract',
+      }),
+      transcribeMedia: async (request) => {
+        noiseCleanupSliceCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'noise-cleanup-transcript-task',
+          configuredOutputDirectory,
+          [
+            {
+              startMs: 0,
+              endMs: 8_000,
+              text: 'um, Watch the setup because activation pain matters.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 8_100,
+              endMs: 8_900,
+              text: '[coughing]',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 9_000,
+              endMs: 9_800,
+              text: '[Music]',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 10_000,
+              endMs: 25_000,
+              text: 'So the complete payoff is the activation fix viewers can apply.',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      sliceVideo: async (request) => {
+        noiseCleanupSliceCommands.push({ kind: 'slice', request });
+        const output = createNativeTaskOutputArtifact(
+          'noise-cleanup-slice-task',
+          request.clips[0]?.outputFileName ?? 'noise-cleanup-slice.mp4',
+          configuredOutputDirectory,
+        );
+        const thumbnail = createNativeTaskCoverArtifact(
+          'noise-cleanup-slice-task',
+          'noise-cleanup-thumb.jpg',
+          configuredOutputDirectory,
+        );
+        const subtitle = createNativeTaskOutputArtifact(
+          'noise-cleanup-slice-task',
+          'noise-cleanup-subtitle.srt',
+          configuredOutputDirectory,
+        );
+        const clip = request.clips[0];
+        return {
+          taskUuid: 'noise-cleanup-slice-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: output.taskOutputDir,
+          ffmpegExecutable: 'ffmpeg',
+          slices: [
+            {
+              artifactUuid: 'noise-cleanup-slice-artifact',
+              artifactPath: output.artifactPath,
+              thumbnailArtifactUuid: 'noise-cleanup-thumb',
+              thumbnailArtifactPath: thumbnail.artifactPath,
+              taskOutputDir: output.taskOutputDir,
+              byteSize: 234567,
+              thumbnailByteSize: 12345,
+              ...(request.subtitleFormat === 'srt'
+                ? {
+                    subtitleArtifactUuid: 'noise-cleanup-subtitle',
+                    subtitleArtifactPath: subtitle.artifactPath,
+                    subtitleByteSize: 1234,
+                    subtitleFormat: 'srt',
+                  }
+                : {}),
+              format: 'mp4',
+              startMs: clip.startMs,
+              durationMs: clip.durationMs,
+              label: clip.label,
+              sourceStartMs: clip.sourceStartMs,
+              sourceEndMs: clip.sourceEndMs,
+              speechStartMs: clip.speechStartMs,
+              speechEndMs: clip.speechEndMs,
+              boundaryPaddingBeforeMs: clip.boundaryPaddingBeforeMs,
+              boundaryPaddingAfterMs: clip.boundaryPaddingAfterMs,
+              transcriptText: clip.transcriptText,
+              transcriptSegments: clip.transcriptSegments,
+              transcriptSegmentCount: clip.transcriptSegmentCount,
+              transcriptCoverageScore: clip.transcriptCoverageScore,
+              speechContinuityGrade: clip.speechContinuityGrade,
+            },
+          ],
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    const noiseCleanupSourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/noise-cleanup-source.mp4',
+      'noise-cleanup-source.mp4',
+    );
+    const noiseCleanupResult = await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-noise-cleanup-slice',
+        file: noiseCleanupSourceFile,
+        mode: 'contract-mode',
+        llmModel: 'gemini-3-flash-preview',
+        targetPlatform: 'generic',
+        sliceCountMode: 'qualityFirst',
+        targetSliceCount: 1,
+        continuityLevel: 'standard',
+        minDuration: 15,
+        maxDuration: 45,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'keyword',
+        customKeywords: ['activation', 'payoff'],
+        enableNoiseReduction: true,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSubtitles: true,
+        subtitleMode: 'srt',
+      }),
+    );
+    services.resetAutoCutNativeHostClient();
+    const noiseCleanupSliceRequest = noiseCleanupSliceCommands.find((entry) => entry.kind === 'slice')?.request;
+    const noiseCleanupClip = noiseCleanupSliceRequest?.clips?.[0];
+    const noiseCleanupTask = readScopedStoredArray(services, 'tasks').find((task) => task.id === noiseCleanupResult.taskId);
+    assertEqual(
+      noiseCleanupResult.success,
+      true,
+      'noise cleanup Smart Slice regression reports success',
+    );
+    assertRule(
+      !/\b(?:coughing|music)\b|^\s*um\b/iu.test(noiseCleanupClip?.transcriptText ?? ''),
+      'noise cleanup Smart Slice regression removes noise and edge filler from native clip transcript text',
+    );
+    assertRule(
+      noiseCleanupClip?.transcriptSegments?.length === 2 &&
+        noiseCleanupClip.transcriptSegments.every((segment) =>
+          !/\b(?:coughing|music)\b|^\s*um\b/iu.test(segment.text)
+        ),
+      'noise cleanup Smart Slice regression removes noise and edge filler from structured native clip transcript segments',
+    );
+    assertRule(
+      noiseCleanupSliceRequest?.subtitleSegments?.length === 2 &&
+        noiseCleanupSliceRequest.subtitleSegments.every((segment) =>
+          !/\b(?:coughing|music)\b|^\s*um\b/iu.test(segment.text)
+        ),
+      'noise cleanup Smart Slice regression removes noise and edge filler from native subtitle rendering input',
+    );
+    assertRule(
+      noiseCleanupTask?.sliceResults?.every((sliceResult) =>
+        !/\b(?:coughing|music)\b|^\s*um\b/iu.test(sliceResult.transcriptText ?? '')
+      ),
+      'noise cleanup Smart Slice regression exposes clean transcript evidence in completed task results',
     );
 
     resetStorage();
