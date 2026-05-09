@@ -222,9 +222,73 @@ function formatSmartSliceSpeechSetupBytes(value: number | undefined) {
   return `${unitIndex === 0 ? Math.round(size) : size.toFixed(1)} ${units[unitIndex]}`;
 }
 
+function formatSmartSliceSpeechSetupPath(path: string | undefined) {
+  const value = path?.trim();
+  if (!value) {
+    return '';
+  }
+  const normalized = value.replace(/\\/gu, '/');
+  const fileName = normalized.split('/').filter(Boolean).at(-1);
+  return fileName || value;
+}
+
+function createSmartSliceSpeechSetupFriendlyError(errorMessage: string) {
+  const rawMessage = errorMessage.trim();
+  if (!rawMessage) {
+    return '';
+  }
+  const message = rawMessage.toLowerCase();
+  if (
+    message.includes('checksum') ||
+    message.includes('integrity') ||
+    message.includes('sha-256') ||
+    message.includes('did not pass integrity')
+  ) {
+    return '下载的语音识别模型没有通过完整性校验。请重新准备，应用会替换无效文件。';
+  }
+  if (
+    message.includes('incomplete') ||
+    message.includes('did not finish') ||
+    message.includes('empty file')
+  ) {
+    return '语音识别模型还没有完整下载。请重试准备；如果网络受限，可以在设置中复制下载链接并手动选择完整模型文件。';
+  }
+  if (
+    message.includes('download') ||
+    message.includes('network') ||
+    message.includes('connection') ||
+    message.includes('timed out') ||
+    message.includes('timeout') ||
+    message.includes('http status') ||
+    message.includes('trusted source')
+  ) {
+    return '语音识别模型暂时无法下载。请检查网络后重试，或在语音识别设置中复制下载链接后手动导入。';
+  }
+  if (
+    message.includes('executable') ||
+    message.includes('whisper-cli') ||
+    message.includes('sidecar')
+  ) {
+    return '本机语音识别程序还没有准备好。请打开语音识别设置，完成自动准备或选择本机 whisper-cli。';
+  }
+  if (
+    message.includes('model') ||
+    message.includes('modelpath')
+  ) {
+    return '离线语音识别模型还没有准备好。请重试准备，或在设置中选择已下载完成的模型文件。';
+  }
+
+  return rawMessage.length > 180
+    ? '语音识别准备失败。请重试，或打开语音识别设置查看详细信息。'
+    : rawMessage;
+}
+
 function getSmartSliceSpeechSetupProgressLabel(progress: AutoCutSpeechTranscriptionModelDownloadProgressEvent | null) {
   if (!progress) {
-    return 'Waiting for local model download';
+    return '等待离线模型准备';
+  }
+  if (progress.errorMessage) {
+    return createSmartSliceSpeechSetupFriendlyError(progress.errorMessage);
   }
 
   const downloaded = formatSmartSliceSpeechSetupBytes(progress.downloadedBytes);
@@ -237,27 +301,28 @@ function createSmartSliceSpeechSetupStatusText(
   errorMessage: string,
 ) {
   if (errorMessage) {
-    return errorMessage;
+    return createSmartSliceSpeechSetupFriendlyError(errorMessage);
   }
   if (!status) {
-    return 'Checking local speech-to-text runtime before Smart Slice.';
+    return '正在检查智能切片需要的语音识别能力。';
   }
   if (status.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready) {
-    return 'Local speech-to-text is ready. Smart Slice can now analyze transcript evidence.';
+    return '语音识别已准备好，智能切片可以继续分析语音内容。';
   }
   if (status.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.needsExecutable) {
     return status.capabilities.toolchainReady
-      ? 'Local Whisper executable is available through the native host. AutoCut will save the verified path before slicing.'
-      : `AutoCut checked Settings, SDKWORK_AUTOCUT_WHISPER_EXECUTABLE, bundled sidecar, PATH, Homebrew, apt/system paths, and common local install directories, but no verified whisper-cli executable is available. Default bundled sidecar target: ${status.defaults.executablePath || status.defaults.executableDirectory}. Package the approved whisper-cli sidecar for this platform or select a verified local whisper-cli in Speech-to-Text settings, then retry initialization.`;
+      ? '已找到本机语音识别程序，应用会在开始切片前保存检测结果。'
+      : '还没有找到可用的本机语音识别程序。请打开语音识别设置，完成自动准备或选择已安装的 whisper-cli。';
   }
   if (status.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.needsModel) {
-    return `Local Whisper model is required. AutoCut will download ${status.model.preset.label} into ${status.defaults.modelDirectory} and verify it before slicing.`;
+    return `需要离线识别模型。应用将下载并校验 ${status.model.preset.label}，完成后继续智能切片。`;
   }
   if (status.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.needsTest) {
-    return 'Local speech-to-text paths exist but must pass provider validation before slicing.';
+    return '语音识别程序和模型已选择，还需要通过一次可用性检测。';
   }
 
-  return status.diagnostics[0] ?? 'Local speech-to-text setup must be ready before Smart Slice can run.';
+  return createSmartSliceSpeechSetupFriendlyError(status.diagnostics[0] ?? '') ||
+    '需要先准备好语音识别能力，智能切片才能分析视频中的语音内容。';
 }
 
 function waitForSmartSliceUiYield() {
@@ -692,10 +757,10 @@ export function SlicerPage() {
       await waitForSmartSliceUiYield();
       const result = await initializeAutoCutLocalSpeechTranscriptionSetup();
       setSpeechSetupStatus(result.status);
-      toast('Local speech-to-text is ready. Smart Slice will continue with verified transcript evidence.', 'success');
+      toast('语音识别已准备好，智能切片将继续处理。', 'success');
       return result.status.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready;
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Local speech-to-text setup was not ready before Smart Slice could start.';
+      const message = error instanceof Error ? error.message : '语音识别还没有准备好。';
       setSpeechSetupErrorMessage(message);
       reportAutoCutDiagnostic('error', 'slicer.speech-setup', 'Smart Slice local STT initialization failed', error);
       await refreshSmartSliceLocalSpeechTranscriptionSetup().catch(() => null);
@@ -1677,7 +1742,7 @@ export function SlicerPage() {
                   {speechSetupErrorMessage ? <AlertTriangle size={18} /> : isInitializingSpeechSetup ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
                 </div>
                 <div>
-                  <h2 id="smart-slice-speech-setup-title" className="text-sm font-semibold text-gray-100">Local speech-to-text setup</h2>
+                  <h2 id="smart-slice-speech-setup-title" className="text-sm font-semibold text-gray-100">准备语音识别能力</h2>
                   <p className="mt-1 text-xs leading-5 text-gray-400">{createSmartSliceSpeechSetupStatusText(speechSetupStatus, speechSetupErrorMessage)}</p>
                 </div>
               </div>
@@ -1686,7 +1751,7 @@ export function SlicerPage() {
                 onClick={() => setSpeechSetupDialogOpen(false)}
                 className="rounded-md p-1.5 text-gray-500 transition-colors hover:bg-[#202020] hover:text-gray-200"
                 disabled={isInitializingSpeechSetup}
-                aria-label="Close local speech-to-text setup"
+                aria-label="Close speech recognition setup"
               >
                 <XCircle size={18} />
               </button>
@@ -1695,16 +1760,16 @@ export function SlicerPage() {
             <div className="space-y-4 px-5 py-4">
               <div className="grid grid-cols-3 gap-2">
                 {[
-                  { label: 'Executable', ready: speechSetupStatus?.executable.ready, detail: speechSetupStatus?.executable.path || speechSetupStatus?.defaults.executablePath || speechSetupStatus?.executable.sourceKind || speechSetupStatus?.defaults.executableStrategy || 'checking' },
-                  { label: 'Model', ready: speechSetupStatus?.model.ready, detail: speechSetupStatus?.model.path || speechSetupStatus?.defaults.modelPath || speechSetupStatus?.model.preset.label || 'recommended' },
-                  { label: 'Provider test', ready: speechSetupStatus?.test.ready, detail: speechSetupStatus?.readiness ?? 'checking' },
+                  { label: '识别程序', ready: speechSetupStatus?.executable.ready, detail: formatSmartSliceSpeechSetupPath(speechSetupStatus?.executable.path || speechSetupStatus?.defaults.executablePath) || (speechSetupStatus?.executable.ready ? '已检测' : '待准备') },
+                  { label: '离线模型', ready: speechSetupStatus?.model.ready, detail: formatSmartSliceSpeechSetupPath(speechSetupStatus?.model.path || speechSetupStatus?.defaults.modelPath) || speechSetupStatus?.model.preset.label || '推荐模型' },
+                  { label: '可用性检测', ready: speechSetupStatus?.test.ready, detail: speechSetupStatus?.test.ready ? '已通过' : '待检测' },
                 ].map((item) => (
                   <div key={item.label} className="rounded-md border border-[#252525] bg-[#151515] p-3">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{item.label}</span>
                       {item.ready ? <CheckCircle2 size={14} className="text-green-400" /> : <AlertTriangle size={14} className="text-amber-400" />}
                     </div>
-                    <div className="mt-2 break-all text-xs leading-4 text-gray-300">{item.detail}</div>
+                    <div className="mt-2 truncate text-xs leading-4 text-gray-300" title={item.detail}>{item.detail}</div>
                   </div>
                 ))}
               </div>
@@ -1712,11 +1777,13 @@ export function SlicerPage() {
               <div className="rounded-md border border-[#252525] bg-[#151515] p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-xs font-semibold text-gray-200">Whisper CLI sidecar</div>
-                    <div className="mt-1 text-[11px] text-gray-500">{speechSetupStatus?.executable.sourceKind || 'system discovery'}</div>
+                    <div className="text-xs font-semibold text-gray-200">本机识别程序</div>
+                    <div className="mt-1 text-[11px] text-gray-500">
+                      {speechSetupStatus?.executable.ready ? '已找到可用程序' : '正在检查程序'}
+                    </div>
                   </div>
                   <div className={`text-xs font-bold ${speechSetupStatus?.executable.ready ? 'text-emerald-300' : 'text-amber-300'}`}>
-                    {speechSetupStatus?.executable.ready ? 'verified' : 'required'}
+                    {speechSetupStatus?.executable.ready ? '已就绪' : '待准备'}
                   </div>
                 </div>
                 <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#252525]">
@@ -1725,19 +1792,15 @@ export function SlicerPage() {
                     style={{ width: speechSetupStatus?.executable.ready ? '100%' : '8%' }}
                   />
                 </div>
-                <div className="mt-2 flex justify-between text-[10px] text-gray-600">
-                  <span>{speechSetupStatus?.defaults.executableStrategy || 'bundled sidecar > local discovery'}</span>
-                  <span>{speechSetupStatus?.capabilities.executableDownloadReady ? 'legacy download disabled' : 'packaged'}</span>
-                </div>
-                <div className="mt-2 break-all text-[10px] text-gray-500">
-                  {speechSetupStatus?.executable.path || speechSetupStatus?.defaults.executablePath || 'Executable path will be resolved by the desktop host'}
+                <div className="mt-2 truncate text-[10px] text-gray-500" title={speechSetupStatus?.executable.path || speechSetupStatus?.defaults.executablePath || ''}>
+                  {formatSmartSliceSpeechSetupPath(speechSetupStatus?.executable.path || speechSetupStatus?.defaults.executablePath) || '应用会自动检测本机识别程序'}
                 </div>
               </div>
 
               <div className="rounded-md border border-[#252525] bg-[#151515] p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-xs font-semibold text-gray-200">Offline Whisper model</div>
+                    <div className="text-xs font-semibold text-gray-200">离线识别模型</div>
                     <div className="mt-1 text-[11px] text-gray-500">{getSmartSliceSpeechSetupProgressLabel(speechModelDownloadProgress)}</div>
                   </div>
                   <div className="text-xs font-bold text-blue-300">{speechModelDownloadProgress?.progress ?? 0}%</div>
@@ -1749,19 +1812,20 @@ export function SlicerPage() {
                   />
                 </div>
                 <div className="mt-2 flex justify-between text-[10px] text-gray-600">
-                  <span>{speechModelDownloadProgress?.phase ?? 'waiting'}</span>
+                  <span>{speechModelDownloadProgress ? '下载进度' : '等待准备'}</span>
                   <span>
                     {formatSmartSliceSpeechSetupBytes(speechModelDownloadProgress?.downloadedBytes)}
                     {speechModelDownloadProgress?.totalBytes ? ` / ${formatSmartSliceSpeechSetupBytes(speechModelDownloadProgress.totalBytes)}` : ''}
                   </span>
                 </div>
-                <div className="mt-2 break-all text-[10px] text-gray-500">
-                  {speechModelDownloadProgress?.modelPath || speechSetupStatus?.model.path || speechSetupStatus?.defaults.modelPath || 'Model path will be resolved by the desktop host'}
+                <div className="mt-2 truncate text-[10px] text-gray-500" title={speechModelDownloadProgress?.modelPath || speechSetupStatus?.model.path || speechSetupStatus?.defaults.modelPath || ''}>
+                  {formatSmartSliceSpeechSetupPath(speechModelDownloadProgress?.modelPath || speechSetupStatus?.model.path || speechSetupStatus?.defaults.modelPath) || '应用会自动保存离线模型'}
                 </div>
               </div>
 
               {speechSetupStatus?.diagnostics?.length ? (
                 <div className="max-h-24 overflow-y-auto rounded-md border border-[#252525] bg-[#0b0b0b] p-3 text-[11px] leading-5 text-gray-400">
+                  <div className="mb-1 font-semibold text-gray-500">详细信息</div>
                   {speechSetupStatus.diagnostics.map((diagnostic, index) => (
                     <div key={`${diagnostic}:${index}`}>{diagnostic}</div>
                   ))}
@@ -1777,7 +1841,7 @@ export function SlicerPage() {
                 onClick={() => navigate('/settings?tab=speech')}
               >
                 <ExternalLink size={14} />
-                Speech-to-Text settings
+                打开语音识别设置
               </Button>
               <Button
                 type="button"
@@ -1786,7 +1850,7 @@ export function SlicerPage() {
                 disabled={isInitializingSpeechSetup}
               >
                 {isInitializingSpeechSetup ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-                {isInitializingSpeechSetup ? 'Initializing' : 'Initialize again'}
+                {isInitializingSpeechSetup ? '准备中' : '重新准备'}
               </Button>
             </div>
           </div>

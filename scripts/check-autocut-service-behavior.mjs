@@ -12150,7 +12150,7 @@ async function run() {
     });
     await assertRejects(
       () => services.setupAutoCutLocalSpeechTranscriptionModelPreset('whisper-cpp-large-v3-turbo-q5'),
-      'downloaded local speech-to-text model is incomplete',
+      'speech recognition model download did not finish',
       'setupAutoCutLocalSpeechTranscriptionModelPreset rejects incomplete native model downloads before saving modelPath',
     );
     services.configureAutoCutNativeHostClient({

@@ -2828,33 +2828,28 @@ fn download_autocut_speech_transcription_model_in_root(
         .canonicalize()
         .map_err(|error| format!("canonicalize AutoCut speech model directory failed: {error}"))?;
     let target_path = canonical_model_directory.join(&request.file_name);
-    if target_path.exists() {
-        let byte_size = fs::metadata(&target_path)
-            .map_err(|error| {
-                format!("read existing AutoCut speech model metadata failed: {error}")
-            })?
-            .len();
-        if byte_size > 0 {
-            emit_autocut_speech_transcription_model_download_progress(
-                app,
-                &request,
-                "skipped",
-                byte_size,
-                Some(byte_size),
-                Some(target_path.display().to_string()),
-                None,
-            );
-            return Ok(AutoCutSpeechTranscriptionModelDownloadResult {
-                provider_id: request.provider_id,
-                preset_id: request.preset_id,
-                file_name: request.file_name,
-                model_path: target_path.display().to_string(),
-                byte_size,
-                downloaded: false,
-                source_url: request.url.clone(),
-                sha256: request.sha256,
-            });
-        }
+    if let Some(byte_size) =
+        validate_existing_autocut_speech_transcription_model(&target_path, &request)?
+    {
+        emit_autocut_speech_transcription_model_download_progress(
+            app,
+            &request,
+            "skipped",
+            byte_size,
+            Some(byte_size),
+            Some(target_path.display().to_string()),
+            None,
+        );
+        return Ok(AutoCutSpeechTranscriptionModelDownloadResult {
+            provider_id: request.provider_id,
+            preset_id: request.preset_id,
+            file_name: request.file_name,
+            model_path: target_path.display().to_string(),
+            byte_size,
+            downloaded: false,
+            source_url: request.url.clone(),
+            sha256: request.sha256,
+        });
     }
 
     let temporary_path = canonical_model_directory.join(format!("{}.download", request.file_name));
@@ -3049,6 +3044,39 @@ fn autocut_speech_transcription_model_download_urls(
     }
     urls.retain(|url| !url.is_empty());
     urls
+}
+
+fn validate_existing_autocut_speech_transcription_model(
+    target_path: &Path,
+    request: &AutoCutSpeechTranscriptionModelDownloadRequest,
+) -> Result<Option<u64>, String> {
+    if !target_path.exists() {
+        return Ok(None);
+    }
+
+    let byte_size = fs::metadata(target_path)
+        .map_err(|error| format!("read existing AutoCut speech model metadata failed: {error}"))?
+        .len();
+    if byte_size == 0 {
+        let _ = fs::remove_file(target_path);
+        return Ok(None);
+    }
+
+    match verify_file_sha256_for_label(
+        target_path,
+        &request.sha256,
+        "existing AutoCut speech transcription model",
+    ) {
+        Ok(()) => Ok(Some(byte_size)),
+        Err(error) => {
+            fs::remove_file(target_path).map_err(|remove_error| {
+                format!(
+                    "remove invalid existing AutoCut speech transcription model failed after {error}: {remove_error}"
+                )
+            })?;
+            Ok(None)
+        }
+    }
 }
 
 fn validate_autocut_speech_transcription_model_download_url(
@@ -14042,6 +14070,43 @@ mod tests {
             error.contains("pinned SHA-256 model digest"),
             "missing digest error should explain pinned model digest contract: {error}"
         );
+    }
+
+    #[test]
+    fn speech_model_download_replaces_invalid_existing_model_instead_of_skipping() {
+        let root = unique_temp_dir("sdkwork-autocut-speech-invalid-existing-model");
+        let model_directory = root
+            .join(AUTOCUT_MEDIA_MODEL_DIR)
+            .join(AUTOCUT_MEDIA_SPEECH_MODEL_DIR);
+        fs::create_dir_all(&model_directory).expect("create speech model dir");
+        let model_path = model_directory.join("ggml-invalid-existing.bin");
+        fs::write(&model_path, b"partial model").expect("write invalid existing model");
+        let expected_sha256 = sha256_hex(b"valid replacement model");
+        let request = AutoCutSpeechTranscriptionModelDownloadRequest {
+            provider_id: "local-whisper-cli".to_string(),
+            preset_id: "invalid-existing-model".to_string(),
+            file_name: "ggml-invalid-existing.bin".to_string(),
+            url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-invalid-existing.bin".to_string(),
+            mirror_urls: None,
+            sha256: expected_sha256.clone(),
+            output_root_dir: None,
+        };
+
+        let existing_result =
+            validate_existing_autocut_speech_transcription_model(&model_path, &request)
+                .expect("invalid existing model should be removable");
+
+        assert_eq!(existing_result, None);
+        assert!(
+            !model_path.exists(),
+            "invalid existing model should be removed before retrying download"
+        );
+        fs::write(&model_path, b"valid replacement model").expect("write valid replacement model");
+        let valid_result =
+            validate_existing_autocut_speech_transcription_model(&model_path, &request)
+                .expect("valid replacement model should pass checksum");
+        assert_eq!(valid_result, Some(23));
+        assert_eq!(expected_sha256, calculate_file_sha256(&model_path).expect("hash replacement"));
     }
 
     #[test]

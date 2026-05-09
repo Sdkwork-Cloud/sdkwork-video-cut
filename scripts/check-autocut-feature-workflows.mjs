@@ -521,8 +521,8 @@ assertIncludes(
 );
 assertIncludes(
   slicerPage,
-  'Whisper CLI sidecar',
-  'Slicer local STT setup dialog renders visible packaged whisper-cli sidecar status',
+  '本机识别程序',
+  'Slicer local STT setup dialog renders visible packaged speech recognition app status',
 );
 assertIncludes(
   slicerPage,
@@ -575,18 +575,18 @@ assertIncludes(
 );
 assertIncludes(
   slicerPage,
-  'PATH, Homebrew, apt/system paths, and common local install directories',
-  'Slicer local STT setup dialog explains every automatic local whisper-cli discovery strategy before asking for manual configuration',
+  'createSmartSliceSpeechSetupFriendlyError',
+  'Slicer local STT setup dialog converts technical setup failures into user-friendly guidance',
 );
 assertIncludes(
   slicerPage,
-  'Package the approved whisper-cli sidecar',
-  'Slicer local STT setup dialog explains the packaged sidecar requirement instead of promising runtime executable auto-install',
+  '打开语音识别设置',
+  'Slicer local STT setup dialog links manual recovery to the product settings page',
 );
 assertIncludes(
   slicerPage,
-  'mt-2 break-all text-[10px] text-gray-500',
-  'Slicer local STT setup dialog wraps long default model paths instead of truncating the visible download destination',
+  'formatSmartSliceSpeechSetupPath',
+  'Slicer local STT setup dialog summarizes long local paths without exposing technical paths as the primary content',
 );
 const speechSettingsPage = read('packages/sdkwork-autocut-settings/src/pages/SettingsPage.tsx');
 assertIncludes(
@@ -1549,7 +1549,7 @@ assertIncludes(settingsPage, "listenAutoCutEvent('speechTranscriptionModelDownlo
 assertRule(!settingsPage.includes("listenAutoCutEvent('speechTranscriptionExecutableDownloadProgress'"), 'SettingsPage does not listen for executable download progress because whisper-cli is packaged as a sidecar');
 assertIncludes(settingsPage, 'speechSetupStatus', 'SettingsPage renders a productized local STT setup status object');
 assertIncludes(settingsPage, 'speechModelDownloadProgress', 'SettingsPage stores visible local STT model download progress state');
-assertIncludes(settingsPage, 'Whisper CLI sidecar', 'SettingsPage stores and renders visible local STT sidecar verification state');
+assertIncludes(settingsPage, 'settings.speech.readinessTitle', 'SettingsPage renders a user-facing local STT readiness summary');
 assertIncludes(settingsPage, 'downloadedBytes', 'SettingsPage displays local STT model download byte progress');
 assertIncludes(settingsPage, 'totalBytes', 'SettingsPage displays local STT model download total byte progress when available');
 assertIncludes(settingsPage, 'handleInitializeSpeechTranscriptionSetup', 'SettingsPage owns a single local STT initialize action that detects executable, downloads model, and verifies probe');
@@ -1663,11 +1663,11 @@ assertRule(
   !/[\u00c0-\u00ff]\u0080?|�/u.test(i18nResources),
   'AutoCut i18n resources do not contain mojibake or replacement characters',
 );
-assertIncludes(normalizedSettingsZhMessages, "setupChecklist: '本地配置清单'", 'zh-CN i18n resources localize the local STT setup checklist in Chinese');
-assertIncludes(normalizedSettingsZhMessages, "setupStatus: {\n      label: '本地运行时'", 'zh-CN i18n resources localize local STT setup status in Chinese');
-assertIncludes(normalizedSettingsZhMessages, "modelCatalog: '本地模型下载'", 'zh-CN i18n resources localize the local STT model catalog in Chinese');
+assertIncludes(normalizedSettingsZhMessages, "readinessTitle: '语音识别状态'", 'zh-CN i18n resources localize the local STT readiness summary in Chinese');
+assertIncludes(normalizedSettingsZhMessages, "setupStatus: {\n      label: '准备状态'", 'zh-CN i18n resources localize local STT setup status in Chinese');
+assertIncludes(normalizedSettingsZhMessages, "modelCatalog: '离线模型'", 'zh-CN i18n resources localize the local STT model catalog in Chinese');
 assertRule(!normalizedSettingsZhMessages.includes("setupChecklist: 'Local setup checklist'"), 'zh-CN settings resources do not fall back to English local STT setup copy');
-assertIncludes(normalizedSettingsEnMessages, "setupChecklist: 'Local setup checklist'", 'en-US i18n resources localize the local STT setup checklist in English');
+assertIncludes(normalizedSettingsEnMessages, "readinessTitle: 'Speech recognition status'", 'en-US i18n resources localize the local STT readiness summary in English');
 assertIncludes(typesSource, 'AUTOCUT_SPEECH_TRANSCRIPTION_LANGUAGE_OPTIONS', 'AutoCut types centralize supported speech transcription language options');
 assertIncludes(typesSource, 'AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS', 'AutoCut types centralize supported local speech model file extensions');
 const workflowPreferencesService = read('packages/sdkwork-autocut-services/src/service/workflow-preferences.service.ts');

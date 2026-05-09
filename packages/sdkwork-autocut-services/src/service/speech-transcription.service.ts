@@ -212,6 +212,7 @@ export async function setupAutoCutLocalSpeechTranscriptionModelPreset(
     sha256: preset.sha256,
     ...(outputRootDir ? { outputRootDir } : {}),
   }).catch((error) => {
+    const userMessage = createAutoCutLocalSpeechTranscriptionDownloadFailureMessage(error);
     dispatchAutoCutSpeechTranscriptionModelDownloadProgress({
       providerId: preset.providerId,
       presetId: preset.id,
@@ -221,9 +222,15 @@ export async function setupAutoCutLocalSpeechTranscriptionModelPreset(
       totalBytes: preset.minimumByteSize,
       progress: 0,
       sourceUrl: preset.url,
-      errorMessage: error instanceof Error ? error.message : 'AutoCut local speech-to-text model download failed.',
+      errorMessage: userMessage,
     });
-    throw error;
+    reportAutoCutDiagnostic(
+      'error',
+      'speech-transcription',
+      'Local speech-to-text model download failed',
+      error,
+    );
+    throw new Error(userMessage, { cause: error });
   });
   try {
     if (modelDownload.providerId !== preset.providerId || modelDownload.presetId !== preset.id) {
@@ -241,6 +248,7 @@ export async function setupAutoCutLocalSpeechTranscriptionModelPreset(
     }
     validateAutoCutLocalSpeechTranscriptionModelDownloadResult(modelDownload.byteSize, preset);
   } catch (error) {
+    const userMessage = createAutoCutLocalSpeechTranscriptionDownloadFailureMessage(error);
     dispatchAutoCutSpeechTranscriptionModelDownloadProgress({
       providerId: preset.providerId,
       presetId: preset.id,
@@ -251,9 +259,15 @@ export async function setupAutoCutLocalSpeechTranscriptionModelPreset(
       progress: 0,
       modelPath: modelDownload.modelPath,
       sourceUrl: preset.url,
-      errorMessage: error instanceof Error ? error.message : 'AutoCut local speech-to-text model validation failed.',
+      errorMessage: userMessage,
     });
-    throw error;
+    reportAutoCutDiagnostic(
+      'error',
+      'speech-transcription',
+      'Local speech-to-text model validation failed',
+      error,
+    );
+    throw new Error(userMessage, { cause: error });
   }
   dispatchAutoCutSpeechTranscriptionModelDownloadProgress({
     providerId: preset.providerId,
@@ -1136,9 +1150,69 @@ function validateAutoCutLocalSpeechTranscriptionModelDownloadResult(
 ) {
   if (!Number.isFinite(byteSize) || byteSize < preset.minimumByteSize) {
     throw new Error(
-      `AutoCut downloaded local speech-to-text model is incomplete. ${preset.label} should be about ${preset.sizeLabel}; use Settings > Speech-to-Text > Use and download the recommended offline Whisper model, then run the provider test again.`,
+      `The speech recognition model download is incomplete. ${preset.label} should be about ${preset.sizeLabel}. Retry automatic setup, or copy the model download link and select the completed local file in Speech-to-Text settings.`,
     );
   }
+}
+
+export function createAutoCutLocalSpeechTranscriptionDownloadFailureMessage(error: unknown) {
+  const rawMessage = error instanceof Error ? error.message : String(error ?? '');
+  const message = rawMessage.toLowerCase();
+  if (!rawMessage.trim()) {
+    return 'The speech recognition model could not be prepared. Check your network connection and retry, or copy the model download link and select the completed local file in Speech-to-Text settings.';
+  }
+
+  if (
+    message.includes('checksum mismatch') ||
+    message.includes('sha-256') ||
+    message.includes('digest')
+  ) {
+    return 'The downloaded speech recognition model did not pass integrity verification. Retry automatic setup; the app will replace the invalid file with a verified copy.';
+  }
+
+  if (
+    message.includes('incomplete') ||
+    message.includes('empty file') ||
+    message.includes('too small') ||
+    message.includes('minimum') ||
+    message.includes('content-length')
+  ) {
+    return 'The speech recognition model download did not finish. Retry automatic setup, or copy the model download link and select the completed local file in Speech-to-Text settings.';
+  }
+
+  if (
+    message.includes('timed out') ||
+    message.includes('timeout') ||
+    message.includes('network') ||
+    message.includes('dns') ||
+    message.includes('connection') ||
+    message.includes('http status') ||
+    message.includes('failed for every trusted source')
+  ) {
+    return 'The speech recognition model could not be downloaded from the available sources. Check your network connection and retry; if your network blocks the download, copy the model link and import the file manually in Speech-to-Text settings.';
+  }
+
+  if (
+    message.includes('create autocut speech model directory failed') ||
+    message.includes('temp file') ||
+    message.includes('write autocut speech transcription model') ||
+    message.includes('install autocut speech transcription model') ||
+    message.includes('permission') ||
+    message.includes('access is denied')
+  ) {
+    return 'The app could not save the speech recognition model. Check that the output directory is writable, then retry automatic setup.';
+  }
+
+  if (
+    message.includes('trusted') ||
+    message.includes('url') ||
+    message.includes('preset') ||
+    message.includes('provider')
+  ) {
+    return 'The speech recognition model source is not valid for this version of the app. Update the app or contact support with the diagnostic log.';
+  }
+
+  return 'The speech recognition model could not be prepared. Retry automatic setup, or copy the model download link and select the completed local file in Speech-to-Text settings.';
 }
 
 function createAutoCutLocalSpeechTranscriptionSetupGuidance(

@@ -63,6 +63,7 @@ import {
 import type {
   AppSettings,
   AutoCutAppLocale,
+  AutoCutLocalSpeechTranscriptionSetupReadiness,
   AutoCutLocalSpeechTranscriptionSetupStatus,
   AutoCutLlmSettings,
   AutoCutSpeechTranscriptionModelDownloadProgressEvent,
@@ -126,6 +127,16 @@ function formatAutoCutByteCount(bytes: number) {
     unitIndex += 1;
   }
   return `${value >= 10 || unitIndex === 0 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function formatAutoCutSpeechSetupPath(path: string | undefined) {
+  const value = path?.trim();
+  if (!value) {
+    return '';
+  }
+  const normalized = value.replace(/\\/gu, '/');
+  const fileName = normalized.split('/').filter(Boolean).at(-1);
+  return fileName || value;
 }
 
 function FieldLabel({ children }: { children: ReactNode }) {
@@ -619,10 +630,33 @@ export function SettingsPage() {
   const speechSetupStatusLabel = readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.downloading
     ? t('settings.speech.setupStatus.downloading')
     : t(`settings.speech.setupStatus.${readiness ?? 'checking'}`);
+  const speechReadinessDescriptionKey = {
+    ready: 'settings.speech.readyDescription',
+    downloading: 'settings.speech.downloadingDescription',
+    'needs-executable': 'settings.speech.needsExecutableDescription',
+    'needs-model': 'settings.speech.needsModelDescription',
+    'needs-test': 'settings.speech.needsTestDescription',
+    unsupported: 'settings.speech.unsupportedDescription',
+    failed: 'settings.speech.failedDescription',
+    checking: 'settings.speech.checkingDescription',
+  } satisfies Record<AutoCutLocalSpeechTranscriptionSetupReadiness | 'checking', string>;
+  const speechReadinessDescription = t(speechReadinessDescriptionKey[readiness ?? 'checking']);
   const downloadedBytes = speechModelDownloadProgress?.downloadedBytes ?? 0;
   const totalBytes = speechModelDownloadProgress?.totalBytes;
   const speechDownloadProgressPercent = speechModelDownloadProgress?.progress ??
     (totalBytes && totalBytes > 0 ? Math.round((downloadedBytes / totalBytes) * 100) : 0);
+  const speechExecutablePath = speechSetupStatus?.executable.path ||
+    settings.speechTranscription.executablePath ||
+    speechSetupStatus?.defaults.executablePath ||
+    '';
+  const speechModelPath = speechSetupStatus?.model.path ||
+    settings.speechTranscription.modelPath ||
+    speechSetupStatus?.defaults.modelPath ||
+    '';
+  const speechDisplayExecutablePath = formatAutoCutSpeechSetupPath(speechExecutablePath) ||
+    t('settings.speech.setupStatus.executableMissing');
+  const speechDisplayModelPath = formatAutoCutSpeechSetupPath(speechModelPath) ||
+    t('settings.speech.setupStatus.modelMissing');
   const speechSetupChecklist = [
     {
       id: 'executableReady',
@@ -854,18 +888,31 @@ export function SettingsPage() {
 
                     {activeSpeechTranscriptionProvider.kind === 'local' && (
                       <>
-                        <div className="space-y-3 rounded-md border border-[#222] bg-[#111] p-4 md:col-span-2">
-                          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="space-y-4 rounded-md border border-[#222] bg-[#111] p-4 md:col-span-2">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                             <div className="min-w-0">
                               <div className="flex flex-wrap items-center gap-2">
-                                <FieldLabel>{t('settings.speech.setupStatus.label')}</FieldLabel>
-                                <StatusBadge tone={speechSetupStatusTone}>
-                                  {speechSetupStatusLabel}
-                                </StatusBadge>
+                                <FieldLabel>{t('settings.speech.readinessTitle')}</FieldLabel>
+                                <StatusBadge tone={speechSetupStatusTone}>{speechSetupStatusLabel}</StatusBadge>
                               </div>
-                              <div className="mt-2 grid gap-1 font-mono text-[11px] text-gray-500">
-                                <span className="truncate">{speechSetupStatus?.executable.path || settings.speechTranscription.executablePath || speechSetupStatus?.defaults.executablePath || t('settings.speech.setupStatus.executableMissing')}</span>
-                                <span className="truncate">{speechSetupStatus?.model.path || settings.speechTranscription.modelPath || t('settings.speech.setupStatus.modelMissing')}</span>
+                              <p className="mt-2 max-w-3xl text-xs leading-relaxed text-gray-400">{speechReadinessDescription}</p>
+                              <div className="mt-3 grid gap-2 text-xs text-gray-500 sm:grid-cols-2">
+                                <div className="rounded-md border border-[#242424] bg-[#0b0b0b] px-3 py-2">
+                                  <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-600">
+                                    {t('settings.speech.executableSource')}
+                                  </span>
+                                  <span className="mt-1 block truncate text-gray-300" title={speechExecutablePath}>
+                                    {speechDisplayExecutablePath}
+                                  </span>
+                                </div>
+                                <div className="rounded-md border border-[#242424] bg-[#0b0b0b] px-3 py-2">
+                                  <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-600">
+                                    {t('settings.speech.modelLocation')}
+                                  </span>
+                                  <span className="mt-1 block truncate text-gray-300" title={speechModelPath}>
+                                    {speechDisplayModelPath}
+                                  </span>
+                                </div>
                               </div>
                             </div>
                             <Button
@@ -881,19 +928,22 @@ export function SettingsPage() {
                               {isConfiguringSpeechModel ? t('settings.speech.configuring') : t('settings.action.initializeSpeech')}
                             </Button>
                           </div>
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between gap-3 text-[11px] text-gray-500">
-                              <span className="truncate">
-                                Whisper CLI sidecar {speechSetupStatus?.executable.sourceKind || speechSetupStatus?.defaults.executableStrategy || t('settings.speech.setupStatus.executableMissing')}
-                              </span>
-                              <span className="font-mono">{speechSetupStatus?.executable.ready ? 'verified' : 'required'}</span>
-                            </div>
-                            <div className="h-2 w-full overflow-hidden rounded-full border border-[#222] bg-[#050505]">
+                          <div className="grid grid-cols-1 gap-2 lg:grid-cols-3">
+                            {speechSetupChecklist.map((item) => (
                               <div
-                                className="h-full min-w-[4px] rounded-full bg-emerald-500"
-                                style={{ width: speechSetupStatus?.executable.ready ? '100%' : '4%' }}
-                              />
-                            </div>
+                                key={item.id}
+                                className={`flex min-h-11 items-center justify-between gap-3 rounded-md border px-3 py-2 ${
+                                  item.ready
+                                    ? 'border-green-500/20 bg-green-500/10 text-green-400'
+                                    : 'border-yellow-500/20 bg-yellow-500/10 text-yellow-400'
+                                }`}
+                              >
+                                <span className="min-w-0 text-xs font-medium">{item.label}</span>
+                                <StatusBadge tone={item.ready ? 'green' : 'yellow'}>
+                                  {item.ready ? t('settings.status.ready') : t('settings.status.required')}
+                                </StatusBadge>
+                              </div>
+                            ))}
                           </div>
                           {speechModelDownloadProgress ? (
                             <div className="space-y-2">
@@ -913,26 +963,6 @@ export function SettingsPage() {
                             </div>
                           ) : null}
                         </div>
-                        <div className="space-y-3 md:col-span-2">
-                          <FieldLabel>{t('settings.speech.setupChecklist')}</FieldLabel>
-                          <div className="grid grid-cols-1 gap-2 lg:grid-cols-3">
-                            {speechSetupChecklist.map((item) => (
-                              <div
-                                key={item.id}
-                                className={`flex min-h-10 items-center justify-between gap-3 rounded-md border px-3 py-2 ${
-                                  item.ready
-                                    ? 'border-green-500/20 bg-green-500/10 text-green-400'
-                                    : 'border-yellow-500/20 bg-yellow-500/10 text-yellow-400'
-                                }`}
-                              >
-                                <span className="min-w-0 text-xs font-medium">{item.label}</span>
-                                <StatusBadge tone={item.ready ? 'green' : 'yellow'}>
-                                  {item.ready ? t('settings.status.ready') : t('settings.status.required')}
-                                </StatusBadge>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
                         <div className="space-y-2 md:col-span-2">
                           <FieldLabel>{t('settings.field.executablePath')}</FieldLabel>
                           <div className="flex gap-3">
@@ -945,7 +975,7 @@ export function SettingsPage() {
                                 executablePath: event.target.value,
                               })}
                               onBlur={handleSaveSpeechTranscriptionSettings}
-                              className="h-10 min-w-0 flex-1 rounded-md border border-[#333] bg-[#111] px-3 font-mono text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
+                              className="h-10 min-w-0 flex-1 rounded-md border border-[#333] bg-[#111] px-3 text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
                             />
                             <Button onClick={() => handleSelectSpeechTranscriptionFile('executable')} variant="outline" className="border-[#333] text-white">
                               <FolderOpen size={16} />
@@ -954,10 +984,7 @@ export function SettingsPage() {
                           </div>
                           <FieldHelp>{t('settings.speech.local.executableHelp')}</FieldHelp>
                           {speechSetupStatus?.defaults.executablePath ? (
-                            <FieldHelp>{speechSetupStatus.defaults.executablePath}</FieldHelp>
-                          ) : null}
-                          {speechSetupStatus?.defaults.executableStrategy ? (
-                            <FieldHelp>{speechSetupStatus.defaults.executableStrategy}</FieldHelp>
+                            <FieldHelp>{formatAutoCutSpeechSetupPath(speechSetupStatus.defaults.executablePath)}</FieldHelp>
                           ) : null}
                         </div>
                         <div className="space-y-2 md:col-span-2">
@@ -971,7 +998,7 @@ export function SettingsPage() {
                                 modelPath: event.target.value,
                               })}
                               onBlur={handleSaveSpeechTranscriptionSettings}
-                              className="h-10 min-w-0 flex-1 rounded-md border border-[#333] bg-[#111] px-3 font-mono text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
+                              className="h-10 min-w-0 flex-1 rounded-md border border-[#333] bg-[#111] px-3 text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
                             />
                             <Button onClick={() => handleSelectSpeechTranscriptionFile('model')} variant="outline" className="border-[#333] text-white">
                               <FolderOpen size={16} />
@@ -984,7 +1011,7 @@ export function SettingsPage() {
                             })}
                           </FieldHelp>
                           {speechSetupStatus?.defaults.modelPath ? (
-                            <FieldHelp>{speechSetupStatus.defaults.modelPath}</FieldHelp>
+                            <FieldHelp>{formatAutoCutSpeechSetupPath(speechSetupStatus.defaults.modelPath)}</FieldHelp>
                           ) : null}
                         </div>
                         <div className="space-y-3 md:col-span-2">
@@ -999,7 +1026,7 @@ export function SettingsPage() {
                                   <div className="flex items-start justify-between gap-3">
                                     <div className="min-w-0">
                                       <div className="truncate text-sm font-semibold text-gray-100">{modelPreset.label}</div>
-                                      <div className="mt-1 truncate font-mono text-[11px] text-gray-500">{modelPreset.fileName}</div>
+                                      <div className="mt-1 text-[11px] text-gray-500">{modelPreset.sizeLabel} / {modelPreset.languageScope}</div>
                                     </div>
                                     {modelPreset.recommended ? (
                                       <StatusBadge tone="green">{t('settings.status.recommended')}</StatusBadge>
@@ -1008,7 +1035,6 @@ export function SettingsPage() {
                                   <div className="mt-3 space-y-1 text-[11px] leading-relaxed text-gray-500">
                                     <div>{modelPreset.qualityLabel}</div>
                                     <div>{modelPreset.speedLabel}</div>
-                                    <div>{modelPreset.sizeLabel} / {modelPreset.languageScope}</div>
                                   </div>
                                   <div className="mt-3 flex flex-wrap gap-2">
                                     <Button
@@ -1101,9 +1127,9 @@ export function SettingsPage() {
                     {settings.speechTranscription.lastProbeDiagnostics?.length ? (
                       <div className="space-y-2 md:col-span-2">
                         <FieldLabel>{t('settings.speech.diagnostics')}</FieldLabel>
-                        <div className="space-y-2 rounded-md border border-red-500/20 bg-red-500/10 p-3">
+                        <div className="space-y-2 rounded-md border border-[#2a2a2a] bg-[#0b0b0b] p-3">
                           {settings.speechTranscription.lastProbeDiagnostics.map((diagnostic) => (
-                            <div key={diagnostic} className="font-mono text-xs leading-relaxed text-red-300">
+                            <div key={diagnostic} className="text-xs leading-relaxed text-gray-400">
                               {diagnostic}
                             </div>
                           ))}
