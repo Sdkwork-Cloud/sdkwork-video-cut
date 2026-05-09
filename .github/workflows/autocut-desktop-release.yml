@@ -12,6 +12,10 @@ on:
         required: true
         type: boolean
         default: true
+      release_platforms:
+        description: Platform set to build: all or comma-separated platform keys
+        required: true
+        default: all
 
 permissions:
   contents: write
@@ -23,6 +27,7 @@ env:
 jobs:
   build-windows:
     name: Build Windows x86_64
+    if: ${{ inputs.release_platforms == 'all' || contains(inputs.release_platforms, 'windows-x86_64') || contains(inputs.release_platforms, 'windows') }}
     runs-on: windows-latest
     timeout-minutes: 90
     env:
@@ -103,6 +108,7 @@ jobs:
 
   build-linux:
     name: Build Ubuntu/Linux x86_64
+    if: ${{ inputs.release_platforms == 'all' || contains(inputs.release_platforms, 'linux-x86_64') || contains(inputs.release_platforms, 'linux') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     env:
@@ -187,6 +193,7 @@ jobs:
 
   build-macos:
     name: Build macOS ${{ matrix.platform }}
+    if: ${{ inputs.release_platforms == 'all' || contains(inputs.release_platforms, 'macos') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
@@ -235,7 +242,16 @@ jobs:
           pnpm prepare:release-sidecars -- --platform ${{ matrix.platform }} --accept-license
 
       - name: Build desktop bundle
-        run: pnpm tauri:build --target ${{ matrix.rust_target }}
+        run: |
+          pnpm tauri:build --target ${{ matrix.rust_target }}
+          appBundle="packages/sdkwork-autocut-desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos/SDKWork Video Cut.app"
+          appArchive="${appBundle}.tar.gz"
+          if [ ! -d "$appBundle" ]; then
+            echo "missing macOS app bundle: $appBundle" >&2
+            exit 1
+          fi
+          tar -C "$(dirname "$appBundle")" -czf "$appArchive" "$(basename "$appBundle")"
+          test -f "$appArchive"
 
       - name: Write macOS release evidence
         run: |
@@ -270,6 +286,7 @@ jobs:
   verify-multiplatform-release:
     name: Verify multiplatform release evidence
     runs-on: ubuntu-22.04
+    if: ${{ always() && inputs.release_platforms == 'all' && needs.build-windows.result == 'success' && needs.build-linux.result == 'success' && needs.build-macos.result == 'success' }}
     needs:
       - build-windows
       - build-linux
