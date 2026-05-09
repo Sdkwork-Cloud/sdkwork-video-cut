@@ -203,9 +203,11 @@ jobs:
           - platform: macos-x86_64
             rust_target: x86_64-apple-darwin
             runner: macos-15-intel
+            app_arch: x64
           - platform: macos-aarch64
             rust_target: aarch64-apple-darwin
             runner: macos-latest
+            app_arch: aarch64
     env:
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -245,11 +247,12 @@ jobs:
         run: |
           pnpm tauri:build --target ${{ matrix.rust_target }}
           appBundle="packages/sdkwork-autocut-desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos/SDKWork Video Cut.app"
-          appArchive="${appBundle}.tar.gz"
+          appArchive="$(dirname "$appBundle")/SDKWork Video Cut_0.1.5_${{ matrix.app_arch }}.app.tar.gz"
           if [ ! -d "$appBundle" ]; then
             echo "missing macOS app bundle: $appBundle" >&2
             exit 1
           fi
+          rm -f "$(dirname "$appBundle")"/*.app.tar.gz
           tar -C "$(dirname "$appBundle")" -czf "$appArchive" "$(basename "$appBundle")"
           test -f "$appArchive"
 

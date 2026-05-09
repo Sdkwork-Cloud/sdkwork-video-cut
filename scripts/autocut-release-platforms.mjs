@@ -57,7 +57,7 @@ export const autoCutReleasePlatformSpecs = {
       {
         kind: 'app',
         bundleSubdir: 'macos',
-        missingFileName: 'SDKWork Video Cut.app.tar.gz',
+        missingFileName: createAutoCutReleaseInstallerFileName('macos-x64-app'),
         suffixes: ['.app.tar.gz'],
       },
     ],
@@ -76,7 +76,7 @@ export const autoCutReleasePlatformSpecs = {
       {
         kind: 'app',
         bundleSubdir: 'macos',
-        missingFileName: 'SDKWork Video Cut.app.tar.gz',
+        missingFileName: createAutoCutReleaseInstallerFileName('macos-aarch64-app'),
         suffixes: ['.app.tar.gz'],
       },
     ],
@@ -252,8 +252,12 @@ function createAutoCutReleaseInstallerFileName(kind) {
       return `SDKWork Video Cut_${token}_amd64.AppImage`;
     case 'macos-x64-dmg':
       return `SDKWork Video Cut_${token}_x64.dmg`;
+    case 'macos-x64-app':
+      return `SDKWork Video Cut_${token}_x64.app.tar.gz`;
     case 'macos-aarch64-dmg':
       return `SDKWork Video Cut_${token}_aarch64.dmg`;
+    case 'macos-aarch64-app':
+      return `SDKWork Video Cut_${token}_aarch64.app.tar.gz`;
     default:
       throw new Error(`Unsupported AutoCut release installer file kind: ${kind}`);
   }

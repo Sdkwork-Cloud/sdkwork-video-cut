@@ -2706,8 +2706,10 @@ assertRule(
     releasePlatformsSource.includes('aarch64-apple-darwin') &&
     releasePlatformsSource.includes('deb') &&
     releasePlatformsSource.includes('appimage') &&
-    releasePlatformsSource.includes('dmg'),
-  'release platform registry maps all desktop release platforms and common Windows/Linux/macOS aliases to their native Tauri installer artifact policy',
+    releasePlatformsSource.includes('dmg') &&
+    releasePlatformsSource.includes('macos-x64-app') &&
+    releasePlatformsSource.includes('macos-aarch64-app'),
+  'release platform registry maps all desktop release platforms and common Windows/Linux/macOS aliases to their native Tauri installer artifact policy with architecture-specific macOS app archives',
 );
 assertRule(
   releaseEvidenceSource.includes('createAutoCutReleaseInstallerSpecs') &&
@@ -2765,8 +2767,9 @@ assertRule(
     desktopReleaseWorkflowSource.includes('autocut-app-manifest-release-evidence-sync.txt') &&
     desktopReleaseWorkflowSource.includes('autocut-app-manifest-release-readiness.txt') &&
     desktopReleaseWorkflowSource.includes('autocut-release-evidence-status.json') &&
+    desktopReleaseWorkflowSource.includes('SDKWork Video Cut_0.1.5_${{ matrix.app_arch }}.app.tar.gz') &&
     desktopReleaseWorkflowSource.includes('artifacts/release/autocut-release-evidence-${{ matrix.platform }}.json'),
-  'GitHub workflow builds native Windows, Linux, Intel macOS, and Apple Silicon macOS desktop release artifacts with app manifest and aggregate readiness evidence',
+  'GitHub workflow builds native Windows, Linux, Intel macOS, and Apple Silicon macOS desktop release artifacts with app manifest and aggregate readiness evidence without clobbering macOS app archives',
 );
 assertRule(
   rootPackage.scripts?.['release:commercial-ready'] === 'node scripts/check-autocut-commercial-release-readiness.mjs',

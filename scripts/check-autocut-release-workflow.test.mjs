@@ -23,6 +23,8 @@ for (const marker of [
   'macos-15-intel',
   'x86_64-apple-darwin',
   'aarch64-apple-darwin',
+  'app_arch: x64',
+  'app_arch: aarch64',
   'libwebkit2gtk-4.1-dev',
   'libayatana-appindicator3-dev',
   'librsvg2-dev',
@@ -81,6 +83,16 @@ assert.match(
   workflow,
   /pnpm tauri:build --target \$\{\{ matrix\.rust_target \}\}/u,
   'workflow builds macOS matrix targets from the repository-root pnpm Tauri command',
+);
+assert.match(
+  workflow,
+  /SDKWork Video Cut_0\.1\.5_\$\{\{ matrix\.app_arch \}\}\.app\.tar\.gz/u,
+  'workflow archives macOS app bundles with architecture-specific release asset names',
+);
+assert.match(
+  workflow,
+  /rm -f "\$\(dirname "\$appBundle"\)"\/\*\.app\.tar\.gz/u,
+  'workflow removes stale macOS app archives before uploading architecture-specific bundles',
 );
 assert.equal(
   workflow.includes('pnpm tauri:build -- --target'),

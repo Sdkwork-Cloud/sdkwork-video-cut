@@ -509,7 +509,7 @@ assert.match(linuxEvidence.installers[1].sha256, /^[a-f0-9]{64}$/u);
 const macRoot = tempRoot('autocut-release-evidence-macos');
 const macFixture = writeCrossPlatformFixture(macRoot, 'macos-aarch64', 'aarch64-apple-darwin', [
   ['dmg/SDKWork Video Cut_0.1.0_aarch64.dmg', 'macos dmg fixture'],
-  ['macos/SDKWork Video Cut.app.tar.gz', 'macos app archive fixture'],
+  ['macos/SDKWork Video Cut_0.1.0_aarch64.app.tar.gz', 'macos app archive fixture'],
 ]);
 const macEvidence = createAutoCutReleaseEvidence({
   rootDir: macRoot,
@@ -528,7 +528,7 @@ assert.deepEqual(
   ['dmg', 'app'],
 );
 assert.equal(macEvidence.installers[0].path.includes('target/aarch64-apple-darwin/release/bundle/dmg/'), true);
-assert.equal(macEvidence.installers[1].path.endsWith('.app.tar.gz'), true);
+assert.equal(macEvidence.installers[1].path.endsWith('_aarch64.app.tar.gz'), true);
 
 const outputPath = path.join(root, 'artifacts', 'release', 'autocut-release-evidence.json');
 const written = writeAutoCutReleaseEvidence({

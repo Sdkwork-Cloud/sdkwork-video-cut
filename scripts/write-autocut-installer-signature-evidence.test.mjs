@@ -116,7 +116,7 @@ assert.deepEqual(
 const macRoot = tempRoot('autocut-installer-signature-macos');
 writeTargetInstallers(macRoot, 'aarch64-apple-darwin', [
   ['dmg/SDKWork Video Cut_0.1.0_aarch64.dmg', 'macos dmg fixture'],
-  ['macos/SDKWork Video Cut.app.tar.gz', 'macos app tar fixture'],
+  ['macos/SDKWork Video Cut_0.1.0_aarch64.app.tar.gz', 'macos app tar fixture'],
 ]);
 const macEvidence = createAutoCutInstallerSignatureEvidence({
   rootDir: macRoot,
