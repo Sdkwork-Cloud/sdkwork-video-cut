@@ -3890,8 +3890,8 @@ fn slice_autocut_video_from_asset_in_root_with_toolchain(
         !subtitle_segments.is_empty(),
     )?;
     let source_duration_ms = read_ffmpeg_media_duration_millis(toolchain, &input_path).ok();
-    let apply_audio_noise_reduction =
-        request.noise_reduction && ffmpeg_media_has_audio_stream(toolchain, &input_path);
+    let source_has_audio_stream = ffmpeg_media_has_audio_stream(toolchain, &input_path);
+    let apply_audio_noise_reduction = request.noise_reduction;
     let task_uuid = autocut_uuid("ops-task")?;
     let task_output_dir = autocut_task_output_dir(&root, &task_uuid)?;
     let output_root_dir =
@@ -3969,6 +3969,7 @@ fn slice_autocut_video_from_asset_in_root_with_toolchain(
         &output_format,
         render_profile.as_ref(),
         apply_audio_noise_reduction,
+        source_has_audio_stream,
         subtitle_format.as_deref(),
         subtitle_mode,
         &subtitle_segments,
@@ -5416,6 +5417,7 @@ fn run_ffmpeg_video_slices(
     output_format: &str,
     render_profile: Option<&AutoCutVideoSliceRenderProfile>,
     apply_audio_noise_reduction: bool,
+    source_has_audio_stream: bool,
     subtitle_format: Option<&str>,
     subtitle_mode: AutoCutVideoSliceSubtitleMode,
     subtitle_segments: &[AutoCutSpeechTranscriptionSegment],
@@ -5452,6 +5454,7 @@ fn run_ffmpeg_video_slices(
             clip,
             render_profile,
             apply_audio_noise_reduction,
+            source_has_audio_stream,
             burned_subtitle_path.as_deref(),
             index,
             total_clips,
@@ -5846,7 +5849,15 @@ fn ffmpeg_video_slice_audio_noise_reduction_filter() -> &'static str {
     "highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11"
 }
 
-fn ffmpeg_video_slice_audio_filter(clip: &AutoCutVideoSliceClipRequest, apply_audio_noise_reduction: bool) -> Option<String> {
+fn ffmpeg_video_slice_audio_filter(
+    clip: &AutoCutVideoSliceClipRequest,
+    apply_audio_noise_reduction: bool,
+    source_has_audio_stream: bool,
+) -> Option<String> {
+    if !source_has_audio_stream {
+        return None;
+    }
+
     let mut filters = Vec::new();
     if apply_audio_noise_reduction {
         filters.push(ffmpeg_video_slice_audio_noise_reduction_filter().to_string());
@@ -5943,6 +5954,7 @@ fn build_ffmpeg_video_slice_command(
     clip: &AutoCutVideoSliceClipRequest,
     render_profile: Option<&AutoCutVideoSliceRenderProfile>,
     apply_audio_noise_reduction: bool,
+    source_has_audio_stream: bool,
     burned_subtitle_path: Option<&Path>,
     candidate: &AutoCutVideoSliceEncoderCandidate,
 ) -> Command {
@@ -5965,7 +5977,7 @@ fn build_ffmpeg_video_slice_command(
         command.args(["-vf", filter_chain.as_str()]);
     }
     if let Some(audio_filter) =
-        ffmpeg_video_slice_audio_filter(clip, apply_audio_noise_reduction)
+        ffmpeg_video_slice_audio_filter(clip, apply_audio_noise_reduction, source_has_audio_stream)
     {
         command.args(["-af", audio_filter.as_str()]);
     }
@@ -5984,6 +5996,7 @@ fn run_ffmpeg_video_slice_with_encoder_fallback(
     clip: &AutoCutVideoSliceClipRequest,
     render_profile: Option<&AutoCutVideoSliceRenderProfile>,
     apply_audio_noise_reduction: bool,
+    source_has_audio_stream: bool,
     burned_subtitle_path: Option<&Path>,
     clip_index: usize,
     total_clips: usize,
@@ -6022,6 +6035,7 @@ fn run_ffmpeg_video_slice_with_encoder_fallback(
             clip,
             render_profile,
             apply_audio_noise_reduction,
+            source_has_audio_stream,
             burned_subtitle_path,
             candidate,
         );
@@ -6072,6 +6086,7 @@ fn run_ffmpeg_video_slice(
     clip: &AutoCutVideoSliceClipRequest,
     render_profile: Option<&AutoCutVideoSliceRenderProfile>,
     apply_audio_noise_reduction: bool,
+    source_has_audio_stream: bool,
     burned_subtitle_path: Option<&Path>,
     clip_index: usize,
     total_clips: usize,
@@ -6086,6 +6101,7 @@ fn run_ffmpeg_video_slice(
         clip,
         render_profile,
         apply_audio_noise_reduction,
+        source_has_audio_stream,
         burned_subtitle_path,
         clip_index,
         total_clips,
@@ -9868,6 +9884,7 @@ mod tests {
             &clip,
             None,
             true,
+            true,
             None,
             &candidate,
         );
@@ -9892,6 +9909,7 @@ mod tests {
             &clip,
             None,
             false,
+            true,
             None,
             &candidate,
         );
@@ -9916,6 +9934,7 @@ mod tests {
             &clip,
             None,
             false,
+            true,
             None,
             &candidate,
         );
@@ -9928,6 +9947,26 @@ mod tests {
                 items[0] == "-af" && items[1] == "volume=enable='between(t,0.300,0.700)':volume=0"
             }),
             "smart-slice recognized cough/music fragments must be muted even when broadband denoise is disabled"
+        );
+
+        let command = build_ffmpeg_video_slice_command(
+            &toolchain,
+            input_path,
+            output_path,
+            &clip,
+            None,
+            false,
+            false,
+            None,
+            &candidate,
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert!(
+            !args.iter().any(|arg| arg == "-af"),
+            "smart-slice audio mute ranges must not add audio filters when the source has no audio stream"
         );
     }
 
