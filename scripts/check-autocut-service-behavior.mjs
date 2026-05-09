@@ -5923,6 +5923,7 @@ async function run() {
     });
     await saveVerifiedLocalSpeechTranscriptionSettings(services);
     const noiseCleanupSliceCommands = [];
+    const noiseCleanupBridgeRequests = [];
     services.configureAutoCutNativeHostClient({
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
@@ -6047,6 +6048,33 @@ async function run() {
       },
       createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
     });
+    await services.saveAutoCutLlmSettings({
+      ...(await services.getAutoCutSettings()).llm,
+      modelVendor: 'gemini',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      model: 'gemini-3-flash-preview',
+      apiKey: 'sk-noise-cleanup-plan',
+    });
+    services.configureAutoCutApprovedAiSdkBridge({
+      async createChatCompletion(request, runtime) {
+        noiseCleanupBridgeRequests.push({ request, runtime });
+        const prompt = JSON.parse(request.messages?.[1]?.content ?? '{}');
+        const selectedCandidate = prompt.candidateWindows?.[0];
+        return {
+          id: 'noise-cleanup-plan',
+          model: request.model,
+          content: JSON.stringify([
+            {
+              candidateId: selectedCandidate?.id,
+              title: 'Clean activation payoff',
+              qualityScore: 0.9,
+              continuityScore: 0.9,
+            },
+          ]),
+          runtime,
+        };
+      },
+    });
     const noiseCleanupSourceFile = createTrustedLocalMediaFile(
       commons,
       'D:/media/noise-cleanup-source.mp4',
@@ -6068,13 +6096,16 @@ async function run() {
         highlightEngine: 'keyword',
         customKeywords: ['activation', 'payoff'],
         enableNoiseReduction: true,
-        enableCoughFilter: true,
+        enableCoughFilter: false,
         enableRepeatFilter: true,
         enableSubtitles: true,
         subtitleMode: 'srt',
       }),
     );
     services.resetAutoCutNativeHostClient();
+    const noiseCleanupPrompt = JSON.parse(
+      noiseCleanupBridgeRequests[0]?.request?.messages?.[1]?.content ?? '{}',
+    );
     const noiseCleanupSliceRequest = noiseCleanupSliceCommands.find((entry) => entry.kind === 'slice')?.request;
     const noiseCleanupClip = noiseCleanupSliceRequest?.clips?.[0];
     const noiseCleanupTask = readScopedStoredArray(services, 'tasks').find((task) => task.id === noiseCleanupResult.taskId);
@@ -6082,6 +6113,13 @@ async function run() {
       noiseCleanupResult.success,
       true,
       'noise cleanup Smart Slice regression reports success',
+    );
+    assertRule(
+      noiseCleanupPrompt?.transcriptTimeline?.every((segment) =>
+        segment.text &&
+          !/\b(?:coughing|music)\b|^\s*um\b/iu.test(segment.text)
+      ),
+      'noise cleanup Smart Slice regression sends only cleaned transcript timeline text to the LLM planner',
     );
     assertRule(
       !/\b(?:coughing|music)\b|^\s*um\b/iu.test(noiseCleanupClip?.transcriptText ?? ''),
@@ -6095,19 +6133,9 @@ async function run() {
       'noise cleanup Smart Slice regression removes noise and edge filler from structured native clip transcript segments',
     );
     assertEqual(
-      noiseCleanupClip?.audioMuteRanges?.length,
-      2,
-      'noise cleanup Smart Slice regression sends short recognized noise fragments as native audio mute ranges',
-    );
-    assertEqual(
-      noiseCleanupClip?.audioMuteRanges?.[0]?.startMs,
-      8_100,
-      'noise cleanup Smart Slice regression preserves the original cough start boundary for native muting',
-    );
-    assertEqual(
-      noiseCleanupClip?.audioMuteRanges?.[1]?.endMs,
-      9_800,
-      'noise cleanup Smart Slice regression preserves the original music end boundary for native muting',
+      noiseCleanupClip?.audioMuteRanges,
+      undefined,
+      'noise cleanup Smart Slice regression respects the disabled cough and noise removal toggle for native audio muting',
     );
     assertRule(
       noiseCleanupSliceRequest?.subtitleSegments?.length === 2 &&
@@ -6122,6 +6150,7 @@ async function run() {
       ),
       'noise cleanup Smart Slice regression exposes clean transcript evidence in completed task results',
     );
+    services.configureAutoCutApprovedAiSdkBridge(null);
 
     resetStorage();
     await services.saveAutoCutWorkspaceSettings({

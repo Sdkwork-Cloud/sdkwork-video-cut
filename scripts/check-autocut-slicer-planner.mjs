@@ -1094,6 +1094,34 @@ assertArrayIncludes(
   'LLM raw-timing plans record when a model midpoint is repaired to speech-to-text boundaries',
 );
 
+const llmWeakOverlapTranscriptPlan = parseLlmSlicePlan(
+  JSON.stringify([
+    {
+      startMs: 40500,
+      durationMs: 10000,
+      title: 'Weak edge overlap',
+      reason: 'LLM selected a window that only grazes the transcript candidate edge.',
+    },
+  ]),
+  baseParams,
+  transcriptPlan,
+  transcriptSegments,
+);
+assertEqual(
+  llmWeakOverlapTranscriptPlan[0]?.startMs,
+  transcriptPlan[0]?.startMs,
+  'LLM weak-overlap raw timing falls back to deterministic transcript plan instead of snapping to an unrelated candidate edge',
+);
+assertEqual(
+  llmWeakOverlapTranscriptPlan[0]?.durationMs,
+  transcriptPlan[0]?.durationMs,
+  'LLM weak-overlap raw timing keeps the fallback transcript duration when transcript overlap confidence is too low',
+);
+assertRule(
+  !llmWeakOverlapTranscriptPlan[0]?.risks?.includes('llm-timing-snapped-to-transcript'),
+  'LLM weak-overlap raw timing is not marked as a confident transcript snap',
+);
+
 const deterministicPlan = createDeterministicSlicePlan({ ...baseParams, minDuration: 15, maxDuration: 60 });
 assertEqual(deterministicPlan.length, 5, 'deterministic fallback keeps the bounded standard clip count');
 assertEqual(deterministicPlan[0]?.durationMs, 15000, 'deterministic fallback uses the configured minimum duration');

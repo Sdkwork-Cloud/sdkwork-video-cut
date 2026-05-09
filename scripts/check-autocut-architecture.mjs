@@ -3561,9 +3561,11 @@ assertRule(
 assertRule(
     slicerServiceSource.includes('function toNativeSliceClipRequest') &&
     slicerServiceSource.includes('clips: nativeClips') &&
-    slicerServiceSource.includes('plannedClips.map((clip) => toNativeSliceClipRequest(clip, transcriptSegments))') &&
+    slicerServiceSource.includes('plannedClips.map((clip) => toNativeSliceClipRequest(clip, transcriptSegments, params))') &&
     slicerServiceSource.includes('clipTranscriptText ? { transcriptText: clipTranscriptText }') &&
     slicerServiceSource.includes('clipTranscriptSegments.length ? { transcriptSegments: clipTranscriptSegments }') &&
+    slicerServiceSource.includes('params.enableCoughFilter === true') &&
+    slicerServiceSource.includes('audioMuteRanges.length ? { audioMuteRanges }') &&
     slicerServiceSource.includes('assertNativeSliceTimingMatchesPlan') &&
     slicerServiceSource.includes('assertNativeSlicePathInsideTaskOutputDir') &&
     slicerServiceSource.includes('assertNativeSliceTaskOutputDirMatchesResult') &&

@@ -340,9 +340,10 @@ function createCandidateCenteredTranscriptTimeline(
     .map((segment) => ({
       startMs: segment.startMs,
       endMs: segment.endMs,
-      speaker: segment.speaker,
-      text: segment.text,
-    }));
+      ...(segment.speaker?.trim() ? { speaker: segment.speaker.trim() } : {}),
+      text: normalizeSmartSliceTranscriptEvidenceText(segment.text),
+    }))
+    .filter((segment) => segment.text.length > 0);
 }
 
 async function finishVideoSliceTask(newTask: AppTask, sliceResults: TaskSliceResult[]) {
@@ -1018,6 +1019,7 @@ function assertNativeSliceThumbnailPathInsideCoverDir(
 function toNativeSliceClipRequest(
   clip: NormalizedSlicePlanClip,
   transcriptSegments: readonly AutoCutSpeechTranscriptionSegment[],
+  params: VideoSliceParams,
 ): AutoCutVideoSliceClipRequest {
   const clipTranscriptSegments = createVideoSliceTranscriptSegments(
     clip,
@@ -1025,11 +1027,13 @@ function toNativeSliceClipRequest(
     transcriptSegments,
   );
   const clipTranscriptText = createVideoSliceTranscriptText(clipTranscriptSegments);
-  const audioMuteRanges = createSmartSliceTranscriptAudioMuteRanges(
-    clip.startMs,
-    clip.startMs + clip.durationMs,
-    transcriptSegments,
-  );
+  const audioMuteRanges = params.enableCoughFilter === true
+    ? createSmartSliceTranscriptAudioMuteRanges(
+        clip.startMs,
+        clip.startMs + clip.durationMs,
+        transcriptSegments,
+      )
+    : [];
 
   return {
     startMs: clip.startMs,
@@ -1476,7 +1480,7 @@ export async function processVideoSlice(params: VideoSliceParams) {
           sourceDurationMs: sourceMedia.durationMs,
         },
       );
-      const nativeClips = plannedClips.map((clip) => toNativeSliceClipRequest(clip, transcriptSegments));
+      const nativeClips = plannedClips.map((clip) => toNativeSliceClipRequest(clip, transcriptSegments, params));
       const subtitleRequest = createVideoSliceSubtitleRequest(params, transcriptSegments);
       const nativeResult = await runSmartSliceExecutionStep(
         newTask.id,

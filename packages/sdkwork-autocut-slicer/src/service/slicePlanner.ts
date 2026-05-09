@@ -31,6 +31,8 @@ const MAX_RENDER_TRAILING_SILENCE_MS = TRANSCRIPT_BOUNDARY_PADDING_AFTER_MS;
 const SLICE_CANDIDATE_DP_BEAM_WIDTH = 8;
 const MAX_TRANSCRIPT_SLICE_CANDIDATE_POOL_SIZE = 160;
 const MAX_SMART_SLICE_AUDIO_MUTE_RANGE_MS = 3_000;
+const MIN_LLM_TRANSCRIPT_SNAP_OVERLAP_MS = 1_000;
+const MIN_LLM_TRANSCRIPT_SNAP_REQUEST_COVERAGE = 0.6;
 const CONTENT_ARC_STAGES = ['hook', 'setup', 'conflict', 'payoff'] as const;
 const TRANSCRIPT_PLANNING_FILLER_SEPARATOR_CLASS = String.raw`[\s,.;:!?\u3001\u3002\uff0c\uff1b\uff1a\uff01\uff1f\u2026]`;
 const TRANSCRIPT_PLANNING_AUDIBLE_ENGLISH_FILLER_PATTERN = String.raw`(?:um+|uh+|er+|erm|ah+|hmm+|mm+)`;
@@ -3144,7 +3146,13 @@ function findBestOverlappingTranscriptCandidate(
     }
   }
 
-  return bestOverlapMs > 0 ? bestCandidate : undefined;
+  const requestedDurationMs = Math.max(0, durationMs);
+  const requestCoverageScore = requestedDurationMs > 0 ? bestOverlapMs / requestedDurationMs : 0;
+  return bestCandidate &&
+    bestOverlapMs >= MIN_LLM_TRANSCRIPT_SNAP_OVERLAP_MS &&
+    requestCoverageScore >= MIN_LLM_TRANSCRIPT_SNAP_REQUEST_COVERAGE
+    ? bestCandidate
+    : undefined;
 }
 
 function createLlmTimingRisks(
@@ -3793,6 +3801,9 @@ export function parseLlmSlicePlan(
           : undefined;
         const matchedCandidate = explicitMatchedCandidate ?? snappedMatchedCandidate;
         const snappedToTranscript = Boolean(snappedMatchedCandidate);
+        if (!matchedCandidate && transcriptCandidates.length > 0) {
+          return null;
+        }
         const startMs = matchedCandidate?.startMs ?? (Number.isFinite(requestedStartMs) ? requestedStartMs : undefined);
         const durationMs = matchedCandidate?.durationMs ?? requestedDurationValue;
         const rawLabel =
