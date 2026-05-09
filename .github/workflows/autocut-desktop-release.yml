@@ -70,7 +70,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           pnpm release:smoke-preflight -- --platform windows-x86_64 --require-bundled
           pnpm release:native-smoke -- --run-real-llm-secret-smoke
-          pnpm release:smart-slice-sample
+          pnpm release:smart-slice-sample -- --platform windows-x86_64
           pnpm release:installer-signature -- --platform windows-x86_64
           pnpm release:evidence -- --platform windows-x86_64 --output artifacts/release/autocut-release-evidence-windows-x86_64.json
           pnpm release:package-sbom -- --platform windows-x86_64
@@ -158,7 +158,7 @@ jobs:
         run: |
           pnpm release:smoke-preflight -- --platform linux-x86_64 --require-bundled
           pnpm release:native-smoke
-          pnpm release:smart-slice-sample
+          pnpm release:smart-slice-sample -- --platform linux-x86_64
           pnpm release:installer-signature -- --platform linux-x86_64
           pnpm release:evidence -- --platform linux-x86_64 --output artifacts/release/autocut-release-evidence-linux-x86_64.json
           pnpm release:package-sbom -- --platform linux-x86_64
@@ -241,7 +241,7 @@ jobs:
         run: |
           pnpm release:smoke-preflight -- --platform ${{ matrix.platform }} --require-bundled
           pnpm release:native-smoke
-          pnpm release:smart-slice-sample
+          pnpm release:smart-slice-sample -- --platform ${{ matrix.platform }}
           pnpm release:installer-signature -- --platform ${{ matrix.platform }}
           pnpm release:evidence -- --platform ${{ matrix.platform }} --output artifacts/release/autocut-release-evidence-${{ matrix.platform }}.json
           pnpm release:package-sbom -- --platform ${{ matrix.platform }}

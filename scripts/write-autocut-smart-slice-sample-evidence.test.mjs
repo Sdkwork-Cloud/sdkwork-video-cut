@@ -39,6 +39,36 @@ assert.equal(plan.commands[2].purpose, 'slice-video-2');
 assert.equal(plan.commands[3].purpose, 'thumbnail-1');
 assert.equal(plan.commands[4].purpose, 'thumbnail-2');
 
+const platformRoot = tempRoot('autocut-smart-slice-sample-platform');
+const platformManifestDir = path.join(platformRoot, 'packages', 'sdkwork-autocut-desktop', 'src-tauri', 'binaries');
+const linuxFfmpegPath = path.join(platformManifestDir, 'linux-x86_64', 'ffmpeg');
+fs.mkdirSync(path.dirname(linuxFfmpegPath), { recursive: true });
+fs.writeFileSync(linuxFfmpegPath, 'linux ffmpeg fixture');
+fs.writeFileSync(
+  path.join(platformManifestDir, 'ffmpeg.toolchain.json'),
+  `${JSON.stringify(
+    {
+      tool: 'ffmpeg',
+      platforms: {
+        'windows-x86_64': {
+          relativePath: 'windows-x86_64/ffmpeg.exe',
+        },
+        'linux-x86_64': {
+          relativePath: 'linux-x86_64/ffmpeg',
+        },
+      },
+    },
+    null,
+    2,
+  )}\n`,
+);
+const linuxPlan = createAutoCutSmartSliceSampleEvidencePlan({
+  rootDir: platformRoot,
+  platform: 'linux-x86_64',
+  generatedAt: '2026-05-06T00:00:00.000Z',
+});
+assert.equal(linuxPlan.ffmpegPath, linuxFfmpegPath);
+
 const result = writeAutoCutSmartSliceSampleEvidence({
   rootDir: root,
   ffmpegPath,

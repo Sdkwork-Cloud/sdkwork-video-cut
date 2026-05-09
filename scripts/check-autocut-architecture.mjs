@@ -812,6 +812,23 @@ const forbiddenSourcePatterns = [
   },
 ];
 
+function assertPngBitDepth(filePath, expectedBitDepth, message) {
+  const header = fs.readFileSync(filePath);
+  const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  assertRule(
+    header.length >= 25 && header.subarray(0, pngSignature.length).equals(pngSignature),
+    `${message} has a valid PNG signature`,
+  );
+  if (header.length < 25) {
+    return;
+  }
+  assertRule(
+    header.toString('ascii', 12, 16) === 'IHDR',
+    `${message} has an IHDR header`,
+  );
+  assertRule(header[24] === expectedBitDepth, `${message} uses ${expectedBitDepth}-bit depth`);
+}
+
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
@@ -1778,10 +1795,18 @@ assertRule(
   'desktop Tauri bundle declares explicit installer and runtime icons',
 );
 for (const iconPath of tauriConfig.bundle?.icon ?? []) {
+  const resolvedIconPath = path.join(desktopTauriDir, iconPath);
   assertRule(
-    fs.existsSync(path.join(desktopTauriDir, iconPath)),
+    fs.existsSync(resolvedIconPath),
     `desktop Tauri bundle icon ${iconPath} exists for generate_context`,
   );
+  if (iconPath.endsWith('.png') && fs.existsSync(resolvedIconPath)) {
+    assertPngBitDepth(
+      resolvedIconPath,
+      8,
+      `desktop Tauri bundle icon ${iconPath} is 8-bit PNG for macOS app icon generation`,
+    );
+  }
 }
 const desktopTauriBinariesDir = path.join(desktopTauriDir, 'binaries');
 assertRule(

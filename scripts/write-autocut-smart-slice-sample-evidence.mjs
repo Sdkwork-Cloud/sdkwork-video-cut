@@ -19,6 +19,10 @@ import {
   normalizeAutoCutCliArgs,
   readAutoCutCliOptionValue,
 } from './autocut-cli-args.mjs';
+import {
+  createAutoCutHostPlatformKey,
+  normalizeAutoCutReleasePlatform,
+} from './autocut-release-platforms.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const sampleSchemaVersion = '2026-05-06.autocut-smart-slice-sample-evidence.v1';
@@ -36,13 +40,14 @@ const sliceTwoSubtitleRelativePath = 'artifacts/smart-slice-media/smart-slice-sa
 
 export function createAutoCutSmartSliceSampleEvidencePlan({
   rootDir = process.cwd(),
-  ffmpegPath = process.env.SDKWORK_AUTOCUT_FFMPEG_EXECUTABLE,
+  ffmpegPath = process.env.SDKWORK_AUTOCUT_FFMPEG_EXECUTABLE ?? process.env.SDKWORK_AUTOCUT_FFMPEG,
+  platform = createAutoCutHostPlatformKey(),
   generatedAt = new Date().toISOString(),
   taskPath,
   outputPath,
 } = {}) {
   const resolvedRootDir = path.resolve(rootDir);
-  const resolvedFfmpegPath = resolveFfmpegPath(resolvedRootDir, ffmpegPath);
+  const resolvedFfmpegPath = resolveFfmpegPath(resolvedRootDir, ffmpegPath, platform);
   const resolvedTaskPath = path.resolve(taskPath ?? path.join(resolvedRootDir, defaultTaskRelativePath));
   const resolvedReportPath = path.resolve(outputPath ?? path.join(resolvedRootDir, defaultReportRelativePath));
   const media = {
@@ -405,7 +410,7 @@ function writeSampleSubtitles(plan) {
   );
 }
 
-function resolveFfmpegPath(rootDir, configuredPath) {
+function resolveFfmpegPath(rootDir, configuredPath, platform) {
   if (typeof configuredPath === 'string' && configuredPath.trim()) {
     const resolved = path.resolve(configuredPath.trim());
     if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
@@ -418,15 +423,24 @@ function resolveFfmpegPath(rootDir, configuredPath) {
     'packages/sdkwork-autocut-desktop/src-tauri/binaries/ffmpeg.toolchain.json',
   );
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  const relativePath = manifest.platforms?.['windows-x86_64']?.relativePath;
+  const platformKey = normalizeAutoCutReleasePlatform(platform);
+  const relativePath = manifest.platforms?.[platformKey]?.relativePath;
   if (typeof relativePath !== 'string' || !relativePath.trim()) {
-    throw new Error('AutoCut smart slice sample requires a windows-x86_64 FFmpeg sidecar manifest entry.');
+    throw new Error(`AutoCut smart slice sample requires a ${platformKey} FFmpeg sidecar manifest entry.`);
   }
-  const resolved = path.join(path.dirname(manifestPath), relativePath);
+  const resolved = path.resolve(path.dirname(manifestPath), relativePath);
+  assertInsideDirectory(resolved, path.dirname(manifestPath));
   if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
     throw new Error(`AutoCut smart slice sample FFmpeg executable is missing: ${resolved}`);
   }
   return resolved;
+}
+
+function assertInsideDirectory(candidatePath, rootPath) {
+  const relative = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error(`AutoCut smart slice sample FFmpeg sidecar path escapes binaries directory: ${candidatePath}`);
+  }
 }
 
 function toAssetUrl(artifactPath) {
@@ -466,6 +480,13 @@ function parseArgs(argv) {
         commandName: 'AutoCut smart slice sample evidence',
       });
       options.ffmpegPath = option.value;
+      index = option.nextIndex;
+    } else if (arg === '--platform') {
+      const option = readAutoCutCliOptionValue(args, index, {
+        optionName: arg,
+        commandName: 'AutoCut smart slice sample evidence',
+      });
+      options.platform = option.value;
       index = option.nextIndex;
     } else if (arg === '--task') {
       const option = readAutoCutCliOptionValue(args, index, {
