@@ -315,11 +315,20 @@ pub struct AutoCutVideoGifResult {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AutoCutVideoSliceAudioMuteRange {
+    pub start_ms: i64,
+    pub end_ms: i64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AutoCutVideoSliceClipRequest {
     pub start_ms: i64,
     pub duration_ms: i64,
     pub label: String,
     pub output_file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_mute_ranges: Option<Vec<AutoCutVideoSliceAudioMuteRange>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_start_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2454,10 +2463,67 @@ fn normalize_video_slice_clips(
                     index,
                     "mp4",
                 ),
+                audio_mute_ranges: normalize_video_slice_audio_mute_ranges(clip, index + 1)?,
                 ..clone_video_slice_clip_evidence(clip)
             })
         })
         .collect()
+}
+
+fn normalize_video_slice_audio_mute_ranges(
+    clip: &AutoCutVideoSliceClipRequest,
+    clip_number: usize,
+) -> Result<Option<Vec<AutoCutVideoSliceAudioMuteRange>>, String> {
+    let Some(ranges) = clip
+        .audio_mute_ranges
+        .as_ref()
+        .filter(|ranges| !ranges.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    if ranges.len() > 50 {
+        return Err(format!(
+            "AutoCut video slice clip {clip_number} supports at most 50 audio mute ranges"
+        ));
+    }
+
+    let clip_end_ms = clip.start_ms.saturating_add(clip.duration_ms);
+    let mut normalized_ranges = Vec::new();
+    for range in ranges {
+        let start_ms = range.start_ms.max(clip.start_ms).min(clip_end_ms);
+        let end_ms = range.end_ms.max(clip.start_ms).min(clip_end_ms);
+        if end_ms <= start_ms {
+            continue;
+        }
+        if end_ms - start_ms > 3_000 {
+            return Err(format!(
+                "AutoCut video slice clip {clip_number} audio mute ranges must not exceed 3000ms"
+            ));
+        }
+        normalized_ranges.push(AutoCutVideoSliceAudioMuteRange { start_ms, end_ms });
+    }
+
+    normalized_ranges.sort_by(|first, second| {
+        first
+            .start_ms
+            .cmp(&second.start_ms)
+            .then(first.end_ms.cmp(&second.end_ms))
+    });
+    let mut merged_ranges: Vec<AutoCutVideoSliceAudioMuteRange> = Vec::new();
+    for range in normalized_ranges {
+        let Some(previous_range) = merged_ranges.last_mut() else {
+            merged_ranges.push(range);
+            continue;
+        };
+        if range.start_ms > previous_range.end_ms {
+            merged_ranges.push(range);
+        } else {
+            previous_range.end_ms = previous_range.end_ms.max(range.end_ms);
+        }
+    }
+
+    Ok((!merged_ranges.is_empty()).then_some(merged_ranges))
 }
 
 fn ensure_video_slice_clip_transcript_evidence(
@@ -2724,6 +2790,7 @@ fn clone_video_slice_clip_evidence(
     clip: &AutoCutVideoSliceClipRequest,
 ) -> AutoCutVideoSliceClipRequest {
     AutoCutVideoSliceClipRequest {
+        audio_mute_ranges: clip.audio_mute_ranges.clone(),
         source_start_ms: clip.source_start_ms,
         source_end_ms: clip.source_end_ms,
         speech_start_ms: clip.speech_start_ms,
@@ -5779,6 +5846,31 @@ fn ffmpeg_video_slice_audio_noise_reduction_filter() -> &'static str {
     "highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11"
 }
 
+fn ffmpeg_video_slice_audio_filter(clip: &AutoCutVideoSliceClipRequest, apply_audio_noise_reduction: bool) -> Option<String> {
+    let mut filters = Vec::new();
+    if apply_audio_noise_reduction {
+        filters.push(ffmpeg_video_slice_audio_noise_reduction_filter().to_string());
+    }
+
+    for range in clip.audio_mute_ranges.as_deref().unwrap_or_default() {
+        if range.end_ms <= range.start_ms {
+            continue;
+        }
+        let relative_start_ms = range.start_ms.saturating_sub(clip.start_ms).max(0);
+        let relative_end_ms = range.end_ms.saturating_sub(clip.start_ms).min(clip.duration_ms);
+        if relative_end_ms <= relative_start_ms {
+            continue;
+        }
+        filters.push(format!(
+            "volume=enable='between(t,{},{})':volume=0",
+            seconds_arg_from_millis(relative_start_ms),
+            seconds_arg_from_millis(relative_end_ms)
+        ));
+    }
+
+    (!filters.is_empty()).then(|| filters.join(","))
+}
+
 fn video_slice_filter_chain_for_encoder_candidate(
     render_profile: Option<&AutoCutVideoSliceRenderProfile>,
     burned_subtitle_path: Option<&Path>,
@@ -5872,8 +5964,10 @@ fn build_ffmpeg_video_slice_command(
     if let Some(filter_chain) = filter_chain {
         command.args(["-vf", filter_chain.as_str()]);
     }
-    if apply_audio_noise_reduction {
-        command.args(["-af", ffmpeg_video_slice_audio_noise_reduction_filter()]);
+    if let Some(audio_filter) =
+        ffmpeg_video_slice_audio_filter(clip, apply_audio_noise_reduction)
+    {
+        command.args(["-af", audio_filter.as_str()]);
     }
     append_ffmpeg_video_slice_encoder_args(&mut command, candidate);
     append_ffmpeg_progress_output_args(&mut command);
@@ -9553,6 +9647,7 @@ mod tests {
             duration_ms,
             label: label.to_string(),
             output_file_name: None,
+            audio_mute_ranges: None,
             source_start_ms: Some(start_ms),
             source_end_ms: Some(speech_end_ms),
             speech_start_ms: Some(speech_start_ms),
@@ -9757,7 +9852,11 @@ mod tests {
     #[test]
     fn video_slice_noise_reduction_adds_audio_filter_only_when_requested() {
         let toolchain = test_system_ffmpeg_toolchain();
-        let clip = smart_slice_test_clip(0, 1_000, "Denoised");
+        let mut clip = smart_slice_test_clip(0, 1_000, "Denoised");
+        clip.audio_mute_ranges = Some(vec![AutoCutVideoSliceAudioMuteRange {
+            start_ms: 250,
+            end_ms: 550,
+        }]);
         let candidate = autocut_video_slice_cpu_encoder_candidate();
         let output_path = Path::new("slice.mp4");
         let input_path = Path::new("source.mp4");
@@ -9778,11 +9877,14 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(
             args.windows(2).any(|items| {
-                items[0] == "-af" && items[1] == ffmpeg_video_slice_audio_noise_reduction_filter()
+                items[0] == "-af" &&
+                    items[1].contains(ffmpeg_video_slice_audio_noise_reduction_filter()) &&
+                    items[1].contains("volume=enable='between(t,0.250,0.550)':volume=0")
             }),
-            "enabled smart-slice noise reduction must add the professional audio filter chain"
+            "enabled smart-slice noise reduction must add the professional audio filter chain and mute recognized noise fragments"
         );
 
+        clip.audio_mute_ranges = None;
         let command = build_ffmpeg_video_slice_command(
             &toolchain,
             input_path,
@@ -9800,6 +9902,32 @@ mod tests {
         assert!(
             !args.iter().any(|arg| arg == "-af"),
             "disabled smart-slice noise reduction must not alter audio"
+        );
+
+        let mut clip = smart_slice_test_clip(1_000, 2_000, "Muted noise");
+        clip.audio_mute_ranges = Some(vec![AutoCutVideoSliceAudioMuteRange {
+            start_ms: 1_300,
+            end_ms: 1_700,
+        }]);
+        let command = build_ffmpeg_video_slice_command(
+            &toolchain,
+            input_path,
+            output_path,
+            &clip,
+            None,
+            false,
+            None,
+            &candidate,
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert!(
+            args.windows(2).any(|items| {
+                items[0] == "-af" && items[1] == "volume=enable='between(t,0.300,0.700)':volume=0"
+            }),
+            "smart-slice recognized cough/music fragments must be muted even when broadband denoise is disabled"
         );
     }
 

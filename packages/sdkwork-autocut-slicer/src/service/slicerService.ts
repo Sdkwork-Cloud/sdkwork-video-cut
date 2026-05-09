@@ -36,6 +36,7 @@ import {
 import {
   buildTranscriptSliceCandidates,
   createDeterministicSlicePlan,
+  createSmartSliceTranscriptAudioMuteRanges,
   createTranscriptAssistedSlicePlan,
   getVideoSlicePlanningPolicy,
   normalizeSmartSliceTranscriptEvidenceText,
@@ -1024,12 +1025,18 @@ function toNativeSliceClipRequest(
     transcriptSegments,
   );
   const clipTranscriptText = createVideoSliceTranscriptText(clipTranscriptSegments);
+  const audioMuteRanges = createSmartSliceTranscriptAudioMuteRanges(
+    clip.startMs,
+    clip.startMs + clip.durationMs,
+    transcriptSegments,
+  );
 
   return {
     startMs: clip.startMs,
     durationMs: clip.durationMs,
     label: clip.label,
     outputFileName: createPlannedSliceOutputFileName(clip),
+    ...(audioMuteRanges.length ? { audioMuteRanges } : {}),
     ...(clip.sourceStartMs !== undefined ? { sourceStartMs: clip.sourceStartMs } : {}),
     ...(clip.sourceEndMs !== undefined ? { sourceEndMs: clip.sourceEndMs } : {}),
     ...(clip.speechStartMs !== undefined ? { speechStartMs: clip.speechStartMs } : {}),
@@ -1479,6 +1486,10 @@ export async function processVideoSlice(params: VideoSliceParams) {
             taskId: newTask.id,
             sourceAssetUuid: sourceMedia.assetUuid,
             clipCount: nativeClips.length,
+            audioMuteRangeCount: nativeClips.reduce(
+              (count, clip) => count + (clip.audioMuteRanges?.length ?? 0),
+              0,
+            ),
             noiseReduction: params.enableNoiseReduction === true,
             subtitleMode: subtitleRequest.subtitleMode,
             subtitleSegmentCount: subtitleRequest.subtitleSegments?.length ?? 0,

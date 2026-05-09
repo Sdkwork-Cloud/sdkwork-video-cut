@@ -6094,6 +6094,21 @@ async function run() {
         ),
       'noise cleanup Smart Slice regression removes noise and edge filler from structured native clip transcript segments',
     );
+    assertEqual(
+      noiseCleanupClip?.audioMuteRanges?.length,
+      2,
+      'noise cleanup Smart Slice regression sends short recognized noise fragments as native audio mute ranges',
+    );
+    assertEqual(
+      noiseCleanupClip?.audioMuteRanges?.[0]?.startMs,
+      8_100,
+      'noise cleanup Smart Slice regression preserves the original cough start boundary for native muting',
+    );
+    assertEqual(
+      noiseCleanupClip?.audioMuteRanges?.[1]?.endMs,
+      9_800,
+      'noise cleanup Smart Slice regression preserves the original music end boundary for native muting',
+    );
     assertRule(
       noiseCleanupSliceRequest?.subtitleSegments?.length === 2 &&
         noiseCleanupSliceRequest.subtitleSegments.every((segment) =>

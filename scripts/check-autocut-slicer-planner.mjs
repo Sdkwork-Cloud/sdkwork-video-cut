@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import {
   buildTranscriptSliceCandidates,
   createDeterministicSlicePlan,
+  createSmartSliceTranscriptAudioMuteRanges,
   createTranscriptAssistedSlicePlan,
   getVideoSlicePlanningPolicy,
   normalizeSmartSliceTranscriptEvidenceText,
@@ -461,6 +462,61 @@ assertRule(
   semanticDuplicateCandidates.some((candidate) => candidate.risks?.includes('transcript-repeat-filtered')),
   'transcript repeat filter records semantically equivalent short-window removals for review',
 );
+const businessMeaningDuplicateCandidates = buildTranscriptSliceCandidates(
+  {
+    ...baseParams,
+    minDuration: 5,
+    maxDuration: 20,
+    targetSliceCount: 3,
+    sliceCountMode: 'qualityFirst',
+    enableRepeatFilter: true,
+    continuityLevel: 'strict',
+  },
+  [
+    { startMs: 0, endMs: 9_000, text: 'Customers cancel after a confusing bill.', speaker: 'Speaker 1' },
+    { startMs: 15_000, endMs: 24_000, text: 'Users churn after unclear invoices.', speaker: 'Speaker 1' },
+    { startMs: 34_000, endMs: 44_000, text: 'Pricing setup explains annual terms.', speaker: 'Speaker 1' },
+  ],
+);
+assertEqual(
+  businessMeaningDuplicateCandidates.filter((candidate) =>
+    /\b(?:cancel|churn)\b/iu.test(candidate.transcriptText ?? '')
+  ).length,
+  1,
+  'transcript repeat filter removes business-meaning duplicates using semantic canonical tokens',
+);
+const internalRepeatCandidates = buildTranscriptSliceCandidates(
+  {
+    ...baseParams,
+    minDuration: 15,
+    maxDuration: 45,
+    targetSliceCount: 3,
+    sourceDurationMs: 70_000,
+    sliceCountMode: 'qualityFirst',
+    enableRepeatFilter: true,
+    continuityLevel: 'standard',
+  },
+  [
+    { startMs: 0, endMs: 8_000, text: 'Watch the onboarding setup and retention pain.', speaker: 'Speaker 1' },
+    { startMs: 8_000, endMs: 16_000, text: 'Watch the onboarding setup and retention pain.', speaker: 'Speaker 1' },
+    { startMs: 16_000, endMs: 28_000, text: 'So the payoff is the activation fix viewers can apply.', speaker: 'Speaker 1' },
+    { startMs: 40_000, endMs: 52_000, text: 'Watch the pricing setup and invoice pain.', speaker: 'Speaker 1' },
+    { startMs: 52_000, endMs: 64_000, text: 'So the payoff is the billing fix viewers can apply.', speaker: 'Speaker 1' },
+  ],
+);
+const internalRepeatCandidate = internalRepeatCandidates.find((candidate) =>
+  candidate.transcriptSegmentCount === 2 &&
+    (candidate.transcriptText?.match(/onboarding setup/giu)?.length ?? 0) >= 2
+);
+assertArrayIncludes(
+  internalRepeatCandidate?.risks,
+  'transcript-internal-repeat',
+  'speech-to-text planning flags candidate windows that contain repeated meaning inside the same rendered slice',
+);
+assertRule(
+  (internalRepeatCandidate?.qualityScore ?? 1) <= 0.72,
+  'speech-to-text planning downgrades internally repeated windows so clean continuous clips win selection',
+);
 const noiseInterruptedTranscriptCandidates = buildTranscriptSliceCandidates({
   ...baseParams,
   minDuration: 15,
@@ -502,6 +558,17 @@ assertEqual(
   'What works is this.',
   'speech-to-text evidence cleanup removes edge filler before native rendering',
 );
+const audioMuteRanges = createSmartSliceTranscriptAudioMuteRanges(0, 25_000, [
+  { startMs: 0, endMs: 9_000, text: 'Watch the onboarding setup and activation pain.', speaker: 'Speaker 1' },
+  { startMs: 9_100, endMs: 10_000, text: '[coughing]', speaker: 'Speaker 1' },
+  { startMs: 10_100, endMs: 10_700, text: 'um', speaker: 'Speaker 1' },
+  { startMs: 11_100, endMs: 12_000, text: '[Music]', speaker: 'Speaker 1' },
+  { startMs: 12_100, endMs: 25_000, text: 'So the complete payoff is the activation fix viewers can apply.', speaker: 'Speaker 1' },
+  { startMs: 26_000, endMs: 30_000, text: '[Music]', speaker: 'Speaker 1' },
+]);
+assertEqual(audioMuteRanges.length, 3, 'speech-to-text noise cleanup creates audio mute ranges for short noise and filler fragments inside rendered clips');
+assertEqual(audioMuteRanges[0]?.startMs, 9_100, 'speech-to-text audio mute range keeps the original cough start boundary');
+assertEqual(audioMuteRanges[2]?.endMs, 12_000, 'speech-to-text audio mute range keeps the original music end boundary');
 const longNoiseBridgeCandidates = buildTranscriptSliceCandidates({
   ...baseParams,
   minDuration: 15,

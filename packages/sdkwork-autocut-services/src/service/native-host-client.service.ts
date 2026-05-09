@@ -151,6 +151,7 @@ export interface AutoCutVideoSliceClipRequest {
   durationMs: number;
   label: string;
   outputFileName?: string;
+  audioMuteRanges?: Array<{ startMs: number; endMs: number }>;
   sourceStartMs?: number;
   sourceEndMs?: number;
   speechStartMs?: number;
@@ -768,6 +769,17 @@ function assertAutoCutNativeVideoSliceClipTranscriptEvidence(
   if (clip.transcriptSegmentCount !== transcriptSegments.length) {
     throw new Error(
       `AutoCut video slice clip ${clipNumber} transcriptSegmentCount must match structured speech-to-text transcriptSegments.`,
+    );
+  }
+
+  const audioMuteRanges = clip.audioMuteRanges?.filter((range) =>
+    Number.isFinite(range.startMs) &&
+      Number.isFinite(range.endMs) &&
+      range.endMs > range.startMs
+  ) ?? [];
+  if (audioMuteRanges.some((range) => range.startMs < clip.startMs || range.endMs > clip.startMs + clip.durationMs)) {
+    throw new Error(
+      `AutoCut video slice clip ${clipNumber} audioMuteRanges must stay inside rendered clip timing.`,
     );
   }
 

@@ -30,6 +30,7 @@ const MAX_RENDER_LEADING_SILENCE_MS = TRANSCRIPT_BOUNDARY_PADDING_BEFORE_MS;
 const MAX_RENDER_TRAILING_SILENCE_MS = TRANSCRIPT_BOUNDARY_PADDING_AFTER_MS;
 const SLICE_CANDIDATE_DP_BEAM_WIDTH = 8;
 const MAX_TRANSCRIPT_SLICE_CANDIDATE_POOL_SIZE = 160;
+const MAX_SMART_SLICE_AUDIO_MUTE_RANGE_MS = 3_000;
 const CONTENT_ARC_STAGES = ['hook', 'setup', 'conflict', 'payoff'] as const;
 const TRANSCRIPT_PLANNING_FILLER_SEPARATOR_CLASS = String.raw`[\s,.;:!?\u3001\u3002\uff0c\uff1b\uff1a\uff01\uff1f\u2026]`;
 const TRANSCRIPT_PLANNING_AUDIBLE_ENGLISH_FILLER_PATTERN = String.raw`(?:um+|uh+|er+|erm|ah+|hmm+|mm+)`;
@@ -90,10 +91,21 @@ const TRANSCRIPT_SEMANTIC_REPEAT_TOKEN_MAP: ReadonlyMap<string, string> = new Ma
   ['users', 'user'],
   ['client', 'user'],
   ['clients', 'user'],
+  ['cancel', 'churn'],
+  ['cancell', 'churn'],
+  ['leave', 'churn'],
+  ['left', 'churn'],
+  ['unclear', 'confusing'],
+  ['confus', 'confusing'],
+  ['confusing', 'confusing'],
+  ['confused', 'confusing'],
   ['price', 'pricing'],
   ['prices', 'pricing'],
   ['invoice', 'billing'],
+  ['invoic', 'billing'],
   ['invoices', 'billing'],
+  ['bill', 'billing'],
+  ['bills', 'billing'],
   ['launches', 'launch'],
   ['onboarding', 'activation'],
 ]);
@@ -972,6 +984,7 @@ const TRANSCRIPT_REPEAT_TOKEN_STOPWORDS = new Set([
   'again',
   'also',
   'and',
+  'after',
   'because',
   'but',
   'can',
@@ -1076,6 +1089,59 @@ function calculateTranscriptTokenOverlapScore(firstText: string, secondText: str
   }
 
   return 0;
+}
+
+function calculateTranscriptRepeatedTokenDensity(texts: readonly string[]) {
+  const tokenCounts = new Map<string, number>();
+  let tokenCount = 0;
+
+  for (const text of texts) {
+    for (const token of extractTranscriptRepeatTokens(text)) {
+      tokenCount += 1;
+      tokenCounts.set(token, (tokenCounts.get(token) ?? 0) + 1);
+    }
+  }
+
+  if (tokenCount < 4 || tokenCounts.size < 2) {
+    return 0;
+  }
+
+  const repeatedTokenCount = [...tokenCounts.values()]
+    .filter((count) => count > 1)
+    .reduce((sum, count) => sum + count, 0);
+  return repeatedTokenCount / tokenCount;
+}
+
+function hasTranscriptInternalRepeatedMeaning(texts: readonly string[]) {
+  const meaningfulTexts = texts
+    .map((text) => normalizeTranscriptRepeatTextSemantics(normalizeTranscriptTextForRepeatDetection(text)))
+    .filter((text) => text.length >= 18);
+  if (meaningfulTexts.length < 2) {
+    return false;
+  }
+
+  for (let firstIndex = 0; firstIndex < meaningfulTexts.length; firstIndex += 1) {
+    const firstText = meaningfulTexts[firstIndex];
+    if (!firstText) {
+      continue;
+    }
+    for (let secondIndex = firstIndex + 1; secondIndex < meaningfulTexts.length; secondIndex += 1) {
+      const secondText = meaningfulTexts[secondIndex];
+      if (!secondText) {
+        continue;
+      }
+      if (
+        firstText === secondText ||
+        firstText.includes(secondText) ||
+        secondText.includes(firstText) ||
+        calculateTranscriptTokenOverlapScore(firstText, secondText) > 0
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return calculateTranscriptRepeatedTokenDensity(meaningfulTexts) >= 0.58;
 }
 
 function areTranscriptSliceClipsRepeated(
@@ -1704,6 +1770,65 @@ export function normalizeSmartSliceTranscriptEvidenceText(text: string) {
   return normalizedText && !isLowInformationTranscriptFillerSegment(normalizedText)
     ? normalizedText
     : '';
+}
+
+export interface SmartSliceTranscriptAudioMuteRange {
+  startMs: number;
+  endMs: number;
+}
+
+export function createSmartSliceTranscriptAudioMuteRanges(
+  clipStartMs: number,
+  clipEndMs: number,
+  transcriptSegments: readonly AutoCutSpeechTranscriptionSegment[],
+): SmartSliceTranscriptAudioMuteRange[] {
+  if (!Number.isFinite(clipStartMs) || !Number.isFinite(clipEndMs) || clipEndMs <= clipStartMs) {
+    return [];
+  }
+
+  const muteRanges: SmartSliceTranscriptAudioMuteRange[] = [];
+  const normalizedClipStartMs = Math.max(0, Math.round(clipStartMs));
+  const normalizedClipEndMs = Math.max(normalizedClipStartMs, Math.round(clipEndMs));
+  for (const segment of transcriptSegments) {
+    if (!Number.isFinite(segment.startMs) || !Number.isFinite(segment.endMs)) {
+      continue;
+    }
+
+    const segmentStartMs = Math.max(normalizedClipStartMs, Math.round(segment.startMs));
+    const segmentEndMs = Math.min(normalizedClipEndMs, Math.round(segment.endMs));
+    const durationMs = segmentEndMs - segmentStartMs;
+    if (durationMs <= 0 || durationMs > MAX_SMART_SLICE_AUDIO_MUTE_RANGE_MS) {
+      continue;
+    }
+
+    if (normalizeSmartSliceTranscriptEvidenceText(segment.text).length === 0) {
+      muteRanges.push({ startMs: segmentStartMs, endMs: segmentEndMs });
+    }
+  }
+
+  return mergeSmartSliceTranscriptAudioMuteRanges(muteRanges);
+}
+
+function mergeSmartSliceTranscriptAudioMuteRanges(
+  ranges: readonly SmartSliceTranscriptAudioMuteRange[],
+) {
+  const sortedRanges = ranges.slice().sort((firstRange, secondRange) =>
+    firstRange.startMs - secondRange.startMs ||
+      firstRange.endMs - secondRange.endMs,
+  );
+  const mergedRanges: SmartSliceTranscriptAudioMuteRange[] = [];
+
+  for (const range of sortedRanges) {
+    const previousRange = mergedRanges.at(-1);
+    if (!previousRange || range.startMs > previousRange.endMs) {
+      mergedRanges.push({ ...range });
+      continue;
+    }
+
+    previousRange.endMs = Math.max(previousRange.endMs, range.endMs);
+  }
+
+  return mergedRanges;
 }
 
 function isLowInformationTranscriptFillerSegment(text: string) {
@@ -3040,6 +3165,7 @@ function scoreTranscriptCandidate(
   durationMs: number,
   minDurationMs: number,
   maxDurationMs: number,
+  transcriptTexts: readonly string[] = [text],
 ) {
   const normalizedText = text.toLowerCase();
   const targetDurationMs = Math.min(maxDurationMs, Math.max(minDurationMs, policy.idealDurationMs));
@@ -3079,6 +3205,10 @@ function scoreTranscriptCandidate(
     score += 0.12;
   } else if (storyShape === 'thin') {
     score -= 0.08;
+  }
+
+  if (hasTranscriptInternalRepeatedMeaning(transcriptTexts)) {
+    score -= 0.18;
   }
 
   return Math.max(0, Math.min(1, score));
@@ -3229,7 +3359,17 @@ export function buildTranscriptSliceCandidates(
     const endMs = timing.endMs;
     const durationMs = timing.durationMs;
     const label = createTranscriptSliceLabel(segments, anchorIndex);
-    const score = scoreTranscriptCandidate(params, policy, text, durationMs, minDurationMs, maxDurationMs);
+    const transcriptTexts = candidateSegments.map((segment) => segment.text);
+    const hasInternalRepeatedMeaning = hasTranscriptInternalRepeatedMeaning(transcriptTexts);
+    const score = scoreTranscriptCandidate(
+      params,
+      policy,
+      text,
+      durationMs,
+      minDurationMs,
+      maxDurationMs,
+      transcriptTexts,
+    );
     const joinsConnectorInsideWindow = candidateSegments
       .slice(1)
       .some((segment) => startsWithWeakConnector(segment.text));
@@ -3241,6 +3381,7 @@ export function buildTranscriptSliceCandidates(
       ...(candidateSegments.some((segment) => (segment.noiseBridgeBeforeMs ?? 0) > 0)
         ? ['transcript-noise-bridge-repaired']
         : []),
+      ...(hasInternalRepeatedMeaning ? ['transcript-internal-repeat'] : []),
       ...(candidateSegments.length <= 1 || durationMs < minDurationMs ? ['sparse-transcript-speech'] : []),
       ...(durationMs < minDurationMs ? ['short-transcript-window'] : []),
     ];
@@ -3268,7 +3409,7 @@ export function buildTranscriptSliceCandidates(
         risks,
         candidateSegments.length,
         transcriptSpeechDurationMs,
-        candidateSegments.map((segment) => segment.text),
+        transcriptTexts,
       ),
     });
     if (candidates.length > candidatePoolLimit * 2) {
