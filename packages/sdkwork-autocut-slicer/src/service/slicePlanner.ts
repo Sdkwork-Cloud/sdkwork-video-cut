@@ -1806,7 +1806,9 @@ export function createSmartSliceTranscriptAudioMuteRanges(
     }
   }
 
-  return mergeSmartSliceTranscriptAudioMuteRanges(muteRanges);
+  return mergeSmartSliceTranscriptAudioMuteRanges(muteRanges).filter(
+    (range) => range.endMs - range.startMs <= MAX_SMART_SLICE_AUDIO_MUTE_RANGE_MS,
+  );
 }
 
 function mergeSmartSliceTranscriptAudioMuteRanges(

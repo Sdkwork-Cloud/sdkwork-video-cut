@@ -2523,7 +2523,12 @@ fn normalize_video_slice_audio_mute_ranges(
         }
     }
 
-    Ok((!merged_ranges.is_empty()).then_some(merged_ranges))
+    let safe_ranges = merged_ranges
+        .into_iter()
+        .filter(|range| range.end_ms - range.start_ms <= 3_000)
+        .collect::<Vec<_>>();
+
+    Ok((!safe_ranges.is_empty()).then_some(safe_ranges))
 }
 
 fn ensure_video_slice_clip_transcript_evidence(
@@ -12975,6 +12980,29 @@ mod tests {
         assert_eq!(
             clips[1].output_file_name.as_deref(),
             Some("02-爆发原因.mp4")
+        );
+    }
+
+    #[test]
+    fn video_slice_filters_merged_audio_mute_ranges_that_would_create_long_silence() {
+        let mut clip = smart_slice_test_clip(0, 10_000, "Merged noise");
+        clip.audio_mute_ranges = Some(vec![
+            AutoCutVideoSliceAudioMuteRange {
+                start_ms: 3_000,
+                end_ms: 5_000,
+            },
+            AutoCutVideoSliceAudioMuteRange {
+                start_ms: 5_000,
+                end_ms: 7_000,
+            },
+        ]);
+
+        let clips = normalize_video_slice_clips(&[clip])
+            .expect("normalize smart slice audio mute ranges");
+
+        assert!(
+            clips[0].audio_mute_ranges.is_none(),
+            "merged smart-slice mute ranges longer than 3000ms should be filtered instead of creating a long silent hole"
         );
     }
 

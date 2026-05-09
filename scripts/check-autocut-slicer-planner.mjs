@@ -569,6 +569,15 @@ const audioMuteRanges = createSmartSliceTranscriptAudioMuteRanges(0, 25_000, [
 assertEqual(audioMuteRanges.length, 3, 'speech-to-text noise cleanup creates audio mute ranges for short noise and filler fragments inside rendered clips');
 assertEqual(audioMuteRanges[0]?.startMs, 9_100, 'speech-to-text audio mute range keeps the original cough start boundary');
 assertEqual(audioMuteRanges[2]?.endMs, 12_000, 'speech-to-text audio mute range keeps the original music end boundary');
+const mergedLongAudioMuteRanges = createSmartSliceTranscriptAudioMuteRanges(0, 12_000, [
+  { startMs: 3_000, endMs: 5_000, text: '[Music]', speaker: 'Speaker 1' },
+  { startMs: 5_000, endMs: 7_000, text: '[coughing]', speaker: 'Speaker 1' },
+]);
+assertEqual(
+  mergedLongAudioMuteRanges.length,
+  0,
+  'speech-to-text noise cleanup refuses merged mute ranges that would create a long silent hole inside the rendered clip',
+);
 const longNoiseBridgeCandidates = buildTranscriptSliceCandidates({
   ...baseParams,
   minDuration: 15,
