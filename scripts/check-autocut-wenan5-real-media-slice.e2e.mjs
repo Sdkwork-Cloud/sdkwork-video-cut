@@ -16,8 +16,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '..');
 const fixtureRoot = path.join(repoRoot, 'artifacts/autocut-diagnostics/wenan5');
-const sourceAudioPath = path.join(fixtureRoot, 'speech.wav');
-const transcriptPath = path.join(fixtureRoot, 'speech-transcript.json');
+const transcriptPath = process.env.SDKWORK_AUTOCUT_WENAN5_TRANSCRIPT_FIXTURE ??
+  path.join(repoRoot, 'scripts/fixtures/autocut/wenan5/speech-transcript.json');
 const generatedSourcePath = path.join(fixtureRoot, 'wenan5-e2e-source.mp4');
 const outputDir = path.join(fixtureRoot, 'slices-e2e');
 const ffmpegPath = process.env.SDKWORK_AUTOCUT_FFMPEG_EXECUTABLE ?? process.env.SDKWORK_AUTOCUT_FFMPEG ?? 'ffmpeg';
@@ -46,7 +46,6 @@ function runCommand(command, args, options = {}) {
 }
 
 function assertFixtureReady() {
-  assert.equal(fs.existsSync(sourceAudioPath), true, `missing Smart Slice e2e source audio: ${sourceAudioPath}`);
   assert.equal(fs.existsSync(transcriptPath), true, `missing Smart Slice e2e transcript: ${transcriptPath}`);
   const ffmpegVersion = runCommand(ffmpegPath, ['-version']);
   assert.equal(ffmpegVersion.status, 0, `ffmpeg is required for Smart Slice e2e: ${ffmpegVersion.stderr}`);
@@ -54,24 +53,21 @@ function assertFixtureReady() {
   assert.equal(ffprobeVersion.status, 0, `ffprobe is required for Smart Slice e2e: ${ffprobeVersion.stderr}`);
 }
 
-function readAudioDurationSeconds() {
-  const result = runCommand(ffprobePath, [
-    '-v',
-    'error',
-    '-show_entries',
-    'format=duration',
-    '-of',
-    'default=noprint_wrappers=1:nokey=1',
-    sourceAudioPath,
-  ]);
-  assert.equal(result.status, 0, `ffprobe failed for Smart Slice e2e audio: ${result.stderr}`);
-  const durationSeconds = Number(String(result.stdout).trim());
-  assert.equal(Number.isFinite(durationSeconds) && durationSeconds > 0, true, 'Smart Slice e2e audio duration must be positive');
-  return durationSeconds;
+function readTranscriptDurationSeconds() {
+  const transcript = JSON.parse(fs.readFileSync(transcriptPath, 'utf8'));
+  const entries = Array.isArray(transcript.transcription) ? transcript.transcription : [];
+  const endMs = Math.max(
+    0,
+    ...entries
+      .map((entry) => Number(entry?.offsets?.to))
+      .filter((value) => Number.isFinite(value)),
+  );
+  assert.equal(endMs > 0, true, 'Smart Slice e2e transcript fixture must expose positive timestamp offsets');
+  return (endMs + 500) / 1_000;
 }
 
 function ensureDeterministicSourceVideo() {
-  const durationSeconds = readAudioDurationSeconds();
+  const durationSeconds = readTranscriptDurationSeconds();
   fs.mkdirSync(path.dirname(generatedSourcePath), { recursive: true });
   const result = runCommand(ffmpegPath, [
     '-hide_banner',
@@ -81,8 +77,10 @@ function ensureDeterministicSourceVideo() {
     'lavfi',
     '-i',
     `testsrc2=size=360x640:rate=10:duration=${durationSeconds.toFixed(6)}`,
+    '-f',
+    'lavfi',
     '-i',
-    sourceAudioPath,
+    `sine=frequency=440:sample_rate=16000:duration=${durationSeconds.toFixed(6)}`,
     '-map',
     '0:v:0',
     '-map',

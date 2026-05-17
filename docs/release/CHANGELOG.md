@@ -84,6 +84,10 @@ release-governance changes completed after the `v0.1.5` tag.
 - Keeps generated artifacts and runtime caches outside the release commit path
   by using the standard `pnpm clean` generated-output cleanup command before
   release packaging.
+- Hardens release verification for clean GitHub runner checkouts by keeping the
+  real-media Smart Slice transcript fixture under version control, avoiding
+  ignored local diagnostic artifact dependencies, and making feature workflow
+  source checks line-ending tolerant on Windows runners.
 - Release publishing remains gated by a clean worktree, writable Git metadata,
   GitHub CLI authentication, Git SSH reachability, package evidence, app
   manifest readiness, multiplatform release evidence, and commercial release

@@ -5,7 +5,7 @@ import process from 'node:process';
 const rootDir = process.cwd();
 
 function read(relativePath) {
-  return fs.readFileSync(path.join(rootDir, relativePath), 'utf8');
+  return normalizeLineEndings(fs.readFileSync(path.join(rootDir, relativePath), 'utf8'));
 }
 
 function exists(relativePath) {

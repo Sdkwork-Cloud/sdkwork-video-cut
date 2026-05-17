@@ -1,7 +1,7 @@
 import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { builtinModules, createRequire } from 'node:module';
 import ts from 'typescript';
 
@@ -1023,10 +1023,7 @@ function decodeEscapedText(value) {
 }
 
 function readWenan5RealSpeechTranscriptSegments() {
-  const transcriptPath = path.join(
-    rootDir,
-    'artifacts/autocut-diagnostics/wenan5/speech-transcript.json',
-  );
+  const transcriptPath = resolveWenan5RealSpeechTranscriptFixturePath();
   const transcript = JSON.parse(readFileSync(transcriptPath, 'utf8'));
   const entries = Array.isArray(transcript.transcription) ? transcript.transcription : [];
   const segments = entries
@@ -1049,6 +1046,22 @@ function readWenan5RealSpeechTranscriptSegments() {
     throw new Error(`wenan5 real speech transcript fixture contains no timestamped speech: ${transcriptPath}`);
   }
   return segments;
+}
+
+function resolveWenan5RealSpeechTranscriptFixturePath() {
+  const candidates = [
+    process.env.SDKWORK_AUTOCUT_WENAN5_TRANSCRIPT_FIXTURE,
+    path.join(rootDir, 'artifacts/autocut-diagnostics/wenan5/speech-transcript.json'),
+    path.join(rootDir, 'scripts/fixtures/autocut/wenan5/speech-transcript.json'),
+  ].filter((candidate) => typeof candidate === 'string' && candidate.trim().length > 0);
+
+  const transcriptPath = candidates.find((candidate) => existsSync(candidate));
+  if (!transcriptPath) {
+    throw new Error(
+      `missing wenan5 real speech transcript fixture. Checked: ${candidates.join(', ')}`,
+    );
+  }
+  return transcriptPath;
 }
 
 function captureEvents(services, eventName) {

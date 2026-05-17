@@ -29,7 +29,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '..');
 const schemaVersion = '2026-05-11.autocut-wenan5-real-media-slice.v1';
-const defaultTranscriptPath = path.join(repoRoot, 'artifacts/autocut-diagnostics/wenan5/speech-transcript.json');
+const trackedTranscriptFixturePath = path.join(repoRoot, 'scripts/fixtures/autocut/wenan5/speech-transcript.json');
+const localDiagnosticTranscriptPath = path.join(repoRoot, 'artifacts/autocut-diagnostics/wenan5/speech-transcript.json');
+const defaultTranscriptPath = process.env.SDKWORK_AUTOCUT_WENAN5_TRANSCRIPT_FIXTURE ??
+  (fs.existsSync(localDiagnosticTranscriptPath) ? localDiagnosticTranscriptPath : trackedTranscriptFixturePath);
 const defaultOutputDir = path.join(repoRoot, 'artifacts/autocut-diagnostics/wenan5/slices-real-media-current');
 const minExpectedClipCount = 3;
 const maxDurationDeltaMs = 750;

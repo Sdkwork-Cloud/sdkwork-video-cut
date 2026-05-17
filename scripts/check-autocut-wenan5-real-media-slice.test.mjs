@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
+import path from 'node:path';
 
 import {
   createAutoCutWenan5RealMediaSlicePlan,
@@ -15,9 +16,16 @@ import {
 
 const commandCalls = [];
 const renderedDurationsByPath = new Map();
+const trackedTranscriptFixturePath = path.join(
+  'scripts',
+  'fixtures',
+  'autocut',
+  'wenan5',
+  'speech-transcript.json',
+);
 const result = await runAutoCutWenan5RealMediaSliceCheck({
   inputPath: 'D:/media/wenan5.mp4',
-  transcriptPath: 'artifacts/autocut-diagnostics/wenan5/speech-transcript.json',
+  transcriptPath: trackedTranscriptFixturePath,
   outputDir: 'artifacts/autocut-diagnostics/wenan5/slices-real-media-contract',
   runCommand(command, args) {
     commandCalls.push({ command, args });
@@ -218,7 +226,7 @@ assert.match(
 
 const desktopDurationPlan = await createAutoCutWenan5RealMediaSlicePlan({
   inputPath: 'D:/media/wenan5.mp4',
-  transcriptPath: 'artifacts/autocut-diagnostics/wenan5/speech-transcript.json',
+  transcriptPath: trackedTranscriptFixturePath,
   runCommand(command, args) {
     const argText = args.join(' ');
     if (command === 'ffprobe' && argText.includes('format=duration')) {
