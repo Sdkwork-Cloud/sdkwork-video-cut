@@ -10,13 +10,15 @@ assert.equal(fs.existsSync(workflowPath), true, 'AutoCut desktop release workflo
 
 const workflow = fs.readFileSync(workflowPath, 'utf8');
 
-function workflowJobBody(jobName) {
+function workflowJobBody(jobName, source = workflow) {
+  const normalizedSource = source.replace(/\r\n?/gu, '\n');
   const pattern = new RegExp(`\\n  ${jobName}:\\n(?<body>[\\s\\S]*?)(?=\\n  [a-zA-Z0-9_-]+:\\n|\\n*$)`, 'u');
-  return workflow.match(pattern)?.groups?.body ?? '';
+  return normalizedSource.match(pattern)?.groups?.body ?? '';
 }
 
 const linuxJob = workflowJobBody('build-linux');
 const macosJob = workflowJobBody('build-macos');
+const macosJobFromCrlfCheckout = workflowJobBody('build-macos', workflow.replace(/\n/gu, '\r\n'));
 
 for (const marker of [
   'name: AutoCut Desktop Multiplatform Release',
@@ -105,6 +107,11 @@ assert.match(
   macosJob,
   /Install CI FFmpeg[\s\S]*brew list ffmpeg[\s\S]*brew install ffmpeg[\s\S]*Verify workspace/u,
   'macOS release job installs FFmpeg with Homebrew before pnpm test',
+);
+assert.match(
+  macosJobFromCrlfCheckout,
+  /Install CI FFmpeg[\s\S]*brew list ffmpeg[\s\S]*brew install ffmpeg[\s\S]*Verify workspace/u,
+  'macOS release job extraction works with CRLF workflow checkouts on Windows runners',
 );
 assert.match(
   workflow,

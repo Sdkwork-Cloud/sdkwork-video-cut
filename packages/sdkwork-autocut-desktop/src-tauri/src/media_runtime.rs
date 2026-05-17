@@ -13827,7 +13827,7 @@ fn detect_autocut_speech_gpu_backend(
     if help_text.contains("core ml") || help_text.contains("coreml") {
         return Some("coreml".to_string());
     }
-    if cfg!(target_os = "macos") && help_text.contains("--no-gpu") {
+    if help_text.contains("ggml-metal") || help_text.contains("metal") {
         return Some("metal".to_string());
     }
     None
@@ -18580,6 +18580,16 @@ mod tests {
         let backend = detect_autocut_speech_gpu_backend(&root, Some("--no-gpu"));
 
         assert_eq!(backend.as_deref(), Some("cuda"));
+    }
+
+    #[test]
+    fn speech_gpu_probe_detects_explicit_metal_help_text() {
+        let root = unique_temp_dir("sdkwork-autocut-speech-metal-help-probe");
+        let help_text = "whisper.cpp backends: metal, cpu";
+
+        let backend = detect_autocut_speech_gpu_backend(&root, Some(help_text));
+
+        assert_eq!(backend.as_deref(), Some("metal"));
     }
 
     #[test]
