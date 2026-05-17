@@ -4,7 +4,7 @@
   "component": {
     "name": "@sdkwork/autocut-video-gif",
     "displayName": "SDKWork Autocut Video Gif",
-    "version": "0.1.7",
+    "version": "0.1.8",
     "type": "react-package",
     "root": "sdkwork-video-cut/packages/sdkwork-autocut-video-gif",
     "domain": "content",

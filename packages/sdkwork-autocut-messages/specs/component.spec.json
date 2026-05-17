@@ -4,7 +4,7 @@
   "component": {
     "name": "@sdkwork/autocut-messages",
     "displayName": "SDKWork Autocut Messages",
-    "version": "0.1.7",
+    "version": "0.1.8",
     "type": "react-package",
     "root": "sdkwork-video-cut/packages/sdkwork-autocut-messages",
     "domain": "content",

@@ -4,7 +4,7 @@
   "component": {
     "name": "@sdkwork/autocut-desktop",
     "displayName": "SDKWork Autocut Desktop",
-    "version": "0.1.7",
+    "version": "0.1.8",
     "type": "react-tauri-package",
     "root": "sdkwork-video-cut/packages/sdkwork-autocut-desktop",
     "domain": "content",

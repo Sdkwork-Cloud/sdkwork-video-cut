@@ -14,7 +14,7 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const defaultRepository = 'Sdkwork-Cloud/sdkwork-video-cut';
-const defaultReleaseTag = 'v0.1.7';
+const defaultReleaseTag = 'v0.1.8';
 
 export function createAutoCutReleaseEnvironmentReport({
   rootDir = process.cwd(),

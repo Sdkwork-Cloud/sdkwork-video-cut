@@ -4,7 +4,7 @@
   "component": {
     "name": "@sdkwork/autocut-tasks",
     "displayName": "SDKWork Autocut Tasks",
-    "version": "0.1.7",
+    "version": "0.1.8",
     "type": "react-package",
     "root": "sdkwork-video-cut/packages/sdkwork-autocut-tasks",
     "domain": "content",

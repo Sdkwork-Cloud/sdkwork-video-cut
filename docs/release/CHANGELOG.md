@@ -7,6 +7,38 @@ directory. If a previous version was not successfully released, its change log
 must be folded into the next successful release instead of leaving orphaned
 release notes.
 
+## v0.1.8 - 2026-05-17
+
+Unsigned preview hotfix for machine-readable aggregate release evidence status.
+This release carries forward the `v0.1.7` desktop reliability and tag-pinned
+release packaging fixes, then corrects the final uploaded
+`autocut-release-evidence-status.json` asset so automation consumers receive
+pure JSON.
+
+### Release Scope
+
+- Updates the root workspace, every AutoCut package manifest, component specs,
+  Tauri application metadata, Rust desktop crate metadata, release workflow
+  defaults, release evidence defaults, and `sdkwork.app.config.json` to the
+  `0.1.8` release line.
+- Keeps all `v0.1.7` runtime fixes: hidden Windows child processes, reduced
+  duplicate FFmpeg probes, blocking native commands moved to the worker pool,
+  and tag-pinned desktop release workflow checkouts.
+- Keeps install package metadata GitHub Release based and disabled until real
+  asset digests, installer trust evidence, notarization/signature evidence, and
+  SBOM evidence are recorded.
+
+### Release Verification
+
+- Writes the uploaded aggregate `autocut-release-evidence-status.json` by
+  invoking the Node script directly, avoiding `pnpm` script banner output in
+  the redirected JSON file.
+- Adds workflow contract checks that fail if `pnpm release:evidence-status
+  --json` is redirected into the uploaded JSON artifact.
+- Retains prerelease status: GitHub's Latest badge and `/releases/latest`
+  endpoint continue to point at the newest non-prerelease, currently `v0.1.1`,
+  until a formal non-prerelease is published.
+
 ## v0.1.7 - 2026-05-17
 
 Unsigned preview hotfix for Windows desktop native process handling and

@@ -6,7 +6,7 @@ on:
       release_tag:
         description: GitHub Release tag to upload assets to
         required: true
-        default: v0.1.7
+        default: v0.1.8
       upload_assets:
         description: Upload built assets to the GitHub Release
         required: true
@@ -347,7 +347,7 @@ jobs:
           pnpm release:sync-app-manifest -- --dry-run --allow-blocked > artifacts/release/autocut-app-manifest-release-evidence-sync.txt
           node scripts/check-autocut-app-manifest-release-readiness.mjs > artifacts/release/autocut-app-manifest-release-readiness.txt
           node scripts/check-autocut-multiplatform-release-readiness.mjs > artifacts/release/autocut-multiplatform-release-readiness.txt
-          pnpm release:evidence-status -- --release-tag "${{ inputs.release_tag }}" --allow-dirty --skip-windows-installer-service --allow-blocked --json > artifacts/release/autocut-release-evidence-status.json
+          node scripts/check-autocut-release-evidence-status.mjs --release-tag "${{ inputs.release_tag }}" --allow-dirty --skip-windows-installer-service --allow-blocked --json > artifacts/release/autocut-release-evidence-status.json
           gh release upload "${{ inputs.release_tag }}" --clobber \
             artifacts/release/autocut-sbom-evidence.json \
             artifacts/release/autocut-app-manifest-release-evidence-sync.txt \

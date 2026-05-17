@@ -1566,7 +1566,7 @@ for (const [relativePath, sourceText] of [
   );
 }
 assertRule(indexHtmlSource.includes('<title>SDKWork Video Cut</title>'), 'desktop index.html title matches the Tauri product name');
-assertRule(rootPackage.version === '0.1.7', 'AutoCut desktop application version matches the v0.1.7 release line');
+assertRule(rootPackage.version === '0.1.8', 'AutoCut desktop application version matches the v0.1.8 release line');
 assertRule(desktopPackage.scripts?.dev?.includes('--host 127.0.0.1'), 'desktop dev binds to loopback for desktop-local development');
 assertRule(desktopPackage.scripts?.dev?.includes('--port 3000'), 'desktop dev uses the standard AutoCut web port 3000');
 assertRule(desktopPackage.scripts?.dev?.includes('--strictPort'), 'desktop dev uses strictPort for deterministic desktop-local startup');
@@ -3208,6 +3208,8 @@ assertRule(
     desktopReleaseWorkflowSource.includes('autocut-app-manifest-release-evidence-sync.txt') &&
     desktopReleaseWorkflowSource.includes('autocut-app-manifest-release-readiness.txt') &&
     desktopReleaseWorkflowSource.includes('autocut-release-evidence-status.json') &&
+    desktopReleaseWorkflowSource.includes('node scripts/check-autocut-release-evidence-status.mjs --release-tag "${{ inputs.release_tag }}" --allow-dirty --skip-windows-installer-service --allow-blocked --json > artifacts/release/autocut-release-evidence-status.json') &&
+    !desktopReleaseWorkflowSource.includes('pnpm release:evidence-status -- --release-tag "${{ inputs.release_tag }}" --allow-dirty --skip-windows-installer-service --allow-blocked --json > artifacts/release/autocut-release-evidence-status.json') &&
     desktopReleaseWorkflowSource.includes('releaseVersion="${{ inputs.release_tag }}"') &&
     desktopReleaseWorkflowSource.includes('releaseVersion="${releaseVersion#v}"') &&
     desktopReleaseWorkflowSource.includes('SDKWork Video Cut_${releaseVersion}_${{ matrix.app_arch }}.app.tar.gz') &&

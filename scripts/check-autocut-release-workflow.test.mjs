@@ -239,6 +239,16 @@ assert.match(
   /release:evidence-status -- --release-tag "\$\{\{ inputs\.release_tag \}\}" --allow-dirty --skip-windows-installer-service --allow-blocked/u,
   'workflow writes an aggregate release evidence status report without bypassing commercial gates',
 );
+assert.match(
+  workflow,
+  /node scripts\/check-autocut-release-evidence-status\.mjs --release-tag "\$\{\{ inputs\.release_tag \}\}" --allow-dirty --skip-windows-installer-service --allow-blocked --json > artifacts\/release\/autocut-release-evidence-status\.json/u,
+  'workflow writes machine-readable aggregate release evidence status JSON without pnpm script banner output',
+);
+assert.equal(
+  workflow.includes('pnpm release:evidence-status -- --release-tag "${{ inputs.release_tag }}" --allow-dirty --skip-windows-installer-service --allow-blocked --json > artifacts/release/autocut-release-evidence-status.json'),
+  false,
+  'workflow never redirects pnpm release:evidence-status --json output into the uploaded JSON artifact',
+);
 assert.equal(
   workflow.includes('autocut-release-evidence-windows_x86_64.json'),
   false,
