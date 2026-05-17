@@ -31,8 +31,6 @@ for (const marker of [
   'pnpm/action-setup',
   'Prepare release sidecars',
   'prepare:release-sidecars',
-  'prepare:ffmpeg-sidecar',
-  'prepare:speech-sidecar',
   'release:smoke-preflight',
   'release:native-smoke',
   'release:smart-slice-sample',
@@ -71,8 +69,8 @@ assert.match(
 );
 assert.match(
   workflow,
-  /prepare:ffmpeg-sidecar -- --platform windows-x86_64 --source "\$sidecarSource\/ffmpeg\.exe" --accept-license/u,
-  'workflow re-verifies the approved Windows FFmpeg LFS sidecar before native packaging',
+  /prepare:release-sidecars -- --platform windows-x86_64 --accept-license/u,
+  'workflow prepares approved Windows release sidecars without requiring GitHub Actions to fetch Git LFS objects',
 );
 assert.match(
   workflow,
@@ -104,6 +102,16 @@ assert.equal(
   false,
   'workflow avoids package-path Tauri action builds so release sidecar checks and workspace scripts stay consistent',
 );
+assert.equal(
+  workflow.includes('lfs: true'),
+  false,
+  'workflow does not fetch Git LFS objects during checkout so release builds are not blocked by LFS bandwidth quota',
+);
+assert.match(
+  workflow,
+  /lfs: false/u,
+  'workflow explicitly disables Git LFS checkout for native release jobs',
+);
 assert.match(
   workflow,
   /\$PSNativeCommandUseErrorActionPreference = \$true[\s\S]*pnpm release:native-smoke -- --run-real-llm-secret-smoke/u,
@@ -123,11 +131,6 @@ assert.equal(
   workflow.includes('prepare:speech-sidecar -- --platform windows_x86_64'),
   false,
   'workflow never uses misspelled Windows platform spelling for speech sidecars',
-);
-assert.match(
-  workflow,
-  /prepare:speech-sidecar -- --platform windows-x86_64 --source "\$sidecarSource\/whisper-cli\.exe" --accept-license/u,
-  'workflow re-verifies the approved Windows Whisper CLI LFS sidecar before native packaging',
 );
 assert.match(
   workflow,

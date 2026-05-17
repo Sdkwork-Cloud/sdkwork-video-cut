@@ -35,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: false
 
       - uses: pnpm/action-setup@v4
         with:
@@ -57,13 +57,8 @@ jobs:
         run: pnpm test
 
       - name: Prepare release sidecars
-        shell: pwsh
         run: |
-          $sidecarSource = Join-Path $env:RUNNER_TEMP "autocut-windows-x86_64-sidecars"
-          New-Item -ItemType Directory -Force -Path $sidecarSource | Out-Null
-          Copy-Item -Path packages/sdkwork-autocut-desktop/src-tauri/binaries/windows-x86_64/* -Destination $sidecarSource -Recurse -Force
-          pnpm prepare:ffmpeg-sidecar -- --platform windows-x86_64 --source "$sidecarSource/ffmpeg.exe" --accept-license
-          pnpm prepare:speech-sidecar -- --platform windows-x86_64 --source "$sidecarSource/whisper-cli.exe" --accept-license
+          pnpm prepare:release-sidecars -- --platform windows-x86_64 --accept-license
 
       - name: Build desktop bundle
         run: pnpm tauri:build
@@ -116,7 +111,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: false
 
       - name: Install Linux Tauri dependencies
         run: |
@@ -218,7 +213,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: false
 
       - uses: pnpm/action-setup@v4
         with:
