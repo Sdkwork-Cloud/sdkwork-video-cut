@@ -230,6 +230,61 @@ assert.equal(
   true,
 );
 
+const windowsCudaRuntimeRoot = tempRoot('autocut-speech-sidecar-windows-cuda-runtime');
+const windowsCudaRuntimeManifestPath = writeManifest(windowsCudaRuntimeRoot);
+const windowsCudaRuntimeSourceDir = path.join(windowsCudaRuntimeRoot, 'source');
+fs.mkdirSync(windowsCudaRuntimeSourceDir, { recursive: true });
+const windowsCudaRuntimeSourcePath = writeSource(windowsCudaRuntimeSourceDir, 'whisper-cli.exe', 'windows cuda runtime cli');
+writeSource(windowsCudaRuntimeSourceDir, 'ggml.dll', 'windows cuda runtime ggml');
+writeSource(windowsCudaRuntimeSourceDir, 'ggml-cuda.dll', 'windows cuda runtime backend');
+writeSource(windowsCudaRuntimeSourceDir, 'whisper.dll', 'windows cuda runtime whisper');
+const windowsCudaRuntimePlan = prepareAutoCutSpeechSidecar({
+  manifestPath: windowsCudaRuntimeManifestPath,
+  platform: 'windows-x86_64',
+  sourcePath: windowsCudaRuntimeSourcePath,
+  acceptLicense: true,
+});
+const windowsCudaRuntimeManifest = JSON.parse(fs.readFileSync(windowsCudaRuntimeManifestPath, 'utf8'));
+assert.equal(
+  windowsCudaRuntimeManifest.platforms['windows-x86_64'].accelerationBackend,
+  'cuda',
+  'Windows CUDA whisper.cpp preparation records a declared GPU acceleration backend in the speech toolchain manifest',
+);
+assert.equal(
+  windowsCudaRuntimePlan.accelerationBackend,
+  'cuda',
+  'speech sidecar plan exposes the inferred acceleration backend for release review',
+);
+const windowsCudaRuntimeReport = createAutoCutSpeechSidecarReadinessReport({
+  manifestPath: windowsCudaRuntimeManifestPath,
+  platform: 'windows-x86_64',
+});
+assert.equal(
+  windowsCudaRuntimeReport.accelerationBackend,
+  'cuda',
+  'speech sidecar readiness report exposes the declared acceleration backend for settings and release evidence',
+);
+
+const explicitMetalRuntimeRoot = tempRoot('autocut-speech-sidecar-explicit-metal-runtime');
+const explicitMetalRuntimeManifestPath = writeManifest(explicitMetalRuntimeRoot);
+const explicitMetalRuntimeSourcePath = writeSource(explicitMetalRuntimeRoot, 'whisper-cli', 'explicit metal runtime cli');
+const explicitMetalRuntimePlan = prepareAutoCutSpeechSidecar({
+  manifestPath: explicitMetalRuntimeManifestPath,
+  platform: 'macos-aarch64',
+  sourcePath: explicitMetalRuntimeSourcePath,
+  accelerationBackend: 'metal',
+  acceptLicense: true,
+});
+assert.equal(
+  explicitMetalRuntimePlan.accelerationBackend,
+  'metal',
+  'speech sidecar preparation supports explicit acceleration backend declaration when companion filenames do not prove it',
+);
+assert.equal(
+  JSON.parse(fs.readFileSync(explicitMetalRuntimeManifestPath, 'utf8')).platforms['macos-aarch64'].accelerationBackend,
+  'metal',
+);
+
 const readyReport = assertAutoCutSpeechSidecarReadiness({
   manifestPath,
   platform: 'windows-x86_64',
@@ -307,6 +362,12 @@ assert.throws(
 );
 
 const originalCwd = process.cwd();
+const defaultCwdPlan = createAutoCutSpeechSidecarPlan({
+  platform: 'windows-x86_64',
+  sourcePath,
+  acceptLicense: true,
+  dryRun: true,
+});
 try {
   process.chdir(path.join(originalCwd, 'packages', 'sdkwork-autocut-desktop'));
   const packageCwdPlan = createAutoCutSpeechSidecarPlan({
@@ -317,7 +378,7 @@ try {
   });
   assert.equal(
     packageCwdPlan.manifestPath,
-    path.join(originalCwd, 'packages', 'sdkwork-autocut-desktop', 'src-tauri', 'binaries', 'speech-transcription.toolchain.json'),
+    defaultCwdPlan.manifestPath,
     'speech sidecar preparation resolves the default manifest from the repository root even when run from the desktop package directory',
   );
 } finally {

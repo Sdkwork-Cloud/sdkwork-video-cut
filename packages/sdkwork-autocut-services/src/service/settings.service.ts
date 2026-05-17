@@ -12,11 +12,13 @@ import type {
   ModelVendor,
 } from '@sdkwork/autocut-types';
 import {
+  AUTOCUT_DEFAULT_SMART_SLICE_SEGMENTATION_AGENT_ID,
   AUTOCUT_DEFAULT_SPEECH_TRANSCRIPTION_PROVIDER_ID,
   AUTOCUT_MODEL_VENDOR_PRESETS,
   AUTOCUT_SPEECH_TRANSCRIPTION_LANGUAGE_OPTIONS,
   AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS,
   getAutoCutModelPreset,
+  getAutoCutSmartSliceSegmentationAgentDefinition,
   getAutoCutSpeechTranscriptionProviderDefinition,
 } from '@sdkwork/autocut-types';
 import { dispatchAutoCutEvent } from './events.service';
@@ -84,6 +86,7 @@ const INITIAL_SETTINGS: AppSettings = {
     apiKeyConfigured: false,
     temperature: 0.2,
     maxTokens: getAutoCutModelPreset('deepseek', AUTOCUT_MODEL_VENDOR_PRESETS.deepseek.defaultModel).defaultMaxTokens,
+    defaultSegmentationAgentId: AUTOCUT_DEFAULT_SMART_SLICE_SEGMENTATION_AGENT_ID,
   },
   security: {
     twoFactorEnabled: false,
@@ -283,6 +286,9 @@ function sanitizeAutoCutLlmSettings(settings: Partial<AutoCutLlmSettings>): Auto
     apiKeyConfigured: Boolean(maskedApiKey || settings.apiKeyConfigured),
     temperature: normalizeAutoCutLlmTemperature(settings.temperature, modelPreset),
     maxTokens: normalizeAutoCutLlmMaxTokens(settings.maxTokens, modelPreset),
+    defaultSegmentationAgentId: getAutoCutSmartSliceSegmentationAgentDefinition(
+      settings.defaultSegmentationAgentId,
+    ).id,
   };
 }
 
@@ -316,6 +322,9 @@ function normalizeAutoCutLlmSaveInput(current: AutoCutLlmSettings, next: AutoCut
     apiKeyConfigured: Boolean(maskedApiKey || next.apiKeyConfigured || current.apiKeyConfigured),
     temperature: next.temperature,
     maxTokens,
+    defaultSegmentationAgentId: getAutoCutSmartSliceSegmentationAgentDefinition(
+      next.defaultSegmentationAgentId ?? current.defaultSegmentationAgentId,
+    ).id,
   });
 }
 
@@ -628,6 +637,7 @@ export async function resolveAutoCutLlmRuntimeConfig(): Promise<AutoCutLlmRuntim
     ...(sessionApiKey ? { sessionApiKey } : {}),
     temperature: settings.llm.temperature,
     maxTokens: settings.llm.maxTokens,
+    defaultSegmentationAgentId: settings.llm.defaultSegmentationAgentId,
     requestFormat: 'openai-chat-completions',
     chatCompletionsPath: '/chat/completions',
   };
@@ -653,6 +663,7 @@ export async function clearAutoCutLlmApiKey(): Promise<AppSettings> {
       apiKeyConfigured: false,
       temperature: settings.llm.temperature,
       maxTokens: settings.llm.maxTokens,
+      defaultSegmentationAgentId: settings.llm.defaultSegmentationAgentId,
     }),
     updatedAt: createAutoCutTimestamp(),
   }));

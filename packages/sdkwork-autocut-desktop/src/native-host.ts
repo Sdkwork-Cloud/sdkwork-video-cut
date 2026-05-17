@@ -1,13 +1,16 @@
 import {
   configureAutoCutNativeHostClient,
   createAutoCutNativeHostClient,
+  dispatchAutoCutEvent,
   dispatchAutoCutSpeechTranscriptionModelDownloadProgress,
   AUTOCUT_EVENTS,
+  projectNativeTaskProgressEventToTask,
   reportAutoCutDiagnostic,
   type AutoCutLocalMediaFileDescription,
   type AutoCutNativeInvoke,
 } from '@sdkwork/autocut-services';
 import type {
+  AutoCutNativeTaskProgressEvent,
   AutoCutSpeechTranscriptionModelDownloadProgressEvent,
 } from '@sdkwork/autocut-types';
 import { dispatchAutoCutTrustedFileSourceDrop } from '@sdkwork/autocut-commons';
@@ -32,6 +35,7 @@ export function configureDesktopNativeHostClient() {
     })
     .catch(() => undefined);
   registerDesktopTrustedFileSourceDropBridge(nativeHostClient);
+  registerDesktopNativeTaskProgressBridge();
   registerDesktopSpeechTranscriptionModelDownloadProgressBridge();
 }
 
@@ -123,6 +127,34 @@ function registerDesktopSpeechTranscriptionModelDownloadProgressBridge() {
       'warning',
       'desktop.speech-model-download-progress',
       'Local speech-to-text model download progress bridge could not be registered.',
+      error,
+    );
+  });
+}
+
+function registerDesktopNativeTaskProgressBridge() {
+  void listen<AutoCutNativeTaskProgressEvent>(
+    AUTOCUT_EVENTS.nativeTaskProgress,
+    (event) => {
+      const progress = event.payload;
+      void projectNativeTaskProgressEventToTask(progress)
+        .catch((error) => {
+          reportAutoCutDiagnostic(
+            'warning',
+            'desktop.native-task-progress-projection',
+            'Native task progress could not be projected onto the workflow task.',
+            error,
+          );
+        })
+        .finally(() => {
+          dispatchAutoCutEvent('nativeTaskProgress', progress);
+        });
+    },
+  ).catch((error) => {
+    reportAutoCutDiagnostic(
+      'warning',
+      'desktop.native-task-progress',
+      'Native task progress bridge could not be registered.',
       error,
     );
   });

@@ -11,6 +11,9 @@ import {
   formatAutoCutSmartSliceReleaseFixtureMessage,
   writeAutoCutSmartSliceReleaseFixtureReport,
 } from './check-autocut-smart-slice-release-fixture.mjs';
+import {
+  AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD,
+} from '../packages/sdkwork-autocut-types/src/index.ts';
 
 function tempRoot(name) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `${name}-`));
@@ -39,6 +42,13 @@ assert.equal(releaseEvidence.nativeReleaseSmoke.videoSliceReady, true);
 assert.equal(report.summary.totalSlices, 2);
 assert.equal(report.summary.smartSliceQualityReady, true);
 assert.equal(report.summary.commercialReleaseReady, true);
+assert.equal(report.summary.reviewWarningSlices, 1);
+assert.equal(report.summary.reviewWarningCount, 1);
+assert.equal(report.taskValidation.reviewWarnings.length, 1);
+assert.equal(report.taskValidation.reviewWarnings[0].code, 'connector-repaired');
+assert.deepEqual(report.taskValidation.reviewWarnings[0].sliceIndexes, [1]);
+assert.equal(report.smartSliceQuality.reviewWarnings.length, 1);
+assert.equal(report.smartSliceQuality.reviewWarnings[0].code, 'connector-repaired');
 assert.equal(
   report.paths.taskEvidence,
   'artifacts/smart-slice/smart-slice-task.json',
@@ -71,6 +81,26 @@ assert.equal(
   fs.existsSync(path.join(root, report.paths.releaseEvidence)),
   true,
 );
+const readyTaskEvidence = JSON.parse(
+  fs.readFileSync(path.join(root, report.paths.taskEvidence), 'utf8'),
+);
+assert.equal(readyTaskEvidence.sliceResults[0].audioCleanupProfile, AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.audioCleanupProfile);
+assert.equal(readyTaskEvidence.sliceResults[0].noiseReductionApplied, AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.defaultNoiseReductionApplied);
+assert.equal(readyTaskEvidence.sliceResults[0].boundaryDecisionSource, 'combined');
+assert.equal(readyTaskEvidence.sliceResults[0].audioActivityStartMs, 200);
+assert.equal(readyTaskEvidence.sliceResults[0].audioActivityEndMs, 41700);
+assert.equal(readyTaskEvidence.sliceResults[0].leadingSilenceMs, 200);
+assert.equal(readyTaskEvidence.sliceResults[0].trailingSilenceMs, 250);
+assert.equal(readyTaskEvidence.sliceResults[0].tailTreatment, 'none');
+assert.equal(readyTaskEvidence.sliceResults[1].audioCleanupProfile, AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.audioCleanupProfile);
+assert.equal(readyTaskEvidence.sliceResults[1].noiseReductionApplied, AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.defaultNoiseReductionApplied);
+assert.equal(readyTaskEvidence.sliceResults[1].boundaryDecisionSource, 'combined');
+assert.equal(readyTaskEvidence.sliceResults[1].audioActivityStartMs, 44200);
+assert.equal(readyTaskEvidence.sliceResults[1].audioActivityEndMs, 79750);
+assert.equal(readyTaskEvidence.sliceResults[1].leadingSilenceMs, 200);
+assert.equal(readyTaskEvidence.sliceResults[1].trailingSilenceMs, 250);
+assert.equal(readyTaskEvidence.sliceResults[1].tailTreatment, 'none');
+assert.deepEqual(readyTaskEvidence.sliceResults[1].risks, ['connector-repaired']);
 assert.equal(
   formatAutoCutSmartSliceReleaseFixtureMessage(report),
   `ok - autocut smart slice release fixture ${root} slices=2 commercialReleaseReady=true blockers=0`,

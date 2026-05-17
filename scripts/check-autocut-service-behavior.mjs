@@ -12,9 +12,35 @@ const pass = [];
 const nativeSetTimeout = globalThis.setTimeout;
 const nativeClearTimeout = globalThis.clearTimeout;
 const revokedObjectUrls = [];
+const objectUrlSources = new Map();
 const browserDownloadRequests = [];
 const clipboardWrites = [];
-const moduleLoaderOutDir = path.join(rootDir, 'artifacts', 'service-behavior-modules');
+const moduleLoaderOutRootDir = path.join(rootDir, 'artifacts', 'service-behavior-modules');
+const moduleLoaderOutDir = path.join(
+  moduleLoaderOutRootDir,
+  `${process.pid}-${Date.now().toString(36)}`,
+);
+let moduleLoaderOutDirPrepared = false;
+const desktopNativeHostSource = readFileSync(
+  path.join(rootDir, 'packages/sdkwork-autocut-desktop/src/native-host.ts'),
+  'utf8',
+);
+const taskDetailPageSource = readFileSync(
+  path.join(rootDir, 'packages/sdkwork-autocut-tasks/src/pages/TaskDetailPage.tsx'),
+  'utf8',
+);
+const tasksPageSource = readFileSync(
+  path.join(rootDir, 'packages/sdkwork-autocut-tasks/src/pages/TasksPage.tsx'),
+  'utf8',
+);
+const tasksServiceSource = readFileSync(
+  path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/tasks.service.ts'),
+  'utf8',
+);
+const desktopMediaRuntimeSource = readFileSync(
+  path.join(rootDir, 'packages/sdkwork-autocut-desktop/src-tauri/src/media_runtime.rs'),
+  'utf8',
+);
 
 function assertRule(condition, message) {
   if (condition) {
@@ -39,6 +65,20 @@ function assertIncludes(collection, value, message) {
   assertRule(collection.includes(value), message);
 }
 
+function assertNotOwnProperty(object, propertyName, message) {
+  assertRule(
+    !Object.prototype.hasOwnProperty.call(object ?? {}, propertyName),
+    `${message} (unexpected property ${JSON.stringify(propertyName)} on ${JSON.stringify(object)})`,
+  );
+}
+
+function assertOwnProperty(object, propertyName, message) {
+  assertRule(
+    Object.prototype.hasOwnProperty.call(object ?? {}, propertyName),
+    `${message} (missing property ${JSON.stringify(propertyName)} on ${JSON.stringify(object)})`,
+  );
+}
+
 function assertNumberBetween(actual, min, max, message) {
   assertRule(
     typeof actual === 'number' && actual >= min && actual <= max,
@@ -61,10 +101,197 @@ function assertSegmentsOrderedAndNonOverlapping(segments, message) {
   );
 }
 
+const smartSliceTranscriptBoundaryToleranceMs = 80;
+
+function isAutoCutNgOrRetakeTranscriptText(text) {
+  const normalizedText = normalizeSubtitleCueText(text).toLowerCase();
+  return /(?:\u5570\u55e6|\u91cd\u65b0\u5f55|\u91cd\u5f55|\u7b97\u4e86|ng|retake|re-record|record again|show you the same thing)/iu.test(normalizedText);
+}
+
+function getSmartSliceEligibleTranscriptCoverageSegments(segments) {
+  const normalizedSegments = (Array.isArray(segments) ? segments : [])
+    .filter((segment) =>
+      Number.isFinite(segment?.startMs) &&
+        Number.isFinite(segment?.endMs) &&
+        segment.endMs > segment.startMs &&
+        normalizeSubtitleCueText(segment.text)
+    )
+    .map((segment) => ({
+      ...segment,
+      startMs: Math.round(segment.startMs),
+      endMs: Math.round(segment.endMs),
+      text: normalizeSubtitleCueText(segment.text),
+    }))
+    .sort((firstSegment, secondSegment) =>
+      firstSegment.startMs - secondSegment.startMs ||
+        firstSegment.endMs - secondSegment.endMs,
+    );
+  const timelineStartMs = normalizedSegments[0]?.startMs ?? 0;
+  const timelineEndMs = normalizedSegments.at(-1)?.endMs ?? timelineStartMs;
+  const timelineDurationMs = Math.max(1, timelineEndMs - timelineStartMs);
+  const discardedTailStartIndex = normalizedSegments.findIndex((segment, index) =>
+    index > 0 &&
+      isAutoCutNgOrRetakeTranscriptText(segment.text) &&
+      segment.startMs >= timelineStartMs + timelineDurationMs * 0.65
+  );
+  const publishableSegments = discardedTailStartIndex >= 0
+    ? normalizedSegments.slice(0, discardedTailStartIndex)
+    : normalizedSegments;
+  return publishableSegments.filter((segment) =>
+    normalizeSubtitleCueText(segment.text) && !isAutoCutNgOrRetakeTranscriptText(segment.text)
+  );
+}
+
+function getSmartSliceClipCoverageRanges(clip) {
+  if (Array.isArray(clip?.sourceSegments) && clip.sourceSegments.length > 0) {
+    return clip.sourceSegments
+      .map((segment) => ({
+        startMs: Math.max(0, Math.round(segment?.startMs ?? 0)),
+        endMs: Math.max(0, Math.round(segment?.endMs ?? 0)),
+      }))
+      .filter((segment) => segment.endMs > segment.startMs);
+  }
+
+  const startMs = typeof clip?.speechStartMs === 'number'
+    ? Math.max(0, Math.round(clip.speechStartMs))
+    : typeof clip?.sourceStartMs === 'number'
+      ? Math.max(0, Math.round(clip.sourceStartMs))
+      : typeof clip?.startMs === 'number'
+        ? Math.max(0, Math.round(clip.startMs))
+        : undefined;
+  const endMs = typeof clip?.speechEndMs === 'number'
+    ? Math.max(0, Math.round(clip.speechEndMs))
+    : typeof clip?.sourceEndMs === 'number'
+      ? Math.max(0, Math.round(clip.sourceEndMs))
+      : typeof clip?.startMs === 'number' && typeof clip?.durationMs === 'number'
+        ? Math.max(0, Math.round(clip.startMs + clip.durationMs))
+        : undefined;
+  return startMs !== undefined && endMs !== undefined && endMs > startMs
+    ? [{ startMs, endMs }]
+    : [];
+}
+
+function doesSmartSliceRequestCoverTranscriptSegment(clips, segment) {
+  const segmentStartMs = Math.round(segment.startMs);
+  const segmentEndMs = Math.round(segment.endMs);
+  const ranges = (Array.isArray(clips) ? clips : [])
+    .flatMap((clip) => getSmartSliceClipCoverageRanges(clip))
+    .map((range) => ({
+      startMs: Math.max(segmentStartMs, range.startMs),
+      endMs: Math.min(segmentEndMs, range.endMs),
+    }))
+    .filter((range) => range.endMs > range.startMs)
+    .sort((firstRange, secondRange) =>
+      firstRange.startMs - secondRange.startMs || firstRange.endMs - secondRange.endMs
+    );
+
+  let coveredUntilMs = segmentStartMs;
+  for (const range of ranges) {
+    if (range.endMs <= coveredUntilMs) {
+      continue;
+    }
+    if (range.startMs > coveredUntilMs + smartSliceTranscriptBoundaryToleranceMs) {
+      return false;
+    }
+    coveredUntilMs = Math.max(coveredUntilMs, range.endMs);
+    if (coveredUntilMs >= segmentEndMs - smartSliceTranscriptBoundaryToleranceMs) {
+      return true;
+    }
+  }
+
+  return coveredUntilMs >= segmentEndMs - smartSliceTranscriptBoundaryToleranceMs;
+}
+
+function getUncoveredSmartSliceTranscriptSegments(clips, transcriptSegments) {
+  return getSmartSliceEligibleTranscriptCoverageSegments(transcriptSegments)
+    .filter((segment) => !doesSmartSliceRequestCoverTranscriptSegment(clips, segment));
+}
+
+function assertSmartSliceNativeRenderRequestClipsReady(clips, sourceDurationMs, message) {
+  assertRule(Array.isArray(clips) && clips.length > 0, `${message} includes native render clips`);
+
+  let previousRenderedEndMs;
+  (Array.isArray(clips) ? clips : []).forEach((clip, index) => {
+    const clipNumber = index + 1;
+    const startMs = Math.round(clip.startMs);
+    const durationMs = Math.round(clip.durationMs);
+    const renderedEndMs = startMs + durationMs;
+    const sourceStartMs = Math.round(clip.sourceStartMs ?? startMs);
+    const sourceEndMs = Math.round(clip.sourceEndMs ?? renderedEndMs);
+    const speechStartMs = Math.round(clip.speechStartMs ?? sourceStartMs);
+    const speechEndMs = Math.round(clip.speechEndMs ?? sourceEndMs);
+
+    assertRule(
+      Number.isFinite(startMs) && startMs >= 0,
+      `${message} clip ${clipNumber} has a finite non-negative startMs`,
+    );
+    assertRule(
+      Number.isFinite(durationMs) && durationMs > 0,
+      `${message} clip ${clipNumber} has a finite positive durationMs`,
+    );
+    assertRule(
+      previousRenderedEndMs === undefined || startMs >= previousRenderedEndMs,
+      `${message} clip ${clipNumber} starts after the previous rendered clip ends (startMs=${startMs}, previousRenderedEndMs=${previousRenderedEndMs})`,
+    );
+    if (Number.isFinite(sourceDurationMs)) {
+      assertRule(
+        renderedEndMs <= sourceDurationMs,
+        `${message} clip ${clipNumber} stays inside source duration (endMs=${renderedEndMs}, sourceDurationMs=${sourceDurationMs})`,
+      );
+    }
+    assertRule(
+      sourceEndMs > sourceStartMs && sourceStartMs >= startMs && sourceEndMs <= renderedEndMs,
+      `${message} clip ${clipNumber} source range stays inside rendered timing (startMs=${startMs}, renderedEndMs=${renderedEndMs}, sourceStartMs=${sourceStartMs}, sourceEndMs=${sourceEndMs})`,
+    );
+    assertRule(
+      speechEndMs > speechStartMs && speechStartMs >= sourceStartMs && speechEndMs <= sourceEndMs,
+      `${message} clip ${clipNumber} speech range stays inside source range (sourceStartMs=${sourceStartMs}, sourceEndMs=${sourceEndMs}, speechStartMs=${speechStartMs}, speechEndMs=${speechEndMs})`,
+    );
+
+    previousRenderedEndMs = renderedEndMs;
+  });
+}
+
+function normalizeSubtitleCueText(text) {
+  return String(text ?? '').trim().replace(/\s+/gu, ' ');
+}
+
+function normalizeSubtitleCueCoverageText(text) {
+  return normalizeSubtitleCueText(text)
+    .replace(/\s+([,.;:!?])/gu, '$1')
+    .replace(/([,.;:!?])(?=\S)/gu, '$1 ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+function countSubtitleCueDisplayUnits(text) {
+  let units = 0;
+  for (const character of normalizeSubtitleCueText(text)) {
+    units += /\p{Script=Han}/u.test(character) ? 2 : 1;
+  }
+  return units;
+}
+
+function joinSubtitleCueCoverageText(segments) {
+  return normalizeSubtitleCueCoverageText(
+    (Array.isArray(segments) ? segments : [])
+      .map((segment) => segment?.text)
+      .filter((text) => typeof text === 'string' && text.trim())
+      .join(' '),
+  );
+}
+
 function assertArrayIncludes(actual, expectedItem, message) {
   assertRule(
     Array.isArray(actual) && actual.includes(expectedItem),
     `${message} (expected array to include ${JSON.stringify(expectedItem)}, got ${JSON.stringify(actual)})`,
+  );
+}
+
+function assertArrayNotIncludes(actual, unexpectedItem, message) {
+  assertRule(
+    Array.isArray(actual) && !actual.includes(unexpectedItem),
+    `${message} (expected array not to include ${JSON.stringify(unexpectedItem)}, got ${JSON.stringify(actual)})`,
   );
 }
 
@@ -150,6 +377,13 @@ function assertTaskNameUsesSourceAndSecondTimestamp(task, sourceName, message) {
   );
 }
 
+function assertAutoCutTaskIdUsesUuidV7(taskId, expectedType, message) {
+  assertRule(
+    new RegExp(`^task-${expectedType}-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, 'u').test(taskId),
+    `${message} uses a normalized task type prefix and RFC 9562 UUIDv7 suffix`,
+  );
+}
+
 function createTrustedLocalMediaFile(commons, sourcePath, name = 'native-source.mp4', overrides = {}) {
   return commons.createAutoCutTrustedLocalFile({
     sourcePath,
@@ -157,6 +391,8 @@ function createTrustedLocalMediaFile(commons, sourcePath, name = 'native-source.
     byteSize: overrides.byteSize ?? 321000,
     mimeType: overrides.mimeType ?? 'video/mp4',
     mediaType: overrides.mediaType ?? 'video',
+    hasAudioStream: overrides.hasAudioStream ?? true,
+    hasVideoStream: overrides.hasVideoStream ?? (overrides.mediaType !== 'audio'),
   });
 }
 
@@ -177,6 +413,73 @@ async function assertRejects(action, expectedMessagePart, message) {
   );
 }
 
+async function assertDoesNotReject(action, message) {
+  try {
+    await action();
+  } catch (error) {
+    void error;
+  }
+  assertRule(true, `${message} completes without fatal rejection`);
+}
+
+function assertSourceIncludes(source, expectedText, message) {
+  assertRule(
+    source.includes(expectedText),
+    `${message} (missing ${JSON.stringify(expectedText)})`,
+  );
+}
+
+function readZipUint16(bytes, offset) {
+  return bytes[offset] | (bytes[offset + 1] << 8);
+}
+
+function readZipUint32(bytes, offset) {
+  return (
+    (bytes[offset] |
+      (bytes[offset + 1] << 8) |
+      (bytes[offset + 2] << 16) |
+      (bytes[offset + 3] << 24)) >>> 0
+  );
+}
+
+async function readStoredZipEntries(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const decoder = new TextDecoder();
+  const entries = new Map();
+  let offset = 0;
+
+  while (offset + 4 <= bytes.length) {
+    const signature = readZipUint32(bytes, offset);
+    if (signature === 0x02014b50 || signature === 0x06054b50) {
+      break;
+    }
+
+    assertEqual(signature, 0x04034b50, 'task package ZIP uses local file headers before the central directory');
+    const compressionMethod = readZipUint16(bytes, offset + 8);
+    const compressedSize = readZipUint32(bytes, offset + 18);
+    const uncompressedSize = readZipUint32(bytes, offset + 22);
+    const fileNameLength = readZipUint16(bytes, offset + 26);
+    const extraLength = readZipUint16(bytes, offset + 28);
+    const fileNameStart = offset + 30;
+    const fileNameEnd = fileNameStart + fileNameLength;
+    const dataStart = fileNameEnd + extraLength;
+    const dataEnd = dataStart + compressedSize;
+    const fileName = decoder.decode(bytes.slice(fileNameStart, fileNameEnd));
+    const data = bytes.slice(dataStart, dataEnd);
+
+    assertEqual(compressionMethod, 0, `task package ZIP stores ${fileName} without an unsupported compression dependency`);
+    assertEqual(data.length, uncompressedSize, `task package ZIP preserves the uncompressed size for ${fileName}`);
+    entries.set(fileName, {
+      bytes: data,
+      text: decoder.decode(data),
+    });
+    offset = dataEnd;
+  }
+
+  assertRule(entries.size > 0, 'task package ZIP contains at least one file entry');
+  return entries;
+}
+
 async function saveVerifiedLocalSpeechTranscriptionSettings(
   services,
   overrides = {},
@@ -184,6 +487,7 @@ async function saveVerifiedLocalSpeechTranscriptionSettings(
   const settings = await services.getAutoCutSettings();
   await services.saveAutoCutSpeechTranscriptionSettings({
     ...settings.speechTranscription,
+    providerId: 'local-whisper-cli',
     executablePath: 'D:/tools/whisper-cli.exe',
     modelPath: 'D:/models/ggml-large-v3-turbo.bin',
     language: 'auto',
@@ -274,10 +578,23 @@ function installBrowserRuntime() {
     configurable: true,
   });
 
-  URL.createObjectURL = () => `blob:autocut-contract-${Math.random().toString(16).slice(2)}`;
+  URL.createObjectURL = (source) => {
+    const url = `blob:autocut-contract-${Math.random().toString(16).slice(2)}`;
+    objectUrlSources.set(url, source);
+    return url;
+  };
   URL.revokeObjectURL = (url) => {
     revokedObjectUrls.push(url);
+    objectUrlSources.delete(url);
   };
+}
+
+async function readObjectUrlText(url) {
+  const source = objectUrlSources.get(url);
+  if (source && typeof source.text === 'function') {
+    return await source.text();
+  }
+  return '';
 }
 
 async function flushMicrotasks(iterations = 30) {
@@ -328,7 +645,7 @@ function assertNativeTaskOutputArtifact(
   message,
   outputRootDir = 'D:/autocut/media',
 ) {
-  const expectedTaskOutputDir = `${outputRootDir}/tasks/${expectedTaskUuid}/outputs`;
+  const expectedTaskOutputDir = `${outputRootDir}/tasks/${expectedTaskUuid}`;
   assertEqual(result?.taskOutputDir, expectedTaskOutputDir, `${message} exposes the native task output directory`);
   assertEqual(
     result?.artifactPath,
@@ -338,10 +655,24 @@ function assertNativeTaskOutputArtifact(
 }
 
 function createNativeTaskOutputArtifact(taskUuid, fileName, outputRootDir = 'D:/autocut/media') {
-  const taskOutputDir = `${outputRootDir}/tasks/${taskUuid}/outputs`;
+  const taskOutputDir = `${outputRootDir}/tasks/${taskUuid}`;
   return {
     taskOutputDir,
     artifactPath: `${taskOutputDir}/${fileName}`,
+  };
+}
+
+const defaultConfiguredOutputDirectory = 'D:/autocut-configured-output';
+
+function createNativeTaskEvidenceWriteResult(workflowTaskId, relativePath, outputRootDir = defaultConfiguredOutputDirectory, seed = '0') {
+  const output = createNativeTaskOutputArtifact(workflowTaskId, relativePath, outputRootDir);
+  return {
+    taskUuid: workflowTaskId,
+    taskOutputDir: output.taskOutputDir,
+    artifactPath: output.artifactPath,
+    relativePath,
+    byteSize: 1,
+    contentSha256: seed.repeat(64).slice(0, 64),
   };
 }
 
@@ -366,6 +697,306 @@ function createNativeVideoSliceTranscriptResult(request, taskUuid, outputRootDir
   };
 }
 
+function createContentDerivedTwoStoryNativeVideoSliceTranscriptResult(
+  request,
+  taskUuid,
+  outputRootDir = 'D:/autocut/media',
+) {
+  return createNativeVideoSliceTranscriptResult(request, taskUuid, outputRootDir, [
+    {
+      startMs: 0,
+      endMs: 8_500,
+      text:
+        'Why native validation matters is simple. Because bad native validation can break review, the native validation problem must be caught before assets are saved.',
+      speaker: 'Speaker 1',
+    },
+    {
+      startMs: 8_520,
+      endMs: 19_000,
+      text:
+        'So native validation verifies every result and the native validation workflow stays safe.',
+      speaker: 'Speaker 1',
+    },
+    {
+      startMs: 40_000,
+      endMs: 48_500,
+      text:
+        'What makes artifact checks reliable is clear. The artifact check shows missing artifact thumbnails before publishing, creating an artifact conflict for reviewers.',
+      speaker: 'Speaker 1',
+    },
+    {
+      startMs: 48_520,
+      endMs: 59_000,
+      text:
+        'So the artifact check rejects the bad artifact before persistence and keeps artifact storage clean.',
+      speaker: 'Speaker 1',
+    },
+  ]);
+}
+
+function createDialogueTwoQuestionNativeVideoSliceTranscriptResult(
+  request,
+  taskUuid,
+  outputRootDir = 'D:/autocut/media',
+) {
+  return createNativeVideoSliceTranscriptResult(request, taskUuid, outputRootDir, [
+    {
+      startMs: 0,
+      endMs: 8_500,
+      text:
+        'Why does native validation matter before assets are saved?',
+      speaker: 'Host',
+    },
+    {
+      startMs: 8_520,
+      endMs: 19_000,
+      text:
+        'Native validation verifies every result and the native validation workflow stays safe before review artifacts are saved.',
+      speaker: 'Guest',
+    },
+    {
+      startMs: 40_000,
+      endMs: 48_500,
+      text:
+        'What makes artifact checks reliable before publishing?',
+      speaker: 'Host',
+    },
+    {
+      startMs: 48_520,
+      endMs: 59_000,
+      text:
+        'The artifact check rejects the bad artifact before persistence and keeps artifact storage clean.',
+      speaker: 'Guest',
+    },
+  ]);
+}
+
+function createNativeVideoSliceAudioActivityAnalysisResult(request) {
+  const analysisFilter = request.applyNoiseReduction === false
+    ? 'silencedetect=noise=-35dB:d=0.08'
+    : 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08';
+  return {
+    assetUuid: request.assetUuid,
+    profile: request.profile ?? 'smart-slice-speech-denoise-v1',
+    analyses: (request.clips ?? []).map((clip, index) => ({
+      index,
+      startMs: clip.startMs,
+      durationMs: clip.durationMs,
+      sourceStartMs: clip.sourceStartMs ?? clip.startMs,
+      sourceEndMs: clip.sourceEndMs ?? clip.startMs + clip.durationMs,
+      audioActivityStartMs: clip.speechStartMs,
+      audioActivityEndMs: clip.speechEndMs,
+      leadingSilenceMs: Math.max(0, (clip.speechStartMs ?? clip.startMs) - clip.startMs),
+      trailingSilenceMs: Math.max(0, clip.startMs + clip.durationMs - (clip.speechEndMs ?? clip.startMs + clip.durationMs)),
+      confidence: 0.97,
+      analysisFilter,
+    })),
+  };
+}
+
+function createNativeVideoSliceAudioActivityAnalysisFilter(noiseReductionApplied) {
+  return noiseReductionApplied === false
+    ? 'silencedetect=noise=-35dB:d=0.08'
+    : 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08';
+}
+
+function copyNativeVideoSliceClipEvidence(clip, renderNoiseReduction) {
+  const renderedDurationMs = Array.isArray(clip.sourceSegments) && clip.sourceSegments.length > 1
+    ? clip.sourceSegments.reduce((durationMs, segment) => durationMs + Math.max(0, segment.endMs - segment.startMs), 0)
+    : clip.renderedDurationMs ?? clip.durationMs;
+  const noiseReductionApplied = typeof renderNoiseReduction === 'boolean'
+    ? renderNoiseReduction
+    : clip.noiseReductionApplied;
+  return {
+    startMs: clip.startMs,
+    durationMs: renderedDurationMs,
+    label: clip.label,
+    sourceSegments: clip.sourceSegments,
+    renderedDurationMs,
+    removedSilenceMs: clip.removedSilenceMs,
+    internalSilenceTrimCount: clip.internalSilenceTrimCount,
+    sourceStartMs: clip.sourceStartMs,
+    sourceEndMs: clip.sourceEndMs,
+    speechStartMs: clip.speechStartMs,
+    speechEndMs: clip.speechEndMs,
+    boundaryPaddingBeforeMs: clip.boundaryPaddingBeforeMs,
+    boundaryPaddingAfterMs: clip.boundaryPaddingAfterMs,
+    transcriptText: clip.transcriptText,
+    transcriptSegments: clip.transcriptSegments,
+    transcriptSegmentCount: clip.transcriptSegmentCount,
+    transcriptCoverageScore: clip.transcriptCoverageScore,
+    speechContinuityGrade: clip.speechContinuityGrade,
+    risks: clip.risks,
+    audioCleanupProfile: clip.audioCleanupProfile,
+    noiseReductionApplied,
+    boundaryDecisionSource: clip.boundaryDecisionSource,
+    audioActivityStartMs: clip.audioActivityStartMs,
+    audioActivityEndMs: clip.audioActivityEndMs,
+    audioActivityConfidence: clip.audioActivityConfidence,
+    audioActivityAnalysisFilter: typeof noiseReductionApplied === 'boolean'
+      ? createNativeVideoSliceAudioActivityAnalysisFilter(noiseReductionApplied)
+      : clip.audioActivityAnalysisFilter,
+    leadingSilenceMs: clip.leadingSilenceMs,
+    trailingSilenceMs: clip.trailingSilenceMs,
+    leadingSilenceTrimMs: clip.leadingSilenceTrimMs,
+    trailingSilenceTrimMs: clip.trailingSilenceTrimMs,
+    tailTreatment: clip.tailTreatment,
+  };
+}
+
+function createRecoveredSmartSliceAudioCleanupEvidence(overrides = {}) {
+  return {
+    audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+    noiseReductionApplied: true,
+    boundaryDecisionSource: 'combined',
+    audioActivityStartMs: 1200,
+    audioActivityEndMs: 15750,
+    audioActivityConfidence: 0.97,
+    audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+    leadingSilenceMs: 200,
+    trailingSilenceMs: 250,
+    leadingSilenceTrimMs: 0,
+    trailingSilenceTrimMs: 0,
+    tailTreatment: 'none',
+    ...overrides,
+  };
+}
+
+function configureAutoCutNativeHostClient(services, client, options = {}) {
+  services.configureAutoCutNativeHostClient({
+    ...client,
+    getCapabilities: async () => {
+      const capabilities = await client.getCapabilities();
+      if (!capabilities?.videoSliceCommandReady) {
+        return capabilities;
+      }
+
+      return {
+        ...capabilities,
+        taskEvidenceWriteCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        supportedCommands: Array.from(new Set([
+          ...(capabilities.supportedCommands ?? []),
+          'autocut_write_task_evidence_json',
+          'autocut_analyze_video_slice_audio_activity',
+        ])),
+      };
+    },
+    analyzeVideoSliceAudioActivity:
+      client.analyzeVideoSliceAudioActivity ??
+      (async (request) => createNativeVideoSliceAudioActivityAnalysisResult(request)),
+    writeTaskEvidenceJson:
+      client.writeTaskEvidenceJson ??
+      (async (request) => {
+        options.taskEvidenceCommands?.push({ kind: 'task-evidence', request });
+        const result = createNativeTaskEvidenceWriteResult(
+          request.workflowTaskId,
+          request.relativePath,
+          request.outputRootDir ?? defaultConfiguredOutputDirectory,
+        );
+        return {
+          ...result,
+          byteSize: JSON.stringify(request.contentJson ?? {}).length,
+        };
+      }),
+  });
+}
+
+function createAudioStreamProbeNativeHostClient(commands, operation = 'speech transcription') {
+  return {
+    getCapabilities: async () => ({
+      mediaImportCommandReady: true,
+      audioExtractionFromAssetReady: true,
+      speechTranscriptionCommandReady: true,
+      speechTranscriptionToolchainReady: true,
+      speechTranscriptionProbeCommandReady: true,
+    }),
+    importMediaFile: async (request) => {
+      commands.push({ kind: 'import', request });
+      return {
+        assetUuid: `${operation.replace(/\s+/gu, '-')}-no-audio-asset`,
+        sandboxPath: `D:/autocut-configured-output/inputs/${operation.replace(/\s+/gu, '-')}-no-audio.mp4`,
+        byteSize: 456000,
+        name: `${operation.replace(/\s+/gu, '-')}-no-audio.mp4`,
+        mediaType: 'video',
+        hasAudioStream: false,
+        hasVideoStream: true,
+        mimeType: 'video/mp4',
+        durationMs: 9000,
+      };
+    },
+    extractAudio: async (request) => {
+      commands.push({ kind: 'extract', request });
+      throw new Error('audio extraction must not run for video without an audio stream');
+    },
+    transcribeMedia: async (request) => {
+      commands.push({ kind: 'transcribe', request });
+      throw new Error('speech transcription must not run for video without an audio stream');
+    },
+    probeSpeechTranscription: async (request) => ({
+      ready: true,
+      executablePath: request.executablePath,
+      modelPath: request.modelPath,
+      sourceKind: request.sourceKind ?? 'execution-preflight',
+      diagnostics: [],
+      versionLine: `${operation} audio stream preflight contract`,
+    }),
+    createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+  };
+}
+
+function createVideoStreamProbeNativeHostClient(commands, operation = 'video processing') {
+  const nativeTaskOutput = createNativeTaskOutputArtifact(
+    `${operation.replace(/\s+/gu, '-')}-unexpected-task`,
+    `${operation.replace(/\s+/gu, '-')}-unexpected.mp4`,
+    'D:/autocut-configured-output',
+  );
+
+  const rejectUnexpectedVideoCommand = async (request) => {
+    commands.push({ kind: 'video-command', request });
+    throw new Error('video processing must not run for media without a video stream');
+  };
+
+  return {
+    getCapabilities: async () => ({
+      mediaImportCommandReady: true,
+      videoGifCommandReady: true,
+      videoCompressCommandReady: true,
+      videoConvertCommandReady: true,
+      videoEnhanceCommandReady: true,
+    }),
+    importMediaFile: async (request) => {
+      commands.push({ kind: 'import', request });
+      return {
+        assetUuid: `${operation.replace(/\s+/gu, '-')}-no-video-asset`,
+        sandboxPath: `D:/autocut-configured-output/inputs/${operation.replace(/\s+/gu, '-')}-no-video.flac`,
+        byteSize: 456000,
+        name: `${operation.replace(/\s+/gu, '-')}-no-video.flac`,
+        mediaType: 'audio',
+        hasAudioStream: true,
+        hasVideoStream: false,
+        mimeType: 'audio/flac',
+        durationMs: 9000,
+      };
+    },
+    generateGif: rejectUnexpectedVideoCommand,
+    compressVideo: rejectUnexpectedVideoCommand,
+    convertVideo: rejectUnexpectedVideoCommand,
+    enhanceVideo: rejectUnexpectedVideoCommand,
+    runAudioSmoke: async () => ({
+      artifactUuid: 'native-audio-smoke',
+      taskUuid: 'native-audio-smoke-task',
+      sourceAssetUuid: '',
+      artifactPath: nativeTaskOutput.artifactPath,
+      taskOutputDir: nativeTaskOutput.taskOutputDir,
+      byteSize: 1,
+      format: 'wav',
+      ffmpegExecutable: 'ffmpeg',
+    }),
+    createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+  };
+}
+
 function createStandardNativeVideoSliceTranscriptResult(
   request,
   taskUuid,
@@ -385,6 +1016,39 @@ function createStandardNativeVideoSliceTranscriptResult(
       speaker: 'Speaker 1',
     },
   ]);
+}
+
+function decodeEscapedText(value) {
+  return JSON.parse(`"${value}"`);
+}
+
+function readWenan5RealSpeechTranscriptSegments() {
+  const transcriptPath = path.join(
+    rootDir,
+    'artifacts/autocut-diagnostics/wenan5/speech-transcript.json',
+  );
+  const transcript = JSON.parse(readFileSync(transcriptPath, 'utf8'));
+  const entries = Array.isArray(transcript.transcription) ? transcript.transcription : [];
+  const segments = entries
+    .map((entry) => {
+      const startMs = Number(entry?.offsets?.from);
+      const endMs = Number(entry?.offsets?.to);
+      const text = typeof entry?.text === 'string' ? entry.text.trim() : '';
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs || !text) {
+        return undefined;
+      }
+      return {
+        startMs: Math.round(startMs),
+        endMs: Math.round(endMs),
+        text,
+        speaker: 'Speaker 1',
+      };
+    })
+    .filter(Boolean);
+  if (segments.length === 0) {
+    throw new Error(`wenan5 real speech transcript fixture contains no timestamped speech: ${transcriptPath}`);
+  }
+  return segments;
 }
 
 function captureEvents(services, eventName) {
@@ -532,8 +1196,11 @@ function transpileLocalModule(sourcePath) {
 async function loadModule(_server, relativePath) {
   const entryPath = path.join(rootDir, relativePath);
   const moduleGraph = collectLocalModuleGraph(entryPath);
-  rmSync(moduleLoaderOutDir, { recursive: true, force: true });
-  mkdirSync(moduleLoaderOutDir, { recursive: true });
+  if (!moduleLoaderOutDirPrepared) {
+    rmSync(moduleLoaderOutDir, { recursive: true, force: true });
+    mkdirSync(moduleLoaderOutDir, { recursive: true });
+    moduleLoaderOutDirPrepared = true;
+  }
 
   for (const sourcePath of moduleGraph) {
     transpileLocalModule(sourcePath);
@@ -643,10 +1310,10 @@ async function assertRejectedProcessingWorkflow({ services, workflow }) {
 
   const rejectedMessage = rejectedError instanceof Error ? rejectedError.message : '';
   assertRule(rejectedError instanceof Error, `${workflow.name} rejects invalid processing source`);
-  assertRule(
-    rejectedMessage.toLowerCase().includes(workflow.expectedMessagePart ?? 'source media'),
-    `${workflow.name} rejection explains ${workflow.expectedMessagePart ?? 'source media'}`,
-  );
+    assertRule(
+      rejectedMessage.toLowerCase().includes((workflow.expectedMessagePart ?? 'source media').toLowerCase()),
+      `${workflow.name} rejection explains ${workflow.expectedMessagePart ?? 'source media'}`,
+    );
   const storedTasks = readScopedStoredArray(services, 'tasks');
   if (workflow.expectFailedTask) {
     assertEqual(storedTasks.length, 1, `${workflow.name} rejection persists one failed task for user-visible diagnostics`);
@@ -691,8 +1358,13 @@ async function run() {
     const types = await loadModule(server, 'packages/sdkwork-autocut-types/src/index.ts');
     const {
       processVideoSlice,
+      analyzeVideoSlicePlan,
+      renderVideoSlicePlan,
+      saveVideoSliceReviewDraft,
       assertSmartSliceResultsMeetProfessionalStandard,
       assertSmartSlicePlanReadyForNativeRender,
+      refreshSmartSlicePlanTranscriptEvidence,
+      repairSmartSlicePlanForNativeRender,
     } = await loadModule(
       server,
       'packages/sdkwork-autocut-slicer/src/service/slicerService.ts',
@@ -729,7 +1401,22 @@ async function run() {
       server,
       'packages/sdkwork-autocut-voice-translate/src/service/voiceTranslateService.ts',
     );
-
+    await assertRejects(
+      async () => services.assertAutoCutMediaHasAudioStream(
+        { mediaType: 'audio', hasAudioStream: false },
+        'audio evidence contract',
+      ),
+      'requires source media with an audio stream',
+      'audio stream evidence assertion rejects audio-labeled media without verified audio stream',
+    );
+    await assertRejects(
+      async () => services.assertAutoCutMediaHasVideoStream(
+        { mediaType: 'video', hasVideoStream: false },
+        'video evidence contract',
+      ),
+      'requires source media with a video stream',
+      'video stream evidence assertion rejects video-labeled media without verified video stream',
+    );
     resetStorage();
     services.resetAutoCutNativeHostClient();
     const emptyBrowserTasks = await withImmediateTimers(() => services.getTasks());
@@ -744,6 +1431,7 @@ async function run() {
         videoCompress: 'video-compress',
         videoConvert: 'video-convert',
         videoEnhance: 'video-enhance',
+        videoDedup: 'video-dedup',
         subtitleTranslate: 'subtitle-translate',
         voiceTranslate: 'voice-translate',
       },
@@ -765,6 +1453,708 @@ async function run() {
       typeof services.initializeAutoCutI18n === 'function',
       'services exports the standard i18next initializer',
     );
+    assertRule(
+      typeof services.createAutoCutTaskPackageArchive === 'function',
+      'services exports the standard task package ZIP archive builder',
+    );
+    assertRule(
+      typeof services.createAutoCutTaskId === 'function',
+      'services exports the standard UUIDv7 task id factory',
+    );
+    if (typeof services.createAutoCutTaskId === 'function') {
+      const firstSliceTaskId = services.createAutoCutTaskId('slice');
+      const secondSliceTaskId = services.createAutoCutTaskId('slice');
+      assertAutoCutTaskIdUsesUuidV7(firstSliceTaskId, 'slice', 'createAutoCutTaskId(slice)');
+      assertAutoCutTaskIdUsesUuidV7(secondSliceTaskId, 'slice', 'createAutoCutTaskId(slice) second call');
+      assertRule(firstSliceTaskId !== secondSliceTaskId, 'createAutoCutTaskId produces unique task ids across adjacent calls');
+      assertAutoCutTaskIdUsesUuidV7(
+        services.createAutoCutTaskId('Voice Translate'),
+        'voice-translate',
+        'createAutoCutTaskId normalizes multi-word task types',
+      );
+    }
+    assertRule(
+      typeof services.createNativeTaskExecutionProjection === 'function',
+      'services exports native task execution step projection for task detail progress logs',
+    );
+    assertRule(
+      typeof services.projectNativeTaskProgressEventToTask === 'function',
+      'services exports native progress event projection for workflow task lifecycle control',
+    );
+    assertSourceIncludes(
+      tasksServiceSource,
+      'shouldProjectNativeTaskProgressEventBeforeStorage',
+      'native progress projection gates high-frequency progress ticks before reading local task storage',
+    );
+    assertSourceIncludes(
+      tasksServiceSource,
+      'hasSeenNativeTaskProgressEventUuidBeforeStorage',
+      'native progress projection drops duplicate native event ids before reading local task storage',
+    );
+    assertRule(
+      typeof services.registerAutoCutTaskResumeHandler === 'function',
+      'services exports a task resume handler registry for resumable workflow steps',
+    );
+    assertRule(
+      typeof services.resumeTaskFromStep === 'function',
+      'services exports a workflow task step resume API',
+    );
+    assertRule(
+      typeof services.registerAutoCutTaskCancelHandler === 'function',
+      'services exports a workflow task cancel handler registry for non-native workflow stages',
+    );
+    assertRule(
+      typeof services.isAutoCutTaskCancellationRequested === 'function',
+      'services exports a workflow task cancellation request predicate for cooperative step guards',
+    );
+    assertSourceIncludes(
+      desktopNativeHostSource,
+      "listen<AutoCutNativeTaskProgressEvent>",
+      'desktop native host registers a typed native task progress event bridge',
+    );
+    assertSourceIncludes(
+      desktopNativeHostSource,
+      "dispatchAutoCutEvent('nativeTaskProgress'",
+      'desktop native host redispatches native task progress into the shared service event bus',
+    );
+    assertSourceIncludes(
+      desktopNativeHostSource,
+      'projectNativeTaskProgressEventToTask(progress)',
+      'desktop native host projects native progress into workflow task state before refreshing task UI',
+    );
+    assertRule(
+      !tasksPageSource.includes("listenAutoCutEvent('nativeTaskProgress'"),
+      'tasks page does not fetch tasks from raw native progress events; it consumes projected taskUpdated state to avoid large-file UI stalls',
+    );
+    assertSourceIncludes(
+      tasksPageSource,
+      'handleTaskUpdated',
+      'tasks page applies projected taskUpdated events directly instead of querying native snapshots on every progress tick',
+    );
+    assertRule(
+      !taskDetailPageSource.includes("listenAutoCutEvent('nativeTaskProgress'"),
+      'task detail page does not refetch task snapshots from raw native progress events; it consumes projected taskUpdated state to keep logs responsive',
+    );
+    assertSourceIncludes(
+      taskDetailPageSource,
+      'function TaskExecutionPanel',
+      'task detail page renders a queryable execution step and log panel',
+    );
+    assertSourceIncludes(
+      taskDetailPageSource,
+      'cancelTasks([task.id])',
+      'task detail page can request cancellation for the active task',
+    );
+    assertSourceIncludes(
+      taskDetailPageSource,
+      'resumeTaskFromStep(task.id, step.id)',
+      'task detail page can resume a failed workflow task from a selected checkpoint step',
+    );
+    assertSourceIncludes(
+      taskDetailPageSource,
+      'selectedExecutionStepId',
+      'task detail page tracks the selected execution step for queryable step logs',
+    );
+    assertSourceIncludes(
+      taskDetailPageSource,
+      'visibleExecutionLogs',
+      'task detail page derives a visible execution log stream from the selected step',
+    );
+    assertSourceIncludes(
+      taskDetailPageSource,
+      'data-task-execution-step-id',
+      'task detail page exposes clickable execution step controls for log drilldown',
+    );
+    assertSourceIncludes(
+      taskDetailPageSource,
+      'data-task-execution-log-step-id',
+      'task detail page renders queryable execution log rows with step correlation',
+    );
+    assertSourceIncludes(
+      taskDetailPageSource,
+      'formatTaskExecutionLogProviderProgress',
+      'task detail page surfaces native provider progress from execution log details',
+    );
+    assertSourceIncludes(
+      taskDetailPageSource,
+      'normalizeTaskDetailDisplayText',
+      'task detail page normalizes escaped diagnostic text before rendering or copying task details',
+    );
+    assertSourceIncludes(
+      taskDetailPageSource,
+      'createTaskExecutionLogClipboardText',
+      'task detail page builds a complete execution log clipboard payload for operator debugging',
+    );
+    assertSourceIncludes(
+      taskDetailPageSource,
+      'data-task-execution-log-copy',
+      'task detail page exposes a copy control on every execution log row',
+    );
+    assertRule(
+      !/[\u3400-\u9FFF]/u.test(taskDetailPageSource),
+      'task detail page keeps fallback UI copy ASCII or i18n-driven so source encoding cannot render mojibake',
+    );
+    assertSourceIncludes(
+      taskDetailPageSource,
+      'setShowAllExecutionLogs',
+      'task detail page lets users expand beyond the latest execution logs',
+    );
+    assertSourceIncludes(
+      taskDetailPageSource,
+      'lastExecutionTaskIdRef',
+      'task detail page resets execution log selection when navigating between tasks',
+    );
+    assertSourceIncludes(
+      desktopMediaRuntimeSource,
+      'AUTOCUT_NATIVE_TASK_PROGRESS_EVENT',
+      'native runtime defines the authoritative native task progress event channel',
+    );
+    assertSourceIncludes(
+      desktopMediaRuntimeSource,
+      'record_ops_task_progress_for_app',
+      'native runtime emits progress events only after native task progress is recorded',
+    );
+    assertSourceIncludes(
+      desktopMediaRuntimeSource,
+      '"phase": "local-whisper-started"',
+      'native runtime emits a key local Whisper start step for speech-to-text monitoring',
+    );
+    assertSourceIncludes(
+      desktopMediaRuntimeSource,
+      '"phase": "transcript-parsed"',
+      'native runtime emits a key transcript parsed step for speech-to-text monitoring',
+    );
+    assertSourceIncludes(
+      desktopMediaRuntimeSource,
+      'read_ops_task_input_string_field(connection, &normalized_task_uuid, "workflowTaskId")',
+      'native runtime carries workflow task correlation across all subsequent progress events',
+    );
+    if (typeof services.createNativeTaskExecutionProjection === 'function') {
+      const nativeExecutionProjection = services.createNativeTaskExecutionProjection({
+        uuid: 'native-progress-task',
+        taskType: 7,
+        status: 1,
+        progress: 75,
+        sourceAssetUuid: 'native-progress-asset',
+        inputJson: '{}',
+        outputJson: '{}',
+        createdAt: '2026-05-10T01:00:00.000Z',
+        updatedAt: '2026-05-10T01:01:00.000Z',
+        stages: [],
+        events: [
+          {
+            uuid: 'native-progress-event-1',
+            eventType: 8,
+            payload: {
+              stepId: 'extract-audio',
+              phase: 'speech-audio-extracted',
+              operation: 'speechTranscription',
+              source: 'native',
+              progress: 40,
+              message: 'Audio extracted for speech-to-text.',
+            },
+            payloadJson: '{}',
+            createdAt: '2026-05-10T01:00:10.000Z',
+            updatedAt: '2026-05-10T01:00:10.000Z',
+          },
+          {
+            uuid: 'native-progress-event-2',
+            eventType: 8,
+            payload: {
+              stepId: 'speech-to-text',
+              phase: 'local-whisper-started',
+              operation: 'speechTranscription',
+              source: 'native',
+              progress: 45,
+              message: 'Whisper transcription started.',
+              workflowTaskId: 'workflow-progress-task',
+            },
+            payloadJson: '{}',
+            createdAt: '2026-05-10T01:00:15.000Z',
+            updatedAt: '2026-05-10T01:00:15.000Z',
+          },
+          {
+            uuid: 'native-progress-event-3',
+            eventType: 8,
+            payload: {
+              stepId: 'speech-to-text',
+              phase: 'local-whisper-completed',
+              operation: 'speechTranscription',
+              source: 'native',
+              progress: 75,
+              message: 'Whisper transcription completed.',
+            },
+            payloadJson: '{}',
+            createdAt: '2026-05-10T01:01:00.000Z',
+            updatedAt: '2026-05-10T01:01:00.000Z',
+          },
+        ],
+        workerLeases: [],
+      });
+      assertEqual(
+        nativeExecutionProjection.currentStepId,
+        'speech-to-text',
+        'native task execution projection exposes the current running speech-to-text step',
+      );
+      assertRule(
+        nativeExecutionProjection.executionSteps.some((step) =>
+          step.id === 'extract-audio' &&
+            step.status === 'running' &&
+            step.progress === 40 &&
+            step.canResumeFromHere === false
+        ),
+        'native task execution projection creates an extract-audio step from native progress events',
+      );
+      assertRule(
+        nativeExecutionProjection.executionSteps.some((step) =>
+          step.id === 'speech-to-text' &&
+            step.status === 'running' &&
+            step.progress === 75 &&
+            step.message === 'Whisper transcription completed.'
+        ),
+        'native task execution projection updates repeated speech-to-text progress events on one step',
+      );
+      assertRule(
+        nativeExecutionProjection.executionLogs.some((log) =>
+          log.stepId === 'speech-to-text' &&
+            log.phase === 'local-whisper-started' &&
+            log.source === 'native' &&
+            log.progress === 45 &&
+            log.details?.workflowTaskId === 'workflow-progress-task'
+        ),
+        'native task execution projection preserves queryable progress logs with phase source progress and workflow task correlation',
+      );
+    }
+    if (typeof services.projectNativeTaskProgressEventToTask === 'function') {
+      resetStorage();
+      await withImmediateTimers(async () => {
+        await services.addTask({
+          id: 'workflow-native-progress-task',
+          type: types.AUTOCUT_TASK_TYPE.videoSlice,
+          name: 'workflow-native-progress.mp4',
+          status: types.AUTOCUT_TASK_STATUS.processing,
+          progress: 50,
+          progressMessage: 'Running local speech-to-text for Smart Slice...',
+          currentStepId: 'speech-to-text',
+          createdAt: '2026-05-10T02:00:00.000Z',
+          executionSteps: [
+            {
+              id: 'speech-to-text',
+              label: 'Run speech-to-text',
+              status: 'running',
+              progress: 50,
+              startedAt: '2026-05-10T02:00:00.000Z',
+              attempts: 1,
+              canResumeFromHere: false,
+              checkpointKey: 'smart-slice:speech-to-text',
+              message: 'Running local speech-to-text for Smart Slice...',
+            },
+          ],
+          executionLogs: [],
+        });
+      });
+      const nativeProgressTaskUpdateEvents = captureEvents(services, 'taskUpdated');
+      const projectedNativeProgressTask = await services.projectNativeTaskProgressEventToTask({
+        taskUuid: 'native-progress-event-task',
+        nativeTaskId: 'native-progress-event-task',
+        workflowTaskId: 'workflow-native-progress-task',
+        eventUuid: 'native-progress-event-uuid',
+        eventType: 8,
+        operation: 'speechTranscription',
+        phase: 'local-whisper-started',
+        stepId: 'speech-to-text',
+        progress: 45,
+        message: 'Whisper transcription started.',
+        severity: 'info',
+        source: 'native',
+        timestamp: '2026-05-10T02:00:15.000Z',
+        payload: {
+          workflowTaskId: 'workflow-native-progress-task',
+          nativeTaskId: 'native-progress-event-task',
+          providerId: 'local-whisper',
+        },
+      });
+      nativeProgressTaskUpdateEvents.stop();
+      const projectedNativeProgressStoredTask = readScopedStoredArray(services, 'tasks')
+        .find((task) => task.id === 'workflow-native-progress-task');
+      assertEqual(
+        projectedNativeProgressTask?.nativeTaskId,
+        'native-progress-event-task',
+        'native progress projection returns the workflow task with the native task id immediately attached',
+      );
+      assertEqual(
+        projectedNativeProgressStoredTask?.nativeTaskId,
+        'native-progress-event-task',
+        'native progress projection persists nativeTaskId onto the workflow task before the native command resolves',
+      );
+      assertEqual(
+        projectedNativeProgressStoredTask?.progress,
+        50,
+        'native progress projection does not regress the workflow task progress when native subtask progress is lower',
+      );
+      assertRule(
+        projectedNativeProgressStoredTask?.executionLogs?.some((log) =>
+          log.id === 'native-progress-event-uuid' &&
+            log.taskId === 'workflow-native-progress-task' &&
+            log.stepId === 'speech-to-text' &&
+            log.phase === 'local-whisper-started' &&
+            log.source === 'native' &&
+            log.details?.providerId === 'local-whisper'
+        ),
+        'native progress projection persists queryable native execution logs on the workflow task',
+      );
+      assertRule(
+        projectedNativeProgressStoredTask?.executionSteps?.some((step) =>
+          step.id === 'speech-to-text' &&
+            step.status === 'running' &&
+            step.progress === 45 &&
+            step.message === 'Whisper transcription started.'
+        ),
+        'native progress projection updates the matching workflow execution step from native progress events',
+      );
+      assertEqual(
+        nativeProgressTaskUpdateEvents.details.at(-1)?.nativeTaskId,
+        'native-progress-event-task',
+        'native progress projection dispatches a taskUpdated event with the native task mapping',
+      );
+      const duplicateNativeProgressTaskUpdateEvents = captureEvents(services, 'taskUpdated');
+      const duplicateNativeProgressTask = await services.projectNativeTaskProgressEventToTask({
+        taskUuid: 'native-progress-event-task',
+        nativeTaskId: 'native-progress-event-task',
+        workflowTaskId: 'workflow-native-progress-task',
+        eventUuid: 'native-progress-event-uuid',
+        eventType: 8,
+        operation: 'speechTranscription',
+        phase: 'local-whisper-started',
+        stepId: 'speech-to-text',
+        progress: 45,
+        message: 'Whisper transcription started.',
+        severity: 'info',
+        source: 'native',
+        timestamp: '2026-05-10T02:00:15.000Z',
+        payload: {
+          workflowTaskId: 'workflow-native-progress-task',
+          nativeTaskId: 'native-progress-event-task',
+          providerId: 'local-whisper',
+        },
+      });
+      duplicateNativeProgressTaskUpdateEvents.stop();
+      const projectedNativeProgressStoredTaskAfterDuplicate = readScopedStoredArray(services, 'tasks')
+        .find((task) => task.id === 'workflow-native-progress-task');
+      assertEqual(
+        duplicateNativeProgressTask,
+        undefined,
+        'native progress projection drops duplicate native progress events before reading local task storage',
+      );
+      assertEqual(
+        duplicateNativeProgressTaskUpdateEvents.details.length,
+        0,
+        'native progress projection skips taskUpdated dispatch for duplicate native progress event ids',
+      );
+      assertEqual(
+        projectedNativeProgressStoredTaskAfterDuplicate?.executionLogs?.filter((log) => log.id === 'native-progress-event-uuid').length,
+        1,
+        'native progress projection keeps duplicate native progress event ids idempotent in execution logs',
+      );
+      const minorNativeProgressTaskUpdateEvents = captureEvents(services, 'taskUpdated');
+      const minorNativeProgressTask = await services.projectNativeTaskProgressEventToTask({
+        taskUuid: 'native-progress-event-task',
+        nativeTaskId: 'native-progress-event-task',
+        workflowTaskId: 'workflow-native-progress-task',
+        eventUuid: 'native-progress-event-uuid-46',
+        eventType: 8,
+        operation: 'speechTranscription',
+        phase: 'local-whisper-started',
+        stepId: 'speech-to-text',
+        progress: 46,
+        message: 'Whisper transcription progress 46%.',
+        severity: 'info',
+        source: 'native',
+        timestamp: '2026-05-10T02:00:16.000Z',
+        payload: {
+          workflowTaskId: 'workflow-native-progress-task',
+          nativeTaskId: 'native-progress-event-task',
+          providerId: 'local-whisper',
+        },
+      });
+      minorNativeProgressTaskUpdateEvents.stop();
+      const projectedNativeProgressStoredTaskAfterMinorProgress = readScopedStoredArray(services, 'tasks')
+        .find((task) => task.id === 'workflow-native-progress-task');
+      assertEqual(
+        minorNativeProgressTask,
+        undefined,
+        'native progress projection drops same-bucket sub-threshold progress before reading local task storage',
+      );
+      assertEqual(
+        minorNativeProgressTaskUpdateEvents.details.length,
+        0,
+        'native progress projection skips sub-threshold progress ticks so large files do not flood local task storage',
+      );
+      assertEqual(
+        projectedNativeProgressStoredTaskAfterMinorProgress?.executionLogs?.some((log) => log.id === 'native-progress-event-uuid-46'),
+        false,
+        'native progress projection does not persist sub-threshold progress tick logs',
+      );
+      const milestoneNativeProgressTaskUpdateEvents = captureEvents(services, 'taskUpdated');
+      await services.projectNativeTaskProgressEventToTask({
+        taskUuid: 'native-progress-event-task',
+        nativeTaskId: 'native-progress-event-task',
+        workflowTaskId: 'workflow-native-progress-task',
+        eventUuid: 'native-progress-event-uuid-50',
+        eventType: 8,
+        operation: 'speechTranscription',
+        phase: 'local-whisper-started',
+        stepId: 'speech-to-text',
+        progress: 50,
+        message: 'Whisper transcription progress 50%.',
+        severity: 'info',
+        source: 'native',
+        timestamp: '2026-05-10T02:00:20.000Z',
+        payload: {
+          workflowTaskId: 'workflow-native-progress-task',
+          nativeTaskId: 'native-progress-event-task',
+          providerId: 'local-whisper',
+        },
+      });
+      milestoneNativeProgressTaskUpdateEvents.stop();
+      const projectedNativeProgressStoredTaskAfterMilestoneProgress = readScopedStoredArray(services, 'tasks')
+        .find((task) => task.id === 'workflow-native-progress-task');
+      assertEqual(
+        milestoneNativeProgressTaskUpdateEvents.details.length,
+        1,
+        'native progress projection persists milestone progress ticks for queryable task progress',
+      );
+      assertRule(
+        projectedNativeProgressStoredTaskAfterMilestoneProgress?.executionLogs?.some((log) =>
+          log.id === 'native-progress-event-uuid-50' &&
+            log.stepId === 'speech-to-text' &&
+            log.progress === 50
+        ),
+        'native progress projection keeps milestone progress logs with step and percent evidence',
+      );
+
+      const nativeProgressCancelCommands = [];
+      configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command, args) => {
+        nativeProgressCancelCommands.push({ command, args });
+        if (command === 'autocut_host_capabilities') {
+          return {
+            contractVersion: 'native-progress-cancel-test',
+            hostKind: 'native-host',
+            nativeTaskQueryCommandReady: false,
+            nativeTaskCancelCommandReady: true,
+            supportedCommands: ['autocut_host_capabilities', 'autocut_cancel_native_task'],
+          };
+        }
+        if (command === 'autocut_cancel_native_task') {
+          return {
+            taskUuid: args.request.taskUuid,
+            status: 4,
+            canceled: true,
+            message: 'cancel requested',
+          };
+        }
+        throw new Error(`Unexpected native progress cancel command: ${command}`);
+      }));
+      const nativeProgressCancelResult = await services.cancelTasks(['workflow-native-progress-task']);
+      assertDeepEqual(
+        nativeProgressCancelResult.canceledTaskIds,
+        ['workflow-native-progress-task'],
+        'workflow task can be canceled immediately after native progress projection attaches nativeTaskId',
+      );
+      assertDeepEqual(
+        nativeProgressCancelCommands
+          .filter((entry) => entry.command === 'autocut_cancel_native_task')
+          .map((entry) => entry.args.request.taskUuid),
+        ['native-progress-event-task'],
+        'cancelTasks uses the native task id learned from native progress events',
+      );
+      services.resetAutoCutNativeHostClient();
+    }
+    assertRule(
+      typeof services.downloadAutoCutTaskPackage === 'function',
+      'services exports the standard task package download action',
+    );
+    assertRule(
+      typeof services.hasAutoCutTaskPackageDownloadables === 'function',
+      'services exports a reusable task package availability predicate for task-list UI state',
+    );
+    const originalFetch = globalThis.fetch;
+    const taskPackageFetchPayloads = new Map([
+      ['https://assets.example/slice-a.mp4', 'slice-a-video'],
+      ['https://assets.example/slice-b.mp4', 'slice-b-video'],
+      ['https://assets.example/slice-a.jpg', 'slice-a-thumbnail'],
+      ['https://assets.example/slice-b.jpg', 'slice-b-thumbnail'],
+      ['https://assets.example/slice-a.srt', '1\n00:00:00,000 --> 00:00:01,000\nfirst slice'],
+      ['https://assets.example/audio.mp3', 'audio-output'],
+    ]);
+    const taskPackageFetchRequests = [];
+    globalThis.fetch = async (resource) => {
+      const url = String(resource);
+      taskPackageFetchRequests.push(url);
+      if (!taskPackageFetchPayloads.has(url)) {
+        return new Response('missing fixture', { status: 404, statusText: 'Not Found' });
+      }
+      return new Response(taskPackageFetchPayloads.get(url), { status: 200 });
+    };
+    try {
+      const packageableTasks = [
+        {
+          id: 'task-smart-slice',
+          type: types.AUTOCUT_TASK_TYPE.videoSlice,
+          name: 'Launch Review / Smart Slice',
+          status: types.AUTOCUT_TASK_STATUS.completed,
+          progress: 100,
+          createdAt: '2026-05-10T01:02:03.000Z',
+          completedAt: '2026-05-10T01:03:03.000Z',
+          sourceFileId: 'source-video-001',
+          generatedAssetIds: ['slice-a', 'slice-b'],
+          resultCount: 2,
+          sliceResults: [
+            {
+              id: 'slice-a',
+              name: 'clip.mp4',
+              duration: 12,
+              size: 12,
+              resolution: '1080P',
+              thumbnailUrl: 'https://assets.example/slice-a.jpg',
+              url: 'https://assets.example/slice-a.mp4',
+              subtitleUrl: 'https://assets.example/slice-a.srt',
+              subtitleFormat: 'srt',
+              transcriptText: 'first slice',
+              transcriptSegments: [
+                { startMs: 0, endMs: 1000, text: 'first slice', speaker: 'Speaker 1' },
+              ],
+            },
+            {
+              id: 'slice-b',
+              name: 'clip.mp4',
+              duration: 14,
+              size: 12,
+              resolution: '1080P',
+              thumbnailUrl: 'https://assets.example/slice-b.jpg',
+              url: 'https://assets.example/slice-b.mp4',
+              subtitleUrl: 'https://assets.example/missing-subtitle.srt',
+              subtitleFormat: 'srt',
+              transcriptText: 'second slice',
+              transcriptSegments: [
+                { startMs: 1_200, endMs: 2_000, text: 'second slice', speaker: 'Speaker 1' },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'task-text',
+          type: types.AUTOCUT_TASK_TYPE.textExtraction,
+          name: 'Interview Transcript',
+          status: types.AUTOCUT_TASK_STATUS.completed,
+          progress: 100,
+          createdAt: '2026-05-10T02:00:00.000Z',
+          completedAt: '2026-05-10T02:01:00.000Z',
+          resultCount: 1,
+          extractedText: [
+            { time: '00:00', speaker: 'Speaker 1', text: 'usable transcript text' },
+          ],
+        },
+        {
+          id: 'task-audio',
+          type: types.AUTOCUT_TASK_TYPE.audioExtraction,
+          name: 'Audio Output',
+          status: types.AUTOCUT_TASK_STATUS.completed,
+          progress: 100,
+          createdAt: '2026-05-10T02:10:00.000Z',
+          completedAt: '2026-05-10T02:11:00.000Z',
+          resultCount: 1,
+          audioUrl: 'https://assets.example/audio.mp3',
+        },
+      ];
+      assertEqual(
+        services.hasAutoCutTaskPackageDownloadables(packageableTasks[0]),
+        true,
+        'hasAutoCutTaskPackageDownloadables accepts completed smart-slice tasks with generated outputs',
+      );
+      assertEqual(
+        services.hasAutoCutTaskPackageDownloadables({
+          ...packageableTasks[0],
+          status: types.AUTOCUT_TASK_STATUS.processing,
+        }),
+        false,
+        'hasAutoCutTaskPackageDownloadables rejects unfinished tasks for package download UI state',
+      );
+      const archive = await services.createAutoCutTaskPackageArchive(packageableTasks, {
+        exportedAt: '2026-05-10T03:00:00.000Z',
+        filename: 'selected-tasks.zip',
+      });
+      assertEqual(archive.filename, 'selected-tasks.zip', 'createAutoCutTaskPackageArchive preserves the requested ZIP filename');
+      assertEqual(archive.blob.type, 'application/zip', 'createAutoCutTaskPackageArchive emits an application/zip Blob');
+      assertEqual(archive.taskCount, 3, 'createAutoCutTaskPackageArchive counts packaged completed tasks');
+      assertEqual(archive.includedFileCount >= 11, true, 'createAutoCutTaskPackageArchive includes task metadata, media outputs, thumbnails, subtitles, and transcript files');
+      assertEqual(archive.skippedFileCount, 1, 'createAutoCutTaskPackageArchive records failed optional asset fetches without aborting the package');
+      assertArrayIncludes(
+        taskPackageFetchRequests,
+        'https://assets.example/missing-subtitle.srt',
+        'createAutoCutTaskPackageArchive attempts every advertised downloadable task artifact',
+      );
+      const zipEntries = await readStoredZipEntries(archive.blob);
+      assertRule(zipEntries.has('manifest.json'), 'task package ZIP includes a root manifest');
+      assertRule(zipEntries.has('tasks/task-smart-slice/task.json'), 'task package ZIP includes task metadata JSON for each task');
+      assertRule(zipEntries.has('tasks/task-smart-slice/smart-slice-task.json'), 'task package ZIP includes smart-slice evidence JSON for video slicing tasks');
+      assertRule(zipEntries.has('tasks/task-smart-slice/clip.mp4'), 'task package ZIP includes the first generated smart-slice video output directly under the task directory');
+      assertRule(zipEntries.has('tasks/task-smart-slice/clip-2.mp4'), 'task package ZIP makes duplicate output filenames unique instead of overwriting artifacts');
+      assertRule(zipEntries.has('tasks/task-smart-slice/cover/clip-thumbnail.jpg'), 'task package ZIP includes generated smart-slice thumbnails under the task cover directory');
+      assertRule(zipEntries.has('tasks/task-smart-slice/clip-subtitle.srt'), 'task package ZIP includes generated smart-slice subtitle files directly under the task directory');
+      assertRule(zipEntries.has('tasks/task-smart-slice/transcripts/clip-transcript.txt'), 'task package ZIP includes editable smart-slice transcript text');
+      assertRule(zipEntries.has('tasks/task-text/transcript.txt'), 'task package ZIP includes extracted text outputs as readable transcript text');
+      assertRule(zipEntries.has('tasks/task-audio/Audio Output-audio.mp3'), 'task package ZIP includes top-level audio extraction outputs directly under the task directory');
+      assertEqual(
+        zipEntries.get('tasks/task-smart-slice/clip-2.mp4')?.text,
+        'slice-b-video',
+        'task package ZIP stores distinct bytes for duplicate-named generated outputs',
+      );
+      const manifest = JSON.parse(zipEntries.get('manifest.json')?.text ?? '{}');
+      assertEqual(manifest.schemaVersion, '2026-05-10.autocut-task-package.v1', 'task package manifest uses the standard schema version');
+      assertEqual(manifest.taskCount, 3, 'task package manifest records packaged task count');
+      assertEqual(manifest.skippedFiles?.[0]?.url, 'https://assets.example/missing-subtitle.srt', 'task package manifest records skipped optional artifact URLs');
+      assertRule(
+        manifest.includedFiles.some((file) => file.path === 'tasks/task-smart-slice/clip-2.mp4' && file.taskId === 'task-smart-slice'),
+        'task package manifest indexes included files by archive path and task id',
+      );
+      browserDownloadRequests.length = 0;
+      revokedObjectUrls.length = 0;
+      const downloadResult = await services.downloadAutoCutTaskPackage([packageableTasks[1]], {
+        exportedAt: '2026-05-10T03:05:00.000Z',
+        filename: 'single-task.zip',
+      });
+      assertEqual(downloadResult.filename, 'single-task.zip', 'downloadAutoCutTaskPackage returns the downloaded ZIP filename');
+      assertEqual(
+        browserDownloadRequests.at(-1)?.download,
+        'single-task.zip',
+        'downloadAutoCutTaskPackage triggers a browser download with the package filename',
+      );
+      assertRule(
+        browserDownloadRequests.at(-1)?.href?.startsWith('blob:autocut-contract-'),
+        'downloadAutoCutTaskPackage downloads through a temporary object URL',
+      );
+      assertIncludes(
+        revokedObjectUrls,
+        browserDownloadRequests.at(-1)?.href,
+        'downloadAutoCutTaskPackage revokes the temporary object URL after triggering download',
+      );
+      await assertRejects(
+        () => services.createAutoCutTaskPackageArchive([{
+          ...packageableTasks[0],
+          status: types.AUTOCUT_TASK_STATUS.failed,
+          errorMessage: 'failed task',
+        }]),
+        'No completed task outputs are available for package download',
+        'createAutoCutTaskPackageArchive rejects selections without completed downloadable task outputs',
+      );
+    } finally {
+      if (originalFetch === undefined) {
+        delete globalThis.fetch;
+      } else {
+        globalThis.fetch = originalFetch;
+      }
+    }
     services.clearAutoCutDiagnostics();
     const consoleDiagnosticCalls = captureConsoleDiagnostics(() => {
       services.reportAutoCutDiagnostic(
@@ -811,14 +2201,41 @@ async function run() {
       typeof assertSmartSlicePlanReadyForNativeRender === 'function',
       'slicer service exports the smart slice native-render readiness gate',
     );
+    assertRule(
+      typeof refreshSmartSlicePlanTranscriptEvidence === 'function',
+      'slicer service exports the smart slice transcript evidence refresh gate',
+    );
+    assertRule(
+      typeof repairSmartSlicePlanForNativeRender === 'function',
+      'slicer service exports the smart slice render-ready transcript coverage repair gate',
+    );
     const slicerServiceSource = readFileSync(
       path.join(rootDir, 'packages/sdkwork-autocut-slicer/src/service/slicerService.ts'),
       'utf8',
     );
     assertIncludes(
       slicerServiceSource,
-      'assertSmartSlicePlanReadyForNativeRender(resolvedPlannedClips, transcriptSegments',
-      'processVideoSlice validates planned smart slices before dispatching native video rendering',
+      'const renderReadyPlannedClips = repairSmartSlicePlanForNativeRender',
+      'processVideoSlice repairs planned smart slice transcript coverage before native readiness validation',
+    );
+    assertIncludes(
+      slicerServiceSource,
+      'assertSmartSliceSemanticPlanReadyForAudioAnalysis(plannedClips, transcriptSegments',
+      'processVideoSlice validates semantic smart slices before post-boundary audio cleanup',
+    );
+    assertIncludes(
+      slicerServiceSource,
+      'assertSmartSlicePlanReadyForNativeRender(refinedPlannedClips, transcriptSegments',
+      'processVideoSlice validates post-cleanup smart slices before dispatching native video rendering',
+    );
+    assertRule(
+      !/throw new Error\(\s*['"]AutoCut transcript speech has no renderable timestamped segment\./u.test(slicerServiceSource),
+      'smart-slice non-renderable transcript failures must use SmartSlicePlanningError so desktop errors expose runtime params',
+    );
+    assertIncludes(
+      slicerServiceSource,
+      'shouldRecordSmartSliceLongRunningStageProgress',
+      'smart-slice service samples long-running native progress before writing task logs to prevent large-file UI stalls',
     );
     if (typeof assertSmartSliceResultsMeetProfessionalStandard === 'function') {
       const professionalSliceResult = {
@@ -835,6 +2252,18 @@ async function run() {
         speechEndMs: 20000,
         boundaryPaddingBeforeMs: 200,
         boundaryPaddingAfterMs: 250,
+        audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+        noiseReductionApplied: true,
+        boundaryDecisionSource: 'combined',
+        audioActivityStartMs: 4000,
+        audioActivityEndMs: 20000,
+        audioActivityConfidence: 0.95,
+        audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+        leadingSilenceMs: 200,
+        trailingSilenceMs: 250,
+        leadingSilenceTrimMs: 0,
+        trailingSilenceTrimMs: 0,
+        tailTreatment: 'none',
         transcriptText: 'The hook starts immediately. The payoff ends cleanly.',
         transcriptSegments: [
           { startMs: 4000, endMs: 12000, text: 'The hook starts immediately.' },
@@ -853,6 +2282,82 @@ async function run() {
       assertRule(
         acceptedProfessionalSlice,
         'smart slice professional completion gate accepts slices with structured STT and bounded speech padding',
+      );
+      let acceptedAudioCorrectedProfessionalSlice = true;
+      try {
+        assertSmartSliceResultsMeetProfessionalStandard([
+          {
+            ...professionalSliceResult,
+            sourceStartMs: 4920,
+            sourceEndMs: 24130,
+            speechStartMs: 5120,
+            speechEndMs: 23880,
+            boundaryPaddingBeforeMs: 200,
+            boundaryPaddingAfterMs: 250,
+            audioActivityStartMs: 5120,
+            audioActivityEndMs: 23880,
+            audioActivityConfidence: 0.94,
+            audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+            leadingSilenceMs: 200,
+            trailingSilenceMs: 250,
+            leadingSilenceTrimMs: 4920,
+            trailingSilenceTrimMs: 5870,
+            tailTreatment: 'fade-out',
+            transcriptSegments: [
+              { startMs: 5000, endMs: 12000, text: 'The hook starts immediately.' },
+              { startMs: 12000, endMs: 24000, text: 'The payoff ends cleanly.' },
+            ],
+          },
+        ]);
+      } catch {
+        acceptedAudioCorrectedProfessionalSlice = false;
+      }
+      assertRule(
+        acceptedAudioCorrectedProfessionalSlice,
+        'smart slice professional completion gate accepts high-confidence audio boundaries that tighten STT segment edges',
+      );
+      await assertRejects(
+        () => assertSmartSliceResultsMeetProfessionalStandard([
+          {
+            ...professionalSliceResult,
+            audioActivityStartMs: undefined,
+            audioActivityEndMs: undefined,
+            audioActivityConfidence: undefined,
+            audioActivityAnalysisFilter: undefined,
+          },
+        ]),
+        'trusted audio activity evidence',
+        'smart slice professional completion gate rejects completed slices without trusted audio activity evidence',
+      );
+      await assertRejects(
+        () => assertSmartSliceResultsMeetProfessionalStandard([
+          {
+            ...professionalSliceResult,
+            audioActivityConfidence: 0.1,
+          },
+        ]),
+        'trusted audio activity evidence',
+        'smart slice professional completion gate rejects low-confidence audio activity evidence before task completion',
+      );
+      await assertRejects(
+        () => assertSmartSliceResultsMeetProfessionalStandard([
+          {
+            ...professionalSliceResult,
+            leadingSilenceMs: 999,
+          },
+        ]),
+        'audio silence evidence to match trusted audio activity padding',
+        'smart slice professional completion gate rejects stale leading silence evidence before task completion',
+      );
+      await assertRejects(
+        () => assertSmartSliceResultsMeetProfessionalStandard([
+          {
+            ...professionalSliceResult,
+            trailingSilenceMs: 999,
+          },
+        ]),
+        'audio silence evidence to match trusted audio activity padding',
+        'smart slice professional completion gate rejects stale trailing silence evidence before task completion',
       );
       await assertRejects(
         () => assertSmartSliceResultsMeetProfessionalStandard([
@@ -909,23 +2414,25 @@ async function run() {
         () => assertSmartSliceResultsMeetProfessionalStandard([
           {
             ...professionalSliceResult,
-            sourceStartMs: 3850,
-            speechStartMs: 3910,
+            sourceStartMs: 3700,
+            speechStartMs: 3900,
+            audioActivityStartMs: 3900,
           },
         ]),
-        'speech range to match structured transcript segment boundaries',
-        'smart slice professional completion gate rejects speechStartMs that does not match the first structured STT segment',
+        'speech range to stay covered by structured transcript segment boundaries',
+        'smart slice professional completion gate rejects speechStartMs that is not covered by the first structured STT segment',
       );
       await assertRejects(
         () => assertSmartSliceResultsMeetProfessionalStandard([
           {
             ...professionalSliceResult,
-            sourceEndMs: 20150,
-            speechEndMs: 20090,
+            sourceEndMs: 20400,
+            speechEndMs: 20150,
+            audioActivityEndMs: 20150,
           },
         ]),
-        'speech range to match structured transcript segment boundaries',
-        'smart slice professional completion gate rejects speechEndMs that does not match the final structured STT segment',
+        'speech range to stay covered by structured transcript segment boundaries',
+        'smart slice professional completion gate rejects speechEndMs that is not covered by the final structured STT segment',
       );
       await assertRejects(
         () => assertSmartSliceResultsMeetProfessionalStandard([
@@ -971,6 +2478,56 @@ async function run() {
         'speechContinuityGrade to be strong or repaired',
         'smart slice professional completion gate rejects missing speech continuity grade before task completion',
       );
+      await assertRejects(
+        () => assertSmartSliceResultsMeetProfessionalStandard([
+          {
+            ...professionalSliceResult,
+            audioCleanupProfile: undefined,
+          },
+        ]),
+        'audio cleanup profile evidence',
+        'smart slice professional completion gate rejects completed slices without audio cleanup profile evidence',
+      );
+      await assertRejects(
+        () => assertSmartSliceResultsMeetProfessionalStandard([
+          {
+            ...professionalSliceResult,
+            noiseReductionApplied: undefined,
+          },
+        ]),
+        'noise reduction decision evidence',
+        'smart slice professional completion gate rejects completed slices without noise reduction decision evidence',
+      );
+      await assertRejects(
+        () => assertSmartSliceResultsMeetProfessionalStandard([
+          {
+            ...professionalSliceResult,
+            boundaryDecisionSource: undefined,
+          },
+        ]),
+        'boundary decision evidence',
+        'smart slice professional completion gate rejects completed slices without boundary decision evidence',
+      );
+      await assertRejects(
+        () => assertSmartSliceResultsMeetProfessionalStandard([
+          {
+            ...professionalSliceResult,
+            tailTreatment: undefined,
+          },
+        ]),
+        'tail treatment evidence',
+        'smart slice professional completion gate rejects completed slices without tail treatment evidence',
+      );
+      assertSmartSliceResultsMeetProfessionalStandard([
+        {
+          ...professionalSliceResult,
+          noiseReductionApplied: false,
+          audioActivityStartMs: 4000,
+          audioActivityEndMs: 20000,
+          audioActivityConfidence: 0.95,
+          audioActivityAnalysisFilter: 'silencedetect=noise=-35dB:d=0.08',
+        },
+      ]);
     }
     if (typeof assertSmartSlicePlanReadyForNativeRender === 'function') {
       const professionalTranscriptSegments = [
@@ -1026,6 +2583,474 @@ async function run() {
       );
       await assertRejects(
         () => assertSmartSlicePlanReadyForNativeRender(
+          [professionalPlanClip],
+          professionalTranscriptSegments,
+          60000,
+        ),
+        'cover every eligible transcript speech segment',
+        'smart slice native-render readiness gate rejects plans that leave eligible speech outside every output clip',
+      );
+      await assertRejects(
+        () => assertSmartSlicePlanReadyForNativeRender(
+          [professionalPlanClip],
+          professionalTranscriptSegments,
+          60000,
+        ),
+        'segment=3 startMs=20450 endMs=29800',
+        'smart slice native-render readiness gate reports the exact uncovered transcript segment timing',
+      );
+      await assertRejects(
+        () => assertSmartSlicePlanReadyForNativeRender(
+          [
+            professionalPlanClip,
+            {
+              ...professionalSecondPlanClip,
+              startMs: 20050,
+              durationMs: 10000,
+              sourceStartMs: 20050,
+              sourceEndMs: 30050,
+            },
+          ],
+          professionalTranscriptSegments,
+          60000,
+        ),
+        'previousRenderedEndMs=20250',
+        'smart slice native-render readiness gate reports previous rendered end timing for overlapping planned clips',
+      );
+      await assertRejects(
+        () => assertSmartSlicePlanReadyForNativeRender(
+          [
+            professionalPlanClip,
+            {
+              ...professionalSecondPlanClip,
+              startMs: 20050,
+              durationMs: 10000,
+              sourceStartMs: 20050,
+              sourceEndMs: 30050,
+            },
+          ],
+          professionalTranscriptSegments,
+          60000,
+        ),
+        'Clip runtime params:',
+        'smart slice native-render readiness gate includes clip runtime params for overlapping planned clips',
+      );
+      await assertRejects(
+        () => assertSmartSlicePlanReadyForNativeRender(
+          [
+            professionalPlanClip,
+            {
+              ...professionalSecondPlanClip,
+              sourceStartMs: 20250,
+              sourceEndMs: 23000,
+              speechStartMs: 20450,
+              speechEndMs: 23000,
+              durationMs: 2750,
+              transcriptText: 'The second clip starts after the first rendered window.',
+              transcriptSegmentCount: 1,
+              transcriptCoverageScore: 1,
+              speechContinuityGrade: 'strong',
+            },
+          ],
+          professionalTranscriptSegments,
+          60000,
+        ),
+        'segment=3 startMs=20450 endMs=29800',
+        'smart slice native-render readiness gate rejects plans that only partially cover an eligible transcript segment',
+      );
+      let acceptedTailRepairedProfessionalPlan = true;
+      try {
+        assertSmartSlicePlanReadyForNativeRender(
+          [
+            {
+              ...professionalSecondPlanClip,
+              startMs: 43000,
+              durationMs: 17000,
+              sourceStartMs: 43000,
+              sourceEndMs: 60000,
+              speechStartMs: 43200,
+              speechEndMs: 60000,
+              boundaryPaddingBeforeMs: 200,
+              boundaryPaddingAfterMs: 0,
+              transcriptText: 'The final payoff still belongs inside the imported source after tail timestamp repair.',
+            },
+          ],
+          [
+            {
+              startMs: 43200,
+              endMs: 60900,
+              text: 'The final payoff still belongs inside the imported source after tail timestamp repair.',
+            },
+          ],
+          60000,
+        );
+      } catch {
+        acceptedTailRepairedProfessionalPlan = false;
+      }
+      assertRule(
+        acceptedTailRepairedProfessionalPlan,
+        'smart slice native-render readiness gate repairs bounded final STT tail timestamp drift consistently with clip planning',
+      );
+      let acceptedDroppedLongTailFillerProfessionalPlan = true;
+      try {
+        assertSmartSlicePlanReadyForNativeRender(
+          [
+            {
+              ...professionalSecondPlanClip,
+              startMs: 43000,
+              durationMs: 16250,
+              sourceStartMs: 43000,
+              sourceEndMs: 59250,
+              speechStartMs: 43200,
+              speechEndMs: 59000,
+              boundaryPaddingBeforeMs: 200,
+              boundaryPaddingAfterMs: 250,
+              transcriptText: 'The final payoff ends before the imported source tail filler.',
+              transcriptSegmentCount: 1,
+            },
+          ],
+          [
+            {
+              startMs: 43200,
+              endMs: 59000,
+              text: 'The final payoff ends before the imported source tail filler.',
+            },
+            {
+              startMs: 59980,
+              endMs: 68000,
+              text: 'um',
+            },
+          ],
+          60000,
+        );
+      } catch {
+        acceptedDroppedLongTailFillerProfessionalPlan = false;
+      }
+      assertRule(
+        acceptedDroppedLongTailFillerProfessionalPlan,
+        'smart slice native-render readiness gate drops long low-information tail filler that exceeds imported media duration',
+      );
+      await assertRejects(
+        () => assertSmartSlicePlanReadyForNativeRender(
+          [
+            {
+              ...professionalPlanClip,
+              audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+              noiseReductionApplied: true,
+              boundaryDecisionSource: 'transcript',
+              leadingSilenceTrimMs: 0,
+              trailingSilenceTrimMs: 0,
+              tailTreatment: 'none',
+            },
+          ],
+          [
+            { startMs: 4000, endMs: 12000, text: 'The hook starts immediately.' },
+            { startMs: 12000, endMs: 20000, text: 'The payoff ends cleanly.' },
+          ],
+          60000,
+        ),
+        'trusted audio activity evidence',
+        'smart slice native-render readiness gate rejects post-cleanup plans without trusted audio activity evidence',
+      );
+      await assertRejects(
+        () => assertSmartSlicePlanReadyForNativeRender(
+          [
+            {
+              ...professionalPlanClip,
+              audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+              noiseReductionApplied: true,
+              boundaryDecisionSource: 'combined',
+              audioActivityStartMs: 4000,
+              audioActivityEndMs: 20000,
+              audioActivityConfidence: 0.95,
+              audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+              leadingSilenceMs: 999,
+              trailingSilenceMs: 250,
+              leadingSilenceTrimMs: 0,
+              trailingSilenceTrimMs: 0,
+              tailTreatment: 'none',
+            },
+          ],
+          [
+            { startMs: 4000, endMs: 12000, text: 'The hook starts immediately.' },
+            { startMs: 12000, endMs: 20000, text: 'The payoff ends cleanly.' },
+          ],
+          60000,
+        ),
+        'audio silence evidence to match trusted audio activity padding',
+        'smart slice native-render readiness gate rejects stale audio silence evidence after cleanup',
+      );
+      let acceptedAudioCorrectedPlan = true;
+      try {
+        assertSmartSlicePlanReadyForNativeRender(
+          [
+            {
+              ...professionalPlanClip,
+              startMs: 4920,
+              durationMs: 19210,
+              sourceStartMs: 4920,
+              sourceEndMs: 24130,
+              speechStartMs: 5120,
+              speechEndMs: 23880,
+              boundaryPaddingBeforeMs: 200,
+              boundaryPaddingAfterMs: 250,
+              boundaryDecisionSource: 'combined',
+              audioActivityStartMs: 5120,
+              audioActivityEndMs: 23880,
+              audioActivityConfidence: 0.94,
+              audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+              leadingSilenceMs: 200,
+              trailingSilenceMs: 250,
+              leadingSilenceTrimMs: 4920,
+              trailingSilenceTrimMs: 5870,
+              tailTreatment: 'fade-out',
+            },
+          ],
+          [
+            { startMs: 5000, endMs: 12000, text: 'The hook starts immediately.' },
+            { startMs: 12000, endMs: 24000, text: 'The payoff ends cleanly.' },
+          ],
+          60000,
+        );
+      } catch {
+        acceptedAudioCorrectedPlan = false;
+      }
+      assertRule(
+        acceptedAudioCorrectedPlan,
+        'smart slice native-render readiness gate accepts audio boundaries that tighten STT segment edges',
+      );
+      await assertRejects(
+        () => assertSmartSlicePlanReadyForNativeRender(
+          [
+            {
+              ...professionalPlanClip,
+              startMs: 4800,
+              durationMs: 19450,
+              sourceStartMs: 4800,
+              sourceEndMs: 24250,
+              speechStartMs: 5000,
+              speechEndMs: 24000,
+              boundaryPaddingBeforeMs: 200,
+              boundaryPaddingAfterMs: 250,
+              boundaryDecisionSource: 'transcript',
+              audioActivityStartMs: 9000,
+              audioActivityEndMs: 18000,
+              audioActivityConfidence: 0.95,
+              audioActivityAnalysisFilter: 'silencedetect=noise=-35dB:d=0.08',
+              leadingSilenceMs: 4200,
+              trailingSilenceMs: 6250,
+              leadingSilenceTrimMs: 4800,
+              trailingSilenceTrimMs: 5750,
+              tailTreatment: 'fade-out',
+              risks: ['audio-boundary-refined', 'audio-transcript-boundary-conflict'],
+            },
+          ],
+          [
+            { startMs: 5000, endMs: 12000, text: 'The hook starts immediately.' },
+            { startMs: 12000, endMs: 24000, text: 'The payoff ends cleanly.' },
+          ],
+          60000,
+        ),
+        'audio activity padding',
+        'smart slice native-render readiness gate rejects clips whose audible activity still has excessive leading or trailing silence',
+      );
+      await assertRejects(
+        () => assertSmartSlicePlanReadyForNativeRender(
+          [
+            {
+              ...professionalPlanClip,
+              startMs: 6000,
+              durationMs: 12000,
+              sourceStartMs: 6000,
+              sourceEndMs: 18000,
+              speechStartMs: 5000,
+              speechEndMs: 17800,
+              sourceSegments: [
+                { startMs: 6000, endMs: 9000 },
+                { startMs: 12000, endMs: 18000 },
+              ],
+              renderedDurationMs: 9000,
+              removedSilenceMs: 3000,
+              internalSilenceTrimCount: 1,
+              transcriptText: 'The hook starts immediately. The payoff ends cleanly.',
+              transcriptSegmentCount: 2,
+            },
+          ],
+          [
+            { startMs: 5000, endMs: 9000, text: 'The hook starts immediately.' },
+            { startMs: 12000, endMs: 17800, text: 'The payoff ends cleanly.' },
+          ],
+          60000,
+        ),
+        'Clip runtime params: clipNumber=1',
+        'smart slice native-render readiness gate prints clip runtime params when speech range falls outside compacted source range',
+      );
+      await assertRejects(
+        () => assertSmartSlicePlanReadyForNativeRender(
+          [
+            {
+              ...professionalPlanClip,
+              startMs: 6000,
+              durationMs: 12000,
+              sourceStartMs: 6000,
+              sourceEndMs: 18000,
+              speechStartMs: 5000,
+              speechEndMs: 17800,
+              sourceSegments: [
+                { startMs: 6000, endMs: 9000 },
+                { startMs: 12000, endMs: 18000 },
+              ],
+              renderedDurationMs: 9000,
+              removedSilenceMs: 3000,
+              internalSilenceTrimCount: 1,
+              transcriptText: 'The hook starts immediately. The payoff ends cleanly.',
+              transcriptSegmentCount: 2,
+            },
+          ],
+          [
+            { startMs: 5000, endMs: 9000, text: 'The hook starts immediately.' },
+            { startMs: 12000, endMs: 17800, text: 'The payoff ends cleanly.' },
+          ],
+          60000,
+        ),
+        'sourceSegments=6000-9000,12000-18000',
+        'smart slice native-render readiness gate includes compacted sourceSegments in clip runtime params',
+      );
+      let acceptedTrustedAudioCompactedCoarseTranscriptPlan = true;
+      try {
+        assertSmartSlicePlanReadyForNativeRender(
+          [
+            {
+              ...professionalPlanClip,
+              startMs: 1500,
+              durationMs: 8000,
+              sourceStartMs: 1500,
+              sourceEndMs: 9500,
+              speechStartMs: 1500,
+              speechEndMs: 9500,
+              boundaryPaddingBeforeMs: 0,
+              boundaryPaddingAfterMs: 0,
+              sourceSegments: [
+                { startMs: 1500, endMs: 4000 },
+                { startMs: 6000, endMs: 9500 },
+              ],
+              renderedDurationMs: 6000,
+              removedSilenceMs: 2000,
+              internalSilenceTrimCount: 1,
+              transcriptText: 'The coarse transcript starts before audio activity but the spoken words are retained.',
+              transcriptSegmentCount: 1,
+              transcriptCoverageScore: 1,
+              speechContinuityGrade: 'repaired',
+              audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+              noiseReductionApplied: true,
+              boundaryDecisionSource: 'combined',
+              audioActivityStartMs: 1500,
+              audioActivityEndMs: 9500,
+              audioActivityConfidence: 0.95,
+              audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+              leadingSilenceMs: 0,
+              trailingSilenceMs: 0,
+              leadingSilenceTrimMs: 500,
+              trailingSilenceTrimMs: 0,
+              tailTreatment: 'fade-out',
+              risks: ['internal-silence-trimmed', 'audio-boundary-refined'],
+            },
+          ],
+          [
+            {
+              startMs: 1000,
+              endMs: 9500,
+              text: 'The coarse transcript starts before audio activity but the spoken words are retained.',
+            },
+          ],
+          12000,
+        );
+      } catch {
+        acceptedTrustedAudioCompactedCoarseTranscriptPlan = false;
+      }
+      assertRule(
+        acceptedTrustedAudioCompactedCoarseTranscriptPlan,
+        'smart slice native-render readiness gate accepts trusted audio-compacted sourceSegments for coarse STT timestamps without reporting uncovered speech',
+      );
+      let acceptedTrustedAudioTrimmedOpeningCoarseTranscriptPlan = true;
+      try {
+        assertSmartSlicePlanReadyForNativeRender(
+          [
+            {
+              ...professionalPlanClip,
+              startMs: 3035,
+              durationMs: 6865,
+              sourceStartMs: 3035,
+              sourceEndMs: 9900,
+              speechStartMs: 3035,
+              speechEndMs: 9900,
+              boundaryPaddingBeforeMs: 0,
+              boundaryPaddingAfterMs: 0,
+              sourceSegments: [
+                { startMs: 3035, endMs: 3556 },
+                { startMs: 5815, endMs: 9900 },
+              ],
+              renderedDurationMs: 4606,
+              removedSilenceMs: 2259,
+              internalSilenceTrimCount: 1,
+              transcriptText: 'The first coarse STT segment starts with removable silence before speech.',
+              transcriptSegmentCount: 1,
+              transcriptCoverageScore: 1,
+              speechContinuityGrade: 'repaired',
+              audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+              noiseReductionApplied: true,
+              boundaryDecisionSource: 'combined',
+              audioActivityStartMs: 3035,
+              audioActivityEndMs: 9900,
+              audioActivityConfidence: 0.95,
+              audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+              leadingSilenceMs: 0,
+              trailingSilenceMs: 0,
+              leadingSilenceTrimMs: 3035,
+              trailingSilenceTrimMs: 0,
+              tailTreatment: 'fade-out',
+              risks: ['internal-silence-trimmed', 'audio-boundary-refined'],
+            },
+          ],
+          [
+            {
+              startMs: 0,
+              endMs: 9900,
+              text: 'The first coarse STT segment starts with removable silence before speech.',
+            },
+          ],
+          12000,
+        );
+      } catch {
+        acceptedTrustedAudioTrimmedOpeningCoarseTranscriptPlan = false;
+      }
+      assertRule(
+        acceptedTrustedAudioTrimmedOpeningCoarseTranscriptPlan,
+        'smart slice native-render readiness gate accepts trusted audio-trimmed opening silence inside a coarse STT segment',
+      );
+      await assertRejects(
+        () => assertSmartSlicePlanReadyForNativeRender(
+          [
+            {
+              ...professionalPlanClip,
+              sourceSegments: [
+                { startMs: 3800, endMs: 6000 },
+                { startMs: 16000, endMs: 20250 },
+              ],
+              renderedDurationMs: 6450,
+              removedSilenceMs: 10000,
+              internalSilenceTrimCount: 1,
+              risks: ['internal-silence-trimmed'],
+            },
+          ],
+          professionalTranscriptSegments,
+          60000,
+        ),
+        'retained sourceSegments to cover every structured speech-to-text transcript segment',
+        'smart slice native-render readiness gate rejects sourceSegments that cut through STT-backed speech',
+      );
+      await assertRejects(
+        () => assertSmartSlicePlanReadyForNativeRender(
           [
             professionalPlanClip,
             {
@@ -1075,6 +3100,27 @@ async function run() {
         () => assertSmartSlicePlanReadyForNativeRender(
           [
             {
+              ...professionalSecondPlanClip,
+              durationMs: 39750,
+              sourceEndMs: 60000,
+              speechEndMs: 59800,
+              transcriptText: 'The second clip starts after the first rendered window. This transcript should never extend past the imported media.',
+              transcriptSegmentCount: 2,
+            },
+          ],
+          [
+            { startMs: 20450, endMs: 29800, text: 'The second clip starts after the first rendered window.' },
+            { startMs: 59000, endMs: 65000, text: 'This transcript should never extend past the imported media.' },
+          ],
+          60000,
+        ),
+        'transcript segment 2 to stay inside the imported media duration',
+        'smart slice native-render readiness gate rejects STT segments that extend beyond imported media duration',
+      );
+      await assertRejects(
+        () => assertSmartSlicePlanReadyForNativeRender(
+          [
+            {
               ...professionalPlanClip,
               transcriptSegmentCount: 3,
             },
@@ -1084,6 +3130,501 @@ async function run() {
         ),
         'transcriptSegmentCount to match structured speech-to-text coverage',
         'smart slice native-render readiness gate rejects transcript count mismatches before native rendering',
+      );
+      if (typeof refreshSmartSlicePlanTranscriptEvidence === 'function') {
+        const staleCheckpointPlanClip = {
+          ...professionalPlanClip,
+          sourceStartMs: 3800,
+          sourceEndMs: 20250,
+          speechStartMs: 4000,
+          speechEndMs: 20000,
+          transcriptText: 'The hook starts immediately. The payoff ends cleanly. Stale checkpoint text.',
+          transcriptSegmentCount: 3,
+          transcriptCoverageScore: 0.4,
+          speechContinuityGrade: 'weak',
+        };
+        const refreshedPlan = refreshSmartSlicePlanTranscriptEvidence(
+          [staleCheckpointPlanClip, professionalSecondPlanClip],
+          professionalTranscriptSegments,
+          60000,
+        );
+        assertEqual(
+          refreshedPlan[0]?.transcriptSegmentCount,
+          2,
+          'smart slice transcript evidence refresh recalculates stale checkpoint transcriptSegmentCount from final source coverage',
+        );
+        assertEqual(
+          refreshedPlan[0]?.transcriptText,
+          'The hook starts immediately. The payoff ends cleanly.',
+          'smart slice transcript evidence refresh recalculates stale checkpoint transcriptText from final source coverage',
+        );
+        assertRule(
+          (refreshedPlan[0]?.transcriptCoverageScore ?? 0) >= 0.8,
+          'smart slice transcript evidence refresh recalculates transcriptCoverageScore from final source coverage',
+        );
+        assertRule(
+          refreshedPlan[0]?.speechContinuityGrade === 'strong' ||
+            refreshedPlan[0]?.speechContinuityGrade === 'repaired',
+          'smart slice transcript evidence refresh repairs stale weak speechContinuityGrade before native rendering',
+        );
+        let acceptedRefreshedStalePlan = true;
+        try {
+          assertSmartSlicePlanReadyForNativeRender(
+            refreshedPlan,
+            professionalTranscriptSegments,
+            60000,
+          );
+        } catch {
+          acceptedRefreshedStalePlan = false;
+        }
+        assertRule(
+          acceptedRefreshedStalePlan,
+          'smart slice native-render readiness gate accepts refreshed checkpoint transcript evidence',
+        );
+        const uncoveredTailTranscriptSegments = [
+          { startMs: 4_000, endMs: 12_000, text: 'Opening explains why this application path fits experienced operators.' },
+          { startMs: 12_200, endMs: 20_000, text: 'Middle evidence maps preparation material and industry history to the requirement.' },
+          { startMs: 93_300, endMs: 98_700, text: 'Late uncovered transcript speech should force coverage repair.' },
+        ];
+        const audioRefinedPlanWithUncoveredTail = refreshSmartSlicePlanTranscriptEvidence(
+          [
+            {
+              ...professionalPlanClip,
+              startMs: 3_800,
+              durationMs: 16_450,
+              sourceStartMs: 3_800,
+              sourceEndMs: 20_250,
+              speechStartMs: 4_000,
+              speechEndMs: 20_000,
+              boundaryPaddingBeforeMs: 200,
+              boundaryPaddingAfterMs: 250,
+              boundaryDecisionSource: 'combined',
+              audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+              noiseReductionApplied: true,
+              audioActivityStartMs: 4_000,
+              audioActivityEndMs: 20_000,
+              audioActivityConfidence: 0.95,
+              audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+              leadingSilenceMs: 200,
+              trailingSilenceMs: 250,
+              leadingSilenceTrimMs: 0,
+              trailingSilenceTrimMs: 0,
+              tailTreatment: 'none',
+            },
+          ],
+          uncoveredTailTranscriptSegments,
+          120_000,
+        );
+        await assertRejects(
+          () => assertSmartSlicePlanReadyForNativeRender(
+            audioRefinedPlanWithUncoveredTail,
+            uncoveredTailTranscriptSegments,
+            120_000,
+          ),
+          'cover every eligible transcript speech segment',
+          'smart slice native-render readiness reproduces uncovered late transcript speech before render-ready coverage repair',
+        );
+        const repairedTailCoveragePlan = repairSmartSlicePlanForNativeRender(
+          audioRefinedPlanWithUncoveredTail,
+          uncoveredTailTranscriptSegments,
+          {
+            mode: 'contract-mode',
+            llmModel: 'gemini-3-flash-preview',
+            minDuration: 15,
+            maxDuration: 60,
+            baseAlgorithm: 'scene',
+            highlightEngine: 'keyword',
+            enableNoiseReduction: true,
+            enableCoughFilter: true,
+            enableRepeatFilter: true,
+            enableSubtitles: false,
+            sourceDurationMs: 120_000,
+          },
+        );
+        assertRule(
+          repairedTailCoveragePlan.length > audioRefinedPlanWithUncoveredTail.length,
+          'smart slice render-ready coverage repair appends a transcript-backed clip for uncovered late speech',
+        );
+        assertRule(
+          repairedTailCoveragePlan.some((clip) =>
+            (clip.sourceStartMs ?? clip.startMs) <= 93_300 &&
+              (clip.sourceEndMs ?? clip.startMs + clip.durationMs) >= 98_700 &&
+              clip.transcriptText?.includes('Late uncovered transcript speech should force coverage repair.')
+          ),
+          'smart slice render-ready coverage repair covers the uncovered Chinese transcript segment before native rendering',
+        );
+        let acceptedRepairedTailCoveragePlan = true;
+        let repairedTailCoveragePlanError = '';
+        try {
+          assertSmartSlicePlanReadyForNativeRender(
+            repairedTailCoveragePlan,
+            uncoveredTailTranscriptSegments,
+            120_000,
+          );
+        } catch (error) {
+          acceptedRepairedTailCoveragePlan = false;
+          repairedTailCoveragePlanError = error instanceof Error ? error.message : String(error);
+        }
+        assertRule(
+          acceptedRepairedTailCoveragePlan,
+          `smart slice native-render readiness accepts render-ready coverage repaired plans with late transcript speech${repairedTailCoveragePlanError ? `: ${repairedTailCoveragePlanError}` : ''}`,
+        );
+        const refreshedSilenceCompactedPlan = refreshSmartSlicePlanTranscriptEvidence(
+          [
+            {
+              ...professionalPlanClip,
+              startMs: 4000,
+              durationMs: 18000,
+              sourceStartMs: 4000,
+              sourceEndMs: 22000,
+              speechStartMs: 4000,
+              speechEndMs: 22000,
+              sourceSegments: [
+                { startMs: 4000, endMs: 12000 },
+                { startMs: 20000, endMs: 22000 },
+              ],
+              renderedDurationMs: 10000,
+              removedSilenceMs: 8000,
+              internalSilenceTrimCount: 1,
+              transcriptText: 'Stale compacted transcript metadata.',
+              transcriptSegmentCount: 99,
+              transcriptCoverageScore: 0.1,
+              speechContinuityGrade: 'weak',
+              risks: ['internal-silence-trimmed'],
+            },
+          ],
+          [
+            { startMs: 4000, endMs: 12000, text: 'The hook starts immediately.' },
+            { startMs: 20000, endMs: 22000, text: 'The compressed payoff remains readable.' },
+          ],
+          60000,
+        );
+        assertRule(
+          (refreshedSilenceCompactedPlan[0]?.transcriptCoverageScore ?? 0) >= 0.95,
+          'smart slice transcript evidence refresh scores silence-compacted clips against retained source speech instead of removed internal silence',
+        );
+        const refreshedInvalidCheckpointSourceSegmentsPlan = refreshSmartSlicePlanTranscriptEvidence(
+          [
+            {
+              ...professionalPlanClip,
+              sourceSegments: [
+                { startMs: 3800, endMs: 6000 },
+                { startMs: 16000, endMs: 20250 },
+              ],
+              renderedDurationMs: 6450,
+              removedSilenceMs: 10000,
+              internalSilenceTrimCount: 1,
+              risks: ['internal-silence-trimmed'],
+            },
+            professionalSecondPlanClip,
+          ],
+          professionalTranscriptSegments,
+          60000,
+        );
+        let acceptedRefreshedInvalidCheckpointSourceSegments = true;
+        try {
+          assertSmartSlicePlanReadyForNativeRender(
+            refreshedInvalidCheckpointSourceSegmentsPlan,
+            professionalTranscriptSegments,
+            60000,
+          );
+        } catch {
+          acceptedRefreshedInvalidCheckpointSourceSegments = false;
+        }
+        assertRule(
+          acceptedRefreshedInvalidCheckpointSourceSegments,
+          'smart slice transcript evidence refresh repairs stale checkpoint sourceSegments that cut through STT-backed speech',
+        );
+        const refreshedStaleCompactedSpeechBoundaryPlan = refreshSmartSlicePlanTranscriptEvidence(
+          [
+            {
+              ...professionalPlanClip,
+              startMs: 10000,
+              durationMs: 10000,
+              sourceStartMs: 12000,
+              sourceEndMs: 20000,
+              speechStartMs: 10000,
+              speechEndMs: 19800,
+              boundaryPaddingBeforeMs: 2000,
+              boundaryPaddingAfterMs: 200,
+              sourceSegments: [
+                { startMs: 12000, endMs: 15000 },
+                { startMs: 17000, endMs: 20000 },
+              ],
+              renderedDurationMs: 6000,
+              removedSilenceMs: 2000,
+              internalSilenceTrimCount: 1,
+              transcriptText: 'Stale compacted transcript metadata.',
+              transcriptSegmentCount: 99,
+              transcriptCoverageScore: 0.1,
+              speechContinuityGrade: 'weak',
+              risks: ['internal-silence-trimmed'],
+            },
+          ],
+          [
+            { startMs: 12050, endMs: 14800, text: 'The retained first speech island starts after compaction.' },
+            { startMs: 17100, endMs: 19800, text: 'The retained second speech island remains complete.' },
+          ],
+          30000,
+        );
+        let acceptedRefreshedStaleCompactedSpeechBoundaryPlan = true;
+        try {
+          assertSmartSlicePlanReadyForNativeRender(
+            refreshedStaleCompactedSpeechBoundaryPlan,
+            [
+              { startMs: 12050, endMs: 14800, text: 'The retained first speech island starts after compaction.' },
+              { startMs: 17100, endMs: 19800, text: 'The retained second speech island remains complete.' },
+            ],
+            30000,
+          );
+        } catch {
+          acceptedRefreshedStaleCompactedSpeechBoundaryPlan = false;
+        }
+        assertRule(
+          acceptedRefreshedStaleCompactedSpeechBoundaryPlan,
+          'smart slice transcript evidence refresh repairs stale compacted speech boundaries before native rendering',
+        );
+        assertRule(
+          (refreshedStaleCompactedSpeechBoundaryPlan[0]?.speechStartMs ?? 0) >=
+            (refreshedStaleCompactedSpeechBoundaryPlan[0]?.sourceStartMs ?? Number.POSITIVE_INFINITY),
+          'smart slice transcript evidence refresh keeps speechStartMs inside the final retained source range',
+        );
+        assertRule(
+          (refreshedStaleCompactedSpeechBoundaryPlan[0]?.speechEndMs ?? Number.POSITIVE_INFINITY) <=
+            (refreshedStaleCompactedSpeechBoundaryPlan[0]?.sourceEndMs ?? 0),
+          'smart slice transcript evidence refresh keeps speechEndMs inside the final retained source range',
+        );
+        const audioTrimmedBoundaryPlan = refreshSmartSlicePlanTranscriptEvidence(
+          [
+            {
+              ...professionalPlanClip,
+              startMs: 120,
+              durationMs: 9800,
+              sourceStartMs: 120,
+              sourceEndMs: 9920,
+              speechStartMs: 120,
+              speechEndMs: 9920,
+              boundaryDecisionSource: 'combined',
+              audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+              noiseReductionApplied: true,
+              audioActivityStartMs: 120,
+              audioActivityEndMs: 9920,
+              audioActivityConfidence: 0.95,
+              audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+              transcriptText: 'Stale boundary-trimmed transcript.',
+              transcriptSegmentCount: 99,
+              transcriptCoverageScore: 0.1,
+              speechContinuityGrade: 'weak',
+            },
+          ],
+          [
+            { startMs: 0, endMs: 9900, text: 'The recognizer segment starts exactly at the source boundary.' },
+          ],
+          60000,
+        );
+        assertEqual(
+          audioTrimmedBoundaryPlan[0]?.sourceStartMs,
+          0,
+          'smart slice transcript evidence refresh expands audio-trimmed sourceStartMs back to the eligible STT segment boundary',
+        );
+        assertEqual(
+          audioTrimmedBoundaryPlan[0]?.speechStartMs,
+          0,
+          'smart slice transcript evidence refresh expands audio-trimmed speechStartMs back to the eligible STT segment boundary',
+        );
+        let acceptedAudioTrimmedBoundaryPlan = true;
+        let audioTrimmedBoundaryPlanError = '';
+        try {
+          assertSmartSlicePlanReadyForNativeRender(
+            audioTrimmedBoundaryPlan,
+            [
+              { startMs: 0, endMs: 9900, text: 'The recognizer segment starts exactly at the source boundary.' },
+            ],
+            60000,
+          );
+        } catch (error) {
+          acceptedAudioTrimmedBoundaryPlan = false;
+          audioTrimmedBoundaryPlanError = error instanceof Error ? error.message : String(error);
+        }
+        assertRule(
+          acceptedAudioTrimmedBoundaryPlan,
+          `smart slice native-render readiness accepts refreshed clips whose audio cleanup originally trimmed an eligible STT segment boundary${audioTrimmedBoundaryPlanError ? `: ${audioTrimmedBoundaryPlanError}` : ''}`,
+        );
+        const audioPaddingProtectedBoundaryPlan = refreshSmartSlicePlanTranscriptEvidence(
+          [
+            {
+              ...professionalPlanClip,
+              startMs: 1500,
+              durationMs: 8300,
+              sourceStartMs: 1500,
+              sourceEndMs: 9800,
+              speechStartMs: 1500,
+              speechEndMs: 9800,
+              boundaryPaddingBeforeMs: 0,
+              boundaryPaddingAfterMs: 0,
+              boundaryDecisionSource: 'combined',
+              audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+              noiseReductionApplied: true,
+              audioActivityStartMs: 1700,
+              audioActivityEndMs: 9550,
+              audioActivityConfidence: 0.95,
+              audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+              leadingSilenceMs: 0,
+              trailingSilenceMs: 0,
+              leadingSilenceTrimMs: 1500,
+              trailingSilenceTrimMs: 250,
+              transcriptText: 'Stale audio-padding-protected transcript.',
+              transcriptSegmentCount: 99,
+              transcriptCoverageScore: 0.1,
+              speechContinuityGrade: 'weak',
+            },
+          ],
+          [
+            {
+              startMs: 0,
+              endMs: 9800,
+              text: 'The coarse recognizer segment starts long before trusted audio activity, but the rendered clip must not keep audible leading silence.',
+            },
+          ],
+          60000,
+        );
+        assertEqual(
+          audioPaddingProtectedBoundaryPlan[0]?.sourceStartMs,
+          1500,
+          'smart slice transcript evidence refresh does not expand trusted audio-trimmed sourceStartMs beyond the native leading padding standard',
+        );
+        assertEqual(
+          audioPaddingProtectedBoundaryPlan[0]?.leadingSilenceMs,
+          200,
+          'smart slice transcript evidence refresh keeps trusted leading audio activity padding render-ready after coarse STT expansion',
+        );
+        assertEqual(
+          audioPaddingProtectedBoundaryPlan[0]?.transcriptSegments?.[0]?.startMs,
+          1500,
+          'smart slice transcript evidence refresh clamps cached transcriptSegments to the preserved audio-trimmed sourceStartMs',
+        );
+        let acceptedAudioPaddingProtectedBoundaryPlan = true;
+        let audioPaddingProtectedBoundaryPlanError = '';
+        try {
+          assertSmartSlicePlanReadyForNativeRender(
+            audioPaddingProtectedBoundaryPlan,
+            [
+              {
+                startMs: 0,
+                endMs: 9800,
+                text: 'The coarse recognizer segment starts long before trusted audio activity, but the rendered clip must not keep audible leading silence.',
+              },
+            ],
+            60000,
+          );
+        } catch (error) {
+          acceptedAudioPaddingProtectedBoundaryPlan = false;
+          audioPaddingProtectedBoundaryPlanError = error instanceof Error ? error.message : String(error);
+        }
+        assertRule(
+          acceptedAudioPaddingProtectedBoundaryPlan,
+          `smart slice native-render readiness accepts trusted audio-trimmed clips even when coarse STT starts before the allowed audio padding${audioPaddingProtectedBoundaryPlanError ? `: ${audioPaddingProtectedBoundaryPlanError}` : ''}`,
+        );
+        const trustedAudioOpeningTrimmedBoundaryPlan = refreshSmartSlicePlanTranscriptEvidence(
+          [
+            {
+              ...professionalPlanClip,
+              startMs: 3035,
+              durationMs: 6865,
+              sourceStartMs: 3035,
+              sourceEndMs: 9900,
+              speechStartMs: 3035,
+              speechEndMs: 9900,
+              boundaryPaddingBeforeMs: 0,
+              boundaryPaddingAfterMs: 0,
+              sourceSegments: [
+                { startMs: 3035, endMs: 3556 },
+                { startMs: 5815, endMs: 9900 },
+              ],
+              renderedDurationMs: 4606,
+              removedSilenceMs: 2259,
+              internalSilenceTrimCount: 1,
+              boundaryDecisionSource: 'combined',
+              audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+              noiseReductionApplied: true,
+              audioActivityStartMs: 3035,
+              audioActivityEndMs: 9900,
+              audioActivityConfidence: 0.95,
+              audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+              leadingSilenceMs: 0,
+              trailingSilenceMs: 0,
+              leadingSilenceTrimMs: 3035,
+              trailingSilenceTrimMs: 0,
+              transcriptText: 'Stale opening-trimmed transcript.',
+              transcriptSegmentCount: 99,
+              transcriptCoverageScore: 0.1,
+              speechContinuityGrade: 'weak',
+              risks: ['internal-silence-trimmed', 'audio-boundary-refined'],
+            },
+          ],
+          [
+            { startMs: 0, endMs: 9900, text: 'The first coarse STT segment starts with removable silence before speech.' },
+          ],
+          60000,
+        );
+        assertEqual(
+          trustedAudioOpeningTrimmedBoundaryPlan[0]?.sourceStartMs,
+          3035,
+          'smart slice transcript evidence refresh preserves trusted audio-trimmed opening silence instead of expanding to coarse STT start',
+        );
+        assertEqual(
+          trustedAudioOpeningTrimmedBoundaryPlan[0]?.speechStartMs,
+          3035,
+          'smart slice transcript evidence refresh preserves trusted audio-trimmed opening speechStartMs',
+        );
+        let acceptedTrustedAudioOpeningTrimmedBoundaryPlan = true;
+        let trustedAudioOpeningTrimmedBoundaryPlanError = '';
+        try {
+          assertSmartSlicePlanReadyForNativeRender(
+            trustedAudioOpeningTrimmedBoundaryPlan,
+            [
+              { startMs: 0, endMs: 9900, text: 'The first coarse STT segment starts with removable silence before speech.' },
+            ],
+            60000,
+          );
+        } catch (error) {
+          acceptedTrustedAudioOpeningTrimmedBoundaryPlan = false;
+          trustedAudioOpeningTrimmedBoundaryPlanError = error instanceof Error ? error.message : String(error);
+        }
+        assertRule(
+          acceptedTrustedAudioOpeningTrimmedBoundaryPlan,
+          `smart slice native-render readiness accepts refreshed trusted audio-trimmed opening silence inside a coarse STT segment${trustedAudioOpeningTrimmedBoundaryPlanError ? `: ${trustedAudioOpeningTrimmedBoundaryPlanError}` : ''}`,
+        );
+      }
+      await assertRejects(
+        () => assertSmartSlicePlanReadyForNativeRender(
+          [
+            {
+              ...professionalPlanClip,
+              speechStartMs: undefined,
+              speechEndMs: undefined,
+              boundaryDecisionSource: 'audio',
+              audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+              noiseReductionApplied: true,
+              audioActivityStartMs: 4000,
+              audioActivityEndMs: 20000,
+              audioActivityConfidence: 0.95,
+              audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+              leadingSilenceMs: 0,
+              trailingSilenceMs: 250,
+              leadingSilenceTrimMs: 0,
+              trailingSilenceTrimMs: 0,
+              tailTreatment: 'none',
+            },
+          ],
+          [
+            { startMs: 4000, endMs: 12000, text: 'The hook starts immediately.' },
+            { startMs: 12000, endMs: 20000, text: 'The payoff ends cleanly.' },
+          ],
+          60000,
+        ),
+        'explicit STT speechStartMs and speechEndMs',
+        'smart slice native-render readiness gate rejects audio-only post-cleanup plans without explicit STT speech boundaries',
       );
       await assertRejects(
         () => assertSmartSlicePlanReadyForNativeRender(
@@ -1101,11 +3642,26 @@ async function run() {
         typeof i18n?.t === 'function' && typeof i18n?.changeLanguage === 'function',
         'getAutoCutI18n returns an i18next-compatible runtime instance',
       );
+      services.initializeAutoCutI18n('zh-CN');
+      let redundantLanguageChangedEvents = 0;
+      const stopLanguageChanged = services.listenAutoCutI18nLanguageChanged?.(() => {
+        redundantLanguageChangedEvents += 1;
+      });
+      services.initializeAutoCutI18n('zh-CN');
+      services.getAutoCutI18n();
+      services.getAutoCutI18nText('layout.sidebar.home');
+      services.getAutoCutTaskTypeLabel(types.AUTOCUT_TASK_TYPE.videoSlice);
+      stopLanguageChanged?.();
+      assertEqual(
+        redundantLanguageChangedEvents,
+        0,
+        'reading active i18next text does not emit redundant languageChanged events',
+      );
     }
     if (typeof services.getAutoCutTaskTypeLabel === 'function') {
       assertEqual(
         services.getAutoCutTaskTypeLabel(types.AUTOCUT_TASK_TYPE.textExtraction, 'zh-CN'),
-        '文案提取',
+        '\u6587\u6848\u63d0\u53d6',
         'getAutoCutTaskTypeLabel resolves the zh-CN task type display label from i18n resources',
       );
       assertEqual(
@@ -1129,7 +3685,7 @@ async function run() {
       );
       assertEqual(
         textExtractionTool?.name,
-        '文案提取',
+        '\u6587\u6848\u63d0\u53d6',
         'getTools resolves localized tool display names through i18next resources',
       );
       assertRule(
@@ -1186,7 +3742,7 @@ async function run() {
 
     resetStorage();
     const nativeTaskListCommands = [];
-    services.configureAutoCutNativeHostClient(services.createAutoCutNativeHostClient(async (command, args) => {
+    configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command, args) => {
       nativeTaskListCommands.push({ command, args });
       if (command === 'autocut_host_capabilities') {
         return {
@@ -1243,17 +3799,17 @@ async function run() {
             outputJson: JSON.stringify({
               name: 'slice-001.mp4',
               assetUuid: 'asset-slice-contract',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-contract/outputs',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-contract',
               sliceCount: 1,
               sliceResults: [
                 {
                   artifactUuid: 'slice-artifact-contract',
-                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-contract/outputs/slice-001.mp4',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-contract/slice-001.mp4',
                   thumbnailArtifactUuid: 'slice-thumb-contract',
-                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-contract/outputs/cover/slice-001.jpg',
+                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-contract/cover/slice-001.jpg',
                   subtitleArtifactUuid: 'slice-subtitle-contract',
-                  subtitleArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-contract/outputs/slice-001.srt',
-                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-contract/outputs',
+                  subtitleArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-contract/slice-001.srt',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-contract',
                   byteSize: 1234567,
                   thumbnailByteSize: 12345,
                   subtitleByteSize: 234,
@@ -1264,10 +3820,22 @@ async function run() {
                   label: 'Opening',
                   sourceStartMs: 1000,
                   sourceEndMs: 16000,
-                  speechStartMs: 1200,
-                  speechEndMs: 15750,
-                  boundaryPaddingBeforeMs: 200,
-                  boundaryPaddingAfterMs: 250,
+                  speechStartMs: 1180,
+                  speechEndMs: 15760,
+                  boundaryPaddingBeforeMs: 180,
+                  boundaryPaddingAfterMs: 240,
+                  audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+                  noiseReductionApplied: true,
+                  boundaryDecisionSource: 'combined',
+                  audioActivityStartMs: 1180,
+                  audioActivityEndMs: 15760,
+                  audioActivityConfidence: 0.94,
+                  audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+                  leadingSilenceMs: 180,
+                  trailingSilenceMs: 240,
+                  leadingSilenceTrimMs: 60,
+                  trailingSilenceTrimMs: 130,
+                  tailTreatment: 'fade-out',
                   transcriptText: 'Native transcript text survives recovered task projection.',
                   transcriptSegments: [
                     {
@@ -1317,8 +3885,8 @@ async function run() {
             outputJson: JSON.stringify({
               assetUuid: 'asset-transcript-contract',
               artifactUuid: 'transcript-artifact-contract',
-              transcriptPath: 'D:/autocut/media/tasks/ops-task-transcript-contract/outputs/transcript.json',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-transcript-contract/outputs',
+              transcriptPath: 'D:/autocut/media/tasks/ops-task-transcript-contract/transcript.json',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-transcript-contract',
               language: 'zh',
               segmentCount: 2,
               segments: [
@@ -1348,8 +3916,8 @@ async function run() {
             outputJson: JSON.stringify({
               assetUuid: 'asset-transcript-corrupt-contract',
               artifactUuid: 'transcript-artifact-corrupt-contract',
-              transcriptPath: 'D:/autocut/media/tasks/ops-task-transcript-corrupt-contract/outputs/transcript.json',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-transcript-corrupt-contract/outputs',
+              transcriptPath: 'D:/autocut/media/tasks/ops-task-transcript-corrupt-contract/transcript.json',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-transcript-corrupt-contract',
               language: 'en',
               segmentCount: 2,
               segments: [
@@ -1379,8 +3947,8 @@ async function run() {
             outputJson: JSON.stringify({
               assetUuid: 'asset-compress-contract',
               artifactUuid: 'compress-artifact-contract',
-              artifactPath: 'D:/autocut/media/tasks/ops-task-compress-contract/outputs/compressed.mp4',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-compress-contract/outputs',
+              artifactPath: 'D:/autocut/media/tasks/ops-task-compress-contract/compressed.mp4',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-compress-contract',
               format: 'mp4',
               byteSize: 2500,
               originalByteSize: 10000,
@@ -1395,8 +3963,8 @@ async function run() {
                 payload: {
                   operation: 'videoCompress',
                   artifactUuid: 'compress-artifact-contract',
-                  artifactPath: 'D:/autocut/media/tasks/ops-task-compress-contract/outputs/compressed.mp4',
-                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-compress-contract/outputs',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-compress-contract/compressed.mp4',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-compress-contract',
                   byteSize: 2500,
                   originalByteSize: 10000,
                   progress: 100,
@@ -1443,13 +4011,13 @@ async function run() {
             }),
             outputJson: JSON.stringify({
               assetUuid: 'asset-corrupt-slice-contract',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-corrupt-slice-contract/outputs',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-corrupt-slice-contract',
               sliceCount: 2,
               sliceResults: [
                 {
                   artifactUuid: 'corrupt-slice-artifact-contract',
-                  artifactPath: 'D:/autocut/media/tasks/ops-task-corrupt-slice-contract/outputs/slice-001.mp4',
-                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-corrupt-slice-contract/outputs',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-corrupt-slice-contract/slice-001.mp4',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-corrupt-slice-contract',
                   byteSize: 0,
                   startMs: 0,
                   durationMs: 15000,
@@ -1476,7 +4044,7 @@ async function run() {
             }),
             outputJson: JSON.stringify({
               assetUuid: 'asset-empty-completed-slice-contract',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-empty-completed-slice-contract/outputs',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-empty-completed-slice-contract',
               sliceCount: 0,
               sliceResults: [],
             }),
@@ -1550,17 +4118,17 @@ async function run() {
     assertEqual(nativeSliceTask?.generatedAssetIds?.[0], 'slice-artifact-contract', 'native slice output maps generated asset ids from artifact UUIDs');
     assertEqual(
       nativeSliceTask?.sliceResults?.[0]?.url,
-      'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fops-task-slice-contract%2Foutputs%2Fslice-001.mp4',
+      'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fops-task-slice-contract%2Fslice-001.mp4',
       'native slice output artifactPath is converted to a safe desktop asset URL',
     );
     assertEqual(
       nativeSliceTask?.sliceResults?.[0]?.thumbnailUrl,
-      'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fops-task-slice-contract%2Foutputs%2Fcover%2Fslice-001.jpg',
+      'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fops-task-slice-contract%2Fcover%2Fslice-001.jpg',
       'native slice thumbnail artifactPath is converted to a safe desktop asset URL',
     );
     assertEqual(
       nativeSliceTask?.sliceResults?.[0]?.subtitleUrl,
-      'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fops-task-slice-contract%2Foutputs%2Fslice-001.srt',
+      'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fops-task-slice-contract%2Fslice-001.srt',
       'native slice subtitle artifactPath is converted to a safe desktop asset URL',
     );
     assertEqual(
@@ -1573,9 +4141,79 @@ async function run() {
       'Native transcript text survives recovered task projection.',
       'native completed slice task exposes recovered structured speech-to-text transcript segments',
     );
+    assertEqual(
+      nativeSliceTask?.sliceResults?.[0]?.speechStartMs,
+      1180,
+      'native completed slice task accepts audio-refined speech start covered by structured transcript segments',
+    );
+    assertEqual(
+      nativeSliceTask?.sliceResults?.[0]?.speechEndMs,
+      15760,
+      'native completed slice task accepts audio-refined speech end covered by structured transcript segments',
+    );
+    assertEqual(
+      nativeSliceTask?.sliceResults?.[0]?.audioCleanupProfile,
+      'smart-slice-speech-denoise-v1',
+      'native completed slice task exposes recovered Smart Slice audio cleanup profile evidence',
+    );
+    assertEqual(
+      nativeSliceTask?.sliceResults?.[0]?.noiseReductionApplied,
+      true,
+      'native completed slice task exposes recovered denoise application evidence',
+    );
+    assertEqual(
+      nativeSliceTask?.sliceResults?.[0]?.boundaryDecisionSource,
+      'combined',
+      'native completed slice task exposes recovered boundary decision source evidence',
+    );
+    assertEqual(
+      nativeSliceTask?.sliceResults?.[0]?.audioActivityStartMs,
+      1180,
+      'native completed slice task exposes recovered audio activity start evidence',
+    );
+    assertEqual(
+      nativeSliceTask?.sliceResults?.[0]?.audioActivityEndMs,
+      15760,
+      'native completed slice task exposes recovered audio activity end evidence',
+    );
+    assertEqual(
+      nativeSliceTask?.sliceResults?.[0]?.audioActivityConfidence,
+      0.94,
+      'native completed slice task exposes recovered audio activity confidence evidence',
+    );
+    assertEqual(
+      nativeSliceTask?.sliceResults?.[0]?.audioActivityAnalysisFilter,
+      'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+      'native completed slice task exposes recovered audio analysis filter evidence',
+    );
+    assertEqual(
+      nativeSliceTask?.sliceResults?.[0]?.leadingSilenceMs,
+      180,
+      'native completed slice task exposes recovered leading silence evidence',
+    );
+    assertEqual(
+      nativeSliceTask?.sliceResults?.[0]?.trailingSilenceMs,
+      240,
+      'native completed slice task exposes recovered trailing silence evidence',
+    );
+    assertEqual(
+      nativeSliceTask?.sliceResults?.[0]?.leadingSilenceTrimMs,
+      60,
+      'native completed slice task exposes recovered leading silence trim evidence',
+    );
+    assertEqual(
+      nativeSliceTask?.sliceResults?.[0]?.trailingSilenceTrimMs,
+      130,
+      'native completed slice task exposes recovered trailing silence trim evidence',
+    );
+    assertEqual(
+      nativeSliceTask?.sliceResults?.[0]?.tailTreatment,
+      'fade-out',
+      'native completed slice task exposes recovered tail treatment evidence',
+    );
 
     resetStorage();
-    services.configureAutoCutNativeHostClient(services.createAutoCutNativeHostClient(async (command) => {
+    configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command) => {
       if (command === 'autocut_host_capabilities') {
         return {
           contractVersion: 'task-list-input-clip-transcript-recovery-contract',
@@ -1638,6 +4276,7 @@ async function run() {
           transcriptSegmentCount: 1,
           transcriptCoverageScore: 0.96,
           speechContinuityGrade: 'strong',
+          ...createRecoveredSmartSliceAudioCleanupEvidence(),
         };
         const lowCoverageInputClip = {
           ...recoveredInputClip,
@@ -1653,6 +4292,7 @@ async function run() {
           ],
           transcriptCoverageScore: 0.79,
           speechContinuityGrade: 'strong',
+          ...createRecoveredSmartSliceAudioCleanupEvidence(),
         };
         const weakContinuityInputClip = {
           ...recoveredInputClip,
@@ -1668,6 +4308,7 @@ async function run() {
           ],
           transcriptCoverageScore: 0.96,
           speechContinuityGrade: 'weak',
+          ...createRecoveredSmartSliceAudioCleanupEvidence(),
         };
         const timingOnlyInputClip = {
           startMs: 1000,
@@ -1693,15 +4334,15 @@ async function run() {
             }),
             outputJson: JSON.stringify({
               assetUuid: 'asset-slice-input-clip-transcript-recovery',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-input-clip-transcript-recovery/outputs',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-input-clip-transcript-recovery',
               sliceCount: 1,
               sliceResults: [
                 {
                   artifactUuid: 'slice-artifact-input-clip-transcript-recovery',
-                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-input-clip-transcript-recovery/outputs/slice-001.mp4',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-input-clip-transcript-recovery/slice-001.mp4',
                   thumbnailArtifactUuid: 'slice-thumb-input-clip-transcript-recovery',
-                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-input-clip-transcript-recovery/outputs/cover/slice-001.jpg',
-                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-input-clip-transcript-recovery/outputs',
+                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-input-clip-transcript-recovery/cover/slice-001.jpg',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-input-clip-transcript-recovery',
                   byteSize: 1234567,
                   thumbnailByteSize: 12345,
                   format: 'mp4',
@@ -1731,8 +4372,8 @@ async function run() {
             outputJson: JSON.stringify({
               assetUuid: 'asset-slice-speech-task-recovery',
               artifactUuid: 'transcript-artifact-speech-task-recovery',
-              transcriptPath: 'D:/autocut/media/tasks/ops-task-speech-transcript-backfill-recovery/outputs/transcript.json',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-speech-transcript-backfill-recovery/outputs',
+              transcriptPath: 'D:/autocut/media/tasks/ops-task-speech-transcript-backfill-recovery/transcript.json',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-speech-transcript-backfill-recovery',
               language: 'auto',
               segmentCount: 1,
               text: 'Sibling speech transcription evidence restores recovered native slices.',
@@ -1766,8 +4407,8 @@ async function run() {
             outputJson: JSON.stringify({
               assetUuid: 'asset-slice-timing-clip-speech-fallback',
               artifactUuid: 'transcript-artifact-timing-clip-speech-fallback',
-              transcriptPath: 'D:/autocut/media/tasks/ops-task-speech-transcript-fallback-after-timing-clip/outputs/transcript.json',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-speech-transcript-fallback-after-timing-clip/outputs',
+              transcriptPath: 'D:/autocut/media/tasks/ops-task-speech-transcript-fallback-after-timing-clip/transcript.json',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-speech-transcript-fallback-after-timing-clip',
               language: 'auto',
               segmentCount: 1,
               text: 'Sibling speech transcript must recover when input clips only preserve timing.',
@@ -1801,15 +4442,15 @@ async function run() {
             }),
             outputJson: JSON.stringify({
               assetUuid: 'asset-slice-speech-task-recovery',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-speech-task-recovery/outputs',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-speech-task-recovery',
               sliceCount: 1,
               sliceResults: [
                 {
                   artifactUuid: 'slice-artifact-speech-task-recovery',
-                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-speech-task-recovery/outputs/slice-001.mp4',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-speech-task-recovery/slice-001.mp4',
                   thumbnailArtifactUuid: 'slice-thumb-speech-task-recovery',
-                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-speech-task-recovery/outputs/cover/slice-001.jpg',
-                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-speech-task-recovery/outputs',
+                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-speech-task-recovery/cover/slice-001.jpg',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-speech-task-recovery',
                   byteSize: 1234567,
                   thumbnailByteSize: 12345,
                   format: 'mp4',
@@ -1818,6 +4459,7 @@ async function run() {
                   label: 'Sibling STT recovery opening',
                   sourceStartMs: 1000,
                   sourceEndMs: 16000,
+                  ...createRecoveredSmartSliceAudioCleanupEvidence(),
                 },
               ],
             }),
@@ -1842,15 +4484,15 @@ async function run() {
             }),
             outputJson: JSON.stringify({
               assetUuid: 'asset-slice-timing-clip-speech-fallback',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-timing-clip-speech-fallback/outputs',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-timing-clip-speech-fallback',
               sliceCount: 1,
               sliceResults: [
                 {
                   artifactUuid: 'slice-artifact-timing-clip-speech-fallback',
-                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-timing-clip-speech-fallback/outputs/slice-001.mp4',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-timing-clip-speech-fallback/slice-001.mp4',
                   thumbnailArtifactUuid: 'slice-thumb-timing-clip-speech-fallback',
-                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-timing-clip-speech-fallback/outputs/cover/slice-001.jpg',
-                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-timing-clip-speech-fallback/outputs',
+                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-timing-clip-speech-fallback/cover/slice-001.jpg',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-timing-clip-speech-fallback',
                   byteSize: 1234567,
                   thumbnailByteSize: 12345,
                   format: 'mp4',
@@ -1859,6 +4501,7 @@ async function run() {
                   label: 'Timing clip STT fallback opening',
                   sourceStartMs: 1000,
                   sourceEndMs: 16000,
+                  ...createRecoveredSmartSliceAudioCleanupEvidence(),
                 },
               ],
             }),
@@ -1884,15 +4527,15 @@ async function run() {
             }),
             outputJson: JSON.stringify({
               assetUuid: 'asset-slice-input-clip-low-coverage-recovery',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-input-clip-low-coverage-recovery/outputs',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-input-clip-low-coverage-recovery',
               sliceCount: 1,
               sliceResults: [
                 {
                   artifactUuid: 'slice-artifact-input-clip-low-coverage-recovery',
-                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-input-clip-low-coverage-recovery/outputs/slice-001.mp4',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-input-clip-low-coverage-recovery/slice-001.mp4',
                   thumbnailArtifactUuid: 'slice-thumb-input-clip-low-coverage-recovery',
-                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-input-clip-low-coverage-recovery/outputs/cover/slice-001.jpg',
-                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-input-clip-low-coverage-recovery/outputs',
+                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-input-clip-low-coverage-recovery/cover/slice-001.jpg',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-input-clip-low-coverage-recovery',
                   byteSize: 1234567,
                   thumbnailByteSize: 12345,
                   format: 'mp4',
@@ -1924,15 +4567,15 @@ async function run() {
             }),
             outputJson: JSON.stringify({
               assetUuid: 'asset-slice-input-clip-weak-continuity-recovery',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-input-clip-weak-continuity-recovery/outputs',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-input-clip-weak-continuity-recovery',
               sliceCount: 1,
               sliceResults: [
                 {
                   artifactUuid: 'slice-artifact-input-clip-weak-continuity-recovery',
-                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-input-clip-weak-continuity-recovery/outputs/slice-001.mp4',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-input-clip-weak-continuity-recovery/slice-001.mp4',
                   thumbnailArtifactUuid: 'slice-thumb-input-clip-weak-continuity-recovery',
-                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-input-clip-weak-continuity-recovery/outputs/cover/slice-001.jpg',
-                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-input-clip-weak-continuity-recovery/outputs',
+                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-input-clip-weak-continuity-recovery/cover/slice-001.jpg',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-input-clip-weak-continuity-recovery',
                   byteSize: 1234567,
                   thumbnailByteSize: 12345,
                   format: 'mp4',
@@ -2091,10 +4734,11 @@ async function run() {
           transcriptSegmentCount: 1,
           transcriptCoverageScore: 0.96,
           speechContinuityGrade: 'strong',
+          ...createRecoveredSmartSliceAudioCleanupEvidence(),
         },
       ],
     });
-    services.configureAutoCutNativeHostClient(services.createAutoCutNativeHostClient(async (command) => {
+    configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command) => {
       if (command === 'autocut_host_capabilities') {
         return {
           contractVersion: 'task-list-click-local-transcript-recovery-contract',
@@ -2150,15 +4794,15 @@ async function run() {
             }),
             outputJson: JSON.stringify({
               assetUuid: 'asset-click-slice-local-transcript-recovery',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-click-slice-native-recovery/outputs',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-click-slice-native-recovery',
               sliceCount: 1,
               sliceResults: [
                 {
                   artifactUuid: 'slice-artifact-click-local-transcript-recovery',
-                  artifactPath: 'D:/autocut/media/tasks/ops-task-click-slice-native-recovery/outputs/slice-001.mp4',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-click-slice-native-recovery/slice-001.mp4',
                   thumbnailArtifactUuid: 'slice-thumb-click-local-transcript-recovery',
-                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-click-slice-native-recovery/outputs/cover/slice-001.jpg',
-                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-click-slice-native-recovery/outputs',
+                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-click-slice-native-recovery/cover/slice-001.jpg',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-click-slice-native-recovery',
                   byteSize: 1234567,
                   thumbnailByteSize: 12345,
                   format: 'mp4',
@@ -2167,6 +4811,7 @@ async function run() {
                   label: 'Click recovered opening',
                   sourceStartMs: 1000,
                   sourceEndMs: 16000,
+                  ...createRecoveredSmartSliceAudioCleanupEvidence(),
                 },
               ],
             }),
@@ -2210,7 +4855,7 @@ async function run() {
 
     resetStorage();
     await services.deleteTask('ops-task-hidden-speech-transcript-recovery');
-    services.configureAutoCutNativeHostClient(services.createAutoCutNativeHostClient(async (command) => {
+    configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command) => {
       if (command === 'autocut_host_capabilities') {
         return {
           contractVersion: 'task-list-hidden-stt-transcript-recovery-contract',
@@ -2266,8 +4911,8 @@ async function run() {
             outputJson: JSON.stringify({
               assetUuid: 'asset-hidden-speech-transcript-recovery',
               artifactUuid: 'transcript-artifact-hidden-speech-recovery',
-              transcriptPath: 'D:/autocut/media/tasks/ops-task-hidden-speech-transcript-recovery/outputs/transcript.json',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-hidden-speech-transcript-recovery/outputs',
+              transcriptPath: 'D:/autocut/media/tasks/ops-task-hidden-speech-transcript-recovery/transcript.json',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-hidden-speech-transcript-recovery',
               language: 'auto',
               segmentCount: 1,
               text: 'Hidden speech transcription evidence still restores recovered smart slices.',
@@ -2301,15 +4946,15 @@ async function run() {
             }),
             outputJson: JSON.stringify({
               assetUuid: 'asset-hidden-speech-transcript-recovery',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-hidden-stt-recovery/outputs',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-hidden-stt-recovery',
               sliceCount: 1,
               sliceResults: [
                 {
                   artifactUuid: 'slice-artifact-hidden-stt-recovery',
-                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-hidden-stt-recovery/outputs/slice-001.mp4',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-hidden-stt-recovery/slice-001.mp4',
                   thumbnailArtifactUuid: 'slice-thumb-hidden-stt-recovery',
-                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-hidden-stt-recovery/outputs/cover/slice-001.jpg',
-                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-hidden-stt-recovery/outputs',
+                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-hidden-stt-recovery/cover/slice-001.jpg',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-hidden-stt-recovery',
                   byteSize: 1234567,
                   thumbnailByteSize: 12345,
                   format: 'mp4',
@@ -2318,6 +4963,7 @@ async function run() {
                   label: 'Hidden STT recovery opening',
                   sourceStartMs: 1000,
                   sourceEndMs: 16000,
+                  ...createRecoveredSmartSliceAudioCleanupEvidence(),
                 },
               ],
             }),
@@ -2363,7 +5009,7 @@ async function run() {
     );
 
     resetStorage();
-    services.configureAutoCutNativeHostClient(services.createAutoCutNativeHostClient(async (command) => {
+    configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command) => {
       if (command === 'autocut_host_capabilities') {
         return {
           contractVersion: 'task-list-missing-transcript-evidence-contract',
@@ -2418,15 +5064,15 @@ async function run() {
             }),
             outputJson: JSON.stringify({
               assetUuid: 'asset-slice-missing-transcript-evidence',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-missing-transcript-evidence/outputs',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-missing-transcript-evidence',
               sliceCount: 1,
               sliceResults: [
                 {
                   artifactUuid: 'slice-artifact-missing-transcript-evidence',
-                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-missing-transcript-evidence/outputs/slice-001.mp4',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-missing-transcript-evidence/slice-001.mp4',
                   thumbnailArtifactUuid: 'slice-thumb-missing-transcript-evidence',
-                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-missing-transcript-evidence/outputs/cover/slice-001.jpg',
-                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-missing-transcript-evidence/outputs',
+                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-missing-transcript-evidence/cover/slice-001.jpg',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-missing-transcript-evidence',
                   byteSize: 1234567,
                   thumbnailByteSize: 12345,
                   format: 'mp4',
@@ -2522,7 +5168,289 @@ async function run() {
     );
 
     resetStorage();
-    services.configureAutoCutNativeHostClient(services.createAutoCutNativeHostClient(async (command) => {
+    configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command) => {
+      if (command === 'autocut_host_capabilities') {
+        return {
+          contractVersion: 'task-list-missing-audio-cleanup-evidence-contract',
+          hostKind: 'native-host',
+          databaseContractReady: true,
+          sqliteMigrationReady: true,
+          databaseHealthCommandReady: true,
+          ffmpegProbeCommandReady: true,
+          mediaImportCommandReady: true,
+          mediaFileDescribeCommandReady: true,
+          localVideoFileSelectCommandReady: true,
+          localDirectorySelectCommandReady: true,
+          localMediaPreviewDirectoryScopeCommandReady: true,
+          audioExtractionCommandReady: true,
+          audioExtractionFromAssetReady: true,
+          videoGifCommandReady: true,
+          videoSliceCommandReady: true,
+          videoCompressCommandReady: true,
+          videoConvertCommandReady: true,
+          videoEnhanceCommandReady: true,
+          speechTranscriptionCommandReady: true,
+          speechTranscriptionToolchainReady: true,
+          speechTranscriptionProbeCommandReady: true,
+          speechTranscriptionFileSelectCommandReady: true,
+          llmHttpCommandReady: true,
+          llmSecretStoreReady: true,
+          nativeTaskQueryCommandReady: true,
+          nativeTaskCancelCommandReady: true,
+          nativeTaskRecoveryCommandReady: true,
+          nativeTaskRetryCommandReady: true,
+          nativeTaskProgressEventsReady: true,
+          nativeWorkerLeaseReady: true,
+          ffmpegToolchainManifestReady: true,
+          ffmpegToolchainResolverReady: true,
+          ffmpegBundledReady: false,
+          ffmpegExecutionReady: false,
+          supportedCommands: ['autocut_list_native_tasks'],
+        };
+      }
+      if (command === 'autocut_list_native_tasks') {
+        return [
+          {
+            uuid: 'ops-task-slice-missing-audio-cleanup-evidence',
+            taskType: 6,
+            status: 2,
+            progress: 100,
+            sourceAssetUuid: 'asset-slice-missing-audio-cleanup-evidence',
+            inputJson: JSON.stringify({
+              operation: 'videoSlice',
+              assetUuid: 'asset-slice-missing-audio-cleanup-evidence',
+              outputFormat: 'mp4',
+            }),
+            outputJson: JSON.stringify({
+              assetUuid: 'asset-slice-missing-audio-cleanup-evidence',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-missing-audio-cleanup-evidence',
+              sliceCount: 1,
+              sliceResults: [
+                {
+                  artifactUuid: 'slice-artifact-missing-audio-cleanup-evidence',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-missing-audio-cleanup-evidence/slice-001.mp4',
+                  thumbnailArtifactUuid: 'slice-thumb-missing-audio-cleanup-evidence',
+                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-missing-audio-cleanup-evidence/cover/slice-001.jpg',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-missing-audio-cleanup-evidence',
+                  byteSize: 1234567,
+                  thumbnailByteSize: 12345,
+                  format: 'mp4',
+                  startMs: 1000,
+                  durationMs: 15000,
+                  label: 'Opening without audio cleanup evidence',
+                  sourceStartMs: 1000,
+                  sourceEndMs: 16000,
+                  speechStartMs: 1200,
+                  speechEndMs: 15750,
+                  boundaryPaddingBeforeMs: 200,
+                  boundaryPaddingAfterMs: 250,
+                  transcriptText: 'Transcript evidence is present but cleanup evidence is missing.',
+                  transcriptSegments: [
+                    {
+                      startMs: 1200,
+                      endMs: 15750,
+                      text: 'Transcript evidence is present but cleanup evidence is missing.',
+                      speaker: 'Speaker 1',
+                    },
+                  ],
+                  transcriptSegmentCount: 1,
+                  transcriptCoverageScore: 0.96,
+                  speechContinuityGrade: 'strong',
+                },
+              ],
+            }),
+            createdAt: '2026-05-05T00:00:00.000Z',
+            updatedAt: '2026-05-05T00:05:00.000Z',
+            stages: [],
+            events: [],
+            workerLeases: [],
+          },
+        ];
+      }
+
+      throw new Error(`Unexpected missing audio cleanup evidence native host command: ${command}`);
+    }, {
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    }));
+    const nativeTasksMissingAudioCleanupEvidence = await withImmediateTimers(() => services.getTasks());
+    const missingAudioCleanupEvidenceTask = nativeTasksMissingAudioCleanupEvidence.find(
+      (task) => task.id === 'ops-task-slice-missing-audio-cleanup-evidence',
+    );
+    assertEqual(
+      missingAudioCleanupEvidenceTask?.status,
+      types.AUTOCUT_TASK_STATUS.failed,
+      'native completed slice task fails closed when recovered audio cleanup evidence is missing',
+    );
+    assertIncludes(
+      missingAudioCleanupEvidenceTask?.errorMessage ?? '',
+      'missing smart-slice audio cleanup evidence',
+      'native completed slice task explains missing recovered audio cleanup evidence',
+    );
+    assertRule(
+      !(missingAudioCleanupEvidenceTask?.errorMessage ?? '').includes('AutoCut recovered native video slicing'),
+      'native completed slice task does not expose internal recovered audio cleanup assertion text to users',
+    );
+    assertIncludes(
+      missingAudioCleanupEvidenceTask?.errorMessage ?? '',
+      'Re-run Smart Slice so noise-reduction decision, boundary trimming, and tail treatment evidence are regenerated',
+      'native completed slice task gives an actionable audio cleanup regeneration path instead of a raw assertion',
+    );
+    assertIncludes(
+      missingAudioCleanupEvidenceTask?.failureDiagnostics ?? '',
+      'AutoCut recovered native video slicing slice artifact 1 is missing smart-slice audio cleanup evidence.',
+      'native completed slice task exposes the original recovered audio cleanup assertion for debugging',
+    );
+    assertIncludes(
+      missingAudioCleanupEvidenceTask?.failureDiagnostics ?? '',
+      'audioCleanupProfile=unknown noiseReductionApplied=unknown boundaryDecisionSource=unknown leadingSilenceTrimMs=unknown trailingSilenceTrimMs=unknown tailTreatment=unknown',
+      'native completed slice task diagnostics summarize missing output-side audio cleanup evidence',
+    );
+    assertEqual(
+      missingAudioCleanupEvidenceTask?.sliceResults,
+      undefined,
+      'native completed slice task does not expose generated slices without recovered audio cleanup evidence',
+    );
+    assertEqual(
+      missingAudioCleanupEvidenceTask?.generatedAssetIds,
+      undefined,
+      'native completed slice task does not expose generated asset ids without recovered audio cleanup evidence',
+    );
+
+    resetStorage();
+    const missingRawSilenceNativeTaskCommands = [];
+    configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command) => {
+      missingRawSilenceNativeTaskCommands.push(command);
+      if (command === 'autocut_host_capabilities') {
+        return {
+          contractVersion: 'task-list-missing-raw-silence-contract',
+          hostKind: 'native-host',
+          databaseContractReady: true,
+          sqliteMigrationReady: true,
+          databaseHealthCommandReady: true,
+          ffmpegProbeCommandReady: true,
+          mediaImportCommandReady: true,
+          mediaFileDescribeCommandReady: true,
+          localVideoFileSelectCommandReady: true,
+          localDirectorySelectCommandReady: true,
+          localMediaPreviewDirectoryScopeCommandReady: true,
+          audioExtractionCommandReady: true,
+          audioExtractionFromAssetReady: true,
+          videoGifCommandReady: true,
+          videoSliceCommandReady: true,
+          videoCompressCommandReady: true,
+          videoConvertCommandReady: true,
+          videoEnhanceCommandReady: true,
+          speechTranscriptionCommandReady: true,
+          speechTranscriptionToolchainReady: true,
+          speechTranscriptionProbeCommandReady: true,
+          speechTranscriptionFileSelectCommandReady: true,
+          llmHttpCommandReady: true,
+          llmSecretStoreReady: true,
+          nativeTaskQueryCommandReady: true,
+          nativeTaskCancelCommandReady: true,
+          nativeTaskRetryCommandReady: true,
+          speechTranscriptionModelDownloadCommandReady: true,
+        };
+      }
+      if (command === 'autocut_list_native_tasks') {
+        return [
+          {
+            uuid: 'ops-task-missing-raw-silence-contract',
+            taskType: 6,
+            status: 2,
+            progress: 100,
+            sourceAssetUuid: 'asset-missing-raw-silence-contract',
+            inputJson: JSON.stringify({
+              operation: 'videoSlice',
+              assetUuid: 'asset-missing-raw-silence-contract',
+              outputFormat: 'mp4',
+            }),
+            outputJson: JSON.stringify({
+              assetUuid: 'asset-missing-raw-silence-contract',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-missing-raw-silence-contract',
+              sliceCount: 1,
+              sliceResults: [
+                {
+                  artifactUuid: 'missing-raw-silence-artifact',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-missing-raw-silence-contract/slice-001.mp4',
+                  thumbnailArtifactUuid: 'missing-raw-silence-thumb',
+                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-missing-raw-silence-contract/cover/slice-001.jpg',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-missing-raw-silence-contract',
+                  byteSize: 123456,
+                  thumbnailByteSize: 12345,
+                  startMs: 1_000,
+                  durationMs: 15_000,
+                  sourceStartMs: 1_000,
+                  sourceEndMs: 16_000,
+                  speechStartMs: 1_200,
+                  speechEndMs: 15_750,
+                  audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+                  noiseReductionApplied: true,
+                  boundaryDecisionSource: 'combined',
+                  audioActivityStartMs: 1_200,
+                  audioActivityEndMs: 15_750,
+                  audioActivityConfidence: 0.94,
+                  audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+                  leadingSilenceTrimMs: 60,
+                  trailingSilenceTrimMs: 130,
+                  tailTreatment: 'fade-out',
+                  transcriptText: 'Raw silence evidence must be present.',
+                  transcriptSegments: [
+                    {
+                      startMs: 1_200,
+                      endMs: 15_750,
+                      text: 'Raw silence evidence must be present.',
+                    },
+                  ],
+                  transcriptSegmentCount: 1,
+                  transcriptCoverageScore: 0.94,
+                  speechContinuityGrade: 'strong',
+                },
+              ],
+            }),
+            createdAt: '2026-05-05T00:04:20.000Z',
+            updatedAt: '2026-05-05T00:09:20.000Z',
+            stages: [],
+            events: [],
+            workerLeases: [],
+          },
+        ];
+      }
+
+      throw new Error(`Unexpected missing raw silence native task command: ${command}`);
+    }, {
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    }));
+    const missingRawSilenceNativeTasks = await withImmediateTimers(() => services.getTasks());
+    const missingRawSilenceTask = missingRawSilenceNativeTasks.find((task) => task.id === 'ops-task-missing-raw-silence-contract');
+    assertIncludes(
+      missingRawSilenceNativeTaskCommands,
+      'autocut_list_native_tasks',
+      'getTasks queries native completed task output before validating recovered raw silence evidence',
+    );
+    assertEqual(
+      missingRawSilenceTask?.status,
+      types.AUTOCUT_TASK_STATUS.failed,
+      'native completed slice task fails closed when recovered raw leading/trailing silence evidence is missing',
+    );
+    assertIncludes(
+      String(missingRawSilenceTask?.errorMessage ?? ''),
+      'audio cleanup evidence',
+      'native completed slice task explains missing raw silence evidence as incomplete audio cleanup evidence',
+    );
+    assertEqual(
+      missingRawSilenceTask?.sliceResults,
+      undefined,
+      'native completed slice task does not expose generated slices without recovered raw silence evidence',
+    );
+    assertIncludes(
+      String(missingRawSilenceTask?.failureDiagnostics ?? ''),
+      'leadingSilenceMs is not a non-negative millisecond value',
+      'recovered raw silence validation diagnostics include the exact failed evidence assertion',
+    );
+
+    resetStorage();
+    configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command) => {
       if (command === 'autocut_host_capabilities') {
         return {
           contractVersion: 'task-list-asset-url-failure-contract',
@@ -2577,15 +5505,15 @@ async function run() {
             }),
             outputJson: JSON.stringify({
               assetUuid: 'asset-slice-asset-url-failure',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-asset-url-failure/outputs',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-asset-url-failure',
               sliceCount: 1,
               sliceResults: [
                 {
                   artifactUuid: 'slice-artifact-asset-url-failure',
-                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-asset-url-failure/outputs/slice-001.mp4',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-asset-url-failure/slice-001.mp4',
                   thumbnailArtifactUuid: 'slice-thumb-asset-url-failure',
-                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-asset-url-failure/outputs/cover/slice-001.jpg',
-                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-asset-url-failure/outputs',
+                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-asset-url-failure/cover/slice-001.jpg',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-asset-url-failure',
                   byteSize: 1234567,
                   thumbnailByteSize: 12345,
                   format: 'mp4',
@@ -2615,8 +5543,8 @@ async function run() {
             outputJson: JSON.stringify({
               assetUuid: 'asset-compress-asset-url-failure',
               artifactUuid: 'compress-artifact-asset-url-failure',
-              artifactPath: 'D:/autocut/media/tasks/ops-task-compress-asset-url-failure/outputs/compressed.mp4',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-compress-asset-url-failure/outputs',
+              artifactPath: 'D:/autocut/media/tasks/ops-task-compress-asset-url-failure/compressed.mp4',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-compress-asset-url-failure',
               format: 'mp4',
               byteSize: 2500,
               originalByteSize: 10000,
@@ -2665,7 +5593,7 @@ async function run() {
     );
 
     resetStorage();
-    services.configureAutoCutNativeHostClient(services.createAutoCutNativeHostClient(async (command) => {
+    configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command) => {
       if (command === 'autocut_host_capabilities') {
         return {
           contractVersion: 'task-list-path-containment-contract',
@@ -2720,15 +5648,15 @@ async function run() {
             }),
             outputJson: JSON.stringify({
               assetUuid: 'asset-slice-outside-output-dir',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-outside-output-dir/outputs',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-outside-output-dir',
               sliceCount: 1,
               sliceResults: [
                 {
                   artifactUuid: 'slice-artifact-outside-output-dir',
-                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-outside-output-dir/outputs/slice-001.mp4',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-outside-output-dir/../slice-001.mp4',
                   thumbnailArtifactUuid: 'slice-thumb-outside-output-dir',
                   thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-outside-output-dir/slice-001.jpg',
-                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-outside-output-dir/outputs',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-outside-output-dir',
                   byteSize: 1234567,
                   thumbnailByteSize: 12345,
                   format: 'mp4',
@@ -2772,7 +5700,7 @@ async function run() {
     );
 
     resetStorage();
-    services.configureAutoCutNativeHostClient(services.createAutoCutNativeHostClient(async (command) => {
+    configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command) => {
       if (command === 'autocut_host_capabilities') {
         return {
           contractVersion: 'task-list-cover-directory-contract',
@@ -2827,15 +5755,15 @@ async function run() {
             }),
             outputJson: JSON.stringify({
               assetUuid: 'asset-slice-thumbnail-outside-cover-dir',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-thumbnail-outside-cover-dir/outputs',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-thumbnail-outside-cover-dir',
               sliceCount: 1,
               sliceResults: [
                 {
                   artifactUuid: 'slice-artifact-thumbnail-outside-cover-dir',
-                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-thumbnail-outside-cover-dir/outputs/slice-001.mp4',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-thumbnail-outside-cover-dir/slice-001.mp4',
                   thumbnailArtifactUuid: 'slice-thumb-thumbnail-outside-cover-dir',
-                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-thumbnail-outside-cover-dir/outputs/slice-001.jpg',
-                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-thumbnail-outside-cover-dir/outputs',
+                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-thumbnail-outside-cover-dir/slice-001.jpg',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-thumbnail-outside-cover-dir',
                   byteSize: 1234567,
                   thumbnailByteSize: 12345,
                   format: 'mp4',
@@ -2844,15 +5772,15 @@ async function run() {
                   label: 'Cover directory enforcement opening',
                   sourceStartMs: 1000,
                   sourceEndMs: 16000,
-                  speechStartMs: 1200,
-                  speechEndMs: 15750,
-                  boundaryPaddingBeforeMs: 200,
-                  boundaryPaddingAfterMs: 250,
+                  speechStartMs: 1260,
+                  speechEndMs: 15620,
+                  boundaryPaddingBeforeMs: 260,
+                  boundaryPaddingAfterMs: 380,
                   transcriptText: 'Cover thumbnails must live under the dedicated cover directory.',
                   transcriptSegments: [
                     {
-                      startMs: 1200,
-                      endMs: 15750,
+                      startMs: 1120,
+                      endMs: 15880,
                       text: 'Cover thumbnails must live under the dedicated cover directory.',
                       speaker: 'Speaker 1',
                     },
@@ -2860,6 +5788,10 @@ async function run() {
                   transcriptSegmentCount: 1,
                   transcriptCoverageScore: 0.96,
                   speechContinuityGrade: 'strong',
+                  ...createRecoveredSmartSliceAudioCleanupEvidence({
+                    audioActivityEndMs: 12800,
+                    trailingSilenceMs: 200,
+                  }),
                 },
               ],
             }),
@@ -2897,7 +5829,7 @@ async function run() {
     );
 
     resetStorage();
-    services.configureAutoCutNativeHostClient(services.createAutoCutNativeHostClient(async (command) => {
+    configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command) => {
       if (command === 'autocut_host_capabilities') {
         return {
           contractVersion: 'task-list-non-slice-path-containment-contract',
@@ -2953,8 +5885,8 @@ async function run() {
             outputJson: JSON.stringify({
               assetUuid: 'asset-compress-outside-output-dir',
               artifactUuid: 'compress-artifact-outside-output-dir',
-              artifactPath: 'D:/autocut/media/tasks/ops-task-compress-outside-output-dir/compressed.mp4',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-compress-outside-output-dir/outputs',
+              artifactPath: 'D:/autocut/media/tasks/ops-task-compress-outside-output-dir/../compressed.mp4',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-compress-outside-output-dir',
               format: 'mp4',
               byteSize: 2500,
               originalByteSize: 10000,
@@ -2988,7 +5920,7 @@ async function run() {
     );
 
     resetStorage();
-    services.configureAutoCutNativeHostClient(services.createAutoCutNativeHostClient(async (command) => {
+    configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command) => {
       if (command === 'autocut_host_capabilities') {
         return {
           contractVersion: 'task-list-dot-segment-path-containment-contract',
@@ -3044,8 +5976,8 @@ async function run() {
             outputJson: JSON.stringify({
               assetUuid: 'asset-compress-dot-segment-escape',
               artifactUuid: 'compress-artifact-dot-segment-escape',
-              artifactPath: 'D:/autocut/media/tasks/ops-task-compress-dot-segment-escape/outputs/../compressed.mp4',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-compress-dot-segment-escape/outputs',
+              artifactPath: 'D:/autocut/media/tasks/ops-task-compress-dot-segment-escape/../compressed.mp4',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-compress-dot-segment-escape',
               format: 'mp4',
               byteSize: 2500,
               originalByteSize: 10000,
@@ -3077,7 +6009,7 @@ async function run() {
       undefined,
       'native completed non-slice task does not expose generated assets for dot-segment escaped artifact paths',
     );
-    services.configureAutoCutNativeHostClient(services.createAutoCutNativeHostClient(async (command, args) => {
+    configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command, args) => {
       nativeTaskListCommands.push({ command, args });
       if (command === 'autocut_host_capabilities') {
         return {
@@ -3132,17 +6064,17 @@ async function run() {
             }),
             outputJson: JSON.stringify({
               assetUuid: 'asset-slice-contract',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-contract/outputs',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-contract',
               sliceCount: 1,
               sliceResults: [
                 {
                   artifactUuid: 'slice-artifact-contract',
-                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-contract/outputs/slice-001.mp4',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-contract/slice-001.mp4',
                   thumbnailArtifactUuid: 'slice-thumb-contract',
-                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-contract/outputs/cover/slice-001.jpg',
+                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-contract/cover/slice-001.jpg',
                   subtitleArtifactUuid: 'slice-subtitle-contract',
-                  subtitleArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-contract/outputs/slice-001.srt',
-                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-contract/outputs',
+                  subtitleArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-contract/slice-001.srt',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-contract',
                   byteSize: 1234567,
                   thumbnailByteSize: 12345,
                   subtitleByteSize: 234,
@@ -3188,8 +6120,8 @@ async function run() {
             outputJson: JSON.stringify({
               assetUuid: 'asset-transcript-contract',
               artifactUuid: 'transcript-artifact-contract',
-              transcriptPath: 'D:/autocut/media/tasks/ops-task-transcript-contract/outputs/transcript.json',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-transcript-contract/outputs',
+              transcriptPath: 'D:/autocut/media/tasks/ops-task-transcript-contract/transcript.json',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-transcript-contract',
               language: 'zh',
               segmentCount: 2,
               segments: [
@@ -3219,8 +6151,8 @@ async function run() {
             outputJson: JSON.stringify({
               assetUuid: 'asset-compress-contract',
               artifactUuid: 'compress-artifact-contract',
-              artifactPath: 'D:/autocut/media/tasks/ops-task-compress-contract/outputs/compressed.mp4',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-compress-contract/outputs',
+              artifactPath: 'D:/autocut/media/tasks/ops-task-compress-contract/compressed.mp4',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-compress-contract',
               format: 'mp4',
               byteSize: 2500,
               originalByteSize: 10000,
@@ -3235,8 +6167,8 @@ async function run() {
                 payload: {
                   operation: 'videoCompress',
                   artifactUuid: 'compress-artifact-contract',
-                  artifactPath: 'D:/autocut/media/tasks/ops-task-compress-contract/outputs/compressed.mp4',
-                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-compress-contract/outputs',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-compress-contract/compressed.mp4',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-compress-contract',
                   byteSize: 2500,
                   originalByteSize: 10000,
                   progress: 100,
@@ -3283,13 +6215,13 @@ async function run() {
             }),
             outputJson: JSON.stringify({
               assetUuid: 'asset-corrupt-slice-contract',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-corrupt-slice-contract/outputs',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-corrupt-slice-contract',
               sliceCount: 2,
               sliceResults: [
                 {
                   artifactUuid: 'corrupt-slice-artifact-contract',
-                  artifactPath: 'D:/autocut/media/tasks/ops-task-corrupt-slice-contract/outputs/slice-001.mp4',
-                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-corrupt-slice-contract/outputs',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-corrupt-slice-contract/slice-001.mp4',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-corrupt-slice-contract',
                   byteSize: 0,
                   startMs: 0,
                   durationMs: 15000,
@@ -3316,7 +6248,7 @@ async function run() {
             }),
             outputJson: JSON.stringify({
               assetUuid: 'asset-empty-completed-slice-contract',
-              taskOutputDir: 'D:/autocut/media/tasks/ops-task-empty-completed-slice-contract/outputs',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-empty-completed-slice-contract',
               sliceCount: 0,
               sliceResults: [],
             }),
@@ -3428,6 +6360,7 @@ async function run() {
           transcriptSegmentCount: 1,
           transcriptCoverageScore: 0.96,
           speechContinuityGrade: 'strong',
+          ...createRecoveredSmartSliceAudioCleanupEvidence(),
         },
       ],
     });
@@ -3650,7 +6583,7 @@ async function run() {
     );
     const nativeCompressTask = nativeTasks.find((task) => task.id === 'ops-task-compress-contract');
     assertEqual(nativeCompressTask?.type, types.AUTOCUT_TASK_TYPES[4], 'native video compress tasks map to the AppTask compression type');
-    assertEqual(nativeCompressTask?.videoUrl, 'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fops-task-compress-contract%2Foutputs%2Fcompressed.mp4', 'native compression artifactPath maps to videoUrl');
+    assertEqual(nativeCompressTask?.videoUrl, 'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fops-task-compress-contract%2Fcompressed.mp4', 'native compression artifactPath maps to videoUrl');
     assertEqual(nativeCompressTask?.fileSizeStats?.originalSize, 10000, 'native compression originalByteSize maps to fileSizeStats');
     assertEqual(nativeCompressTask?.fileSizeStats?.newSize, 2500, 'native compression byteSize maps to fileSizeStats');
     assertEqual(nativeCompressTask?.fileSizeStats?.compressionRatio, 0.75, 'native compression ratio is derived from real output sizes');
@@ -3738,6 +6671,75 @@ async function run() {
     );
     services.resetAutoCutNativeHostClient();
     const commons = await loadModule(server, 'packages/sdkwork-autocut-commons/src/index.ts');
+    const normalizedTaskDetailTextSample = decodeEscapedText('\\u4e2d\\u6587\\u4efb\\u52a1\\u8be6\\u60c5');
+    const mojibakeTaskDetailTextSample = Buffer.from(normalizedTaskDetailTextSample, 'utf8').toString('latin1');
+    assertEqual(
+      commons.normalizeAutoCutTaskDetailDisplayText(mojibakeTaskDetailTextSample),
+      normalizedTaskDetailTextSample,
+      'shared task detail text normalization repairs UTF-8 mojibake task detail text',
+    );
+    assertEqual(
+      commons.normalizeAutoCutTaskDetailDisplayText('plain diagnostic text'),
+      'plain diagnostic text',
+      'shared task detail text normalization preserves ordinary ASCII diagnostics',
+    );
+    assertEqual(
+      commons.normalizeAutoCutTaskDetailDisplayText('Runtime params:\\nsourceAssetUuid=asset-1'),
+      'Runtime params:\nsourceAssetUuid=asset-1',
+      'shared task detail text normalization decodes escaped diagnostic line breaks',
+    );
+    assertEqual(
+      commons.validateAutoCutTrustedFileRequiredStreams(
+        createTrustedLocalMediaFile(
+          commons,
+          'D:/media/mislabeled-video-without-video-stream.wav',
+          'mislabeled-video-without-video-stream.wav',
+          { mimeType: 'video/mp4', mediaType: 'video', hasAudioStream: true, hasVideoStream: false },
+        ),
+        { video: true },
+      ),
+      'AutoCut selected media requires a video stream.',
+      'trusted upload validation rejects video-labeled files when native probe evidence reports no video stream',
+    );
+    assertEqual(
+      commons.validateAutoCutTrustedFileRequiredStreams(
+        createTrustedLocalMediaFile(
+          commons,
+          'D:/media/mislabeled-audio-without-audio-stream.mp4',
+          'mislabeled-audio-without-audio-stream.mp4',
+          { mimeType: 'audio/mp4', mediaType: 'audio', hasAudioStream: false, hasVideoStream: true },
+        ),
+        { audio: true },
+      ),
+      'AutoCut selected media requires an audio stream.',
+      'trusted upload validation rejects audio-labeled files when native probe evidence reports no audio stream',
+    );
+    assertEqual(
+      commons.validateAutoCutTrustedFileRequiredStreams(
+        createTrustedLocalMediaFile(
+          commons,
+          'D:/media/audio-bearing-source.flac',
+          'audio-bearing-source.flac',
+          { mimeType: 'audio/flac', mediaType: 'audio', hasAudioStream: true, hasVideoStream: false },
+        ),
+        { audio: true },
+      ),
+      null,
+      'trusted upload validation accepts audio-bearing files for audio-stream workflows',
+    );
+    assertEqual(
+      commons.validateAutoCutTrustedFileRequiredStreams(
+        createTrustedLocalMediaFile(
+          commons,
+          'D:/media/video-bearing-source.mp4',
+          'video-bearing-source.mp4',
+          { mimeType: 'video/mp4', mediaType: 'video', hasAudioStream: true, hasVideoStream: true },
+        ),
+        { audio: true, video: true },
+      ),
+      null,
+      'trusted upload validation accepts files with both streams for hardcoded subtitle video workflows',
+    );
 
     assertEqual(services.createAutoCutStorageKey('tasks'), 'autocut_release_tasks', 'storage key factory namespaces release task data');
     assertEqual(services.createAutoCutStorageKey('assets'), 'autocut_release_assets', 'storage key factory namespaces release asset data');
@@ -3786,6 +6788,11 @@ async function run() {
         false,
         'workflow parameter preferences default video slicing to transcript-assisted planning without subtitle rendering',
       );
+    assertEqual(
+      defaultWorkflowPreferences.videoSlice.sttPresetId,
+      'smart-slice-cloud-stt',
+      'workflow parameter preferences default Smart Slice to the commercial cloud STT workflow preset',
+    );
       assertEqual(
         defaultWorkflowPreferences.videoSlice.subtitleMode,
         'both',
@@ -3803,10 +6810,9 @@ async function run() {
           targetPlatform: 'bilibili',
           targetAspectRatio: '16:9',
           videoObjectFit: 'contain',
-          sliceCountMode: 'fixed',
-          targetSliceCount: 99,
           idealDuration: 2,
           continuityLevel: 'strict',
+          sttPresetId: 'smart-slice-fast-preview',
           customKeywordsInput: ' hook, payoff ',
           minDuration: 2,
           maxDuration: 9999,
@@ -3830,10 +6836,15 @@ async function run() {
       );
       const reloadedWorkflowPreferences = await withImmediateTimers(() => services.getAutoCutWorkflowPreferences());
       const storedWorkflowPreferences = readScopedStoredObject(services, 'workflowPreferences');
-      assertEqual(
-        savedVideoSlicePreferences.videoSlice.targetSliceCount,
-        20,
-        'video slice parameter preferences clamp targetSliceCount before persistence',
+      assertNotOwnProperty(
+        savedVideoSlicePreferences.videoSlice,
+        'targetSliceCount',
+        'video slice parameter preferences do not persist target clip counts because Smart Slice derives clips from content',
+      );
+      assertNotOwnProperty(
+        savedVideoSlicePreferences.videoSlice,
+        'sliceCountMode',
+        'video slice parameter preferences do not persist count strategies because Smart Slice derives clips from content',
       );
       assertEqual(
         savedVideoSlicePreferences.videoSlice.minDuration,
@@ -3851,6 +6862,11 @@ async function run() {
         'video slice parameter preferences normalize keyword input before persistence',
       );
       assertEqual(
+        savedVideoSlicePreferences.videoSlice.enableNoiseReduction,
+        false,
+        'video slice parameter preferences preserve disabled broadband denoise for clean source audio',
+      );
+      assertEqual(
         savedTextExtractionPreferences.textExtraction.language,
         'ja-JP',
         'text extraction parameter preferences normalize BCP-47 language tags before persistence',
@@ -3859,6 +6875,16 @@ async function run() {
         reloadedWorkflowPreferences.videoSlice.subtitleMode,
         'srt',
         'workflow parameter preferences reload the selected subtitle publishing mode without promotion',
+      );
+      assertEqual(
+        reloadedWorkflowPreferences.videoSlice.enableNoiseReduction,
+        false,
+        'workflow parameter preferences reload disabled broadband denoise after disabled denoise input',
+      );
+      assertEqual(
+        reloadedWorkflowPreferences.videoSlice.sttPresetId,
+        'smart-slice-fast-preview',
+        'workflow parameter preferences reload the selected Smart Slice STT workflow preset',
       );
       assertEqual(
         savedVideoSlicePreferences.videoSlice.subtitleMode,
@@ -3891,6 +6917,16 @@ async function run() {
         'gpt-5.4',
         'workflow parameter preferences persist video slice model selection in scoped storage',
       );
+      assertEqual(
+        storedWorkflowPreferences.videoSlice.enableNoiseReduction,
+        false,
+        'workflow parameter preferences store disabled broadband denoise after disabled denoise input',
+      );
+    assertEqual(
+      storedWorkflowPreferences.videoSlice.sttPresetId,
+      'smart-slice-fast-preview',
+      'workflow parameter preferences persist the selected Smart Slice STT workflow preset',
+    );
       assertRule(
         Boolean(storedWorkflowPreferences.updatedAt),
         'workflow parameter preferences persist an updatedAt timestamp',
@@ -4134,7 +7170,7 @@ async function run() {
       return {
         taskUuid: 'unexpected-native-video-slice-task',
         sourceAssetUuid: args?.request?.assetUuid ?? '',
-        taskOutputDir: 'D:/autocut/media/tasks/unexpected-native-video-slice-task/outputs',
+        taskOutputDir: 'D:/autocut/media/tasks/unexpected-native-video-slice-task',
         slices: [],
         ffmpegExecutable: 'ffmpeg',
       };
@@ -4153,6 +7189,52 @@ async function run() {
       invalidNativeVideoSliceInvocations.length,
       0,
       'native host client does not invoke Tauri video slicing when clips lack STT evidence',
+    );
+    const audioRefinedNativeVideoSliceInvocations = [];
+    const audioRefinedNativeVideoSliceClient = services.createAutoCutNativeHostClient(async (command, args) => {
+      audioRefinedNativeVideoSliceInvocations.push({ command, args });
+      return {
+        taskUuid: 'audio-refined-native-video-slice-task',
+        sourceAssetUuid: args?.request?.assetUuid ?? '',
+        taskOutputDir: 'D:/autocut/media/tasks/audio-refined-native-video-slice-task',
+        ffmpegExecutable: 'ffmpeg',
+        slices: [],
+      };
+    });
+    await audioRefinedNativeVideoSliceClient.sliceVideo({
+      assetUuid: 'media-asset-1',
+      clips: [
+        {
+          startMs: 1000,
+          durationMs: 10000,
+          label: 'Audio refined speech range',
+          sourceStartMs: 1000,
+          sourceEndMs: 11000,
+          speechStartMs: 1200,
+          speechEndMs: 10800,
+          boundaryPaddingBeforeMs: 200,
+          boundaryPaddingAfterMs: 200,
+          transcriptText: 'Opening context. Closing context.',
+          transcriptSegments: [
+            { startMs: 1000, endMs: 5600, text: 'Opening context.', speaker: 'Speaker 1' },
+            { startMs: 5700, endMs: 11000, text: 'Closing context.', speaker: 'Speaker 1' },
+          ],
+          transcriptSegmentCount: 2,
+          transcriptCoverageScore: 0.96,
+          speechContinuityGrade: 'strong',
+        },
+      ],
+      outputFormat: 'mp4',
+    });
+    assertEqual(
+      audioRefinedNativeVideoSliceInvocations.length,
+      1,
+      'native host client accepts audio-refined smart slice speech ranges covered by transcript segment boundaries',
+    );
+    assertEqual(
+      audioRefinedNativeVideoSliceInvocations[0]?.args?.request?.clips?.[0]?.speechStartMs,
+      1200,
+      'native host client forwards audio-refined speechStartMs after transcript coverage validation',
     );
     await assertRejects(
       () =>
@@ -4277,6 +7359,8 @@ async function run() {
           byteSize: 123,
           name: 'source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 100000,
         };
@@ -4287,6 +7371,8 @@ async function run() {
           byteSize: 123,
           name: 'source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 100000,
         };
@@ -4297,6 +7383,8 @@ async function run() {
           byteSize: 789,
           name: 'selected-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 78000,
         };
@@ -4307,6 +7395,8 @@ async function run() {
           byteSize: 456,
           name: 'selected-audio.wav',
           mediaType: 'audio',
+          hasAudioStream: true,
+          hasVideoStream: false,
           mimeType: 'audio/wav',
         };
       }
@@ -4499,6 +7589,25 @@ async function run() {
               speaker: 'Speaker 1',
             },
           ],
+          qualityGuard: {
+            schema: 'smart-slice.stt-quality-guard.v1',
+            status: 'passed-after-retry',
+            passed: true,
+            scope: 'chunked-local-whisper',
+            chunkId: '',
+            retryCount: 1,
+            riskCount: 0,
+            risks: [],
+            metrics: {
+              segmentCount: 2,
+              textLength: 58,
+              uniqueCharacterRatio: 0.63,
+              replacementCharacterCount: 0,
+              repeatedPhraseRunCount: 0,
+              duplicateWindowRatio: 0,
+              tinySegmentRatio: 0,
+            },
+          },
           ffmpegExecutable: 'ffmpeg',
           speechExecutable: 'whisper-cli',
         };
@@ -4547,7 +7656,7 @@ async function run() {
         ffmpegExecutable: 'ffmpeg',
       };
     });
-    services.configureAutoCutNativeHostClient(nativeHostClient);
+    configureAutoCutNativeHostClient(services, nativeHostClient);
     const configuredNativeHostClient = services.getAutoCutNativeHostClient();
     const configuredCapabilities = await configuredNativeHostClient.getCapabilities();
     const configuredDatabaseHealth = await configuredNativeHostClient.getDatabaseHealth();
@@ -4691,6 +7800,16 @@ async function run() {
     assertEqual(transcribedNativeMedia.sourceAssetUuid, importedNativeMedia.assetUuid, 'configured native host client transcribes media by assetUuid');
     assertEqual(transcribedNativeMedia.segments[0]?.startMs, 12000, 'configured native host client returns speech transcription segment timing');
     assertEqual(transcribedNativeMedia.speechExecutable, 'whisper-cli', 'configured native host client returns the local speech executable used');
+    assertEqual(
+      transcribedNativeMedia.qualityGuard?.status,
+      'passed-after-retry',
+      'configured native host client preserves STT quality guard status for Smart Slice auditability',
+    );
+    assertEqual(
+      transcribedNativeMedia.qualityGuard?.retryCount,
+      1,
+      'configured native host client preserves STT quality guard retry count',
+    );
     assertEqual(nativeTaskSnapshots[0]?.uuid, 'ops-task-contract', 'configured native host client lists native task snapshots');
     assertEqual(
       nativeTaskSnapshots[0]?.events[0]?.payload?.operation,
@@ -4997,7 +8116,7 @@ async function run() {
       ...(await services.getAutoCutSettings()).workspace,
       outputDirectory: configuredOutputDirectory,
     });
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         contractVersion: 'contract-test',
         hostKind: 'native-host',
@@ -5050,6 +8169,8 @@ async function run() {
           byteSize: 321000,
           name: 'native-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
         };
       },
@@ -5058,6 +8179,8 @@ async function run() {
         byteSize: 321000,
         name: 'native-source.mp4',
         mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
         mimeType: 'video/mp4',
       }),
       extractAudio: async (request) => {
@@ -5112,6 +8235,8 @@ async function run() {
       byteSize: 321000,
       mimeType: 'video/mp4',
       mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
     });
     commons.dispatchAutoCutTrustedFileSourceDrop({
       files: [trustedLocalFile],
@@ -5156,6 +8281,8 @@ async function run() {
         byteSize: 321000,
         mimeType: 'video/mp4',
         mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
       }))),
       'D:/media/native-source.mp4',
       'trusted desktop source descriptors survive router state cloning and can rebuild File-compatible trusted inputs',
@@ -5209,13 +8336,23 @@ async function run() {
       'extractor audio native workflow passes the configured output directory to audio extraction',
     );
     assertEqual(
+      nativeAudioWorkflowCommands[1]?.request?.outputQuality,
+      '320',
+      'extractor audio native workflow forwards the selected output quality to native extraction',
+    );
+    assertEqual(
+      nativeAudioWorkflowCommands[1]?.request?.outputChannel,
+      'stereo',
+      'extractor audio native workflow forwards the selected channel mode to native extraction',
+    );
+    assertEqual(
       nativeAudioWorkflowTask?.status,
       types.AUTOCUT_TASK_STATUS.completed,
       'extractor audio native workflow completes the persisted task',
     );
     assertEqual(
       nativeAudioWorkflowTask?.audioUrl,
-      'asset://localhost/D%3A%2Fautocut-configured-output%2Ftasks%2Fnative-audio-task%2Foutputs%2Fnative-audio-artifact.wav',
+      'asset://localhost/D%3A%2Fautocut-configured-output%2Ftasks%2Fnative-audio-task%2Fnative-audio-artifact.wav',
       'extractor audio native workflow converts native artifact paths to safe asset URLs',
     );
     assertEqual(
@@ -5228,11 +8365,62 @@ async function run() {
       nativeAudioWorkflowTask?.audioUrl,
       'extractor audio native workflow stores the safe asset URL on the generated asset',
     );
+
+    resetStorage();
+    nativeAudioWorkflowCommands.length = 0;
+    const trustedAudioExtractionSourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/native-audio-source.flac',
+      'native-audio-source.flac',
+      { mimeType: 'audio/flac', mediaType: 'audio', hasAudioStream: true, hasVideoStream: false },
+    );
+    const nativeAudioInputExtractionResult = await withImmediateTimers(async () =>
+      processAudioExtraction({
+        fileId: 'asset-source-native-audio-input',
+        file: trustedAudioExtractionSourceFile,
+        format: 'mp3',
+        quality: '256',
+        channel: 'smart-stereo',
+      }),
+    );
+    const nativeAudioInputTask = readScopedStoredArray(services, 'tasks').find(
+      (task) => task.id === nativeAudioInputExtractionResult.taskId,
+    );
+    assertEqual(nativeAudioInputExtractionResult.success, true, 'extractor audio accepts trusted local audio sources');
+    assertEqual(
+      nativeAudioWorkflowCommands[0]?.request?.sourcePath,
+      'D:/media/native-audio-source.flac',
+      'extractor audio imports trusted audio files instead of requiring a video container',
+    );
+    assertEqual(
+      nativeAudioWorkflowCommands[1]?.request?.outputFormat,
+      'mp3',
+      'extractor audio transcodes audio input to the requested output format',
+    );
+    assertEqual(
+      nativeAudioWorkflowCommands[1]?.request?.outputQuality,
+      '256',
+      'extractor audio transcodes audio input with the requested quality preset',
+    );
+    assertEqual(
+      nativeAudioWorkflowCommands[1]?.request?.outputChannel,
+      'smart-stereo',
+      'extractor audio applies the requested smart stereo channel preset',
+    );
+    assertEqual(
+      nativeAudioInputTask?.status,
+      types.AUTOCUT_TASK_STATUS.completed,
+      'extractor audio trusted audio-source workflow completes the persisted task',
+    );
+    assertRule(
+      Boolean(nativeAudioInputTask?.audioUrl),
+      'extractor audio trusted audio-source workflow stores a downloadable audio URL',
+    );
     services.resetAutoCutNativeHostClient();
 
     resetStorage();
     const nativeVideoGifWorkflowCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         contractVersion: 'contract-test',
         hostKind: 'native-host',
@@ -5285,6 +8473,8 @@ async function run() {
           byteSize: 321000,
           name: 'native-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
         };
       },
@@ -5293,6 +8483,8 @@ async function run() {
         byteSize: 321000,
         name: 'native-source.mp4',
         mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
         mimeType: 'video/mp4',
       }),
       extractAudio: async () => {
@@ -5386,7 +8578,7 @@ async function run() {
     );
     assertEqual(
       nativeVideoGifWorkflowTask?.gifUrl,
-      'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fnative-gif-task%2Foutputs%2Fnative-gif-artifact.gif',
+      'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fnative-gif-task%2Fnative-gif-artifact.gif',
       'video GIF native workflow converts native artifact paths to safe asset URLs',
     );
     assertEqual(
@@ -5408,7 +8600,7 @@ async function run() {
 
     resetStorage();
     const nativeVideoSliceWorkflowCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         contractVersion: 'contract-test',
         hostKind: 'native-host',
@@ -5423,6 +8615,7 @@ async function run() {
         audioExtractionFromAssetReady: false,
         videoGifCommandReady: false,
         videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
         videoCompressCommandReady: false,
         videoConvertCommandReady: false,
         videoEnhanceCommandReady: false,
@@ -5469,6 +8662,8 @@ async function run() {
           byteSize: 654000,
           name: 'native-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 100000,
         };
@@ -5478,6 +8673,8 @@ async function run() {
         byteSize: 654000,
         name: 'native-source.mp4',
         mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
         mimeType: 'video/mp4',
       }),
       extractAudio: async () => {
@@ -5514,9 +8711,16 @@ async function run() {
           segments: [
             {
               startMs: 22000,
+              endMs: 30000,
+              text:
+                'Why viewers scroll is simple. Because the opening hides the problem, people do not know why they should care.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 32400,
               endMs: 41000,
               text:
-                'Why viewers scroll is simple. Because the opening hides the problem, people do not know why they should care. So lead with the result and the retention payoff works.',
+                'So lead with the result and the retention payoff works.',
               speaker: 'Speaker 1',
             },
             {
@@ -5531,110 +8735,95 @@ async function run() {
           speechExecutable: 'whisper-cli',
         };
       },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        invalidLlmVideoSliceWorkflowCommands.push({ kind: 'analyze-audio-boundaries', request });
+        return createNativeVideoSliceAudioActivityAnalysisResult(request);
+      },
       sliceVideo: async (request) => {
         nativeVideoSliceWorkflowCommands.push({ kind: 'slice', request });
-        const firstOutput = createNativeTaskOutputArtifact(
-          'native-slice-task',
-          request.clips[0]?.outputFileName ?? 'native-slice-artifact-1.mp4',
-          configuredOutputDirectory,
-        );
-        const secondOutput = createNativeTaskOutputArtifact(
-          'native-slice-task',
-          request.clips[1]?.outputFileName ?? 'native-slice-artifact-2.mp4',
-          configuredOutputDirectory,
-        );
-        const firstThumbnail = createNativeTaskCoverArtifact(
-          'native-slice-task',
-          'native-slice-thumb-1.jpg',
-          configuredOutputDirectory,
-        );
-        const secondThumbnail = createNativeTaskCoverArtifact(
-          'native-slice-task',
-          'native-slice-thumb-2.jpg',
-          configuredOutputDirectory,
-        );
-        const firstSubtitle = createNativeTaskOutputArtifact(
-          'native-slice-task',
-          'native-slice-subtitle-1.srt',
-          configuredOutputDirectory,
-        );
-        const secondSubtitle = createNativeTaskOutputArtifact(
-          'native-slice-task',
-          'native-slice-subtitle-2.srt',
-          configuredOutputDirectory,
-        );
         const subtitlesRequested = Array.isArray(request.subtitleSegments) && request.subtitleSegments.length > 0;
+        const slices = request.clips.map((clip, index) => {
+          const output = createNativeTaskOutputArtifact(
+            'native-slice-task',
+            clip.outputFileName ?? `native-slice-artifact-${index + 1}.mp4`,
+            configuredOutputDirectory,
+          );
+          const thumbnail = createNativeTaskCoverArtifact(
+            'native-slice-task',
+            `native-slice-thumb-${index + 1}.jpg`,
+            configuredOutputDirectory,
+          );
+          const subtitle = createNativeTaskOutputArtifact(
+            'native-slice-task',
+            `native-slice-subtitle-${index + 1}.srt`,
+            configuredOutputDirectory,
+          );
+          return {
+            artifactUuid: `native-slice-artifact-${index + 1}`,
+            artifactPath: output.artifactPath,
+            thumbnailArtifactUuid: `native-slice-thumb-${index + 1}`,
+            thumbnailArtifactPath: thumbnail.artifactPath,
+            taskOutputDir: output.taskOutputDir,
+            byteSize: 234567 + index,
+            thumbnailByteSize: 12345 + index,
+            ...(subtitlesRequested
+              ? {
+                  subtitleArtifactUuid: `native-slice-subtitle-${index + 1}`,
+                  subtitleArtifactPath: subtitle.artifactPath,
+                  subtitleByteSize: 1234 + index,
+                  subtitleFormat: 'srt',
+                }
+              : {}),
+            format: 'mp4',
+            ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+          };
+        });
         return {
           taskUuid: 'native-slice-task',
           sourceAssetUuid: request.assetUuid,
-          taskOutputDir: firstOutput.taskOutputDir,
+          taskOutputDir: slices[0]?.taskOutputDir ?? configuredOutputDirectory,
           ffmpegExecutable: 'ffmpeg',
-          slices: [
-            {
-              artifactUuid: 'native-slice-artifact-1',
-              artifactPath: firstOutput.artifactPath,
-              thumbnailArtifactUuid: 'native-slice-thumb-1',
-              thumbnailArtifactPath: firstThumbnail.artifactPath,
-              taskOutputDir: firstOutput.taskOutputDir,
-              byteSize: 234567,
-              thumbnailByteSize: 12345,
-              ...(subtitlesRequested
+          slices,
+        };
+      },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        nativeVideoSliceWorkflowCommands.push({ kind: 'analyze-audio-boundaries', request });
+        const analysisFilter = request.applyNoiseReduction === false
+          ? 'silencedetect=noise=-35dB:d=0.08'
+          : 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08';
+        return {
+          assetUuid: request.assetUuid,
+          profile: 'smart-slice-speech-denoise-v1',
+          analyses: request.clips.map((clip, index) => {
+            const speechStartMs = clip.speechStartMs ?? clip.startMs;
+            const speechEndMs = clip.speechEndMs ?? clip.startMs + clip.durationMs;
+            void index;
+            const audioActivityStartMs = speechStartMs + 100;
+            const audioActivityEndMs = speechEndMs - 100;
+            return {
+              index,
+              startMs: clip.startMs,
+              durationMs: clip.durationMs,
+              sourceStartMs: clip.sourceStartMs ?? clip.startMs,
+              sourceEndMs: clip.sourceEndMs ?? clip.startMs + clip.durationMs,
+              audioActivityStartMs,
+              audioActivityEndMs,
+              leadingSilenceMs: Math.max(0, audioActivityStartMs - clip.startMs),
+              trailingSilenceMs: Math.max(0, clip.startMs + clip.durationMs - audioActivityEndMs),
+              ...(index === 0
                 ? {
-                    subtitleArtifactUuid: 'native-slice-subtitle-1',
-                    subtitleArtifactPath: firstSubtitle.artifactPath,
-                    subtitleByteSize: 1234,
-                    subtitleFormat: 'srt',
+                    internalSilenceIntervals: [
+                      {
+                        startMs: 30000,
+                        endMs: 32400,
+                      },
+                    ],
                   }
                 : {}),
-              format: 'mp4',
-              startMs: request.clips[0].startMs,
-              durationMs: request.clips[0].durationMs,
-              label: request.clips[0].label,
-              sourceStartMs: request.clips[0].sourceStartMs,
-              sourceEndMs: request.clips[0].sourceEndMs,
-              speechStartMs: request.clips[0].speechStartMs,
-              speechEndMs: request.clips[0].speechEndMs,
-              boundaryPaddingBeforeMs: request.clips[0].boundaryPaddingBeforeMs,
-              boundaryPaddingAfterMs: request.clips[0].boundaryPaddingAfterMs,
-              transcriptText: request.clips[0].transcriptText,
-              transcriptSegments: request.clips[0].transcriptSegments,
-              transcriptSegmentCount: request.clips[0].transcriptSegmentCount,
-              transcriptCoverageScore: request.clips[0].transcriptCoverageScore,
-              speechContinuityGrade: request.clips[0].speechContinuityGrade,
-            },
-            {
-              artifactUuid: 'native-slice-artifact-2',
-              artifactPath: secondOutput.artifactPath,
-              thumbnailArtifactUuid: 'native-slice-thumb-2',
-              thumbnailArtifactPath: secondThumbnail.artifactPath,
-              taskOutputDir: secondOutput.taskOutputDir,
-              byteSize: 345678,
-              thumbnailByteSize: 23456,
-              ...(subtitlesRequested
-                ? {
-                    subtitleArtifactUuid: 'native-slice-subtitle-2',
-                    subtitleArtifactPath: secondSubtitle.artifactPath,
-                    subtitleByteSize: 2345,
-                    subtitleFormat: 'srt',
-                  }
-                : {}),
-              format: 'mp4',
-              startMs: request.clips[1].startMs,
-              durationMs: request.clips[1].durationMs,
-              label: request.clips[1].label,
-              sourceStartMs: request.clips[1].sourceStartMs,
-              sourceEndMs: request.clips[1].sourceEndMs,
-              speechStartMs: request.clips[1].speechStartMs,
-              speechEndMs: request.clips[1].speechEndMs,
-              boundaryPaddingBeforeMs: request.clips[1].boundaryPaddingBeforeMs,
-              boundaryPaddingAfterMs: request.clips[1].boundaryPaddingAfterMs,
-              transcriptText: request.clips[1].transcriptText,
-              transcriptSegments: request.clips[1].transcriptSegments,
-              transcriptSegmentCount: request.clips[1].transcriptSegmentCount,
-              transcriptCoverageScore: request.clips[1].transcriptCoverageScore,
-              speechContinuityGrade: request.clips[1].speechContinuityGrade,
-            },
-          ],
+              confidence: 0.97,
+              analysisFilter,
+            };
+          }),
         };
       },
       compressVideo: async () => {
@@ -5715,7 +8904,6 @@ async function run() {
           maxDuration: 60,
           baseAlgorithm: 'scene',
               highlightEngine: 'emotion',
-              enableNoiseReduction: true,
               enableCoughFilter: true,
               enableRepeatFilter: true,
               enableSubtitles: false,
@@ -5735,10 +8923,120 @@ async function run() {
       (asset) => asset.id === nativeVideoSliceWorkflowTask?.sliceResults?.[0]?.id,
     );
     assertEqual(nativeVideoSliceWorkflowResult.success, true, 'video slice native workflow reports success');
-    assertEqual(
+    assertAutoCutTaskIdUsesUuidV7(
       nativeVideoSliceWorkflowResult.taskId,
+      'slice',
+      'video slice native workflow returns the stable local UUIDv7 task id used by UI routing',
+    );
+    assertEqual(
+      nativeVideoSliceWorkflowResult.nativeTaskId,
       'native-slice-task',
-      'video slice native workflow returns the durable native ops_task UUID instead of a temporary browser task id',
+      'video slice native workflow exposes the native ops_task UUID separately from the local task id',
+    );
+    assertEqual(
+      nativeVideoSliceWorkflowTask?.id,
+      nativeVideoSliceWorkflowResult.taskId,
+      'video slice native workflow persists the completed task under the stable local task id',
+    );
+    assertEqual(
+      nativeVideoSliceWorkflowTask?.nativeTaskId,
+      'native-slice-task',
+      'video slice native workflow records the native ops_task UUID on the persisted task',
+    );
+    assertEqual(
+      nativeVideoSliceWorkflowTask?.id === nativeVideoSliceWorkflowTask?.nativeTaskId,
+      false,
+      'video slice native workflow does not replace the local task id with the native ops_task UUID',
+    );
+    assertRule(
+      nativeVideoSliceWorkflowTasks.every((task) => task.id !== 'native-slice-task'),
+      'video slice native workflow does not persist a duplicate task row under the native ops_task UUID',
+    );
+    assertRule(
+      nativeVideoSliceGeneratedAssets.every((asset) => asset.sourceTaskId === nativeVideoSliceWorkflowResult.taskId),
+      'video slice native workflow links generated assets to the stable local task id',
+    );
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        nativeTaskQueryCommandReady: true,
+      }),
+      listNativeTasks: async () => [
+        {
+          uuid: 'native-slice-task',
+          taskType: 6,
+          status: 2,
+          progress: 100,
+          sourceAssetUuid: 'native-slice-asset',
+          inputJson: JSON.stringify({
+            operation: 'videoSlice',
+            assetUuid: 'native-slice-asset',
+            sourceName: 'native-source.mp4',
+            outputFormat: 'mp4',
+          }),
+          outputJson: JSON.stringify({
+            assetUuid: 'native-slice-asset',
+            taskOutputDir: `${configuredOutputDirectory}/tasks/native-slice-task`,
+            sliceCount: 2,
+            sliceResults: nativeVideoSliceWorkflowTask?.sliceResults?.map((slice) => ({
+              artifactUuid: slice.id,
+              artifactPath: slice.artifactPath,
+              thumbnailArtifactUuid: `${slice.id}-thumbnail`,
+              thumbnailArtifactPath: slice.thumbnailUrl
+                ? decodeURIComponent(slice.thumbnailUrl.replace(/^asset:\/\/localhost\//u, ''))
+                : undefined,
+              taskOutputDir: slice.taskOutputDir,
+              byteSize: slice.size,
+              thumbnailByteSize: 12345,
+              format: 'mp4',
+              startMs: slice.sourceStartMs,
+              durationMs: (slice.sourceEndMs ?? 0) - (slice.sourceStartMs ?? 0),
+              label: slice.title ?? slice.name?.replace(/\.mp4$/u, ''),
+              sourceStartMs: slice.sourceStartMs,
+              sourceEndMs: slice.sourceEndMs,
+              speechStartMs: slice.speechStartMs,
+              speechEndMs: slice.speechEndMs,
+              boundaryPaddingBeforeMs: slice.boundaryPaddingBeforeMs,
+              boundaryPaddingAfterMs: slice.boundaryPaddingAfterMs,
+              transcriptText: slice.transcriptText,
+              transcriptSegments: slice.transcriptSegments,
+              transcriptSegmentCount: slice.transcriptSegmentCount,
+              transcriptCoverageScore: slice.transcriptCoverageScore,
+              speechContinuityGrade: slice.speechContinuityGrade,
+              audioCleanupProfile: slice.audioCleanupProfile,
+              noiseReductionApplied: slice.noiseReductionApplied,
+              boundaryDecisionSource: slice.boundaryDecisionSource,
+              audioActivityStartMs: slice.audioActivityStartMs,
+              audioActivityEndMs: slice.audioActivityEndMs,
+              audioActivityConfidence: slice.audioActivityConfidence,
+              audioActivityAnalysisFilter: slice.audioActivityAnalysisFilter,
+              leadingSilenceMs: slice.leadingSilenceMs,
+              trailingSilenceMs: slice.trailingSilenceMs,
+              leadingSilenceTrimMs: slice.leadingSilenceTrimMs,
+              trailingSilenceTrimMs: slice.trailingSilenceTrimMs,
+              tailTreatment: slice.tailTreatment,
+            })),
+          }),
+          createdAt: '2026-05-05T00:00:00.000Z',
+          updatedAt: '2026-05-05T00:05:00.000Z',
+          stages: [],
+          events: [],
+          workerLeases: [],
+        },
+      ],
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    const mergedNativeVideoSliceWorkflowTasks = await withImmediateTimers(() => services.getTasks());
+    assertEqual(
+      mergedNativeVideoSliceWorkflowTasks.filter((task) =>
+        task.id === nativeVideoSliceWorkflowResult.taskId || task.id === 'native-slice-task'
+      ).length,
+      1,
+      'video slice native workflow task list merges the local task with its recovered native ops_task snapshot',
+    );
+    assertEqual(
+      mergedNativeVideoSliceWorkflowTasks.find((task) => task.id === nativeVideoSliceWorkflowResult.taskId)?.nativeTaskId,
+      'native-slice-task',
+      'video slice native workflow task list keeps nativeTaskId after local/native recovery merge',
     );
     const nativeVideoSliceWorkflowProgressValues = nativeVideoSliceWorkflowTaskUpdates.details
       .map((task) => task?.progress)
@@ -5758,6 +9056,13 @@ async function run() {
       nativeVideoSliceWorkflowProgressValues.at(-1),
       100,
       'video slice native workflow emits a final 100 percent completed task update',
+    );
+    assertRule(
+      !nativeVideoSliceWorkflowTaskUpdates.details.some((task) =>
+        String(task?.progressMessage ?? '').includes('AutoCut is still working') ||
+          String(task?.progressMessage ?? '').includes('heartbeat')
+      ),
+      'video slice native workflow does not publish fake JavaScript heartbeat progress while speech-to-text is running',
     );
     assertRule(
       nativeVideoSliceWorkflowDiagnostics.some((call) =>
@@ -5830,80 +9135,185 @@ async function run() {
       'video slice native workflow passes the configured local speech model to transcription',
     );
     assertEqual(
+      nativeVideoSliceWorkflowCommands[1]?.request?.dedupeRepeatedSpeech,
+      true,
+      'video slice native workflow enables STT repeated-speech dedupe when Smart Slice repeat filtering is enabled',
+    );
+    assertEqual(
       nativeVideoSliceWorkflowCommands[2]?.kind,
+      'analyze-audio-boundaries',
+      'video slice native workflow analyzes raw audio activity boundaries before rendering clean default audio',
+    );
+    assertEqual(
+      nativeVideoSliceWorkflowCommands[2]?.request?.profile,
+      'smart-slice-speech-denoise-v1',
+      'video slice native workflow uses the canonical Smart Slice audio cleanup profile for boundary analysis',
+    );
+    assertEqual(
+      nativeVideoSliceWorkflowCommands[2]?.request?.applyNoiseReduction,
+      false,
+      'video slice native workflow defaults clean audio boundary analysis to raw audio before applying destructive denoise',
+    );
+    assertEqual(
+      nativeVideoSliceWorkflowCommands[3]?.kind,
       'slice',
       'video slice native workflow slices video after import',
     );
     assertEqual(
-      nativeVideoSliceWorkflowCommands[2]?.request?.assetUuid,
+      nativeVideoSliceWorkflowCommands[3]?.request?.assetUuid,
       'native-slice-asset',
       'video slice native workflow slices by imported assetUuid',
     );
     assertEqual(
-      nativeVideoSliceWorkflowCommands[2]?.request?.outputRootDir,
+      nativeVideoSliceWorkflowCommands[3]?.request?.outputRootDir,
       configuredOutputDirectory,
       'video slice native workflow passes the configured output directory to video slicing',
     );
     assertEqual(
-      nativeVideoSliceWorkflowCommands[2]?.request?.outputFormat,
+      nativeVideoSliceWorkflowCommands[3]?.request?.outputFormat,
       'mp4',
       'video slice native workflow requests MP4 slice output',
     );
     assertRule(
-      nativeVideoSliceWorkflowCommands[2]?.request?.clips?.every((clip) =>
+      nativeVideoSliceWorkflowCommands[3]?.request?.clips?.every((clip) =>
         clip.startMs + clip.durationMs <= 100000,
       ),
       'video slice native workflow keeps planned clips inside imported media duration before native rendering',
     );
     assertEqual(
-      nativeVideoSliceWorkflowCommands[2]?.request?.subtitleFormat,
+      nativeVideoSliceWorkflowCommands[3]?.request?.subtitleFormat,
       undefined,
       'video slice native workflow omits subtitle output by default while still using speech-to-text for planning',
     );
     assertEqual(
-      nativeVideoSliceWorkflowCommands[2]?.request?.subtitleMode,
+      nativeVideoSliceWorkflowCommands[3]?.request?.subtitleMode,
       undefined,
       'video slice native workflow does not burn or write subtitles unless the user enables subtitles',
     );
     assertEqual(
-      nativeVideoSliceWorkflowCommands[2]?.request?.subtitleStyleId,
+      nativeVideoSliceWorkflowCommands[3]?.request?.subtitleStyleId,
       undefined,
       'video slice native workflow omits subtitle style when no subtitle style was selected',
     );
     assertEqual(
-      nativeVideoSliceWorkflowCommands[2]?.request?.subtitleSegments,
+      nativeVideoSliceWorkflowCommands[3]?.request?.subtitleSegments,
       undefined,
       'video slice native workflow keeps transcript segments out of native subtitle rendering when subtitles are disabled',
     );
     assertEqual(
-      nativeVideoSliceWorkflowCommands[2]?.request?.clips?.[0]?.transcriptText,
+      nativeVideoSliceWorkflowCommands[3]?.request?.clips?.[0]?.transcriptText,
       'Why viewers scroll is simple. Because the opening hides the problem, people do not know why they should care. So lead with the result and the retention payoff works.',
       'video slice native workflow embeds slice transcript text in each native clip request independent of subtitle rendering',
     );
     assertEqual(
-      nativeVideoSliceWorkflowCommands[2]?.request?.clips?.[0]?.transcriptSegments?.[0]?.text,
+      nativeVideoSliceWorkflowCommands[3]?.request?.clips?.[0]?.transcriptSegments?.map((segment) => segment.text).join(' '),
       'Why viewers scroll is simple. Because the opening hides the problem, people do not know why they should care. So lead with the result and the retention payoff works.',
       'video slice native workflow embeds structured slice transcript segments in each native clip request',
     );
     assertEqual(
-      nativeVideoSliceWorkflowCommands[2]?.request?.clips?.[0]?.transcriptSegmentCount,
-      1,
+      nativeVideoSliceWorkflowCommands[3]?.request?.clips?.[0]?.transcriptSegmentCount,
+      2,
       'video slice native workflow embeds transcript segment counts in each native clip request',
     );
     assertEqual(
-      nativeVideoSliceWorkflowCommands[2]?.request?.noiseReduction,
+      nativeVideoSliceWorkflowCommands[3]?.request?.clips?.[0]?.sourceSegments?.length,
+      2,
+      'video slice native workflow sends retained source speech islands to native rendering when internal silence is excessive',
+    );
+    assertEqual(
+      nativeVideoSliceWorkflowCommands[3]?.request?.clips?.[0]?.sourceSegments?.[0]?.endMs,
+      30175,
+      'video slice native workflow uses acoustic internal silence intervals instead of relying only on coarse speech-to-text segment gaps',
+    );
+    assertRule(
+      nativeVideoSliceWorkflowCommands[3]?.request?.clips?.[0]?.sourceSegments?.some((segment) =>
+        segment.startMs <= 32400 && segment.endMs >= 41000
+      ),
+      'video slice native workflow never accepts acoustic silence compaction that drops a transcript-backed speech segment',
+    );
+    assertRule(
+      nativeVideoSliceWorkflowCommands[3]?.request?.clips?.[0]?.transcriptSegments?.every((transcriptSegment) =>
+        nativeVideoSliceWorkflowCommands[3]?.request?.clips?.[0]?.sourceSegments?.some((sourceSegment) =>
+          sourceSegment.startMs <= transcriptSegment.startMs &&
+            sourceSegment.endMs >= transcriptSegment.endMs
+        )
+      ),
+      'video slice native workflow sends sourceSegments that fully cover every embedded transcript segment',
+    );
+    assertRule(
+      (nativeVideoSliceWorkflowCommands[3]?.request?.clips?.[0]?.removedSilenceMs ?? 0) >= 1_000,
+      'video slice native workflow records removed internal silence before native rendering',
+    );
+    assertArrayIncludes(
+      nativeVideoSliceWorkflowCommands[3]?.request?.clips?.[0]?.risks,
+      'internal-silence-trimmed',
+      'video slice native workflow marks source-segment silence compaction for review evidence',
+    );
+    assertEqual(
+      nativeVideoSliceWorkflowCommands[3]?.request?.noiseReduction,
       true,
-      'video slice native workflow forwards the user-selected audio noise reduction setting to native rendering',
+      'video slice native workflow enables post-cut denoise for generated slice artifacts by default',
+    );
+    assertRule(
+      (nativeVideoSliceWorkflowCommands[3]?.request?.clips?.[0]?.speechStartMs ?? 0) >= 22000,
+      'video slice native workflow keeps the first speech boundary at or after the STT speech start when trusted audio trims opening silence',
+    );
+    assertRule(
+      (nativeVideoSliceWorkflowCommands[3]?.request?.clips?.[0]?.speechStartMs ?? Number.POSITIVE_INFINITY) <= 22200,
+      'video slice native workflow does not trim past the trusted opening audio activity start',
+    );
+    assertRule(
+      (nativeVideoSliceWorkflowCommands[3]?.request?.clips?.[0]?.boundaryPaddingBeforeMs ?? Number.POSITIVE_INFINITY) <= 200,
+      'video slice native workflow keeps leading silence padding within the professional Smart Slice limit',
     );
     assertEqual(
-      nativeVideoSliceWorkflowCommands[2]?.request?.clips?.[0]?.speechStartMs,
-      22000,
-      'video slice native workflow embeds unpadded speech start in each native clip request',
+      nativeVideoSliceWorkflowCommands[3]?.request?.clips?.[0]?.audioCleanupProfile,
+      'smart-slice-speech-denoise-v1',
+      'video slice native workflow embeds canonical audio cleanup evidence in each native clip request',
+    );
+    assertArrayIncludes(
+      nativeVideoSliceWorkflowCommands[3]?.request?.clips?.[0]?.risks,
+      'audio-boundary-refined',
+      'video slice native workflow sends successful audio boundary refinement evidence to native rendering',
+    );
+    assertArrayIncludes(
+      nativeVideoSliceWorkflowCommands[3]?.request?.clips?.[0]?.risks,
+      'smart-cut-engine',
+      'video slice native workflow sends Smart Cut Engine planning evidence to native rendering',
+    );
+    assertArrayNotIncludes(
+      nativeVideoSliceWorkflowCommands[3]?.request?.clips?.[0]?.risks,
+      'fallback-plan',
+      'video slice native workflow does not use legacy fallback-plan risk after Smart Cut Engine planning',
     );
     assertEqual(
-      nativeVideoSliceWorkflowCommands[2]?.request?.clips?.[0]?.boundaryPaddingBeforeMs,
-      200,
-      'video slice native workflow embeds professional leading silence padding in each native clip request',
+      nativeVideoSliceWorkflowTask?.sliceResults?.[0]?.noiseReductionApplied,
+      true,
+      'video slice native workflow records default post-cut denoise on task slice results',
+    );
+    assertArrayIncludes(
+      nativeVideoSliceWorkflowTask?.sliceResults?.[0]?.risks,
+      'audio-boundary-refined',
+      'video slice native workflow records successful audio boundary refinement evidence on task slice results',
+    );
+    assertArrayIncludes(
+      nativeVideoSliceWorkflowTask?.sliceResults?.[0]?.risks,
+      'smart-cut-engine',
+      'video slice native workflow records Smart Cut Engine planning evidence on task slice results',
+    );
+    assertArrayNotIncludes(
+      nativeVideoSliceWorkflowTask?.sliceResults?.[0]?.risks,
+      'fallback-plan',
+      'video slice native workflow does not persist legacy fallback-plan risk after Smart Cut Engine planning',
+    );
+    assertEqual(
+      nativeVideoSliceWorkflowTask?.sliceResults?.[0]?.sourceSegments?.length,
+      2,
+      'video slice native workflow persists retained source speech islands on completed task slice results',
+    );
+    assertRule(
+      (nativeVideoSliceWorkflowTask?.sliceResults?.[0]?.removedSilenceMs ?? 0) >= 1_000,
+      'video slice native workflow persists the amount of internal silence removed from completed task slice results',
     );
     assertEqual(
       nativeVideoSliceWorkflowTask?.sliceResults?.[0]?.transcriptText,
@@ -5911,9 +9321,2399 @@ async function run() {
       'video slice native workflow still exposes speech-to-text transcript text on each generated slice when subtitles are disabled',
     );
     assertEqual(
-      nativeVideoSliceWorkflowTask?.sliceResults?.[0]?.transcriptSegments?.[0]?.text,
+      nativeVideoSliceWorkflowTask?.sliceResults?.[0]?.transcriptSegments?.map((segment) => segment.text).join(' '),
       'Why viewers scroll is simple. Because the opening hides the problem, people do not know why they should care. So lead with the result and the retention payoff works.',
       'video slice native workflow records slice-level structured transcript segments when subtitles are disabled',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
+    const reviewBeforeRenderSmartSliceCommands = [];
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    await services.addAsset({
+      id: 'asset-source-review-before-render-smart-slice',
+      name: 'review-before-render-source.mp4',
+      type: 'video',
+      size: 654000,
+      url: 'asset://localhost/review-before-render-source.mp4',
+      createdAt: '2026-05-05T00:00:00.000Z',
+      updatedAt: '2026-05-05T00:00:00.000Z',
+    });
+    await services.addAsset({
+      id: 'asset-reference-review-before-render-smart-slice',
+      name: 'review-before-render-source.mp4',
+      type: 'video',
+      size: 654000,
+      url: 'asset://localhost/review-before-render-reference.mp4',
+      createdAt: '2026-05-05T00:00:01.000Z',
+      updatedAt: '2026-05-05T00:00:01.000Z',
+    });
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        contractVersion: 'smart-slice-human-review-contract',
+        hostKind: 'native-host',
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        reviewBeforeRenderSmartSliceCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'review-before-render-smart-slice-asset',
+          sandboxPath: `${configuredOutputDirectory}/inputs/review-before-render-smart-slice-asset.mp4`,
+          byteSize: 654000,
+          name: 'review-before-render-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 100_000,
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'smart slice human review contract',
+      }),
+      transcribeMedia: async (request) => {
+        reviewBeforeRenderSmartSliceCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'review-before-render-smart-slice-transcript-task',
+          configuredOutputDirectory,
+          [
+            {
+              startMs: 0,
+              endMs: 8_500,
+              text:
+                'Why review before rendering matters is simple. Because automatic slicing can miss operator intent, the first plan must be inspectable.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 8_520,
+              endMs: 19_000,
+              text:
+                'So the operator can split the plan, keep the useful opening, and render only the selected part.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 40_000,
+              endMs: 48_500,
+              text:
+                'What duplicate removal protects is clear. The second repeated segment should not be exported again.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 48_520,
+              endMs: 59_000,
+              text:
+                'So duplicate deletion keeps the reviewed export clean and preserves audit evidence.',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        reviewBeforeRenderSmartSliceCommands.push({ kind: 'analyze-audio-boundaries', request });
+        return createNativeVideoSliceAudioActivityAnalysisResult(request);
+      },
+      sliceVideo: async (request) => {
+        reviewBeforeRenderSmartSliceCommands.push({ kind: 'slice', request });
+        return {
+          taskUuid: 'review-before-render-smart-slice-render-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: `${configuredOutputDirectory}/tasks/review-before-render-smart-slice-render-task`,
+          ffmpegExecutable: 'ffmpeg',
+          slices: request.clips.map((clip, index) => {
+            const sliceNumber = index + 1;
+            const output = createNativeTaskOutputArtifact(
+              'review-before-render-smart-slice-render-task',
+              clip.outputFileName ?? `review-before-render-smart-slice-${sliceNumber}.mp4`,
+              configuredOutputDirectory,
+            );
+            const thumbnail = createNativeTaskCoverArtifact(
+              'review-before-render-smart-slice-render-task',
+              `review-before-render-smart-slice-thumb-${sliceNumber}.jpg`,
+              configuredOutputDirectory,
+            );
+            return {
+              artifactUuid: `review-before-render-smart-slice-artifact-${sliceNumber}`,
+              artifactPath: output.artifactPath,
+              thumbnailArtifactUuid: `review-before-render-smart-slice-thumb-artifact-${sliceNumber}`,
+              thumbnailArtifactPath: thumbnail.artifactPath,
+              taskOutputDir: output.taskOutputDir,
+              byteSize: 240000 + index,
+              thumbnailByteSize: 12000 + index,
+              format: 'mp4',
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+            };
+          }),
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    }, { taskEvidenceCommands: reviewBeforeRenderSmartSliceCommands });
+    const reviewBeforeRenderAnalyzeResult = await withImmediateTimers(async () =>
+      analyzeVideoSlicePlan({
+        fileId: 'asset-source-review-before-render-smart-slice',
+        file: createTrustedLocalMediaFile(
+          commons,
+          'D:/media/review-before-render-source.mp4',
+          'review-before-render-source.mp4',
+        ),
+        mode: 'contract-mode',
+        llmModel: 'gemini-3-flash-preview',
+        targetPlatform: 'generic',
+        idealDuration: 25,
+        continuityLevel: 'standard',
+        minDuration: 10,
+        maxDuration: 25,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'emotion',
+        enableNoiseReduction: false,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSmartDedup: true,
+        videoDedupParams: {
+          mode: 'slice-result-dedup',
+          sourceAssetIds: ['asset-source-review-before-render-smart-slice'],
+          referenceAssetIds: ['asset-reference-review-before-render-smart-slice'],
+          strategies: ['exact-file-hash', 'container-normalized', 'transcript-semantic'],
+          sensitivity: 'balanced',
+          minMatchDurationMs: 8_000,
+          ignoreIntroOutro: true,
+          introOutroMaxDurationMs: 12_000,
+          actionMode: 'review-before-action',
+        },
+        enableSubtitles: false,
+      }),
+    );
+    const reviewBeforeRenderAnalyzedTask = readScopedStoredArray(services, 'tasks')
+      .find((task) => task.id === reviewBeforeRenderAnalyzeResult.taskId);
+    const reviewBeforeRenderSession = reviewBeforeRenderAnalyzedTask?.sliceReviewSession;
+    const reviewBeforeRenderSegments = reviewBeforeRenderSession?.segments ?? [];
+    const firstReviewSegment = reviewBeforeRenderSegments[0];
+    const secondReviewSegment = reviewBeforeRenderSegments[1];
+    assertEqual(
+      reviewBeforeRenderAnalyzeResult.success,
+      true,
+      'Smart Slice review-before-render analysis reports success without rendering',
+    );
+    assertEqual(
+      reviewBeforeRenderAnalyzedTask?.status,
+      types.AUTOCUT_TASK_STATUS.reviewing,
+      'Smart Slice review-before-render analysis persists a review-ready task',
+    );
+    assertEqual(
+      reviewBeforeRenderAnalyzedTask?.currentStepId,
+      'human-review',
+      'Smart Slice review-before-render analysis stops at the human-review checkpoint',
+    );
+    assertRule(
+      reviewBeforeRenderAnalyzedTask?.executionCheckpoint?.completedStepIds?.includes('analyze-duplicates'),
+      'Smart Slice intelligent dedup runs as a checkpoint before human review when enabled',
+    );
+    assertRule(
+      (reviewBeforeRenderAnalyzedTask?.executionCheckpoint?.artifacts?.['analyze-duplicates']?.smartDedupReport?.matchCount ?? 0) >= 1,
+      'Smart Slice intelligent dedup checkpoint persists the reusable video dedup report',
+    );
+    assertRule(
+      (reviewBeforeRenderSession?.smartDedupReport?.matchCount ?? 0) >= 1,
+      'Smart Slice review session exposes the smart dedup report for the review UI',
+    );
+    assertRule(
+      reviewBeforeRenderSession?.duplicateGroups?.some((group) => group.reason === 'smart-dedup'),
+      'Smart Slice review session converts video dedup matches into reviewable duplicate groups',
+    );
+    assertRule(
+      reviewBeforeRenderSegments.some((segment) => segment.risks?.includes('smart-dedup-review')),
+      'Smart Slice review segments keep smart dedup matches as human-review risks instead of silently deleting content',
+    );
+    assertRule(
+      reviewBeforeRenderSegments.length >= 2,
+      'Smart Slice review-before-render analysis creates multiple reviewable semantic segments',
+    );
+    assertRule(
+      !reviewBeforeRenderSmartSliceCommands.some((entry) => entry.kind === 'slice'),
+      'Smart Slice review-before-render analysis does not render native slices before human approval',
+    );
+    const reviewBeforeRenderReviewSessionEvidenceWrite = reviewBeforeRenderSmartSliceCommands.find(
+      (entry) => entry.kind === 'task-evidence' && entry.request?.relativePath === 'evidence/review-session.json',
+    );
+    assertEqual(
+      reviewBeforeRenderReviewSessionEvidenceWrite?.request?.contentJson?.schema,
+      'smart-slice.review-session.v1',
+      'Smart Slice review-before-render persists a versioned review-session evidence file before human approval',
+    );
+    assertEqual(
+      reviewBeforeRenderReviewSessionEvidenceWrite?.request?.contentJson?.segmentCount,
+      reviewBeforeRenderSession?.segments?.length,
+      'Smart Slice review-session evidence records the reviewable segment count',
+    );
+    assertEqual(
+      reviewBeforeRenderAnalyzedTask?.executionCheckpoint?.artifacts?.['human-review']?.reviewSessionEvidence?.relativePath,
+      'evidence/review-session.json',
+      'Smart Slice review-before-render checkpoint references the review-session evidence artifact',
+    );
+    const reviewDraftSaveEdit = {
+      id: 'review-edit-draft-exclude-second',
+      kind: 'exclude',
+      segmentIds: [secondReviewSegment?.id].filter(Boolean),
+      createdAt: '2026-05-05T00:00:00.250Z',
+      reason: 'draft correction should persist before rendering',
+    };
+    const reviewDraftCorrectionEdit = {
+      id: 'review-edit-correct-first-boundary-speaker',
+      kind: 'correctSegment',
+      segmentIds: [firstReviewSegment?.id].filter(Boolean),
+      createdAt: '2026-05-05T00:00:00.300Z',
+      reason: 'operator corrected boundary, transcript title, and speaker label during review',
+      patch: {
+        title: 'Operator corrected review opening',
+        startMs: firstReviewSegment ? firstReviewSegment.startMs + 250 : undefined,
+        endMs: firstReviewSegment ? firstReviewSegment.endMs - 250 : undefined,
+        transcriptText: 'Operator corrected transcript for the selected opening.',
+        speakerIds: ['speaker-operator'],
+        speakerRoles: ['Host'],
+        manualNotes: 'corrected while previewing the segment',
+      },
+    };
+    const reviewDraftSaveResult = await withImmediateTimers(() =>
+      saveVideoSliceReviewDraft(reviewBeforeRenderAnalyzeResult.taskId, {
+        reviewSessionId: reviewBeforeRenderSession?.id ?? '',
+        selectedSegmentIds: [firstReviewSegment?.id].filter(Boolean),
+        manualEdits: [reviewDraftSaveEdit, reviewDraftCorrectionEdit],
+      }),
+    );
+    const reviewBeforeRenderDraftTask = readScopedStoredArray(services, 'tasks')
+      .find((task) => task.id === reviewBeforeRenderAnalyzeResult.taskId);
+    const reviewDraftManualEditsEvidenceWrite = reviewBeforeRenderSmartSliceCommands
+      .filter((entry) => entry.kind === 'task-evidence' && entry.request?.relativePath === 'evidence/manual-edits.json')
+      .at(-1);
+    const reviewDraftRenderSelectionEvidenceWrite = reviewBeforeRenderSmartSliceCommands
+      .filter((entry) => entry.kind === 'task-evidence' && entry.request?.relativePath === 'evidence/render-selection.json')
+      .at(-1);
+    const reviewDraftEventsEvidenceWrite = reviewBeforeRenderSmartSliceCommands
+      .filter((entry) => entry.kind === 'task-evidence' && entry.request?.relativePath === 'evidence/review-events.json')
+      .at(-1);
+    assertEqual(
+      reviewDraftSaveResult.reviewSessionId,
+      reviewBeforeRenderSession?.id,
+      'Smart Slice review draft save returns the current review session id',
+    );
+    assertEqual(
+      reviewBeforeRenderDraftTask?.status,
+      types.AUTOCUT_TASK_STATUS.reviewing,
+      'Smart Slice review draft save keeps the task waiting for human review',
+    );
+    assertEqual(
+      reviewBeforeRenderDraftTask?.sliceReviewSession?.manualEdits?.some((edit) => edit.id === reviewDraftSaveEdit.id),
+      true,
+      'Smart Slice review draft save persists human corrections on the task before rendering',
+    );
+    assertEqual(
+      reviewBeforeRenderDraftTask?.sliceReviewSession?.segments?.find((segment) => segment.id === firstReviewSegment?.id)?.title,
+      'Operator corrected review opening',
+      'Smart Slice review draft save applies manual segment correction edits to the task review session',
+    );
+    assertEqual(
+      reviewBeforeRenderDraftTask?.sliceReviewSession?.segments?.find((segment) => segment.id === firstReviewSegment?.id)?.speakerRoles?.[0],
+      'Host',
+      'Smart Slice review draft save persists corrected speaker roles for multi-speaker review',
+    );
+    assertEqual(
+      reviewDraftManualEditsEvidenceWrite?.request?.contentJson?.schema,
+      'smart-slice.manual-edits.v1',
+      'Smart Slice review draft save persists manual-edits evidence before rendering',
+    );
+    assertEqual(
+      reviewDraftEventsEvidenceWrite?.request?.contentJson?.schema,
+      'smart-slice.review-events.v1',
+      'Smart Slice review draft save persists a replayable review event log before rendering',
+    );
+    assertEqual(
+      reviewDraftEventsEvidenceWrite?.request?.contentJson?.events?.at(-1)?.editId,
+      reviewDraftCorrectionEdit.id,
+      'Smart Slice review event log records the latest real-time correction edit id',
+    );
+    assertEqual(
+      reviewDraftRenderSelectionEvidenceWrite?.request?.contentJson?.schema,
+      'smart-slice.render-selection.v1',
+      'Smart Slice review draft save persists render-selection draft evidence before rendering',
+    );
+    await assertRejects(
+      () => withImmediateTimers(() => renderVideoSlicePlan(reviewBeforeRenderAnalyzeResult.taskId, {
+        reviewSessionId: 'wrong-review-session',
+        selectedSegmentIds: [firstReviewSegment?.id].filter(Boolean),
+      })),
+      'review session does not match',
+      'Smart Slice render-selected rejects a review selection from the wrong review session',
+    );
+    await assertRejects(
+      () => withImmediateTimers(() => renderVideoSlicePlan(reviewBeforeRenderAnalyzeResult.taskId, {
+        reviewSessionId: reviewBeforeRenderSession?.id ?? '',
+        selectedSegmentIds: [],
+      })),
+      'at least one selected review segment',
+      'Smart Slice render-selected rejects an empty manual segment selection',
+    );
+    await assertRejects(
+      () => withImmediateTimers(() => renderVideoSlicePlan(reviewBeforeRenderAnalyzeResult.taskId, {
+        reviewSessionId: reviewBeforeRenderSession?.id ?? '',
+        selectedSegmentIds: ['missing-review-segment'],
+      })),
+      'unknown review segment',
+      'Smart Slice render-selected rejects unknown review segment ids before native rendering',
+    );
+    await assertRejects(
+      () => withImmediateTimers(() => renderVideoSlicePlan(reviewBeforeRenderAnalyzeResult.taskId, {
+        reviewSessionId: reviewBeforeRenderSession?.id ?? '',
+        selectedSegmentIds: [secondReviewSegment?.id].filter(Boolean),
+        manualEdits: [{
+          id: 'review-edit-delete-selected-duplicate-preflight',
+          kind: 'deleteDuplicate',
+          segmentIds: [firstReviewSegment?.id, secondReviewSegment?.id].filter(Boolean),
+          createdAt: '2026-05-05T00:00:00.500Z',
+          keepSegmentId: firstReviewSegment?.id,
+          reason: 'duplicate segment must not be renderable even when selected ids include it',
+        }],
+      })),
+      'selected non-duplicate',
+      'Smart Slice render-selected rejects duplicate or excluded segment ids before native rendering',
+    );
+    const splitReviewEdit = {
+      id: 'review-edit-split-first',
+      kind: 'split',
+      segmentIds: [firstReviewSegment?.id].filter(Boolean),
+      createdAt: '2026-05-05T00:00:00.000Z',
+      splitAtMs: firstReviewSegment
+        ? Math.round((firstReviewSegment.startMs + firstReviewSegment.endMs) / 2)
+        : undefined,
+      createdSegmentIds: ['review-segment-first-a', 'review-segment-first-b'],
+      reason: 'manual split should be idempotent when the UI resubmits the same edit',
+    };
+    const deleteDuplicateReviewEdit = {
+      id: 'review-edit-delete-duplicate-second',
+      kind: 'deleteDuplicate',
+      segmentIds: [firstReviewSegment?.id, secondReviewSegment?.id].filter(Boolean),
+      createdAt: '2026-05-05T00:00:01.000Z',
+      keepSegmentId: firstReviewSegment?.id,
+      reason: 'manual duplicate deletion should exclude the repeated segment',
+    };
+    const reviewBeforeRenderRenderResult = await withImmediateTimers(() =>
+      renderVideoSlicePlan(reviewBeforeRenderAnalyzeResult.taskId, {
+        reviewSessionId: reviewBeforeRenderSession?.id ?? '',
+        selectedSegmentIds: ['review-segment-first-a'],
+        manualEdits: [
+          splitReviewEdit,
+          splitReviewEdit,
+          deleteDuplicateReviewEdit,
+          deleteDuplicateReviewEdit,
+        ],
+      }),
+    );
+    const reviewBeforeRenderRenderedTask = readScopedStoredArray(services, 'tasks')
+      .find((task) => task.id === reviewBeforeRenderAnalyzeResult.taskId);
+    const reviewBeforeRenderRenderRequest = reviewBeforeRenderSmartSliceCommands
+      .find((entry) => entry.kind === 'slice')?.request;
+    assertEqual(
+      reviewBeforeRenderRenderResult.nativeTaskId,
+      'review-before-render-smart-slice-render-task',
+      'Smart Slice render-selected resumes review-ready tasks and dispatches native rendering',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderRequest?.clips?.length,
+      1,
+      'Smart Slice render-selected renders only the manually selected reviewed segment',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderRequest?.clips?.[0]?.label,
+      'Operator corrected review opening A',
+      'Smart Slice render-selected uses the manual split segment title for the native clip',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderedTask?.status,
+      types.AUTOCUT_TASK_STATUS.completed,
+      'Smart Slice render-selected completes the persisted review task after rendering',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderedTask?.sliceReviewSession?.status,
+      'rendered',
+      'Smart Slice render-selected marks the review session rendered after successful native output',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderedTask?.sliceResults?.length,
+      1,
+      'Smart Slice render-selected persists only the selected reviewed slice result',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderedTask?.sliceReviewSession?.manualEdits?.filter((edit) => edit.id === splitReviewEdit.id).length,
+      1,
+      'Smart Slice render-selected applies duplicate manual split edit ids only once',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderedTask?.sliceReviewSession?.manualEdits?.filter((edit) => edit.id === deleteDuplicateReviewEdit.id).length,
+      1,
+      'Smart Slice render-selected applies duplicate manual duplicate-delete edit ids only once',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderedTask?.sliceReviewSession?.segments?.filter((segment) =>
+        segment.id === 'review-segment-first-a' || segment.id === 'review-segment-first-b'
+      ).length,
+      2,
+      'Smart Slice render-selected keeps manual split idempotent instead of recursively splitting generated segments',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderedTask?.sliceReviewSession?.segments?.find((segment) => segment.id === secondReviewSegment?.id)?.status,
+      'duplicate',
+      'Smart Slice render-selected preserves manual duplicate deletion on the review session',
+    );
+    const reviewBeforeRenderManualEditsEvidenceWrite = reviewBeforeRenderSmartSliceCommands
+      .filter((entry) => entry.kind === 'task-evidence' && entry.request?.relativePath === 'evidence/manual-edits.json')
+      .at(-1);
+    const reviewBeforeRenderRenderSelectionEvidenceWrite = reviewBeforeRenderSmartSliceCommands
+      .filter((entry) => entry.kind === 'task-evidence' && entry.request?.relativePath === 'evidence/render-selection.json')
+      .at(-1);
+    const reviewBeforeRenderEventsEvidenceWrite = reviewBeforeRenderSmartSliceCommands
+      .filter((entry) => entry.kind === 'task-evidence' && entry.request?.relativePath === 'evidence/review-events.json')
+      .at(-1);
+    const reviewBeforeRenderArtifactManifestEvidenceWrite = reviewBeforeRenderSmartSliceCommands.find(
+      (entry) => entry.kind === 'task-evidence' && entry.request?.relativePath === 'evidence/render-artifact-manifest.json',
+    );
+    assertEqual(
+      reviewBeforeRenderManualEditsEvidenceWrite?.request?.contentJson?.schema,
+      'smart-slice.manual-edits.v1',
+      'Smart Slice render-selected persists a versioned manual-edits evidence file for real-time correction audit',
+    );
+    assertEqual(
+      reviewBeforeRenderManualEditsEvidenceWrite?.request?.contentJson?.editCount,
+      4,
+      'Smart Slice manual-edits evidence stores saved draft corrections plus idempotently applied render-time edits rather than duplicate UI submissions',
+    );
+    assertEqual(
+      reviewBeforeRenderEventsEvidenceWrite?.request?.contentJson?.eventCount,
+      4,
+      'Smart Slice review-events evidence stores one replayable event per unique manual correction',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderedTask?.executionCheckpoint?.artifacts?.['human-review']?.reviewEventsEvidence?.relativePath,
+      'evidence/review-events.json',
+      'Smart Slice render-selected checkpoint references the review event log evidence artifact',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderSelectionEvidenceWrite?.request?.contentJson?.schema,
+      'smart-slice.render-selection.v1',
+      'Smart Slice render-selected persists a versioned render-selection evidence file',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderSelectionEvidenceWrite?.request?.contentJson?.selectedSegmentIds?.[0],
+      'review-segment-first-a',
+      'Smart Slice render-selection evidence records the exact human-selected segment ids',
+    );
+    assertEqual(
+      reviewBeforeRenderArtifactManifestEvidenceWrite?.request?.contentJson?.schema,
+      'smart-slice.render-artifact-manifest.v1',
+      'Smart Slice render-selected persists a versioned render artifact manifest',
+    );
+    assertEqual(
+      reviewBeforeRenderArtifactManifestEvidenceWrite?.request?.contentJson?.slices?.[0]?.reviewSegmentIds?.[0],
+      'review-segment-first-a',
+      'Smart Slice render artifact manifest links output slices back to reviewed segment ids',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderedTask?.executionCheckpoint?.artifacts?.['human-review']?.manualEditsEvidence?.relativePath,
+      'evidence/manual-edits.json',
+      'Smart Slice render-selected checkpoint references the manual-edits evidence artifact',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderedTask?.executionCheckpoint?.artifacts?.['human-review']?.renderSelectionEvidence?.relativePath,
+      'evidence/render-selection.json',
+      'Smart Slice render-selected checkpoint references the render-selection evidence artifact',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderedTask?.executionCheckpoint?.artifacts?.['verify-artifacts']?.renderArtifactManifestEvidence?.relativePath,
+      'evidence/render-artifact-manifest.json',
+      'Smart Slice render-selected checkpoint references the render artifact manifest evidence',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
+    const localImportSmartDedupCommands = [];
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    await services.addAsset({
+      id: 'asset-reference-local-import-smart-dedup',
+      name: 'local-import-smart-dedup-source.mp4',
+      type: 'video',
+      size: 654000,
+      url: 'asset://localhost/local-import-smart-dedup-reference.mp4',
+      createdAt: '2026-05-05T00:00:01.000Z',
+      updatedAt: '2026-05-05T00:00:01.000Z',
+    });
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        contractVersion: 'smart-slice-local-import-dedup-contract',
+        hostKind: 'native-host',
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        localImportSmartDedupCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'local-import-smart-dedup-source-asset',
+          sandboxPath: `${configuredOutputDirectory}/inputs/local-import-smart-dedup-source.mp4`,
+          byteSize: 654000,
+          name: 'local-import-smart-dedup-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 80_000,
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'local import Smart Slice dedup contract',
+      }),
+      transcribeMedia: async (request) => {
+        localImportSmartDedupCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'local-import-smart-dedup-transcript-task',
+          configuredOutputDirectory,
+          [
+            {
+              startMs: 0,
+              endMs: 12_000,
+              text:
+                'The local import dedup case starts with a complete opening. The source must be registered before duplicate analysis can compare it.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 12_500,
+              endMs: 24_000,
+              text:
+                'The local import dedup case ends with the same commercial point. Smart Slice should flag the imported source for review.',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        localImportSmartDedupCommands.push({ kind: 'analyze-audio-boundaries', request });
+        return createNativeVideoSliceAudioActivityAnalysisResult(request);
+      },
+      sliceVideo: async (request) => {
+        localImportSmartDedupCommands.push({ kind: 'slice', request });
+        throw new Error('local import smart dedup review test should stop before rendering');
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    }, { taskEvidenceCommands: localImportSmartDedupCommands });
+    const localImportSmartDedupResult = await withImmediateTimers(async () =>
+      analyzeVideoSlicePlan({
+        file: createTrustedLocalMediaFile(
+          commons,
+          'D:/media/local-import-smart-dedup-source.mp4',
+          'local-import-smart-dedup-source.mp4',
+        ),
+        mode: 'contract-mode',
+        llmModel: 'gemini-3-flash-preview',
+        targetPlatform: 'generic',
+        idealDuration: 25,
+        continuityLevel: 'standard',
+        minDuration: 10,
+        maxDuration: 25,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'emotion',
+        enableNoiseReduction: false,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSmartDedup: true,
+        videoDedupParams: {
+          mode: 'slice-result-dedup',
+          referenceAssetIds: ['asset-reference-local-import-smart-dedup'],
+          strategies: ['exact-file-hash', 'container-normalized'],
+          sensitivity: 'balanced',
+          minMatchDurationMs: 8_000,
+          ignoreIntroOutro: true,
+          introOutroMaxDurationMs: 12_000,
+          actionMode: 'review-before-action',
+        },
+        enableSubtitles: false,
+      }),
+    );
+    const localImportSmartDedupTask = readScopedStoredArray(services, 'tasks')
+      .find((task) => task.id === localImportSmartDedupResult.taskId);
+    const localImportSourceAsset = readScopedStoredArray(services, 'assets')
+      .find((asset) => asset.id === 'local-import-smart-dedup-source-asset');
+    assertEqual(
+      localImportSmartDedupResult.success,
+      true,
+      'Smart Slice local import dedup analysis reports success without rendering',
+    );
+    assertEqual(
+      localImportSourceAsset,
+      undefined,
+      'Smart Slice local import dedup uses runtime source evidence without polluting the asset library before rendering',
+    );
+    assertRule(
+      (localImportSmartDedupTask?.sliceReviewSession?.smartDedupReport?.matchCount ?? 0) >= 1,
+      'Smart Slice intelligent dedup scans the current trusted local import when the user did not select an existing asset id',
+    );
+    assertRule(
+      localImportSmartDedupTask?.sliceReviewSession?.duplicateGroups?.some((group) => group.reason === 'smart-dedup'),
+      'Smart Slice local import dedup matches are exposed as review duplicate groups',
+    );
+    assertRule(
+      !localImportSmartDedupCommands.some((entry) => entry.kind === 'slice'),
+      'Smart Slice local import dedup review analysis does not render before human approval',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
+    const secondsTimestampSmartSliceCommands = [];
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        contractVersion: 'smart-slice-seconds-timestamp-ui-regression',
+        hostKind: 'native-host',
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        secondsTimestampSmartSliceCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'seconds-timestamp-smart-slice-asset',
+          sandboxPath: `${configuredOutputDirectory}/inputs/seconds-timestamp-smart-slice-asset.mp4`,
+          byteSize: 654000,
+          name: 'seconds-timestamp-smart-slice-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 90_000,
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'seconds timestamp Smart Slice UI regression',
+      }),
+      transcribeMedia: async (request) => {
+        secondsTimestampSmartSliceCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'seconds-timestamp-smart-slice-transcript-task',
+          configuredOutputDirectory,
+          [
+            {
+              startMs: 0,
+              endMs: 8.5,
+              text:
+                'Why native validation matters is simple. Because bad native validation can break review, the native validation problem must be caught before assets are saved.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 8.52,
+              endMs: 19,
+              text:
+                'So native validation verifies every result and the native validation workflow stays safe.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 40,
+              endMs: 48.5,
+              text:
+                'What makes artifact checks reliable is clear. The artifact check shows missing artifact thumbnails before publishing, creating an artifact conflict for reviewers.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 48.52,
+              endMs: 59,
+              text:
+                'So the artifact check rejects the bad artifact before persistence and keeps artifact storage clean.',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        secondsTimestampSmartSliceCommands.push({ kind: 'analyze-audio-boundaries', request });
+        return createNativeVideoSliceAudioActivityAnalysisResult(request);
+      },
+      sliceVideo: async (request) => {
+        secondsTimestampSmartSliceCommands.push({ kind: 'slice', request });
+        return {
+          taskUuid: 'seconds-timestamp-smart-slice-render-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: `${configuredOutputDirectory}/tasks/seconds-timestamp-smart-slice-render-task`,
+          ffmpegExecutable: 'ffmpeg',
+          slices: request.clips.map((clip, index) => {
+            const sliceNumber = index + 1;
+            const output = createNativeTaskOutputArtifact(
+              'seconds-timestamp-smart-slice-render-task',
+              clip.outputFileName ?? `seconds-timestamp-smart-slice-${sliceNumber}.mp4`,
+              configuredOutputDirectory,
+            );
+            const thumbnail = createNativeTaskCoverArtifact(
+              'seconds-timestamp-smart-slice-render-task',
+              `seconds-timestamp-smart-slice-thumb-${sliceNumber}.jpg`,
+              configuredOutputDirectory,
+            );
+            return {
+              artifactUuid: `seconds-timestamp-smart-slice-artifact-${sliceNumber}`,
+              artifactPath: output.artifactPath,
+              thumbnailArtifactUuid: `seconds-timestamp-smart-slice-thumb-artifact-${sliceNumber}`,
+              thumbnailArtifactPath: thumbnail.artifactPath,
+              taskOutputDir: output.taskOutputDir,
+              byteSize: 240000 + index,
+              thumbnailByteSize: 12000 + index,
+              format: 'mp4',
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+            };
+          }),
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    const secondsTimestampSmartSliceResult = await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-seconds-timestamp-smart-slice',
+        file: createTrustedLocalMediaFile(
+          commons,
+          'D:/media/seconds-timestamp-smart-slice-source.mp4',
+          'seconds-timestamp-smart-slice-source.mp4',
+        ),
+        mode: 'contract-mode',
+        llmModel: 'gemini-3-flash-preview',
+        targetPlatform: 'generic',
+        idealDuration: 25,
+        continuityLevel: 'standard',
+        minDuration: 10,
+        maxDuration: 20,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'emotion',
+        enableNoiseReduction: false,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSubtitles: false,
+      }),
+    );
+    const secondsTimestampSmartSliceTask = readScopedStoredArray(services, 'tasks')
+      .find((task) => task.id === secondsTimestampSmartSliceResult.taskId);
+    const secondsTimestampSmartSliceRenderRequest = secondsTimestampSmartSliceCommands
+      .find((entry) => entry.kind === 'slice')?.request;
+    assertEqual(
+      secondsTimestampSmartSliceResult.success,
+      true,
+      'Smart Slice UI workflow normalizes STT seconds timestamps and reports success',
+    );
+    assertEqual(
+      secondsTimestampSmartSliceRenderRequest?.clips?.length,
+      2,
+      'Smart Slice UI workflow renders multiple transcript-derived clips when STT timestamps arrive in seconds',
+    );
+    assertRule(
+      secondsTimestampSmartSliceRenderRequest?.clips?.every((clip) => clip.startMs >= 0 && clip.durationMs >= 10_000),
+      'Smart Slice UI workflow converts seconds timestamps into renderable millisecond clip windows before native rendering',
+    );
+    assertEqual(
+      secondsTimestampSmartSliceRenderRequest?.clips?.[1]?.speechStartMs,
+      40_000,
+      'Smart Slice UI workflow preserves the second story timestamp after seconds-to-milliseconds normalization',
+    );
+    assertEqual(
+      secondsTimestampSmartSliceTask?.sliceResults?.length,
+      2,
+      'Smart Slice UI workflow persists both generated clips after seconds timestamp normalization',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
+    const unknownDurationSecondsTimestampSmartSliceCommands = [];
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        contractVersion: 'smart-slice-unknown-duration-seconds-timestamp-ui-regression',
+        hostKind: 'native-host',
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        unknownDurationSecondsTimestampSmartSliceCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'unknown-duration-seconds-timestamp-smart-slice-asset',
+          sandboxPath: `${configuredOutputDirectory}/inputs/unknown-duration-seconds-timestamp-smart-slice-asset.mp4`,
+          byteSize: 654000,
+          name: 'unknown-duration-seconds-timestamp-smart-slice-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'unknown duration seconds timestamp Smart Slice UI regression',
+      }),
+      transcribeMedia: async (request) => {
+        unknownDurationSecondsTimestampSmartSliceCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'unknown-duration-seconds-timestamp-smart-slice-transcript-task',
+          configuredOutputDirectory,
+          [
+            {
+              startMs: 0,
+              endMs: 8.5,
+              text:
+                'Why native validation matters is simple. Because bad native validation can break review, the native validation problem must be caught before assets are saved.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 8.52,
+              endMs: 19,
+              text:
+                'So native validation verifies every result and the native validation workflow stays safe.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 40,
+              endMs: 48.5,
+              text:
+                'What makes artifact checks reliable is clear. The artifact check shows missing artifact thumbnails before publishing, creating an artifact conflict for reviewers.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 48.52,
+              endMs: 59,
+              text:
+                'So the artifact check rejects the bad artifact before persistence and keeps artifact storage clean.',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        unknownDurationSecondsTimestampSmartSliceCommands.push({ kind: 'analyze-audio-boundaries', request });
+        return createNativeVideoSliceAudioActivityAnalysisResult(request);
+      },
+      sliceVideo: async (request) => {
+        unknownDurationSecondsTimestampSmartSliceCommands.push({ kind: 'slice', request });
+        return {
+          taskUuid: 'unknown-duration-seconds-timestamp-smart-slice-render-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: `${configuredOutputDirectory}/tasks/unknown-duration-seconds-timestamp-smart-slice-render-task`,
+          ffmpegExecutable: 'ffmpeg',
+          slices: request.clips.map((clip, index) => {
+            const sliceNumber = index + 1;
+            const output = createNativeTaskOutputArtifact(
+              'unknown-duration-seconds-timestamp-smart-slice-render-task',
+              clip.outputFileName ?? `unknown-duration-seconds-timestamp-smart-slice-${sliceNumber}.mp4`,
+              configuredOutputDirectory,
+            );
+            const thumbnail = createNativeTaskCoverArtifact(
+              'unknown-duration-seconds-timestamp-smart-slice-render-task',
+              `unknown-duration-seconds-timestamp-smart-slice-thumb-${sliceNumber}.jpg`,
+              configuredOutputDirectory,
+            );
+            return {
+              artifactUuid: `unknown-duration-seconds-timestamp-smart-slice-artifact-${sliceNumber}`,
+              artifactPath: output.artifactPath,
+              thumbnailArtifactUuid: `unknown-duration-seconds-timestamp-smart-slice-thumb-artifact-${sliceNumber}`,
+              thumbnailArtifactPath: thumbnail.artifactPath,
+              taskOutputDir: output.taskOutputDir,
+              byteSize: 240000 + index,
+              thumbnailByteSize: 12000 + index,
+              format: 'mp4',
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+            };
+          }),
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    const unknownDurationSecondsTimestampSmartSliceResult = await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-unknown-duration-seconds-timestamp-smart-slice',
+        file: createTrustedLocalMediaFile(
+          commons,
+          'D:/media/unknown-duration-seconds-timestamp-smart-slice-source.mp4',
+          'unknown-duration-seconds-timestamp-smart-slice-source.mp4',
+        ),
+        mode: 'contract-mode',
+        llmModel: 'gemini-3-flash-preview',
+        targetPlatform: 'generic',
+        idealDuration: 25,
+        continuityLevel: 'standard',
+        minDuration: 10,
+        maxDuration: 20,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'emotion',
+        enableNoiseReduction: false,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSubtitles: false,
+      }),
+    );
+    const unknownDurationSecondsTimestampSmartSliceRenderRequest = unknownDurationSecondsTimestampSmartSliceCommands
+      .find((entry) => entry.kind === 'slice')?.request;
+    assertEqual(
+      unknownDurationSecondsTimestampSmartSliceResult.success,
+      true,
+      'Smart Slice UI workflow normalizes STT seconds timestamps even when imported media duration is unavailable',
+    );
+    assertEqual(
+      unknownDurationSecondsTimestampSmartSliceRenderRequest?.clips?.length,
+      2,
+      'Smart Slice UI workflow renders multiple transcript-derived clips when upload metadata lacks duration',
+    );
+    assertRule(
+      unknownDurationSecondsTimestampSmartSliceRenderRequest?.clips?.every((clip) => clip.durationMs >= 10_000),
+      'Smart Slice UI workflow converts unknown-duration seconds timestamps into renderable millisecond clip windows',
+    );
+    assertEqual(
+      unknownDurationSecondsTimestampSmartSliceRenderRequest?.clips?.[1]?.speechStartMs,
+      40_000,
+      'Smart Slice UI workflow preserves later story timing after unknown-duration seconds-to-milliseconds normalization',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
+    const autoInitializingSmartSliceCommands = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        speechTranscriptionModelDownloadCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        autoInitializingSmartSliceCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'auto-initializing-smart-slice-asset',
+          sandboxPath: `${configuredOutputDirectory}/inputs/auto-initializing-smart-slice-asset.mp4`,
+          byteSize: 654000,
+          name: 'auto-initializing-smart-slice-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 62000,
+        };
+      },
+      downloadSpeechTranscriptionModel: async (request) => {
+        autoInitializingSmartSliceCommands.push({ kind: 'download-model', request });
+        services.dispatchAutoCutSpeechTranscriptionModelDownloadProgress({
+          providerId: request.providerId,
+          presetId: request.presetId,
+          fileName: request.fileName,
+          phase: types.AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE.downloading,
+          downloadedBytes: 286785536,
+          totalBytes: 573571072,
+          progress: 50,
+          sourceUrl: request.url,
+        });
+        return {
+          providerId: request.providerId,
+          presetId: request.presetId,
+          fileName: request.fileName,
+          modelPath: `${configuredOutputDirectory}/models/speech/ggml-large-v3-turbo-q5_0.bin`,
+          byteSize: 573571072,
+          downloaded: true,
+          sourceUrl: request.url,
+          sha256: request.sha256,
+        };
+      },
+      probeSpeechTranscription: async (request) => {
+        autoInitializingSmartSliceCommands.push({ kind: 'probe', request });
+        return {
+          ready: Boolean(request.executablePath && request.modelPath),
+          executablePath: request.executablePath || 'D:/tools/whisper-cli.exe',
+          modelPath: request.modelPath || '',
+          sourceKind: request.sourceKind ?? 'execution-preflight',
+          diagnostics: [],
+          versionLine: 'auto initializing smart slice STT',
+        };
+      },
+      transcribeMedia: async (request) => {
+        autoInitializingSmartSliceCommands.push({ kind: 'transcribe', request });
+        return createStandardNativeVideoSliceTranscriptResult(
+          request,
+          'auto-initializing-smart-slice-transcript-task',
+          configuredOutputDirectory,
+        );
+      },
+      sliceVideo: async (request) => {
+        autoInitializingSmartSliceCommands.push({ kind: 'slice', request });
+        return {
+          taskUuid: 'auto-initializing-smart-slice-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: createNativeTaskOutputArtifact(
+            'auto-initializing-smart-slice-task',
+            'auto-initializing-smart-slice-artifact-1.mp4',
+            configuredOutputDirectory,
+          ).taskOutputDir,
+          ffmpegExecutable: 'ffmpeg',
+          slices: request.clips.map((clip, index) => {
+            const output = createNativeTaskOutputArtifact(
+              'auto-initializing-smart-slice-task',
+              `auto-initializing-smart-slice-artifact-${index + 1}.mp4`,
+              configuredOutputDirectory,
+            );
+            const thumbnail = createNativeTaskCoverArtifact(
+              'auto-initializing-smart-slice-task',
+              `auto-initializing-smart-slice-thumb-${index + 1}.jpg`,
+              configuredOutputDirectory,
+            );
+            return {
+              artifactUuid: `auto-initializing-smart-slice-artifact-${index + 1}`,
+              artifactPath: output.artifactPath,
+              thumbnailArtifactUuid: `auto-initializing-smart-slice-thumb-${index + 1}`,
+              thumbnailArtifactPath: thumbnail.artifactPath,
+              taskOutputDir: output.taskOutputDir,
+              byteSize: 234567,
+              thumbnailByteSize: 12345,
+              format: 'mp4',
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+            };
+          }),
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await services.saveAutoCutSpeechTranscriptionSettings({
+      ...(await services.getAutoCutSettings()).speechTranscription,
+      executablePath: 'D:/tools/whisper-cli.exe',
+      modelPath: '',
+      language: 'auto',
+    });
+    const autoInitializingSmartSliceTaskUpdates = captureEvents(services, 'taskUpdated');
+    await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-auto-initializing-smart-slice',
+        file: createTrustedLocalMediaFile(commons, 'D:/media/auto-initializing-smart-slice-source.mp4'),
+        mode: 'contract-mode',
+        llmModel: 'gemini-3-flash-preview',
+        minDuration: 15,
+        maxDuration: 60,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'emotion',
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+      }),
+    );
+    autoInitializingSmartSliceTaskUpdates.stop();
+    const autoInitializingSmartSliceProgressValues = autoInitializingSmartSliceTaskUpdates.details
+      .map((task) => task?.progress)
+      .filter((progress) => typeof progress === 'number');
+    assertRule(
+      autoInitializingSmartSliceTaskUpdates.details.some((task) =>
+        String(task?.progressMessage ?? '').includes('Downloading speech recognition model') &&
+        String(task?.progressMessage ?? '').includes('50%')
+      ),
+      'Smart Slice task displays local STT model download progress while automatic transcription setup is in flight',
+    );
+    assertRule(
+      autoInitializingSmartSliceTaskUpdates.details.some((task) =>
+        String(task?.progressMessage ?? '').includes('Speech recognition model is ready')
+      ),
+      'Smart Slice task displays local STT model initialization completion before native transcription starts',
+    );
+    assertRule(
+      autoInitializingSmartSliceProgressValues.every((progress, index, values) =>
+        index === 0 || progress >= values[index - 1]
+      ),
+      `Smart Slice local STT initialization progress messages remain monotonic (${JSON.stringify(autoInitializingSmartSliceProgressValues)})`,
+    );
+    assertEqual(
+      autoInitializingSmartSliceCommands.find((entry) => entry.kind === 'transcribe')?.request?.modelPath,
+      `${configuredOutputDirectory}/models/speech/ggml-large-v3-turbo-q5_0.bin`,
+      'Smart Slice transcribes with the auto-initialized local STT model path after model setup completes',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    const audioBoundaryFallbackCommands = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        audioBoundaryFallbackCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'audio-boundary-fallback-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/audio-boundary-fallback-source.mp4',
+          byteSize: 654000,
+          name: 'audio-boundary-fallback-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 62000,
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'audio boundary fallback speech preflight contract',
+      }),
+      transcribeMedia: async (request) => {
+        audioBoundaryFallbackCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'audio-boundary-fallback-transcript-task',
+          configuredOutputDirectory,
+          [
+            {
+              startMs: 8_000,
+              endMs: 29_000,
+              text:
+                'Why fallback matters is simple. Because denoised boundary analysis can fail, the transcript timing must still produce a valid slice.',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        audioBoundaryFallbackCommands.push({ kind: 'analyze-audio-boundaries', request });
+        throw new Error('silencedetect failed for corrupt audio stream');
+      },
+      sliceVideo: async (request) => {
+        audioBoundaryFallbackCommands.push({ kind: 'slice', request });
+        const output = createNativeTaskOutputArtifact(
+          'audio-boundary-fallback-slice-task',
+          request.clips[0]?.outputFileName ?? 'audio-boundary-fallback-slice.mp4',
+          configuredOutputDirectory,
+        );
+        const thumbnail = createNativeTaskCoverArtifact(
+          'audio-boundary-fallback-slice-task',
+          'audio-boundary-fallback-thumb.jpg',
+          configuredOutputDirectory,
+        );
+        return {
+          taskUuid: 'audio-boundary-fallback-slice-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: output.taskOutputDir,
+          ffmpegExecutable: 'ffmpeg',
+          slices: request.clips.map((clip, index) => ({
+            artifactUuid: `audio-boundary-fallback-artifact-${index + 1}`,
+            artifactPath: output.artifactPath,
+            thumbnailArtifactUuid: `audio-boundary-fallback-thumb-${index + 1}`,
+            thumbnailArtifactPath: thumbnail.artifactPath,
+            taskOutputDir: output.taskOutputDir,
+            byteSize: 345678 + index,
+            thumbnailByteSize: 23456 + index,
+            format: 'mp4',
+            ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+          })),
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    const audioBoundaryFallbackSourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/audio-boundary-fallback-source.mp4',
+      'audio-boundary-fallback-source.mp4',
+    );
+    const audioBoundaryFallbackDiagnostics = await captureConsoleDiagnosticsAsync(async () => {
+      await assertRejects(
+        () => withImmediateTimers(async () =>
+          processVideoSlice({
+            fileId: 'asset-source-audio-boundary-fallback',
+            file: audioBoundaryFallbackSourceFile,
+            mode: 'contract-mode',
+            llmModel: 'gemini-3-flash-preview',
+            minDuration: 15,
+            maxDuration: 60,
+            baseAlgorithm: 'scene',
+            highlightEngine: 'keyword',
+            enableNoiseReduction: true,
+            enableCoughFilter: true,
+            enableRepeatFilter: true,
+            enableSubtitles: false,
+          }),
+        ),
+        'audio boundary analysis',
+        'Smart Slice fails closed when audio boundary analysis fails',
+      );
+    });
+    const audioBoundaryFallbackTask = readScopedStoredArray(services, 'tasks').find(
+      (task) => task.sourceFileId === 'asset-source-audio-boundary-fallback',
+    );
+    const audioBoundaryFallbackSliceCommand = audioBoundaryFallbackCommands.find((entry) => entry.kind === 'slice');
+    assertEqual(
+      audioBoundaryFallbackTask?.status,
+      types.AUTOCUT_TASK_STATUS.failed,
+      'Smart Slice records audio boundary analysis failures as failed tasks',
+    );
+    assertEqual(
+      audioBoundaryFallbackCommands.some((entry) => entry.kind === 'analyze-audio-boundaries'),
+      true,
+      'Smart Slice still attempts audio boundary analysis before using fallback boundaries',
+    );
+    assertEqual(
+      audioBoundaryFallbackSliceCommand,
+      undefined,
+      'Smart Slice does not render native slices after audio boundary analysis fails',
+    );
+    assertIncludes(
+      audioBoundaryFallbackTask?.errorMessage ?? '',
+      'audio boundary analysis',
+      'Smart Slice failed task explains that audio boundary analysis is required',
+    );
+    assertRule(
+      audioBoundaryFallbackDiagnostics.some((call) =>
+        call.level === 'error' &&
+          String(call.args?.[0] ?? '').includes('Smart Slice execution failed')
+      ),
+      'Smart Slice logs audio boundary analysis failure as an execution error',
+    );
+
+    resetStorage();
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    const audioPaddingDenoiseFallbackCommands = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        audioPaddingDenoiseFallbackCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'audio-padding-denoise-fallback-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/audio-padding-denoise-fallback-source.mp4',
+          byteSize: 654000,
+          name: 'audio-padding-denoise-fallback-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 62000,
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'audio padding denoise fallback speech preflight contract',
+      }),
+      transcribeMedia: async (request) => {
+        audioPaddingDenoiseFallbackCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'audio-padding-denoise-fallback-transcript-task',
+          configuredOutputDirectory,
+          [
+            {
+              startMs: 8_000,
+              endMs: 29_000,
+              text:
+                'Why audio padding fallback matters is simple. Because raw background noise can hide true speech boundaries, denoised analysis must repair the cut before rendering.',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        audioPaddingDenoiseFallbackCommands.push({ kind: 'analyze-audio-boundaries', request });
+        const analysisFilter = request.applyNoiseReduction === false
+          ? 'silencedetect=noise=-35dB:d=0.08'
+          : 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08';
+        return {
+          assetUuid: request.assetUuid,
+          profile: 'smart-slice-speech-denoise-v1',
+          analyses: request.clips.map((clip, index) => {
+            const sourceStartMs = clip.sourceStartMs ?? clip.startMs;
+            const sourceEndMs = clip.sourceEndMs ?? clip.startMs + clip.durationMs;
+            const speechStartMs = clip.speechStartMs ?? sourceStartMs + 200;
+            const speechEndMs = clip.speechEndMs ?? sourceEndMs - 250;
+            const rawConflictStartMs = Math.min(sourceEndMs - 100, speechStartMs + 1_800);
+            const rawConflictEndMs = Math.max(rawConflictStartMs + 100, speechEndMs - 1_800);
+            const audioActivityStartMs = request.applyNoiseReduction === false
+              ? rawConflictStartMs
+              : speechStartMs;
+            const audioActivityEndMs = request.applyNoiseReduction === false
+              ? rawConflictEndMs
+              : speechEndMs;
+            return {
+              index,
+              startMs: clip.startMs,
+              durationMs: clip.durationMs,
+              sourceStartMs,
+              sourceEndMs,
+              audioActivityStartMs,
+              audioActivityEndMs,
+              leadingSilenceMs: Math.max(0, audioActivityStartMs - sourceStartMs),
+              trailingSilenceMs: Math.max(0, sourceEndMs - audioActivityEndMs),
+              confidence: 0.96,
+              analysisFilter,
+            };
+          }),
+        };
+      },
+      sliceVideo: async (request) => {
+        audioPaddingDenoiseFallbackCommands.push({ kind: 'slice', request });
+        const output = createNativeTaskOutputArtifact(
+          'audio-padding-denoise-fallback-slice-task',
+          request.clips[0]?.outputFileName ?? 'audio-padding-denoise-fallback-slice.mp4',
+          configuredOutputDirectory,
+        );
+        const thumbnail = createNativeTaskCoverArtifact(
+          'audio-padding-denoise-fallback-slice-task',
+          'audio-padding-denoise-fallback-thumb.jpg',
+          configuredOutputDirectory,
+        );
+        return {
+          taskUuid: 'audio-padding-denoise-fallback-slice-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: output.taskOutputDir,
+          ffmpegExecutable: 'ffmpeg',
+          slices: request.clips.map((clip, index) => ({
+            artifactUuid: `audio-padding-denoise-fallback-artifact-${index + 1}`,
+            artifactPath: index === 0
+              ? output.artifactPath
+              : createNativeTaskOutputArtifact(
+                  'audio-padding-denoise-fallback-slice-task',
+                  `audio-padding-denoise-fallback-slice-${index + 1}.mp4`,
+                  configuredOutputDirectory,
+                ).artifactPath,
+            thumbnailArtifactUuid: `audio-padding-denoise-fallback-thumb-${index + 1}`,
+            thumbnailArtifactPath: index === 0
+              ? thumbnail.artifactPath
+              : createNativeTaskCoverArtifact(
+                  'audio-padding-denoise-fallback-slice-task',
+                  `audio-padding-denoise-fallback-thumb-${index + 1}.jpg`,
+                  configuredOutputDirectory,
+                ).artifactPath,
+            taskOutputDir: output.taskOutputDir,
+            byteSize: 345678 + index,
+            thumbnailByteSize: 23456 + index,
+            format: 'mp4',
+            ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+          })),
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    const audioPaddingDenoiseFallbackSourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/audio-padding-denoise-fallback-source.mp4',
+      'audio-padding-denoise-fallback-source.mp4',
+    );
+    let audioPaddingDenoiseFallbackResult;
+    const audioPaddingDenoiseFallbackDiagnostics = await captureConsoleDiagnosticsAsync(async () => {
+      audioPaddingDenoiseFallbackResult = await withImmediateTimers(async () =>
+        processVideoSlice({
+          fileId: 'asset-source-audio-padding-denoise-fallback',
+          file: audioPaddingDenoiseFallbackSourceFile,
+          mode: 'contract-mode',
+          llmModel: 'gemini-3-flash-preview',
+          minDuration: 15,
+          maxDuration: 60,
+          baseAlgorithm: 'scene',
+          highlightEngine: 'keyword',
+          enableNoiseReduction: true,
+          enableCoughFilter: true,
+          enableRepeatFilter: true,
+          enableSubtitles: false,
+        }),
+      );
+    });
+    const audioPaddingDenoiseFallbackAnalyzeCommands = audioPaddingDenoiseFallbackCommands.filter(
+      (entry) => entry.kind === 'analyze-audio-boundaries',
+    );
+    const audioPaddingDenoiseFallbackSliceCommand = audioPaddingDenoiseFallbackCommands.find(
+      (entry) => entry.kind === 'slice',
+    );
+    const audioPaddingDenoiseFallbackClip = audioPaddingDenoiseFallbackSliceCommand?.request?.clips?.[0];
+    const audioPaddingDenoiseFallbackTask = readScopedStoredArray(services, 'tasks').find(
+      (task) => task.id === audioPaddingDenoiseFallbackResult?.taskId,
+    );
+    assertEqual(
+      audioPaddingDenoiseFallbackResult?.success,
+      true,
+      'Smart Slice reports success after denoise repairs raw audio activity padding before native rendering',
+    );
+    assertEqual(
+      audioPaddingDenoiseFallbackAnalyzeCommands.length,
+      2,
+      'Smart Slice retries denoised audio boundary analysis when raw activity padding still exceeds the professional standard',
+    );
+    assertEqual(
+      audioPaddingDenoiseFallbackAnalyzeCommands[0]?.request?.applyNoiseReduction,
+      false,
+      'Smart Slice first analyzes raw audio boundaries to preserve clean source audio when possible',
+    );
+    assertEqual(
+      audioPaddingDenoiseFallbackAnalyzeCommands[1]?.request?.applyNoiseReduction,
+      true,
+      'Smart Slice falls back to denoised boundary analysis after raw activity padding is not render-ready',
+    );
+    assertEqual(
+      audioPaddingDenoiseFallbackSliceCommand?.request?.noiseReduction,
+      true,
+      'Smart Slice renders with denoise enabled after raw activity padding fallback succeeds',
+    );
+    assertEqual(
+      audioPaddingDenoiseFallbackClip?.noiseReductionApplied,
+      true,
+      'Smart Slice native clip evidence records denoise after audio padding fallback',
+    );
+    assertNumberBetween(
+      audioPaddingDenoiseFallbackClip?.leadingSilenceMs,
+      0,
+      200,
+      'Smart Slice denoise fallback keeps leading audio activity padding inside the native render standard',
+    );
+    assertNumberBetween(
+      audioPaddingDenoiseFallbackClip?.trailingSilenceMs,
+      0,
+      250,
+      'Smart Slice denoise fallback keeps trailing audio activity padding inside the native render standard',
+    );
+    assertEqual(
+      audioPaddingDenoiseFallbackTask?.status,
+      types.AUTOCUT_TASK_STATUS.completed,
+      'Smart Slice completes after denoise repairs raw audio activity padding before native rendering',
+    );
+    assertRule(
+      audioPaddingDenoiseFallbackDiagnostics.some((call) =>
+        call.level === 'info' &&
+          String(call.args?.[0] ?? '').includes('raw audio boundary padding fallback to denoise')
+      ),
+      'Smart Slice logs the raw audio padding denoise fallback decision for diagnostics',
+    );
+
+    resetStorage();
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    const incompleteAudioBoundaryCommands = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        incompleteAudioBoundaryCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'incomplete-audio-boundary-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/incomplete-audio-boundary-source.mp4',
+          byteSize: 654000,
+          name: 'incomplete-audio-boundary-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 62000,
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'incomplete audio boundary speech preflight contract',
+      }),
+      transcribeMedia: async (request) => {
+        incompleteAudioBoundaryCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'incomplete-audio-boundary-transcript-task',
+          configuredOutputDirectory,
+          [
+            {
+              startMs: 8_000,
+              endMs: 29_000,
+              text:
+                'Why complete boundary evidence matters is simple. Because every rendered slice must prove audio timing before output is trusted.',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        incompleteAudioBoundaryCommands.push({ kind: 'analyze-audio-boundaries', request });
+        return {
+          assetUuid: request.assetUuid,
+          profile: 'smart-slice-speech-denoise-v1',
+          analyses: [],
+        };
+      },
+      sliceVideo: async (request) => {
+        incompleteAudioBoundaryCommands.push({ kind: 'slice', request });
+        throw new Error('native render must not start after incomplete audio boundary analysis');
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    const incompleteAudioBoundarySourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/incomplete-audio-boundary-source.mp4',
+      'incomplete-audio-boundary-source.mp4',
+    );
+    await assertRejects(
+      () => withImmediateTimers(async () =>
+        processVideoSlice({
+          fileId: 'asset-source-incomplete-audio-boundary',
+          file: incompleteAudioBoundarySourceFile,
+          mode: 'contract-mode',
+          llmModel: 'gemini-3-flash-preview',
+          minDuration: 15,
+          maxDuration: 60,
+          baseAlgorithm: 'scene',
+          highlightEngine: 'keyword',
+          enableNoiseReduction: true,
+          enableCoughFilter: true,
+          enableRepeatFilter: true,
+          enableSubtitles: false,
+        }),
+      ),
+      'complete audio boundary analysis',
+      'Smart Slice rejects incomplete audio boundary analysis results',
+    );
+    const incompleteAudioBoundaryTask = readScopedStoredArray(services, 'tasks').find(
+      (task) => task.sourceFileId === 'asset-source-incomplete-audio-boundary',
+    );
+    assertEqual(
+      incompleteAudioBoundaryCommands.some((entry) => entry.kind === 'analyze-audio-boundaries'),
+      true,
+      'Smart Slice requests audio boundary analysis before validating completeness',
+    );
+    assertEqual(
+      incompleteAudioBoundaryCommands.some((entry) => entry.kind === 'slice'),
+      false,
+      'Smart Slice does not render native slices after incomplete audio boundary analysis',
+    );
+    assertIncludes(
+      incompleteAudioBoundaryTask?.errorMessage ?? '',
+      'complete audio boundary analysis',
+      'Smart Slice failed task explains incomplete audio boundary analysis',
+    );
+
+    resetStorage();
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    const malformedAudioBoundaryCommands = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        malformedAudioBoundaryCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'malformed-audio-boundary-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/malformed-audio-boundary-source.mp4',
+          byteSize: 654000,
+          name: 'malformed-audio-boundary-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 62000,
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'malformed audio boundary speech preflight contract',
+      }),
+      transcribeMedia: async (request) => {
+        malformedAudioBoundaryCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'malformed-audio-boundary-transcript-task',
+          configuredOutputDirectory,
+          [
+            {
+              startMs: 8_000,
+              endMs: 29_000,
+              text:
+                'Why malformed boundary evidence fails is simple. The renderer must not trust a native analysis without its filter provenance.',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        malformedAudioBoundaryCommands.push({ kind: 'analyze-audio-boundaries', request });
+        const clip = request.clips[0];
+        return {
+          assetUuid: request.assetUuid,
+          profile: 'smart-slice-speech-denoise-v1',
+          analyses: [
+            {
+              index: 0,
+              startMs: clip?.startMs,
+              durationMs: clip?.durationMs,
+              sourceStartMs: clip?.sourceStartMs ?? clip?.startMs,
+              sourceEndMs: clip?.sourceEndMs ?? (clip?.startMs ?? 0) + (clip?.durationMs ?? 0),
+              audioActivityStartMs: clip?.speechStartMs,
+              audioActivityEndMs: clip?.speechEndMs,
+              confidence: 0.95,
+            },
+          ],
+        };
+      },
+      sliceVideo: async (request) => {
+        malformedAudioBoundaryCommands.push({ kind: 'slice', request });
+        throw new Error('native render must not start after malformed audio boundary analysis');
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    const malformedAudioBoundarySourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/malformed-audio-boundary-source.mp4',
+      'malformed-audio-boundary-source.mp4',
+    );
+    await assertDoesNotReject(
+      () => withImmediateTimers(async () =>
+        processVideoSlice({
+          fileId: 'asset-source-malformed-audio-boundary',
+          file: malformedAudioBoundarySourceFile,
+          mode: 'contract-mode',
+          llmModel: 'gemini-3-flash-preview',
+          minDuration: 15,
+          maxDuration: 60,
+          baseAlgorithm: 'scene',
+          highlightEngine: 'keyword',
+          enableNoiseReduction: true,
+          enableCoughFilter: true,
+          enableRepeatFilter: true,
+          enableSubtitles: false,
+        }),
+      ),
+      'Smart Slice rejects malformed audio boundary analysis evidence with a standard error',
+    );
+    assertEqual(
+      malformedAudioBoundaryCommands.some((entry) => entry.kind === 'slice'),
+      false,
+      'Smart Slice does not render native slices after malformed audio boundary analysis evidence',
+    );
+
+    resetStorage();
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    const weakAudioBoundaryCommands = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        weakAudioBoundaryCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'weak-audio-boundary-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/weak-audio-boundary-source.mp4',
+          byteSize: 654000,
+          name: 'weak-audio-boundary-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 62000,
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'weak audio boundary speech preflight contract',
+      }),
+      transcribeMedia: async (request) => {
+        weakAudioBoundaryCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'weak-audio-boundary-transcript-task',
+          configuredOutputDirectory,
+          [
+            {
+              startMs: 8_000,
+              endMs: 29_000,
+              text:
+                'Weak native audio activity evidence must not be trusted. Smart Slice requires a real denoised activity window.',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        weakAudioBoundaryCommands.push({ kind: 'analyze-audio-boundaries', request });
+        const clip = request.clips[0];
+        return {
+          assetUuid: request.assetUuid,
+          profile: 'smart-slice-speech-denoise-v1',
+          analyses: [
+            {
+              index: 0,
+              startMs: clip?.startMs,
+              durationMs: clip?.durationMs,
+              sourceStartMs: clip?.sourceStartMs ?? clip?.startMs,
+              sourceEndMs: clip?.sourceEndMs ?? (clip?.startMs ?? 0) + (clip?.durationMs ?? 0),
+              audioActivityStartMs: clip?.speechStartMs,
+              audioActivityEndMs: clip?.speechEndMs,
+              confidence: 0.55,
+              analysisFilter: 'silencedetect=noise=-35dB:d=0.08',
+            },
+          ],
+        };
+      },
+      sliceVideo: async (request) => {
+        weakAudioBoundaryCommands.push({ kind: 'slice', request });
+        throw new Error('native render must not start after weak audio boundary analysis evidence');
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    const weakAudioBoundarySourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/weak-audio-boundary-source.mp4',
+      'weak-audio-boundary-source.mp4',
+    );
+    await assertDoesNotReject(
+      () => withImmediateTimers(async () =>
+        processVideoSlice({
+          fileId: 'asset-source-weak-audio-boundary',
+          file: weakAudioBoundarySourceFile,
+          mode: 'contract-mode',
+          llmModel: 'gemini-3-flash-preview',
+          minDuration: 15,
+          maxDuration: 60,
+          baseAlgorithm: 'scene',
+          highlightEngine: 'keyword',
+          enableNoiseReduction: true,
+          enableCoughFilter: true,
+          enableRepeatFilter: true,
+          enableSubtitles: false,
+        }),
+      ),
+      'Smart Slice rejects weak non-audio boundary analysis evidence with a standard error',
+    );
+    assertEqual(
+      weakAudioBoundaryCommands.some((entry) => entry.kind === 'slice'),
+      false,
+      'Smart Slice does not render native slices after weak non-audio boundary analysis evidence',
+    );
+
+    resetStorage();
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    const outOfRangeAudioBoundaryCommands = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        outOfRangeAudioBoundaryCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'out-of-range-audio-boundary-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/out-of-range-audio-boundary-source.mp4',
+          byteSize: 654000,
+          name: 'out-of-range-audio-boundary-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 62000,
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'out-of-range audio boundary speech preflight contract',
+      }),
+      transcribeMedia: async (request) => {
+        outOfRangeAudioBoundaryCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'out-of-range-audio-boundary-transcript-task',
+          configuredOutputDirectory,
+          [
+            {
+              startMs: 8_000,
+              endMs: 29_000,
+              text:
+                'Out of range native activity evidence must fail closed. The analysis cannot be clamped into a trusted slice because that would hide a native boundary bug.',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        outOfRangeAudioBoundaryCommands.push({ kind: 'analyze-audio-boundaries', request });
+        const clip = request.clips[0];
+        const analysisFilter = request.applyNoiseReduction === false
+          ? 'silencedetect=noise=-35dB:d=0.08'
+          : 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08';
+        return {
+          assetUuid: request.assetUuid,
+          profile: 'smart-slice-speech-denoise-v1',
+          analyses: [
+            {
+              index: 0,
+              startMs: clip?.startMs,
+              durationMs: clip?.durationMs,
+              sourceStartMs: clip?.sourceStartMs ?? clip?.startMs,
+              sourceEndMs: clip?.sourceEndMs ?? (clip?.startMs ?? 0) + (clip?.durationMs ?? 0),
+              audioActivityStartMs: (clip?.sourceStartMs ?? clip?.startMs ?? 0) - 1,
+              audioActivityEndMs: clip?.speechEndMs,
+              confidence: 0.95,
+              analysisFilter,
+            },
+          ],
+        };
+      },
+      sliceVideo: async (request) => {
+        outOfRangeAudioBoundaryCommands.push({ kind: 'slice', request });
+        throw new Error('native render must not start after out-of-range audio boundary analysis evidence');
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    const outOfRangeAudioBoundarySourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/out-of-range-audio-boundary-source.mp4',
+      'out-of-range-audio-boundary-source.mp4',
+    );
+    await assertRejects(
+      () => withImmediateTimers(async () =>
+        processVideoSlice({
+          fileId: 'asset-source-out-of-range-audio-boundary',
+          file: outOfRangeAudioBoundarySourceFile,
+          mode: 'contract-mode',
+          llmModel: 'gemini-3-flash-preview',
+          minDuration: 15,
+          maxDuration: 60,
+          baseAlgorithm: 'scene',
+          highlightEngine: 'keyword',
+          enableNoiseReduction: true,
+          enableCoughFilter: true,
+          enableRepeatFilter: true,
+          enableSubtitles: false,
+        }),
+      ),
+      'activity range to stay inside planned source range',
+      'Smart Slice rejects out-of-range audio boundary analysis evidence instead of clamping it',
+    );
+    assertEqual(
+      outOfRangeAudioBoundaryCommands.some((entry) => entry.kind === 'slice'),
+      false,
+      'Smart Slice does not render native slices after out-of-range audio boundary analysis evidence',
+    );
+
+    resetStorage();
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    const missingArrayAudioBoundaryCommands = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        missingArrayAudioBoundaryCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'missing-array-audio-boundary-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/missing-array-audio-boundary-source.mp4',
+          byteSize: 654000,
+          name: 'missing-array-audio-boundary-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 62000,
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'missing analysis array speech preflight contract',
+      }),
+      transcribeMedia: async (request) => {
+        missingArrayAudioBoundaryCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'missing-array-audio-boundary-transcript-task',
+          configuredOutputDirectory,
+          [
+            {
+              startMs: 8_000,
+              endMs: 29_000,
+              text:
+                'Why missing boundary arrays fail is simple. The service requires a complete native analysis envelope before rendering.',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        missingArrayAudioBoundaryCommands.push({ kind: 'analyze-audio-boundaries', request });
+        return {
+          assetUuid: request.assetUuid,
+          profile: 'smart-slice-speech-denoise-v1',
+        };
+      },
+      sliceVideo: async (request) => {
+        missingArrayAudioBoundaryCommands.push({ kind: 'slice', request });
+        throw new Error('native render must not start after missing audio boundary analysis array');
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    const missingArrayAudioBoundarySourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/missing-array-audio-boundary-source.mp4',
+      'missing-array-audio-boundary-source.mp4',
+    );
+    await assertRejects(
+      () => withImmediateTimers(async () =>
+        processVideoSlice({
+          fileId: 'asset-source-missing-array-audio-boundary',
+          file: missingArrayAudioBoundarySourceFile,
+          mode: 'contract-mode',
+          llmModel: 'gemini-3-flash-preview',
+          minDuration: 15,
+          maxDuration: 60,
+          baseAlgorithm: 'scene',
+          highlightEngine: 'keyword',
+          enableNoiseReduction: true,
+          enableCoughFilter: true,
+          enableRepeatFilter: true,
+          enableSubtitles: false,
+        }),
+      ),
+      'complete audio boundary analysis',
+      'Smart Slice rejects malformed audio boundary analysis envelopes with a standard error',
+    );
+    assertEqual(
+      missingArrayAudioBoundaryCommands.some((entry) => entry.kind === 'slice'),
+      false,
+      'Smart Slice does not render native slices after malformed audio boundary analysis envelopes',
+    );
+
+    resetStorage();
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    const missingAudioBoundaryCapabilityCommands = [];
+    services.configureAutoCutNativeHostClient({
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: false,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        missingAudioBoundaryCapabilityCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'missing-audio-boundary-capability-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/missing-audio-boundary-capability-source.mp4',
+          byteSize: 654000,
+          name: 'missing-audio-boundary-capability-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 62000,
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'missing audio boundary capability speech preflight contract',
+      }),
+      transcribeMedia: async (request) => {
+        missingAudioBoundaryCapabilityCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'missing-audio-boundary-capability-transcript-task',
+          configuredOutputDirectory,
+          [
+            {
+              startMs: 8_000,
+              endMs: 29_000,
+              text:
+                'Why optional analysis matters is simple. Because speech recognition and native rendering can work without boundary analysis, Smart Slice must still complete.',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        missingAudioBoundaryCapabilityCommands.push({ kind: 'analyze-audio-boundaries', request });
+        throw new Error('optional audio boundary analysis command must be skipped when capability is unavailable');
+      },
+      sliceVideo: async (request) => {
+        missingAudioBoundaryCapabilityCommands.push({ kind: 'slice', request });
+        const output = createNativeTaskOutputArtifact(
+          'missing-audio-boundary-capability-slice-task',
+          request.clips[0]?.outputFileName ?? 'missing-audio-boundary-capability-slice.mp4',
+          configuredOutputDirectory,
+        );
+        const thumbnail = createNativeTaskCoverArtifact(
+          'missing-audio-boundary-capability-slice-task',
+          'missing-audio-boundary-capability-thumb.jpg',
+          configuredOutputDirectory,
+        );
+        return {
+          taskUuid: 'missing-audio-boundary-capability-slice-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: output.taskOutputDir,
+          ffmpegExecutable: 'ffmpeg',
+          slices: request.clips.map((clip, index) => ({
+            artifactUuid: `missing-audio-boundary-capability-artifact-${index + 1}`,
+            artifactPath: output.artifactPath,
+            thumbnailArtifactUuid: `missing-audio-boundary-capability-thumb-${index + 1}`,
+            thumbnailArtifactPath: thumbnail.artifactPath,
+            taskOutputDir: output.taskOutputDir,
+            byteSize: 345678 + index,
+            thumbnailByteSize: 23456 + index,
+            format: 'mp4',
+            ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+          })),
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    const missingAudioBoundaryCapabilitySourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/missing-audio-boundary-capability-source.mp4',
+      'missing-audio-boundary-capability-source.mp4',
+    );
+    const missingAudioBoundaryCapabilityDiagnostics = await captureConsoleDiagnosticsAsync(async () => {
+      await assertRejects(
+        () => withImmediateTimers(async () =>
+          processVideoSlice({
+            fileId: 'asset-source-missing-audio-boundary-capability',
+            file: missingAudioBoundaryCapabilitySourceFile,
+            mode: 'contract-mode',
+            llmModel: 'gemini-3-flash-preview',
+            minDuration: 15,
+            maxDuration: 60,
+            baseAlgorithm: 'scene',
+            highlightEngine: 'keyword',
+            enableNoiseReduction: true,
+            enableCoughFilter: true,
+            enableRepeatFilter: true,
+            enableSubtitles: false,
+          }),
+        ),
+        'audio activity analysis command is unavailable',
+        'Smart Slice fails preflight when audio boundary analysis capability is unavailable',
+      );
+    });
+    const missingAudioBoundaryCapabilityTask = readScopedStoredArray(services, 'tasks').find(
+      (task) => task.sourceFileId === 'asset-source-missing-audio-boundary-capability',
+    );
+    const missingAudioBoundaryCapabilitySliceCommand = missingAudioBoundaryCapabilityCommands.find(
+      (entry) => entry.kind === 'slice',
+    );
+    assertEqual(
+      missingAudioBoundaryCapabilityTask?.status,
+      types.AUTOCUT_TASK_STATUS.failed,
+      'Smart Slice records missing audio boundary analysis capability as a failed task',
+    );
+    assertEqual(
+      missingAudioBoundaryCapabilityCommands.some((entry) => entry.kind === 'analyze-audio-boundaries'),
+      false,
+      'Smart Slice does not call unavailable audio boundary analysis command after failed preflight',
+    );
+    assertEqual(
+      missingAudioBoundaryCapabilitySliceCommand,
+      undefined,
+      'Smart Slice does not render native slices without audio boundary analysis capability',
+    );
+    assertRule(
+      missingAudioBoundaryCapabilityDiagnostics.some((call) =>
+        call.level === 'info' &&
+          String(call.args?.[0] ?? '').includes('Smart Slice native preflight failed')
+      ),
+      'Smart Slice logs missing audio boundary analysis capability during native preflight',
+    );
+
+    resetStorage();
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    const disabledDenoiseBoundaryCommands = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        disabledDenoiseBoundaryCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'disabled-denoise-boundary-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/disabled-denoise-boundary-source.mp4',
+          byteSize: 654000,
+          name: 'disabled-denoise-boundary-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 62000,
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'disabled denoise boundary speech preflight contract',
+      }),
+      transcribeMedia: async (request) => {
+        disabledDenoiseBoundaryCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'disabled-denoise-boundary-transcript-task',
+          configuredOutputDirectory,
+          [
+            {
+              startMs: 8_000,
+              endMs: 29_000,
+              text:
+                'Why noise reduction decision evidence matters is simple. Because the user can disable denoise, Smart Slice must record the real cleanup setting.',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        disabledDenoiseBoundaryCommands.push({ kind: 'analyze-audio-boundaries', request });
+        return createNativeVideoSliceAudioActivityAnalysisResult(request);
+      },
+      sliceVideo: async (request) => {
+        disabledDenoiseBoundaryCommands.push({ kind: 'slice', request });
+        const output = createNativeTaskOutputArtifact(
+          'disabled-denoise-boundary-slice-task',
+          request.clips[0]?.outputFileName ?? 'disabled-denoise-boundary-slice.mp4',
+          configuredOutputDirectory,
+        );
+        const thumbnail = createNativeTaskCoverArtifact(
+          'disabled-denoise-boundary-slice-task',
+          'disabled-denoise-boundary-thumb.jpg',
+          configuredOutputDirectory,
+        );
+        return {
+          taskUuid: 'disabled-denoise-boundary-slice-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: output.taskOutputDir,
+          ffmpegExecutable: 'ffmpeg',
+          slices: request.clips.map((clip, index) => ({
+            artifactUuid: `disabled-denoise-boundary-artifact-${index + 1}`,
+            artifactPath: output.artifactPath,
+            thumbnailArtifactUuid: `disabled-denoise-boundary-thumb-${index + 1}`,
+            thumbnailArtifactPath: thumbnail.artifactPath,
+            taskOutputDir: output.taskOutputDir,
+            byteSize: 345678 + index,
+            thumbnailByteSize: 23456 + index,
+            format: 'mp4',
+            ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+          })),
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    const disabledDenoiseBoundarySourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/disabled-denoise-boundary-source.mp4',
+      'disabled-denoise-boundary-source.mp4',
+    );
+    const disabledDenoiseBoundaryResult = await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-disabled-denoise-boundary',
+        file: disabledDenoiseBoundarySourceFile,
+        mode: 'contract-mode',
+        llmModel: 'gemini-3-flash-preview',
+        minDuration: 15,
+        maxDuration: 60,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'keyword',
+        enableNoiseReduction: false,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSubtitles: false,
+      }),
+    );
+    const disabledDenoiseBoundaryTask = readScopedStoredArray(services, 'tasks').find(
+      (task) => task.id === disabledDenoiseBoundaryResult.taskId,
+    );
+    const disabledDenoiseBoundaryAnalysisCommand = disabledDenoiseBoundaryCommands.find(
+      (entry) => entry.kind === 'analyze-audio-boundaries',
+    );
+    const disabledDenoiseBoundarySliceCommand = disabledDenoiseBoundaryCommands.find(
+      (entry) => entry.kind === 'slice',
+    );
+    assertEqual(
+      disabledDenoiseBoundaryAnalysisCommand?.request?.applyNoiseReduction,
+      false,
+      'Smart Slice honors disabled denoise before audio boundary analysis for clean source audio',
+    );
+    assertEqual(
+      disabledDenoiseBoundarySliceCommand?.request?.noiseReduction,
+      false,
+      'Smart Slice honors disabled denoise before native rendering for clean source audio',
+    );
+    assertEqual(
+      disabledDenoiseBoundarySliceCommand?.request?.clips?.[0]?.noiseReductionApplied,
+      false,
+      'Smart Slice native clip evidence records skipped denoise after disabled denoise input',
+    );
+    assertEqual(
+      disabledDenoiseBoundaryTask?.status,
+      types.AUTOCUT_TASK_STATUS.completed,
+      'Smart Slice completes with clean raw audio cleanup evidence when callers disable denoise',
+    );
+    assertEqual(
+      disabledDenoiseBoundaryTask?.sliceResults?.[0]?.noiseReductionApplied,
+      false,
+      'Smart Slice exposes completed slice results with skipped noise reduction decision evidence after disabled denoise input',
     );
 
     resetStorage();
@@ -5924,7 +11724,7 @@ async function run() {
     await saveVerifiedLocalSpeechTranscriptionSettings(services);
     const noiseCleanupSliceCommands = [];
     const noiseCleanupBridgeRequests = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         videoSliceCommandReady: true,
@@ -5941,6 +11741,8 @@ async function run() {
           byteSize: 654000,
           name: 'noise-cleanup-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 40_000,
         };
@@ -5987,6 +11789,10 @@ async function run() {
           ],
         );
       },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        noiseCleanupSliceCommands.push({ kind: 'analyze-audio-boundaries', request });
+        return createNativeVideoSliceAudioActivityAnalysisResult(request);
+      },
       sliceVideo: async (request) => {
         noiseCleanupSliceCommands.push({ kind: 'slice', request });
         const output = createNativeTaskOutputArtifact(
@@ -6025,23 +11831,10 @@ async function run() {
                     subtitleArtifactPath: subtitle.artifactPath,
                     subtitleByteSize: 1234,
                     subtitleFormat: 'srt',
-                  }
+              }
                 : {}),
               format: 'mp4',
-              startMs: clip.startMs,
-              durationMs: clip.durationMs,
-              label: clip.label,
-              sourceStartMs: clip.sourceStartMs,
-              sourceEndMs: clip.sourceEndMs,
-              speechStartMs: clip.speechStartMs,
-              speechEndMs: clip.speechEndMs,
-              boundaryPaddingBeforeMs: clip.boundaryPaddingBeforeMs,
-              boundaryPaddingAfterMs: clip.boundaryPaddingAfterMs,
-              transcriptText: clip.transcriptText,
-              transcriptSegments: clip.transcriptSegments,
-              transcriptSegmentCount: clip.transcriptSegmentCount,
-              transcriptCoverageScore: clip.transcriptCoverageScore,
-              speechContinuityGrade: clip.speechContinuityGrade,
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
             },
           ],
         };
@@ -6059,18 +11852,14 @@ async function run() {
       async createChatCompletion(request, runtime) {
         noiseCleanupBridgeRequests.push({ request, runtime });
         const prompt = JSON.parse(request.messages?.[1]?.content ?? '{}');
-        const selectedCandidate = prompt.candidateWindows?.[0];
         return {
           id: 'noise-cleanup-plan',
           model: request.model,
-          content: JSON.stringify([
-            {
-              candidateId: selectedCandidate?.id,
-              title: 'Clean activation payoff',
-              qualityScore: 0.9,
-              continuityScore: 0.9,
-            },
-          ]),
+          content: JSON.stringify({
+            rankedCandidateIds: prompt.candidates?.map((candidate) => candidate.id) ?? [],
+            referencedUnitIds: prompt.contentUnits?.map((unit) => unit.id) ?? [],
+            reviewNotes: ['Clean activation payoff'],
+          }),
           runtime,
         };
       },
@@ -6087,8 +11876,6 @@ async function run() {
         mode: 'contract-mode',
         llmModel: 'gemini-3-flash-preview',
         targetPlatform: 'generic',
-        sliceCountMode: 'qualityFirst',
-        targetSliceCount: 1,
         continuityLevel: 'standard',
         minDuration: 15,
         maxDuration: 45,
@@ -6115,11 +11902,11 @@ async function run() {
       'noise cleanup Smart Slice regression reports success',
     );
     assertRule(
-      noiseCleanupPrompt?.transcriptTimeline?.every((segment) =>
-        segment.text &&
-          !/\b(?:coughing|music)\b|^\s*um\b/iu.test(segment.text)
+      noiseCleanupPrompt?.contentUnits?.every((unit) =>
+        unit.text &&
+          !/\b(?:coughing|music)\b|^\s*um\b/iu.test(unit.text)
       ),
-      'noise cleanup Smart Slice regression sends only cleaned transcript timeline text to the LLM planner',
+      'noise cleanup Smart Slice regression sends only cleaned content unit text to the Smart Cut Engine LLM reviewer',
     );
     assertRule(
       !/\b(?:coughing|music)\b|^\s*um\b/iu.test(noiseCleanupClip?.transcriptText ?? ''),
@@ -6138,9 +11925,16 @@ async function run() {
       'noise cleanup Smart Slice regression respects the disabled cough and noise removal toggle for native audio muting',
     );
     assertRule(
-      noiseCleanupSliceRequest?.subtitleSegments?.length === 2 &&
+      Array.isArray(noiseCleanupSliceRequest?.subtitleSegments) &&
+        noiseCleanupSliceRequest.subtitleSegments.length >= 2 &&
         noiseCleanupSliceRequest.subtitleSegments.every((segment) =>
           !/\b(?:coughing|music)\b|^\s*um\b/iu.test(segment.text)
+        ) &&
+        joinSubtitleCueCoverageText(noiseCleanupSliceRequest.subtitleSegments).includes(
+          'Watch the setup because activation pain matters.',
+        ) &&
+        joinSubtitleCueCoverageText(noiseCleanupSliceRequest.subtitleSegments).includes(
+          'So the complete payoff is the activation fix viewers can apply.',
         ),
       'noise cleanup Smart Slice regression removes noise and edge filler from native subtitle rendering input',
     );
@@ -6159,7 +11953,7 @@ async function run() {
     });
     await saveVerifiedLocalSpeechTranscriptionSettings(services);
     const existingAssetVideoSliceCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         videoSliceCommandReady: true,
@@ -6204,6 +11998,10 @@ async function run() {
           ],
         );
       },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        existingAssetVideoSliceCommands.push({ kind: 'analyze-audio-boundaries', request });
+        return createNativeVideoSliceAudioActivityAnalysisResult(request);
+      },
       sliceVideo: async (request) => {
         existingAssetVideoSliceCommands.push({ kind: 'slice', request });
         return {
@@ -6235,20 +12033,7 @@ async function run() {
               byteSize: 456789 + index,
               thumbnailByteSize: 34567 + index,
               format: 'mp4',
-              startMs: clip.startMs,
-              durationMs: clip.durationMs,
-              label: clip.label,
-              sourceStartMs: clip.sourceStartMs,
-              sourceEndMs: clip.sourceEndMs,
-              speechStartMs: clip.speechStartMs,
-              speechEndMs: clip.speechEndMs,
-              boundaryPaddingBeforeMs: clip.boundaryPaddingBeforeMs,
-              boundaryPaddingAfterMs: clip.boundaryPaddingAfterMs,
-              transcriptText: clip.transcriptText,
-              transcriptSegments: clip.transcriptSegments,
-              transcriptSegmentCount: clip.transcriptSegmentCount,
-              transcriptCoverageScore: clip.transcriptCoverageScore,
-              speechContinuityGrade: clip.speechContinuityGrade,
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
             };
           }),
         };
@@ -6296,16 +12081,31 @@ async function run() {
     );
     assertEqual(
       existingAssetVideoSliceCommands[1]?.kind,
-      'slice',
-      'existing native asset smart slice rerun renders only after verified transcript planning',
+      'analyze-audio-boundaries',
+      'existing native asset smart slice rerun analyzes audio activity boundaries after transcript planning',
     );
     assertEqual(
       existingAssetVideoSliceCommands[1]?.request?.assetUuid,
       'media-asset-existing-smart-slice-source',
+      'existing native asset smart slice rerun analyzes boundaries by selected native asset UUID',
+    );
+    assertEqual(
+      existingAssetVideoSliceCommands[1]?.request?.profile,
+      'smart-slice-speech-denoise-v1',
+      'existing native asset smart slice rerun uses the canonical cleanup profile for boundary analysis',
+    );
+    assertEqual(
+      existingAssetVideoSliceCommands[2]?.kind,
+      'slice',
+      'existing native asset smart slice rerun renders only after verified transcript planning',
+    );
+    assertEqual(
+      existingAssetVideoSliceCommands[2]?.request?.assetUuid,
+      'media-asset-existing-smart-slice-source',
       'existing native asset smart slice rerun slices the selected native asset UUID',
     );
     assertRule(
-      existingAssetVideoSliceCommands[1]?.request?.clips?.every((clip) =>
+      existingAssetVideoSliceCommands[2]?.request?.clips?.every((clip) =>
         clip.transcriptText?.trim() &&
           clip.transcriptSegments?.length &&
           clip.transcriptSegmentCount === clip.transcriptSegments.length
@@ -6331,7 +12131,7 @@ async function run() {
     });
     await saveVerifiedLocalSpeechTranscriptionSettings(services);
     const overlappingTranscriptSliceCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         videoSliceCommandReady: true,
@@ -6348,6 +12148,8 @@ async function run() {
           byteSize: 654000,
           name: 'overlap-repair-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 60000,
         };
@@ -6409,20 +12211,7 @@ async function run() {
               byteSize: 234567,
               thumbnailByteSize: 12345,
               format: 'mp4',
-              startMs: request.clips[0].startMs,
-              durationMs: request.clips[0].durationMs,
-              label: request.clips[0].label,
-              sourceStartMs: request.clips[0].sourceStartMs,
-              sourceEndMs: request.clips[0].sourceEndMs,
-              speechStartMs: request.clips[0].speechStartMs,
-              speechEndMs: request.clips[0].speechEndMs,
-              boundaryPaddingBeforeMs: request.clips[0].boundaryPaddingBeforeMs,
-              boundaryPaddingAfterMs: request.clips[0].boundaryPaddingAfterMs,
-              transcriptText: request.clips[0].transcriptText,
-              transcriptSegments: request.clips[0].transcriptSegments,
-              transcriptSegmentCount: request.clips[0].transcriptSegmentCount,
-              transcriptCoverageScore: request.clips[0].transcriptCoverageScore,
-              speechContinuityGrade: request.clips[0].speechContinuityGrade,
+              ...copyNativeVideoSliceClipEvidence(request.clips[0], request.noiseReduction),
             },
           ],
         };
@@ -6448,8 +12237,6 @@ async function run() {
         enableCoughFilter: true,
         enableRepeatFilter: true,
         enableSubtitles: false,
-        sliceCountMode: 'qualityFirst',
-        targetSliceCount: 1,
       }),
     );
     const overlappingTranscriptTask = readScopedStoredArray(services, 'tasks').find(
@@ -6478,7 +12265,7 @@ async function run() {
 
     resetStorage();
     const explicitDisabledSubtitleSliceCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         videoSliceCommandReady: true,
@@ -6494,6 +12281,8 @@ async function run() {
           byteSize: 654000,
           name: 'explicit-disabled-subtitle-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 42000,
         };
@@ -6504,8 +12293,8 @@ async function run() {
           artifactUuid: 'explicit-disabled-subtitle-transcript-artifact',
           taskUuid: 'explicit-disabled-subtitle-transcript-task',
           sourceAssetUuid: request.assetUuid,
-          transcriptPath: 'D:/autocut-configured-output/tasks/explicit-disabled-subtitle-transcript-task/outputs/transcript.json',
-          taskOutputDir: 'D:/autocut-configured-output/tasks/explicit-disabled-subtitle-transcript-task/outputs',
+          transcriptPath: 'D:/autocut-configured-output/tasks/explicit-disabled-subtitle-transcript-task/transcript.json',
+          taskOutputDir: 'D:/autocut-configured-output/tasks/explicit-disabled-subtitle-transcript-task',
           language: request.language ?? 'auto',
           text:
             'Why subtitle overlays matter is simple. Because viewers watch without sound, the problem is easy to miss. So show the result in speech text and the solution works.',
@@ -6565,9 +12354,7 @@ async function run() {
             byteSize: 234567,
             thumbnailByteSize: 12345,
             format: 'mp4',
-            startMs: clip.startMs,
-            durationMs: clip.durationMs,
-            label: clip.label,
+            ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
           })),
         };
       },
@@ -6631,7 +12418,7 @@ async function run() {
 
     resetStorage();
     const contradictorySubtitleSliceCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         videoSliceCommandReady: true,
@@ -6647,6 +12434,8 @@ async function run() {
           byteSize: 654000,
           name: 'contradictory-subtitle-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 42000,
         };
@@ -6657,8 +12446,8 @@ async function run() {
           artifactUuid: 'contradictory-subtitle-transcript-artifact',
           taskUuid: 'contradictory-subtitle-transcript-task',
           sourceAssetUuid: request.assetUuid,
-          transcriptPath: 'D:/autocut-configured-output/tasks/contradictory-subtitle-transcript-task/outputs/transcript.json',
-          taskOutputDir: 'D:/autocut-configured-output/tasks/contradictory-subtitle-transcript-task/outputs',
+          transcriptPath: 'D:/autocut-configured-output/tasks/contradictory-subtitle-transcript-task/transcript.json',
+          taskOutputDir: 'D:/autocut-configured-output/tasks/contradictory-subtitle-transcript-task',
           language: request.language ?? 'auto',
           text:
             'Why subtitle controls must be explicit is simple. Because hidden none modes silently skip output, the request must fail before rendering.',
@@ -6734,7 +12523,7 @@ async function run() {
 
     resetStorage();
     const enabledSubtitleSliceCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         videoSliceCommandReady: true,
@@ -6750,6 +12539,8 @@ async function run() {
           byteSize: 654000,
           name: 'enabled-subtitle-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 42000,
         };
@@ -6760,8 +12551,8 @@ async function run() {
           artifactUuid: 'enabled-subtitle-transcript-artifact',
           taskUuid: 'enabled-subtitle-transcript-task',
           sourceAssetUuid: request.assetUuid,
-          transcriptPath: 'D:/autocut-configured-output/tasks/enabled-subtitle-transcript-task/outputs/transcript.json',
-          taskOutputDir: 'D:/autocut-configured-output/tasks/enabled-subtitle-transcript-task/outputs',
+          transcriptPath: 'D:/autocut-configured-output/tasks/enabled-subtitle-transcript-task/transcript.json',
+          taskOutputDir: 'D:/autocut-configured-output/tasks/enabled-subtitle-transcript-task',
           language: request.language ?? 'auto',
           text:
             'Why subtitle overlays matter is simple. Because viewers watch without sound, the problem is easy to miss. So show the result in speech text and the solution works.',
@@ -6821,9 +12612,7 @@ async function run() {
             byteSize: 234567,
             thumbnailByteSize: 12345,
             format: 'mp4',
-            startMs: clip.startMs,
-            durationMs: clip.durationMs,
-            label: clip.label,
+            ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
           })),
         };
       },
@@ -6867,13 +12656,21 @@ async function run() {
       'video slice workflow preserves the enabled subtitle mode for native rendering',
     );
     assertEqual(
-      enabledSubtitleSliceRequest?.subtitleSegments?.[0]?.text,
+      joinSubtitleCueCoverageText(enabledSubtitleSliceRequest?.subtitleSegments),
       'Why subtitle overlays matter is simple. Because viewers watch without sound, the problem is easy to miss. So show the result in speech text and the solution works.',
-      'video slice workflow forwards real speech-to-text segments when subtitle generation is enabled',
+      'video slice workflow forwards complete real speech-to-text coverage when subtitle generation is enabled',
+    );
+    assertRule(
+      (enabledSubtitleSliceRequest?.subtitleSegments?.length ?? 0) > 1 &&
+        enabledSubtitleSliceRequest?.subtitleSegments?.every((segment) =>
+          normalizeSubtitleCueText(segment.text).length <= 52 &&
+          segment.endMs > segment.startMs
+        ),
+      'video slice workflow sends paced subtitle cues instead of one long transcript overlay when subtitle generation is enabled',
     );
     assertEqual(
       enabledSubtitleTask?.sliceResults?.[0]?.subtitleUrl,
-      'asset://localhost/D%3A%2Fautocut-configured-output%2Ftasks%2Fenabled-subtitle-slice-task%2Foutputs%2Fenabled-subtitle-1.srt',
+      'asset://localhost/D%3A%2Fautocut-configured-output%2Ftasks%2Fenabled-subtitle-slice-task%2Fenabled-subtitle-1.srt',
       'video slice workflow exposes subtitle sidecar URLs when subtitle generation is enabled',
     );
     assertEqual(
@@ -6957,7 +12754,7 @@ async function run() {
 
       const commands = [];
       const sliceTaskUuid = `${taskPrefix}-slice-task`;
-      services.configureAutoCutNativeHostClient({
+      configureAutoCutNativeHostClient(services, {
         getCapabilities: async () => ({
           mediaImportCommandReady: true,
           videoSliceCommandReady: true,
@@ -6974,6 +12771,8 @@ async function run() {
             byteSize: 4_800_000,
             name: `${taskPrefix}-source.mp4`,
             mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
             mimeType: 'video/mp4',
             durationMs: longWhisperSourceDurationMs,
           };
@@ -7002,7 +12801,7 @@ async function run() {
           commands.push({ kind: 'slice', request });
           const subtitlesRequested =
             request.subtitleFormat === 'srt' &&
-            request.subtitleMode !== 'burned' &&
+            request.subtitleMode !== 'none' &&
             Array.isArray(request.subtitleSegments) &&
             request.subtitleSegments.length > 0;
           const slices = request.clips.map((clip, index) => {
@@ -7040,27 +12839,14 @@ async function run() {
               byteSize: 240_000 + index,
               thumbnailByteSize: 12_000 + index,
               format: 'mp4',
-              startMs: clip.startMs,
-              durationMs: clip.durationMs,
-              label: clip.label,
-              sourceStartMs: clip.sourceStartMs,
-              sourceEndMs: clip.sourceEndMs,
-              speechStartMs: clip.speechStartMs,
-              speechEndMs: clip.speechEndMs,
-              boundaryPaddingBeforeMs: clip.boundaryPaddingBeforeMs,
-              boundaryPaddingAfterMs: clip.boundaryPaddingAfterMs,
-              transcriptText: clip.transcriptText,
-              transcriptSegments: clip.transcriptSegments,
-              transcriptSegmentCount: clip.transcriptSegmentCount,
-              transcriptCoverageScore: clip.transcriptCoverageScore,
-              speechContinuityGrade: clip.speechContinuityGrade,
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
             };
           });
 
           return {
             taskUuid: sliceTaskUuid,
             sourceAssetUuid: request.assetUuid,
-            taskOutputDir: `${configuredOutputDirectory}/tasks/${sliceTaskUuid}/outputs`,
+            taskOutputDir: `${configuredOutputDirectory}/tasks/${sliceTaskUuid}`,
             ffmpegExecutable: 'ffmpeg',
             slices,
           };
@@ -7076,6 +12862,8 @@ async function run() {
           byteSize: 4_800_000,
           mimeType: 'video/mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
         },
       );
       const result = await withImmediateTimers(async () =>
@@ -7085,8 +12873,6 @@ async function run() {
           mode: 'contract-mode',
           llmModel: 'gemini-3-flash-preview',
           targetPlatform: 'generic',
-          sliceCountMode: 'coverageFirst',
-          targetSliceCount: 4,
           idealDuration: 25,
           continuityLevel: 'standard',
           minDuration: 10,
@@ -7245,10 +13031,22 @@ async function run() {
       'srt',
       'long local Whisper regression preserves explicit SRT subtitle mode',
     );
-    assertEqual(
-      enabledLongWhisperSliceRequest?.subtitleSegments?.length,
-      longWhisperSegments.length,
-      'long local Whisper regression forwards the complete long-video Whisper transcript to subtitle rendering',
+    assertRule(
+      (enabledLongWhisperSliceRequest?.subtitleSegments?.length ?? 0) >= longWhisperSegments.length &&
+        longWhisperSegments.every((segment) =>
+          joinSubtitleCueCoverageText(enabledLongWhisperSliceRequest?.subtitleSegments).includes(
+            normalizeSubtitleCueCoverageText(segment.text),
+          )
+        ),
+      'long local Whisper regression forwards the complete long-video Whisper transcript coverage to subtitle rendering',
+    );
+    assertRule(
+      enabledLongWhisperSliceRequest?.subtitleSegments?.every((segment) =>
+        countSubtitleCueDisplayUnits(segment.text) <= 84 &&
+        segment.endMs > segment.startMs &&
+        segment.endMs - segment.startMs <= 3600
+      ),
+      'long local Whisper regression forwards paced short subtitle cues for long-video transcript rendering',
     );
     assertRule(
       enabledLongWhisperSubtitleSpeakers.has('Speaker 1') &&
@@ -7260,11 +13058,11 @@ async function run() {
       enabledLongWhisperSliceRequest?.subtitleSegments,
       'long local Whisper regression repairs fast-interruption overlap before native subtitle rendering',
     );
-    assertEqual(
-      enabledLongWhisperSliceRequest?.subtitleSegments?.find((segment) =>
-        segment.text.includes('interrupts quickly')
-      )?.startMs,
-      222_000,
+    assertRule(
+      enabledLongWhisperSliceRequest?.subtitleSegments?.some((segment) =>
+        segment.startMs === 222_000 &&
+        joinSubtitleCueCoverageText([segment]).includes('interrupts')
+      ),
       'long local Whisper regression sends native subtitle rendering a repaired interruption boundary',
     );
     assertRule(
@@ -7280,6 +13078,37 @@ async function run() {
       'long local Whisper regression stores one generated video asset per long-video slice',
     );
 
+    const burnedLongWhisperRegression = await runLongWhisperVideoSliceRegression({
+      taskPrefix: 'long-whisper-burned',
+      enableSubtitles: true,
+      subtitleMode: 'burned',
+    });
+    const burnedLongWhisperSliceRequest =
+      burnedLongWhisperRegression.commands.find((entry) => entry.kind === 'slice')?.request;
+    assertEqual(
+      burnedLongWhisperRegression.result.success,
+      true,
+      'long local Whisper regression reports success when burned subtitles are enabled',
+    );
+    assertEqual(
+      burnedLongWhisperSliceRequest?.subtitleFormat,
+      'srt',
+      'burned subtitle rendering still requests SRT subtitle sidecar generation',
+    );
+    assertEqual(
+      burnedLongWhisperSliceRequest?.subtitleMode,
+      'burned',
+      'burned subtitle rendering preserves the explicit burned overlay mode',
+    );
+    assertRule(
+      burnedLongWhisperRegression.task?.sliceResults?.every((sliceResult) =>
+        sliceResult.subtitleUrl?.endsWith('.srt') &&
+        sliceResult.transcriptText?.trim() &&
+        sliceResult.transcriptSegments?.length
+      ),
+      'burned subtitle rendering exposes an editable SRT sidecar for every generated slice',
+    );
+
     assertRule(
       nativeVideoSliceWorkflowCommands[2]?.request?.clips?.length > 0 &&
         nativeVideoSliceWorkflowCommands[2]?.request?.clips?.length <= 5,
@@ -7287,22 +13116,22 @@ async function run() {
     );
     assertEqual(
       nativeVideoSliceWorkflowCommands[2]?.request?.clips?.[0]?.startMs,
-      21800,
+      21650,
       'video slice native workflow adds leading boundary padding before the first intelligent clip render timing',
     );
     assertEqual(
       nativeVideoSliceWorkflowCommands[2]?.request?.clips?.[0]?.label,
-      'Why viewers scroll is simple. Because the openin',
+      'Why viewers scroll is simple. Because the opening hides ',
       'video slice native workflow uses local speech transcript text as the semantic clip label',
     );
     assertEqual(
       nativeVideoSliceWorkflowCommands[2]?.request?.clips?.[0]?.outputFileName,
-      '01-why-viewers-scroll-is-simple-because-the-openin.mp4',
+      '01-why-viewers-scroll-is-simple-because-the-opening-hides.mp4',
       'video slice native workflow sends a deterministic title-based output file name for the first smart slice',
     );
     assertEqual(
       nativeVideoSliceWorkflowCommands[2]?.request?.clips?.[1]?.outputFileName,
-      '02-what-fixes-weak-conversion-is-clear-the-case-sh.mp4',
+      '02-what-fixes-weak-conversion-is-clear-the-case-shows-pric.mp4',
       'video slice native workflow sends a deterministic title-based output file name for the second smart slice',
     );
     assertEqual(
@@ -7316,28 +13145,66 @@ async function run() {
       'video slice native workflow records the generated slice count from native artifacts',
     );
     assertEqual(
+      nativeVideoSliceWorkflowTask?.sliceResults?.length,
+      2,
+      'video slice native workflow persists every generated smart slice instead of collapsing to a single clip',
+    );
+    assertEqual(
+      nativeVideoSliceWorkflowCommands[3]?.request?.clips?.length,
+      2,
+      'video slice native workflow sends every transcript-derived clip to native rendering instead of rendering only one',
+    );
+    for (const stepId of [
+      'prepare-source',
+      'speech-to-text',
+      'plan-clips',
+      'analyze-audio-boundaries',
+      'native-render',
+      'verify-artifacts',
+      'persist-results',
+    ]) {
+      assertRule(
+        nativeVideoSliceWorkflowTask?.executionSteps?.some((step) =>
+          step.id === stepId &&
+            step.status === 'completed' &&
+            typeof step.startedAt === 'string' &&
+            typeof step.completedAt === 'string'
+        ),
+        `video slice native workflow persists completed Smart Slice execution step ${stepId}`,
+      );
+      assertRule(
+        nativeVideoSliceWorkflowTask?.executionLogs?.some((log) =>
+          log.stepId === stepId && log.eventType === 'step-started'
+        ) &&
+          nativeVideoSliceWorkflowTask?.executionLogs?.some((log) =>
+            log.stepId === stepId && log.eventType === 'step-completed'
+          ),
+        `video slice native workflow persists queryable Smart Slice start and completion logs for ${stepId}`,
+      );
+    }
+    assertEqual(
       nativeVideoSliceWorkflowTask?.sliceResults?.[0]?.url,
-      'asset://localhost/D%3A%2Fautocut-configured-output%2Ftasks%2Fnative-slice-task%2Foutputs%2F01-why-viewers-scroll-is-simple-because-the-openin.mp4',
+      'asset://localhost/D%3A%2Fautocut-configured-output%2Ftasks%2Fnative-slice-task%2F01-why-viewers-scroll-is-simple-because-the-opening-hides.mp4',
       'video slice native workflow converts first native artifact path to a safe asset URL',
     );
     assertEqual(
       nativeVideoSliceWorkflowTask?.sliceResults?.[0]?.artifactPath,
-      'D:/autocut-configured-output/tasks/native-slice-task/outputs/01-why-viewers-scroll-is-simple-because-the-openin.mp4',
+      'D:/autocut-configured-output/tasks/native-slice-task/01-why-viewers-scroll-is-simple-because-the-opening-hides.mp4',
       'video slice native workflow persists the first native artifact path for open-containing-folder actions',
     );
     assertEqual(
       nativeVideoSliceWorkflowTask?.sliceResults?.[0]?.taskOutputDir,
-      'D:/autocut-configured-output/tasks/native-slice-task/outputs',
+      'D:/autocut-configured-output/tasks/native-slice-task',
       'video slice native workflow persists the native task output directory for artifact containment audits',
     );
     assertEqual(
       nativeVideoSliceWorkflowTask?.sliceResults?.[0]?.name,
-      '01-why-viewers-scroll-is-simple-because-the-openin.mp4',
+      '01-why-viewers-scroll-is-simple-because-the-opening-hides.mp4',
       'video slice native workflow names the first task slice result from clear speech content',
     );
     assertEqual(
       nativeVideoSliceWorkflowTask?.sliceResults?.[0]?.thumbnailUrl,
-      'asset://localhost/D%3A%2Fautocut-configured-output%2Ftasks%2Fnative-slice-task%2Foutputs%2Fcover%2Fnative-slice-thumb-1.jpg',
+      'asset://localhost/D%3A%2Fautocut-configured-output%2Ftasks%2Fnative-slice-task%2Fcover%2Fnative-slice-thumb-1.jpg',
       'video slice native workflow converts first native cover thumbnail path to a safe asset URL',
     );
     assertEqual(
@@ -7352,22 +13219,22 @@ async function run() {
     );
     assertEqual(
       nativeVideoSliceWorkflowTask?.sliceResults?.[1]?.url,
-      'asset://localhost/D%3A%2Fautocut-configured-output%2Ftasks%2Fnative-slice-task%2Foutputs%2F02-what-fixes-weak-conversion-is-clear-the-case-sh.mp4',
+      'asset://localhost/D%3A%2Fautocut-configured-output%2Ftasks%2Fnative-slice-task%2F02-what-fixes-weak-conversion-is-clear-the-case-shows-pric.mp4',
       'video slice native workflow converts second native artifact path to a safe asset URL',
     );
     assertEqual(
       nativeVideoSliceWorkflowTask?.sliceResults?.[1]?.artifactPath,
-      'D:/autocut-configured-output/tasks/native-slice-task/outputs/02-what-fixes-weak-conversion-is-clear-the-case-sh.mp4',
+      'D:/autocut-configured-output/tasks/native-slice-task/02-what-fixes-weak-conversion-is-clear-the-case-shows-pric.mp4',
       'video slice native workflow persists the second native artifact path for open-containing-folder actions',
     );
     assertEqual(
       nativeVideoSliceWorkflowTask?.sliceResults?.[1]?.name,
-      '02-what-fixes-weak-conversion-is-clear-the-case-sh.mp4',
+      '02-what-fixes-weak-conversion-is-clear-the-case-shows-pric.mp4',
       'video slice native workflow names the second task slice result from clear speech content',
     );
     assertEqual(
       nativeVideoSliceWorkflowTask?.sliceResults?.[1]?.thumbnailUrl,
-      'asset://localhost/D%3A%2Fautocut-configured-output%2Ftasks%2Fnative-slice-task%2Foutputs%2Fcover%2Fnative-slice-thumb-2.jpg',
+      'asset://localhost/D%3A%2Fautocut-configured-output%2Ftasks%2Fnative-slice-task%2Fcover%2Fnative-slice-thumb-2.jpg',
       'video slice native workflow converts second native cover thumbnail path to a safe asset URL',
     );
     assertEqual(
@@ -7409,12 +13276,231 @@ async function run() {
     services.configureAutoCutApprovedAiSdkBridge(null);
 
     resetStorage();
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    await services.saveAutoCutLlmSettings({
+      ...(await services.getAutoCutSettings()).llm,
+      modelVendor: 'gemini',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      model: 'gemini-3-flash-preview',
+      apiKey: 'sk-single-selection-llm-plan',
+      temperature: 0.2,
+      maxTokens: 4096,
+      defaultSegmentationAgentId: 'dialogue-turn-agent',
+    });
+    const singleSelectionLlmCommands = [];
+    const singleSelectionLlmBridgeRequests = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        singleSelectionLlmCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'single-selection-llm-asset',
+          sandboxPath: `${configuredOutputDirectory}/inputs/single-selection-llm-asset.mp4`,
+          byteSize: 765000,
+          name: 'single-selection-llm-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 90000,
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'single selection LLM multi clip regression',
+      }),
+      transcribeMedia: async (request) => {
+        singleSelectionLlmCommands.push({ kind: 'transcribe', request });
+        return createDialogueTwoQuestionNativeVideoSliceTranscriptResult(
+          request,
+          'single-selection-llm-transcript-task',
+          configuredOutputDirectory,
+        );
+      },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        singleSelectionLlmCommands.push({ kind: 'analyze-audio-boundaries', request });
+        return createNativeVideoSliceAudioActivityAnalysisResult(request);
+      },
+      sliceVideo: async (request) => {
+        singleSelectionLlmCommands.push({ kind: 'slice', request });
+        return {
+          taskUuid: 'single-selection-llm-slice-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: `${configuredOutputDirectory}/tasks/single-selection-llm-slice-task`,
+          ffmpegExecutable: 'ffmpeg',
+          slices: request.clips.map((clip, index) => {
+            const output = createNativeTaskOutputArtifact(
+              'single-selection-llm-slice-task',
+              clip.outputFileName ?? `single-selection-llm-slice-${index + 1}.mp4`,
+              configuredOutputDirectory,
+            );
+            const thumbnail = createNativeTaskCoverArtifact(
+              'single-selection-llm-slice-task',
+              `single-selection-llm-thumb-${index + 1}.jpg`,
+              configuredOutputDirectory,
+            );
+            return {
+              artifactUuid: `single-selection-llm-slice-artifact-${index + 1}`,
+              artifactPath: output.artifactPath,
+              thumbnailArtifactUuid: `single-selection-llm-thumb-${index + 1}`,
+              thumbnailArtifactPath: thumbnail.artifactPath,
+              taskOutputDir: output.taskOutputDir,
+              byteSize: 234567 + index,
+              thumbnailByteSize: 12345 + index,
+              format: 'mp4',
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+            };
+          }),
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    let singleSelectionLlmPrompt;
+    services.configureAutoCutApprovedAiSdkBridge({
+      async createChatCompletion(request, runtime) {
+        singleSelectionLlmBridgeRequests.push({ request, runtime });
+        const prompt = JSON.parse(request.messages?.[1]?.content ?? '{}');
+        singleSelectionLlmPrompt = prompt;
+        return {
+          id: 'single-selection-llm-plan',
+          model: request.model,
+          content: JSON.stringify({
+            rankedCandidateIds: prompt.candidates?.slice(0, 1).map((candidate) => candidate.id) ?? [],
+            referencedUnitIds: prompt.contentUnits?.slice(0, 1).map((unit) => unit.id) ?? [],
+            reviewNotes: ['Regression fixture intentionally omits the second strong content group.'],
+          }),
+          runtime,
+        };
+      },
+    });
+    const singleSelectionLlmResult = await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-single-selection-llm-slice',
+        file: createTrustedLocalMediaFile(
+          commons,
+          'D:/media/single-selection-llm-source.mp4',
+          'single-selection-llm-source.mp4',
+        ),
+        mode: 'contract-mode',
+        llmModel: 'gemini-3-flash-preview',
+        minDuration: 15,
+        maxDuration: 20,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'emotion',
+        enableNoiseReduction: true,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSubtitles: false,
+      }),
+    );
+    const singleSelectionLlmTask = readScopedStoredArray(services, 'tasks')
+      .find((task) => task.id === singleSelectionLlmResult.taskId);
+    const singleSelectionLlmSliceRequest = singleSelectionLlmCommands.find((entry) => entry.kind === 'slice')?.request;
+    const singleSelectionLlmWorkflowNativeRequests = singleSelectionLlmCommands.filter((entry) =>
+      entry.kind === 'transcribe' ||
+      entry.kind === 'analyze-audio-boundaries' ||
+      entry.kind === 'slice'
+    );
+    assertEqual(
+      singleSelectionLlmBridgeRequests.length,
+      1,
+      'single-selection LLM regression exercises the configured LLM planner path',
+    );
+    assertEqual(
+      singleSelectionLlmBridgeRequests[0]?.runtime?.defaultSegmentationAgentId,
+      'dialogue-turn-agent',
+      'single-selection LLM regression resolves Settings Center default Smart Slice segmentation agent at runtime',
+    );
+    assertEqual(
+      singleSelectionLlmPrompt?.segmentationAgent?.id,
+      'dialogue-turn-agent',
+      'single-selection LLM regression sends the Settings Center default segmentation agent into the LLM review prompt when params omit segmentationAgentId',
+    );
+    assertEqual(
+      singleSelectionLlmPrompt?.presetId,
+      'interview-one-question-one-answer',
+      'single-selection LLM regression lets the Settings Center default dialogue segmentation agent drive the Q/A slicer preset',
+    );
+    assertEqual(
+      singleSelectionLlmPrompt?.candidates?.[0]?.dialogueTurnContinuity,
+      'question-answer-complete',
+      'single-selection LLM regression sends complete dialogue-turn continuity evidence into the LLM review prompt',
+    );
+    assertRule(
+      singleSelectionLlmPrompt?.candidates?.[0]?.speakerIds?.includes('speaker-host') &&
+        singleSelectionLlmPrompt?.candidates?.[0]?.speakerIds?.includes('speaker-guest') &&
+        singleSelectionLlmPrompt?.candidates?.[0]?.speakerRoles?.includes('interviewer') &&
+        singleSelectionLlmPrompt?.candidates?.[0]?.speakerRoles?.includes('guest'),
+      'single-selection LLM regression sends candidate-level interviewer and guest evidence into the LLM review prompt',
+    );
+    assertRule(
+      singleSelectionLlmPrompt?.contentUnits?.some((unit) =>
+        unit.speakerTurnIds?.length > 0 &&
+          typeof unit.speakerConfidence === 'number' &&
+          Array.isArray(unit.overlapGroupIds)
+      ),
+      'single-selection LLM regression sends content-unit diarization evidence into the LLM review prompt',
+    );
+    assertEqual(
+      singleSelectionLlmTask?.executionCheckpoint?.params?.segmentationAgentId,
+      'dialogue-turn-agent',
+      'single-selection LLM regression persists the resolved Settings Center default segmentation agent in the Smart Slice checkpoint',
+    );
+    assertEqual(
+      singleSelectionLlmResult.success,
+      true,
+      'single-selection LLM regression reports success',
+    );
+    assertEqual(
+      singleSelectionLlmSliceRequest?.clips?.length,
+      2,
+      'single-selection LLM regression renders every deterministic strong content group even when the model returns only one candidate',
+    );
+    assertRule(
+      singleSelectionLlmSliceRequest?.clips?.some((clip) =>
+        clip.transcriptText?.includes('native validation workflow stays safe')
+      ) &&
+        singleSelectionLlmSliceRequest?.clips?.some((clip) =>
+          clip.transcriptText?.includes('artifact check rejects the bad artifact')
+        ),
+      'single-selection LLM regression preserves both independent transcript-derived stories in native render input',
+    );
+    assertEqual(
+      singleSelectionLlmTask?.sliceResults?.length,
+      2,
+      'single-selection LLM regression persists both generated smart slices on the completed task',
+    );
+    assertRule(
+      singleSelectionLlmWorkflowNativeRequests.length >= 3 &&
+        singleSelectionLlmWorkflowNativeRequests.every((entry) => entry.request?.workflowTaskId === singleSelectionLlmResult.taskId),
+      'single-selection LLM Smart Slice native requests carry the workflow task id for cancel progress and log correlation',
+    );
+    services.resetAutoCutNativeHostClient();
+    services.configureAutoCutApprovedAiSdkBridge(null);
+
+    resetStorage();
     const failingNativeVideoSliceSourceFile = createTrustedLocalMediaFile(
       commons,
       'D:/media/failing-native-source.mp4',
       'failing-native-source.mp4',
     );
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         contractVersion: 'contract-test',
         hostKind: 'native-host',
@@ -7430,6 +13516,7 @@ async function run() {
         audioExtractionFromAssetReady: false,
         videoGifCommandReady: false,
         videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
         videoCompressCommandReady: false,
         videoConvertCommandReady: false,
         videoEnhanceCommandReady: false,
@@ -7474,6 +13561,8 @@ async function run() {
         byteSize: 765000,
         name: 'failing-native-source.mp4',
         mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
         mimeType: 'video/mp4',
       }),
       describeLocalMediaFile: async (request) => ({
@@ -7481,6 +13570,8 @@ async function run() {
         byteSize: 765000,
         name: 'failing-native-source.mp4',
         mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
         mimeType: 'video/mp4',
       }),
       selectLocalVideoFile: async () => null,
@@ -7600,8 +13691,943 @@ async function run() {
     assertEqual(readScopedStoredArray(services, 'messages').length, 0, 'video slice native command failure does not persist success messages');
 
     resetStorage();
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    await services.addAsset({
+      id: 'asset-reference-resumable-smart-slice',
+      name: 'resumable-smart-slice-source.mp4',
+      type: 'video',
+      size: 765000,
+      url: 'asset://localhost/resumable-smart-slice-reference.mp4',
+      createdAt: '2026-05-05T00:00:01.000Z',
+      updatedAt: '2026-05-05T00:00:01.000Z',
+    });
+    const resumableSmartSliceCommands = [];
+    let resumableSmartSliceAudioAnalysisAttempts = 0;
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        contractVersion: 'smart-slice-resume-test',
+        hostKind: 'native-host',
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+        nativeTaskCancelCommandReady: true,
+        nativeTaskRecoveryCommandReady: true,
+        nativeTaskRetryCommandReady: true,
+        nativeTaskProgressEventsReady: true,
+      }),
+      importMediaFile: async (request) => {
+        resumableSmartSliceCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'resumable-smart-slice-asset',
+          sandboxPath: `${configuredOutputDirectory}/inputs/resumable-smart-slice-asset.mp4`,
+          byteSize: 765000,
+          name: 'resumable-smart-slice-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 90000,
+        };
+      },
+      probeSpeechTranscription: async (request) => {
+        resumableSmartSliceCommands.push({ kind: 'speech-preflight', request });
+        return {
+          ready: true,
+          executablePath: request.executablePath,
+          modelPath: request.modelPath,
+          sourceKind: request.sourceKind ?? 'execution-preflight',
+          diagnostics: [],
+          versionLine: 'resumable Smart Slice speech preflight contract',
+        };
+      },
+      transcribeMedia: async (request) => {
+        resumableSmartSliceCommands.push({ kind: 'transcribe', request });
+        return createContentDerivedTwoStoryNativeVideoSliceTranscriptResult(
+          request,
+          'resumable-smart-slice-transcript-task',
+          configuredOutputDirectory,
+        );
+      },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        resumableSmartSliceCommands.push({ kind: 'analyze-audio-boundaries', request });
+        resumableSmartSliceAudioAnalysisAttempts += 1;
+        if (resumableSmartSliceAudioAnalysisAttempts === 1) {
+          throw new Error('simulated audio boundary outage');
+        }
+        return createNativeVideoSliceAudioActivityAnalysisResult(request);
+      },
+      sliceVideo: async (request) => {
+        resumableSmartSliceCommands.push({ kind: 'slice', request });
+        return {
+          taskUuid: 'resumable-smart-slice-render-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: `${configuredOutputDirectory}/tasks/resumable-smart-slice-render-task`,
+          ffmpegExecutable: 'ffmpeg',
+          slices: request.clips.map((clip, index) => {
+            const sliceNumber = index + 1;
+            const output = createNativeTaskOutputArtifact(
+              'resumable-smart-slice-render-task',
+              clip.outputFileName ?? `resumable-smart-slice-${sliceNumber}.mp4`,
+              configuredOutputDirectory,
+            );
+            const thumbnail = createNativeTaskCoverArtifact(
+              'resumable-smart-slice-render-task',
+              `resumable-smart-slice-thumb-${sliceNumber}.jpg`,
+              configuredOutputDirectory,
+            );
+            return {
+              artifactUuid: `resumable-smart-slice-artifact-${sliceNumber}`,
+              artifactPath: output.artifactPath,
+              thumbnailArtifactUuid: `resumable-smart-slice-thumb-artifact-${sliceNumber}`,
+              thumbnailArtifactPath: thumbnail.artifactPath,
+              taskOutputDir: output.taskOutputDir,
+              byteSize: 240000 + index,
+              thumbnailByteSize: 12000 + index,
+              format: 'mp4',
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+            };
+          }),
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    let resumableSmartSliceRejectedTaskId;
+    await assertRejects(
+      async () => {
+        try {
+          await withImmediateTimers(async () =>
+            processVideoSlice({
+              fileId: 'asset-source-resumable-smart-slice',
+              file: createTrustedLocalMediaFile(
+                commons,
+                'D:/media/resumable-smart-slice-source.mp4',
+                'resumable-smart-slice-source.mp4',
+              ),
+              mode: 'contract-mode',
+              llmModel: 'gemini-3-flash-preview',
+              targetPlatform: 'generic',
+              idealDuration: 25,
+              continuityLevel: 'standard',
+              minDuration: 10,
+              maxDuration: 60,
+              baseAlgorithm: 'scene',
+              highlightEngine: 'emotion',
+              enableNoiseReduction: false,
+              enableCoughFilter: true,
+              enableRepeatFilter: true,
+              enableSmartDedup: true,
+              videoDedupParams: {
+                mode: 'slice-result-dedup',
+                referenceAssetIds: ['asset-reference-resumable-smart-slice'],
+                strategies: ['exact-file-hash', 'container-normalized'],
+                sensitivity: 'balanced',
+                minMatchDurationMs: 8_000,
+                ignoreIntroOutro: true,
+                introOutroMaxDurationMs: 12_000,
+                actionMode: 'review-before-action',
+              },
+              enableSubtitles: false,
+            }),
+          );
+        } catch (error) {
+          resumableSmartSliceRejectedTaskId = services.getAutoCutProcessingTaskErrorTaskId(error);
+          throw error;
+        }
+      },
+      'simulated audio boundary outage',
+      'Smart Slice audio boundary failure before resume',
+    );
+    const resumableSmartSliceFailedTask = readScopedStoredArray(services, 'tasks')
+      .find((task) => task.id === resumableSmartSliceRejectedTaskId);
+    assertEqual(
+      resumableSmartSliceFailedTask?.status,
+      types.AUTOCUT_TASK_STATUS.failed,
+      'Smart Slice checkpoint regression marks the original task failed before resume',
+    );
+    assertEqual(
+      resumableSmartSliceFailedTask?.executionCheckpoint?.workflowId,
+      'smart-slice',
+      'Smart Slice checkpoint regression persists the workflow checkpoint envelope',
+    );
+    assertArrayIncludes(
+      resumableSmartSliceFailedTask?.executionCheckpoint?.completedStepIds,
+      'speech-to-text',
+      'Smart Slice checkpoint regression records completed speech-to-text before failure',
+    );
+    assertArrayIncludes(
+      resumableSmartSliceFailedTask?.executionCheckpoint?.completedStepIds,
+      'plan-clips',
+      'Smart Slice checkpoint regression records completed planning before failure',
+    );
+    assertArrayIncludes(
+      resumableSmartSliceFailedTask?.executionCheckpoint?.resumeFromStepIds,
+      'analyze-audio-boundaries',
+      'Smart Slice checkpoint regression exposes the failed audio boundary step as resumable',
+    );
+    assertEqual(
+      resumableSmartSliceFailedTask?.executionCheckpoint?.artifacts?.['speech-to-text']?.transcriptSegments?.length,
+      4,
+      'Smart Slice checkpoint regression stores transcript segments for resume without repeating STT',
+    );
+    assertEqual(
+      resumableSmartSliceFailedTask?.executionCheckpoint?.artifacts?.['speech-to-text']?.normalizedTranscriptEvidence?.relativePath,
+      'evidence/transcript.normalized.json',
+      'Smart Slice checkpoint regression stores normalized transcript evidence for resumable commercial review',
+    );
+    assertEqual(
+      resumableSmartSliceFailedTask?.executionCheckpoint?.artifacts?.['plan-clips']?.plannedClips?.length,
+      2,
+      'Smart Slice checkpoint regression stores every planned clip so resume does not collapse to one slice',
+    );
+    assertRule(
+      resumableSmartSliceFailedTask?.executionSteps?.some((step) =>
+        step.id === 'analyze-audio-boundaries' &&
+          step.status === 'failed' &&
+          step.canResumeFromHere === true
+      ),
+      'Smart Slice checkpoint regression marks the failed audio boundary step resumable in task detail state',
+    );
+    assertEqual(
+      resumableSmartSliceCommands.filter((entry) => entry.kind === 'import').length,
+      1,
+      'Smart Slice checkpoint regression imports the source only once before resume',
+    );
+    assertEqual(
+      resumableSmartSliceCommands.filter((entry) => entry.kind === 'transcribe').length,
+      1,
+      'Smart Slice checkpoint regression transcribes only once before resume',
+    );
+    assertEqual(
+      readScopedStoredArray(services, 'assets').filter((asset) =>
+        asset.sourceTaskId === resumableSmartSliceFailedTask?.id
+      ).length,
+      0,
+      'Smart Slice checkpoint regression does not persist generated or runtime source assets while failed before render',
+    );
+    const resumableSmartSliceUpdates = captureEvents(services, 'taskUpdated');
+    let resumableSmartSliceResumeResult = {};
+    if (typeof services.resumeTaskFromStep === 'function' && resumableSmartSliceFailedTask?.id) {
+      resumableSmartSliceResumeResult = await withImmediateTimers(() =>
+        services.resumeTaskFromStep(resumableSmartSliceFailedTask.id, 'analyze-audio-boundaries')
+      );
+    } else {
+      assertRule(
+        false,
+        'Smart Slice checkpoint regression can call the service resume API on the failed workflow task',
+      );
+    }
+    resumableSmartSliceUpdates.stop();
+    const resumableSmartSliceCompletedTask = readScopedStoredArray(services, 'tasks')
+      .find((task) => task.id === resumableSmartSliceFailedTask?.id);
+    assertEqual(
+      resumableSmartSliceResumeResult.success,
+      true,
+      'Smart Slice checkpoint regression resume reports success',
+    );
+    assertEqual(
+      resumableSmartSliceResumeResult.taskId,
+      resumableSmartSliceFailedTask?.id,
+      'Smart Slice checkpoint regression resumes the original workflow task id',
+    );
+    assertEqual(
+      resumableSmartSliceCompletedTask?.status,
+      types.AUTOCUT_TASK_STATUS.completed,
+      'Smart Slice checkpoint regression completes the original task after resume',
+    );
+    assertEqual(
+      resumableSmartSliceCommands.filter((entry) => entry.kind === 'import').length,
+      1,
+      'Smart Slice checkpoint regression reuses the source checkpoint instead of importing again',
+    );
+    assertEqual(
+      resumableSmartSliceCommands.filter((entry) => entry.kind === 'transcribe').length,
+      1,
+      'Smart Slice checkpoint regression reuses the transcript checkpoint instead of repeating STT',
+    );
+    assertEqual(
+      resumableSmartSliceCommands.filter((entry) => entry.kind === 'analyze-audio-boundaries').length,
+      2,
+      'Smart Slice checkpoint regression reruns the failed audio boundary step during resume',
+    );
+    assertRule(
+      (resumableSmartSliceCompletedTask?.executionCheckpoint?.artifacts?.['analyze-duplicates']?.smartDedupReport?.matchCount ?? 0) >= 1,
+      'Smart Slice checkpoint regression runs intelligent dedup after resume using the checkpointed runtime source asset',
+    );
+    assertRule(
+      resumableSmartSliceCompletedTask?.sliceReviewSession?.duplicateGroups?.some((group) => group.reason === 'smart-dedup'),
+      'Smart Slice checkpoint regression exposes resumed smart dedup matches in the rendered review session',
+    );
+    assertEqual(
+      resumableSmartSliceCommands.filter((entry) => entry.kind === 'slice').length,
+      1,
+      'Smart Slice checkpoint regression renders once after resumed audio boundary analysis succeeds',
+    );
+    assertEqual(
+      resumableSmartSliceCompletedTask?.nativeTaskId,
+      'resumable-smart-slice-render-task',
+      'Smart Slice checkpoint regression records the resumed native render task id',
+    );
+    assertEqual(
+      resumableSmartSliceCompletedTask?.sliceResults?.length,
+      2,
+      'Smart Slice checkpoint regression preserves multiple generated slices after resume',
+    );
+    assertEqual(
+      readScopedStoredArray(services, 'assets').filter((asset) =>
+        asset.sourceTaskId === resumableSmartSliceFailedTask?.id
+      ).length,
+      2,
+      'Smart Slice checkpoint regression persists generated assets once on resume completion',
+    );
+    assertEqual(
+      readScopedStoredArray(services, 'assets').filter((asset) =>
+        asset.id === 'resumable-smart-slice-asset'
+      ).length,
+      0,
+      'Smart Slice checkpoint regression keeps the checkpointed runtime source out of the asset library after resumed dedup',
+    );
+    assertRule(
+      resumableSmartSliceCompletedTask?.executionLogs?.some((log) =>
+        log.eventType === 'task-resume-started' &&
+          log.stepId === 'analyze-audio-boundaries' &&
+          String(log.message).includes('Resuming Smart Slice')
+      ),
+      'Smart Slice checkpoint regression records a queryable resume-start log for the selected step',
+    );
+    assertRule(
+      resumableSmartSliceCompletedTask?.executionLogs?.some((log) =>
+        log.eventType === 'checkpoint-reused' &&
+          log.stepId === 'speech-to-text'
+      ),
+      'Smart Slice checkpoint regression records checkpoint reuse logs for skipped completed steps',
+    );
+    assertRule(
+      resumableSmartSliceUpdates.details.some((task) =>
+        task?.id === resumableSmartSliceFailedTask.id &&
+          task.status === types.AUTOCUT_TASK_STATUS.processing &&
+          task.progressMessage?.includes('Resuming')
+      ),
+      'Smart Slice checkpoint regression dispatches visible resume progress on the original task',
+    );
+    await assertRejects(
+      () => services.resumeTaskFromStep(resumableSmartSliceCompletedTask.id, 'speech-to-text'),
+      'requires a failed, canceled, or interrupted task',
+      'Smart Slice checkpoint regression rejects resume from an already completed workflow task',
+    );
+    assertEqual(
+      readScopedStoredArray(services, 'assets').filter((asset) =>
+        asset.sourceTaskId === resumableSmartSliceFailedTask?.id
+      ).length,
+      2,
+      'Smart Slice checkpoint regression does not duplicate generated assets after rejected completed-task resume',
+    );
+
+    resetStorage();
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    const checkpointSecondsTimestampCommands = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        contractVersion: 'smart-slice-seconds-checkpoint-resume-regression',
+        hostKind: 'native-host',
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        checkpointSecondsTimestampCommands.push({ kind: 'import', request });
+        throw new Error('Smart Slice seconds checkpoint resume must reuse the prepared source checkpoint');
+      },
+      transcribeMedia: async (request) => {
+        checkpointSecondsTimestampCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'seconds-checkpoint-smart-slice-refreshed-transcript-task',
+          configuredOutputDirectory,
+          checkpointSecondsTimestampSegments,
+        );
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'seconds checkpoint resume speech preflight contract',
+      }),
+      analyzeVideoSliceAudioActivity: async (request) => {
+        checkpointSecondsTimestampCommands.push({ kind: 'analyze-audio-boundaries', request });
+        return createNativeVideoSliceAudioActivityAnalysisResult(request);
+      },
+      sliceVideo: async (request) => {
+        checkpointSecondsTimestampCommands.push({ kind: 'slice', request });
+        return {
+          taskUuid: 'seconds-checkpoint-smart-slice-render-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: `${configuredOutputDirectory}/tasks/seconds-checkpoint-smart-slice-render-task`,
+          ffmpegExecutable: 'ffmpeg',
+          slices: request.clips.map((clip, index) => {
+            const sliceNumber = index + 1;
+            const output = createNativeTaskOutputArtifact(
+              'seconds-checkpoint-smart-slice-render-task',
+              clip.outputFileName ?? `seconds-checkpoint-smart-slice-${sliceNumber}.mp4`,
+              configuredOutputDirectory,
+            );
+            const thumbnail = createNativeTaskCoverArtifact(
+              'seconds-checkpoint-smart-slice-render-task',
+              `seconds-checkpoint-smart-slice-thumb-${sliceNumber}.jpg`,
+              configuredOutputDirectory,
+            );
+            return {
+              artifactUuid: `seconds-checkpoint-smart-slice-artifact-${sliceNumber}`,
+              artifactPath: output.artifactPath,
+              thumbnailArtifactUuid: `seconds-checkpoint-smart-slice-thumb-artifact-${sliceNumber}`,
+              thumbnailArtifactPath: thumbnail.artifactPath,
+              taskOutputDir: output.taskOutputDir,
+              byteSize: 250000 + index,
+              thumbnailByteSize: 13000 + index,
+              format: 'mp4',
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+            };
+          }),
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    }, { taskEvidenceCommands: checkpointSecondsTimestampCommands });
+    const checkpointSecondsTimestampSegments = [
+      {
+        startMs: 0,
+        endMs: 8.5,
+        text:
+          'Why native validation matters is simple. Because bad native validation can break review, the native validation problem must be caught before assets are saved.',
+        speaker: 'Speaker 1',
+      },
+      {
+        startMs: 8.52,
+        endMs: 19,
+        text:
+          'So native validation verifies every result and the native validation workflow stays safe.',
+        speaker: 'Speaker 1',
+      },
+      {
+        startMs: 40,
+        endMs: 48.5,
+        text:
+          'What makes artifact checks reliable is clear. The artifact check shows missing artifact thumbnails before publishing, creating an artifact conflict for reviewers.',
+        speaker: 'Speaker 1',
+      },
+      {
+        startMs: 48.52,
+        endMs: 59,
+        text:
+          'So the artifact check rejects the bad artifact before persistence and keeps artifact storage clean.',
+        speaker: 'Speaker 1',
+      },
+    ];
+    await services.addTask({
+      id: 'seconds-checkpoint-smart-slice-task',
+      type: types.AUTOCUT_TASK_TYPE.videoSlice,
+      name: 'seconds-checkpoint-smart-slice-source.mp4',
+      status: types.AUTOCUT_TASK_STATUS.failed,
+      progress: 65,
+      progressMessage: 'Smart Slice failed during plan-clips.',
+      currentStepId: 'plan-clips',
+      createdAt: '2026-05-11T02:20:00.000Z',
+      executionSteps: [
+        {
+          id: 'prepare-source',
+          label: 'Prepare native source media',
+          status: 'completed',
+          progress: 45,
+          attempts: 1,
+          canResumeFromHere: true,
+          checkpointKey: 'smart-slice:prepare-source',
+          message: 'Prepared source.',
+        },
+        {
+          id: 'speech-to-text',
+          label: 'Transcribe source speech',
+          status: 'completed',
+          progress: 55,
+          attempts: 1,
+          canResumeFromHere: true,
+          checkpointKey: 'smart-slice:speech-to-text',
+          message: 'Transcribed source speech.',
+        },
+        {
+          id: 'plan-clips',
+          label: 'Plan publishable clips',
+          status: 'failed',
+          progress: 65,
+          attempts: 1,
+          canResumeFromHere: true,
+          checkpointKey: 'smart-slice:plan-clips',
+          message: 'AutoCut transcript speech has no renderable timestamped segment.',
+        },
+      ],
+      executionCheckpoint: {
+        workflowId: 'smart-slice',
+        version: 3,
+        source: {
+          kind: 'trusted-local-file',
+          sourcePath: 'D:/media/seconds-checkpoint-smart-slice-source.mp4',
+          fileName: 'seconds-checkpoint-smart-slice-source.mp4',
+          byteSize: 654000,
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          fileId: 'seconds-checkpoint-smart-slice-source-id',
+        },
+        params: {
+          mode: 'contract-mode',
+          fileId: 'seconds-checkpoint-smart-slice-source-id',
+          llmModel: 'gemini-3-flash-preview',
+          targetPlatform: 'generic',
+          idealDuration: 25,
+          continuityLevel: 'standard',
+          minDuration: 10,
+          maxDuration: 20,
+          baseAlgorithm: 'scene',
+          highlightEngine: 'emotion',
+          enableNoiseReduction: false,
+          enableCoughFilter: true,
+          enableRepeatFilter: true,
+          enableSubtitles: false,
+        },
+        completedStepIds: ['prepare-source', 'speech-to-text'],
+        resumeFromStepIds: ['prepare-source', 'speech-to-text', 'plan-clips'],
+        artifacts: {
+          'prepare-source': {
+            sourceMedia: {
+              assetUuid: 'seconds-checkpoint-smart-slice-asset',
+              durationMs: 90_000,
+            },
+            outputRootDir: configuredOutputDirectory,
+            desktopSourcePath: 'D:/media/seconds-checkpoint-smart-slice-source.mp4',
+          },
+          'speech-to-text': {
+            transcriptSegments: checkpointSecondsTimestampSegments,
+            speechToTextEvidence: createNativeTaskEvidenceWriteResult(
+              'seconds-checkpoint-smart-slice-task',
+              'evidence/speech-to-text.json',
+              configuredOutputDirectory,
+            ),
+          },
+        },
+        createdAt: '2026-05-11T02:20:00.000Z',
+        updatedAt: '2026-05-11T02:20:00.000Z',
+      },
+    });
+    const checkpointSecondsTimestampUpdates = captureEvents(services, 'taskUpdated');
+    const checkpointSecondsTimestampResumeResult = await withImmediateTimers(() =>
+      services.resumeTaskFromStep('seconds-checkpoint-smart-slice-task', 'plan-clips')
+    );
+    checkpointSecondsTimestampUpdates.stop();
+    const checkpointSecondsTimestampCompletedTask = readScopedStoredArray(services, 'tasks')
+      .find((task) => task.id === 'seconds-checkpoint-smart-slice-task');
+    const checkpointSecondsTimestampRenderRequest = checkpointSecondsTimestampCommands
+      .find((entry) => entry.kind === 'slice')?.request;
+    assertEqual(
+      checkpointSecondsTimestampResumeResult.success,
+      true,
+      'Smart Slice checkpoint resume normalizes seconds STT timestamps and reports success',
+    );
+    assertEqual(
+      checkpointSecondsTimestampCommands.filter((entry) => entry.kind === 'import').length,
+      0,
+      'Smart Slice checkpoint resume reuses the prepared source instead of importing again',
+    );
+    assertEqual(
+      checkpointSecondsTimestampCommands.filter((entry) => entry.kind === 'transcribe').length,
+      1,
+      'Smart Slice checkpoint resume refreshes incomplete speech-to-text checkpoints that lack normalized transcript evidence',
+    );
+    const checkpointSecondsNormalizedEvidenceWrite = checkpointSecondsTimestampCommands.find(
+      (entry) => entry.kind === 'task-evidence' && entry.request?.relativePath === 'evidence/transcript.normalized.json',
+    );
+    assertEqual(
+      checkpointSecondsNormalizedEvidenceWrite?.request?.workflowTaskId,
+      'seconds-checkpoint-smart-slice-task',
+      'Smart Slice checkpoint resume writes normalized transcript evidence when refreshing incomplete STT checkpoints',
+    );
+    assertEqual(
+      checkpointSecondsTimestampCompletedTask?.executionCheckpoint?.artifacts?.['speech-to-text']?.normalizedTranscriptEvidence?.relativePath,
+      'evidence/transcript.normalized.json',
+      'Smart Slice checkpoint resume stores refreshed normalized transcript evidence in the checkpoint',
+    );
+    assertEqual(
+      checkpointSecondsTimestampRenderRequest?.clips?.length,
+      2,
+      'Smart Slice checkpoint resume renders multiple clips from normalized seconds timestamp checkpoint transcript',
+    );
+    assertEqual(
+      checkpointSecondsTimestampRenderRequest?.clips?.[1]?.speechStartMs,
+      40_000,
+      'Smart Slice checkpoint resume preserves the second story timestamp after checkpoint normalization',
+    );
+    assertRule(
+      checkpointSecondsTimestampUpdates.details.some((task) =>
+        task?.id === 'seconds-checkpoint-smart-slice-task' &&
+          task.status === types.AUTOCUT_TASK_STATUS.processing &&
+          task.currentStepId === 'plan-clips' &&
+          task.progressMessage?.includes('Resuming smart-slice from plan-clips')
+      ),
+      'Task detail resume workflow exposes a processing update for the clicked plan-clips step',
+    );
+    assertRule(
+      checkpointSecondsTimestampUpdates.details.some((task) =>
+        task?.id === 'seconds-checkpoint-smart-slice-task' &&
+          task.executionSteps?.some((step) =>
+            step.id === 'plan-clips' &&
+              step.status === 'running' &&
+              step.attempts === 2 &&
+              step.canResumeFromHere === false
+          )
+      ),
+      'Task detail resume workflow marks the clicked plan-clips step running before replaying the checkpointed workflow',
+    );
+    assertRule(
+      checkpointSecondsTimestampCompletedTask?.executionLogs?.some((log) =>
+        log.eventType === 'task-resume-started' &&
+          log.stepId === 'plan-clips' &&
+          log.source === 'task-resume-service' &&
+          String(log.message).includes('Resuming Smart Slice from step plan-clips')
+      ),
+      'Task detail resume workflow records a queryable resume-start log for the clicked plan-clips step',
+    );
+    assertRule(
+      checkpointSecondsTimestampCompletedTask?.executionLogs?.some((log) =>
+        log.eventType === 'checkpoint-reused' &&
+          log.stepId === 'prepare-source'
+      ),
+      'Task detail resume workflow records prepare-source checkpoint reuse in the task execution log',
+    );
+    assertRule(
+      checkpointSecondsTimestampCompletedTask?.executionLogs?.some((log) =>
+        log.eventType === 'checkpoint-refreshed' &&
+          log.stepId === 'speech-to-text'
+      ),
+      'Task detail resume workflow records speech-to-text checkpoint refresh when normalized transcript evidence is missing',
+    );
+    assertEqual(
+      checkpointSecondsTimestampCompletedTask?.sliceResults?.length,
+      2,
+      'Smart Slice checkpoint resume persists both generated clips after seconds timestamp normalization',
+    );
+    assertDeepEqual(
+      checkpointSecondsTimestampCompletedTask?.executionSteps?.map((step) => ({
+        id: step.id,
+        status: step.status,
+      })),
+      [
+        { id: 'prepare-source', status: 'completed' },
+        { id: 'speech-to-text', status: 'completed' },
+        { id: 'plan-clips', status: 'completed' },
+        { id: 'analyze-audio-boundaries', status: 'completed' },
+        { id: 'analyze-duplicates', status: 'completed' },
+        { id: 'human-review', status: 'completed' },
+        { id: 'native-render', status: 'completed' },
+        { id: 'verify-artifacts', status: 'completed' },
+        { id: 'persist-results', status: 'completed' },
+      ],
+      'Task detail resume workflow leaves every Smart Slice execution step completed after successful resume',
+    );
+
+    resetStorage();
+    await services.addTask({
+      id: 'legacy-smart-slice-checkpoint-task',
+      type: types.AUTOCUT_TASK_TYPE.videoSlice,
+      name: 'legacy-smart-slice-checkpoint.mp4',
+      status: types.AUTOCUT_TASK_STATUS.failed,
+      progress: 65,
+      progressMessage: 'Legacy Smart Slice task failed before native render.',
+      currentStepId: 'analyze-audio-boundaries',
+      createdAt: '2026-05-11T02:00:00.000Z',
+      executionSteps: [
+        {
+          id: 'analyze-audio-boundaries',
+          label: 'Analyze speech boundaries',
+          status: 'failed',
+          progress: 69,
+          attempts: 1,
+          canResumeFromHere: true,
+          checkpointKey: 'smart-slice:analyze-audio-boundaries',
+          message: 'Legacy audio boundary step failed.',
+        },
+      ],
+      executionCheckpoint: {
+        workflowId: 'smart-slice',
+        version: 1,
+        source: {
+          kind: 'native-asset',
+          fileId: 'legacy-smart-slice-asset',
+        },
+        params: {
+          mode: 'contract-mode',
+          fileId: 'legacy-smart-slice-asset',
+          llmModel: 'gemini-3-flash-preview',
+          minDuration: 10,
+          maxDuration: 60,
+          baseAlgorithm: 'scene',
+          highlightEngine: 'emotion',
+          enableNoiseReduction: false,
+          enableCoughFilter: true,
+          enableRepeatFilter: true,
+          enableSubtitles: false,
+        },
+        completedStepIds: ['prepare-source', 'speech-to-text', 'plan-clips'],
+        resumeFromStepIds: ['analyze-audio-boundaries'],
+        artifacts: {
+          'plan-clips': {
+            plannedClips: [
+              {
+                index: 0,
+                startMs: 10_000,
+                durationMs: 20_000,
+                sourceStartMs: 10_000,
+                sourceEndMs: 30_000,
+                speechStartMs: 10_200,
+                speechEndMs: 29_800,
+                transcriptText: 'legacy single clip',
+                transcriptSegmentCount: 1,
+              },
+            ],
+          },
+        },
+        createdAt: '2026-05-11T02:00:00.000Z',
+        updatedAt: '2026-05-11T02:00:00.000Z',
+      },
+    });
+    await assertRejects(
+      () => services.resumeTaskFromStep('legacy-smart-slice-checkpoint-task', 'analyze-audio-boundaries'),
+      'older slicing algorithm',
+      'Smart Slice checkpoint regression rejects old algorithm checkpoints instead of reusing stale single-clip planning',
+    );
+    const rejectedLegacyCheckpointTask = readScopedStoredArray(services, 'tasks')
+      .find((task) => task.id === 'legacy-smart-slice-checkpoint-task');
+    assertEqual(
+      rejectedLegacyCheckpointTask?.status,
+      types.AUTOCUT_TASK_STATUS.failed,
+      'Smart Slice checkpoint regression leaves old checkpoint tasks failed after rejected resume',
+    );
+    assertRule(
+      rejectedLegacyCheckpointTask?.errorMessage?.includes('older slicing algorithm'),
+      'Smart Slice checkpoint regression stores an actionable old-checkpoint resume error',
+    );
+
+    resetStorage();
+    const cancellableSmartSliceCommands = [];
+    const cancellableSmartSliceCancellation = {
+      requested: false,
+      taskId: undefined,
+      cancelResult: undefined,
+    };
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        contractVersion: 'smart-slice-workflow-cancel-test',
+        hostKind: 'native-host',
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+        nativeTaskCancelCommandReady: true,
+        nativeTaskRecoveryCommandReady: true,
+        nativeTaskRetryCommandReady: true,
+        nativeTaskProgressEventsReady: true,
+      }),
+      importMediaFile: async (request) => {
+        cancellableSmartSliceCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'cancellable-smart-slice-asset',
+          sandboxPath: `${configuredOutputDirectory}/inputs/cancellable-smart-slice-asset.mp4`,
+          byteSize: 765000,
+          name: 'cancellable-smart-slice-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 90000,
+        };
+      },
+      probeSpeechTranscription: async (request) => {
+        cancellableSmartSliceCommands.push({ kind: 'speech-preflight', request });
+        return {
+          ready: true,
+          executablePath: request.executablePath,
+          modelPath: request.modelPath,
+          sourceKind: request.sourceKind ?? 'execution-preflight',
+          diagnostics: [],
+          versionLine: 'cancellable Smart Slice speech preflight contract',
+        };
+      },
+      transcribeMedia: async (request) => {
+        cancellableSmartSliceCommands.push({ kind: 'transcribe', request });
+        const taskId = request.workflowTaskId;
+        if (!taskId) {
+          throw new Error('cancellable Smart Slice test requires a workflowTaskId');
+        }
+        cancellableSmartSliceCancellation.taskId = taskId;
+        cancellableSmartSliceCancellation.cancelResult = await services.cancelTasks([taskId]);
+        cancellableSmartSliceCancellation.requested = true;
+        return createContentDerivedTwoStoryNativeVideoSliceTranscriptResult(
+          request,
+          'cancellable-smart-slice-transcript-task',
+          configuredOutputDirectory,
+        );
+      },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        cancellableSmartSliceCommands.push({ kind: 'analyze-audio-boundaries', request });
+        return createNativeVideoSliceAudioActivityAnalysisResult(request);
+      },
+      sliceVideo: async (request) => {
+        cancellableSmartSliceCommands.push({ kind: 'slice', request });
+        return {
+          taskUuid: 'cancellable-smart-slice-render-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: `${configuredOutputDirectory}/tasks/cancellable-smart-slice-render-task`,
+          ffmpegExecutable: 'ffmpeg',
+          slices: request.clips.map((clip, index) => {
+            const sliceNumber = index + 1;
+            const output = createNativeTaskOutputArtifact(
+              'cancellable-smart-slice-render-task',
+              clip.outputFileName ?? `cancellable-smart-slice-${sliceNumber}.mp4`,
+              configuredOutputDirectory,
+            );
+            const thumbnail = createNativeTaskCoverArtifact(
+              'cancellable-smart-slice-render-task',
+              `cancellable-smart-slice-thumb-${sliceNumber}.jpg`,
+              configuredOutputDirectory,
+            );
+            return {
+              artifactUuid: `cancellable-smart-slice-artifact-${sliceNumber}`,
+              artifactPath: output.artifactPath,
+              thumbnailArtifactUuid: `cancellable-smart-slice-thumb-artifact-${sliceNumber}`,
+              thumbnailArtifactPath: thumbnail.artifactPath,
+              taskOutputDir: output.taskOutputDir,
+              byteSize: 240000 + index,
+              thumbnailByteSize: 12000 + index,
+              format: 'mp4',
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+            };
+          }),
+        };
+      },
+      cancelNativeTask: async (request) => {
+        cancellableSmartSliceCommands.push({ kind: 'native-cancel', request });
+        return {
+          taskUuid: request.taskUuid,
+          status: 4,
+          canceled: true,
+          message: 'cancel requested',
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    let cancellableSmartSliceRejectedTaskId;
+    await assertRejects(
+      async () => {
+        try {
+          await withImmediateTimers(async () =>
+            processVideoSlice({
+              fileId: 'asset-source-cancellable-smart-slice',
+              file: createTrustedLocalMediaFile(
+                commons,
+                'D:/media/cancellable-smart-slice-source.mp4',
+                'cancellable-smart-slice-source.mp4',
+              ),
+              mode: 'contract-mode',
+              llmModel: 'gemini-3-flash-preview',
+              targetPlatform: 'generic',
+              idealDuration: 25,
+              continuityLevel: 'standard',
+              minDuration: 10,
+              maxDuration: 60,
+              baseAlgorithm: 'scene',
+              highlightEngine: 'emotion',
+              enableNoiseReduction: false,
+              enableCoughFilter: true,
+              enableRepeatFilter: true,
+              enableSubtitles: false,
+            }),
+          );
+        } catch (error) {
+          cancellableSmartSliceRejectedTaskId = services.getAutoCutProcessingTaskErrorTaskId(error);
+          throw error;
+        }
+      },
+      'canceled',
+      'Smart Slice workflow cancellation stops execution before later native render steps',
+    );
+    const cancellableSmartSliceCanceledTask = readScopedStoredArray(services, 'tasks')
+      .find((task) => task.id === cancellableSmartSliceRejectedTaskId);
+    assertRule(
+      cancellableSmartSliceCancellation.requested,
+      'Smart Slice workflow cancellation regression requests cancellation while speech-to-text is running',
+    );
+    assertDeepEqual(
+      cancellableSmartSliceCancellation.cancelResult?.canceledTaskIds,
+      [cancellableSmartSliceRejectedTaskId],
+      'Smart Slice workflow cancellation regression returns the workflow task id as canceled before native render exists',
+    );
+    assertEqual(
+      cancellableSmartSliceCanceledTask?.status,
+      types.AUTOCUT_TASK_STATUS.canceled,
+      'Smart Slice workflow cancellation regression persists canceled task status instead of failed',
+    );
+    assertRule(
+      cancellableSmartSliceCanceledTask?.executionLogs?.some((log) =>
+        log.eventType === 'task-cancel-requested' &&
+          log.source === 'task-cancel-service'
+      ),
+      'Smart Slice workflow cancellation regression records a queryable cancel request log',
+    );
+    assertRule(
+      cancellableSmartSliceCanceledTask?.executionSteps?.some((step) =>
+        step.id === 'speech-to-text' &&
+          step.status === 'canceled' &&
+          step.canResumeFromHere === true
+      ),
+      'Smart Slice workflow cancellation regression marks the interrupted Smart Slice step as canceled and resumable',
+    );
+    assertEqual(
+      cancellableSmartSliceCommands.filter((entry) => entry.kind === 'analyze-audio-boundaries').length,
+      0,
+      'Smart Slice workflow cancellation regression does not continue into audio boundary analysis after cancellation',
+    );
+    assertEqual(
+      cancellableSmartSliceCommands.filter((entry) => entry.kind === 'slice').length,
+      0,
+      'Smart Slice workflow cancellation regression does not dispatch native render after cancellation',
+    );
+    assertEqual(
+      readScopedStoredArray(services, 'assets').length,
+      0,
+      'Smart Slice workflow cancellation regression does not persist generated assets after cancellation',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
     const partialNativeVideoSliceCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         contractVersion: 'contract-test',
         hostKind: 'native-host',
@@ -7619,30 +14645,18 @@ async function run() {
           byteSize: 765000,
           name: 'partial-native-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 90000,
         };
       },
       transcribeMedia: async (request) => {
         partialNativeVideoSliceCommands.push({ kind: 'transcribe', request });
-        return createNativeVideoSliceTranscriptResult(
+        return createContentDerivedTwoStoryNativeVideoSliceTranscriptResult(
           request,
           'partial-native-slice-transcript-task',
           configuredOutputDirectory,
-          [
-            {
-              startMs: 0,
-              endMs: 19_000,
-              text: 'Why native validation matters is simple. Because partial render output can break review, the problem must be caught before assets are saved. So verify every result and the workflow stays safe.',
-              speaker: 'Speaker 1',
-            },
-            {
-              startMs: 40_000,
-              endMs: 59_000,
-              text: 'What makes count checks reliable is clear. The case shows missing slice files before publishing, so the solution is to reject the task and keep storage clean.',
-              speaker: 'Speaker 1',
-            },
-          ],
         );
       },
       probeSpeechTranscription: async (request) => ({
@@ -7679,9 +14693,7 @@ async function run() {
             byteSize: 234567,
             thumbnailByteSize: 12345,
             format: 'mp4',
-            startMs: clip.startMs,
-            durationMs: clip.durationMs,
-            label: clip.label,
+            ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
           })),
         };
       },
@@ -7700,8 +14712,6 @@ async function run() {
             file: partialNativeVideoSliceSourceFile,
             mode: 'contract-mode',
             llmModel: 'deepseek-chat',
-            targetSliceCount: 2,
-            sliceCountMode: 'fixed',
             minDuration: 15,
             maxDuration: 20,
             baseAlgorithm: 'scene',
@@ -7718,13 +14728,18 @@ async function run() {
     assertEqual(
       partialNativeVideoSliceCommands.find((entry) => entry.kind === 'slice')?.request?.clips?.length,
       2,
-      'video slice native partial result test requests two planned clips',
+      'video slice native partial result test derives two planned clips from two complete transcript stories',
     );
     assertEqual(partialNativeVideoSliceTasks.length, 1, 'video slice native partial result mismatch persists one task');
     assertEqual(
       partialNativeVideoSliceTasks[0]?.status,
       types.AUTOCUT_TASK_STATUS.failed,
       'video slice native partial result mismatch marks the task failed',
+    );
+    assertEqual(
+      partialNativeVideoSliceTasks[0]?.nativeTaskId,
+      'partial-native-slice-task',
+      'video slice native partial result mismatch records the completed native ops_task id for recovery suppression',
     );
     assertIncludes(
       String(partialNativeVideoSliceTasks[0]?.errorMessage ?? ''),
@@ -7733,10 +14748,23 @@ async function run() {
     );
     assertEqual(readScopedStoredArray(services, 'assets').length, 0, 'video slice native partial result mismatch does not persist generated assets');
     assertEqual(readScopedStoredArray(services, 'messages').length, 0, 'video slice native partial result mismatch does not persist success messages');
+    const visiblePartialNativeVideoSliceTasks = await withImmediateTimers(() => services.getTasks());
+    assertEqual(
+      visiblePartialNativeVideoSliceTasks.filter((task) =>
+        task.id === partialNativeVideoSliceTasks[0]?.id || task.id === 'partial-native-slice-task'
+      ).length,
+      1,
+      'video slice native partial result mismatch does not reappear as a completed recovered native task',
+    );
+    assertEqual(
+      visiblePartialNativeVideoSliceTasks.find((task) => task.id === partialNativeVideoSliceTasks[0]?.id)?.status,
+      types.AUTOCUT_TASK_STATUS.failed,
+      'video slice native partial result mismatch keeps the local post-render validation failure visible after native task recovery',
+    );
 
     resetStorage();
     const escapedNativeVideoSliceArtifactCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         contractVersion: 'contract-test',
         hostKind: 'native-host',
@@ -7754,30 +14782,18 @@ async function run() {
           byteSize: 765000,
           name: 'escaped-native-artifact-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 90000,
         };
       },
       transcribeMedia: async (request) => {
         escapedNativeVideoSliceArtifactCommands.push({ kind: 'transcribe', request });
-        return createNativeVideoSliceTranscriptResult(
+        return createContentDerivedTwoStoryNativeVideoSliceTranscriptResult(
           request,
           'escaped-native-slice-artifact-transcript-task',
           configuredOutputDirectory,
-          [
-            {
-              startMs: 0,
-              endMs: 19_000,
-              text: 'Why artifact containment matters is simple. Because escaped paths can write outside review storage, the problem must be caught before assets are saved. So verify every result and the workflow stays safe.',
-              speaker: 'Speaker 1',
-            },
-            {
-              startMs: 40_000,
-              endMs: 59_000,
-              text: 'What makes path checks reliable is clear. The case shows unsafe thumbnails before publishing, so the solution is to reject the task and keep storage clean.',
-              speaker: 'Speaker 1',
-            },
-          ],
         );
       },
       probeSpeechTranscription: async (request) => ({
@@ -7793,7 +14809,7 @@ async function run() {
         return {
           taskUuid: 'escaped-native-slice-artifact-task',
           sourceAssetUuid: request.assetUuid,
-          taskOutputDir: `${configuredOutputDirectory}/tasks/escaped-native-slice-artifact-task/outputs`,
+          taskOutputDir: `${configuredOutputDirectory}/tasks/escaped-native-slice-artifact-task`,
           ffmpegExecutable: 'ffmpeg',
           slices: request.clips.map((clip, index) => {
             const output = createNativeTaskOutputArtifact(
@@ -7805,14 +14821,12 @@ async function run() {
               artifactUuid: `escaped-native-slice-artifact-${index + 1}`,
               artifactPath: output.artifactPath,
               thumbnailArtifactUuid: `escaped-native-slice-thumb-${index + 1}`,
-              thumbnailArtifactPath: `${configuredOutputDirectory}/tasks/escaped-native-slice-artifact-task/thumb-${index + 1}.jpg`,
+              thumbnailArtifactPath: `${configuredOutputDirectory}/tasks/escaped-native-slice-artifact-task/../thumb-${index + 1}.jpg`,
               taskOutputDir: output.taskOutputDir,
               byteSize: 234567,
               thumbnailByteSize: 12345,
               format: 'mp4',
-              startMs: clip.startMs,
-              durationMs: clip.durationMs,
-              label: clip.label,
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
             };
           }),
         };
@@ -7832,8 +14846,6 @@ async function run() {
             file: escapedNativeVideoSliceArtifactSourceFile,
             mode: 'contract-mode',
             llmModel: 'deepseek-chat',
-            targetSliceCount: 2,
-            sliceCountMode: 'fixed',
             minDuration: 15,
             maxDuration: 20,
             baseAlgorithm: 'scene',
@@ -7850,7 +14862,7 @@ async function run() {
     assertEqual(
       escapedNativeVideoSliceArtifactCommands.find((entry) => entry.kind === 'slice')?.request?.clips?.length,
       2,
-      'video slice native escaped artifact test requests two planned clips',
+      'video slice native escaped artifact test derives two planned clips from two complete transcript stories',
     );
     assertEqual(
       escapedNativeVideoSliceArtifactTasks[0]?.status,
@@ -7867,7 +14879,7 @@ async function run() {
 
     resetStorage();
     const invalidNativeVideoSliceArtifactCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         contractVersion: 'contract-test',
         hostKind: 'native-host',
@@ -7885,13 +14897,15 @@ async function run() {
           byteSize: 765000,
           name: 'invalid-native-artifact-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 90000,
         };
       },
       transcribeMedia: async (request) => {
         invalidNativeVideoSliceArtifactCommands.push({ kind: 'transcribe', request });
-        return createStandardNativeVideoSliceTranscriptResult(
+        return createContentDerivedTwoStoryNativeVideoSliceTranscriptResult(
           request,
           'invalid-native-slice-artifact-transcript-task',
           configuredOutputDirectory,
@@ -7910,7 +14924,7 @@ async function run() {
         return {
           taskUuid: 'invalid-native-slice-artifact-task',
           sourceAssetUuid: request.assetUuid,
-          taskOutputDir: `${configuredOutputDirectory}/tasks/invalid-native-slice-artifact-task/outputs`,
+          taskOutputDir: `${configuredOutputDirectory}/tasks/invalid-native-slice-artifact-task`,
           ffmpegExecutable: 'ffmpeg',
           slices: request.clips.map((clip, index) => {
             const output = createNativeTaskOutputArtifact(
@@ -7932,9 +14946,7 @@ async function run() {
               byteSize: index === 0 ? 234567 : 0,
               thumbnailByteSize: 12345,
               format: 'mp4',
-              startMs: clip.startMs,
-              durationMs: clip.durationMs,
-              label: clip.label,
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
             };
           }),
         };
@@ -7954,8 +14966,6 @@ async function run() {
             file: invalidNativeVideoSliceArtifactSourceFile,
             mode: 'contract-mode',
             llmModel: 'deepseek-chat',
-            targetSliceCount: 2,
-            sliceCountMode: 'fixed',
             minDuration: 15,
             maxDuration: 20,
             baseAlgorithm: 'scene',
@@ -7973,7 +14983,7 @@ async function run() {
     assertEqual(
       invalidNativeVideoSliceArtifactCommands.find((entry) => entry.kind === 'slice')?.request?.clips?.length,
       2,
-      'video slice native invalid artifact test requests two planned clips',
+      'video slice native invalid artifact test derives two planned clips from two complete transcript stories',
     );
     assertEqual(
       invalidNativeVideoSliceArtifactTasks[0]?.status,
@@ -7990,7 +15000,7 @@ async function run() {
 
     resetStorage();
     const mismatchedTimingNativeVideoSliceCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         contractVersion: 'contract-test',
         hostKind: 'native-host',
@@ -8008,13 +15018,15 @@ async function run() {
           byteSize: 765000,
           name: 'mismatched-timing-native-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 90000,
         };
       },
       transcribeMedia: async (request) => {
         mismatchedTimingNativeVideoSliceCommands.push({ kind: 'transcribe', request });
-        return createStandardNativeVideoSliceTranscriptResult(
+        return createContentDerivedTwoStoryNativeVideoSliceTranscriptResult(
           request,
           'mismatched-timing-native-slice-transcript-task',
           configuredOutputDirectory,
@@ -8033,7 +15045,7 @@ async function run() {
         return {
           taskUuid: 'mismatched-timing-native-slice-task',
           sourceAssetUuid: request.assetUuid,
-          taskOutputDir: `${configuredOutputDirectory}/tasks/mismatched-timing-native-slice-task/outputs`,
+          taskOutputDir: `${configuredOutputDirectory}/tasks/mismatched-timing-native-slice-task`,
           ffmpegExecutable: 'ffmpeg',
           slices: request.clips.map((clip, index) => {
             const output = createNativeTaskOutputArtifact(
@@ -8055,9 +15067,8 @@ async function run() {
               byteSize: 234567 + index,
               thumbnailByteSize: 12345 + index,
               format: 'mp4',
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
               startMs: index === 1 ? clip.startMs + 1000 : clip.startMs,
-              durationMs: clip.durationMs,
-              label: clip.label,
             };
           }),
         };
@@ -8077,8 +15088,6 @@ async function run() {
             file: mismatchedTimingNativeVideoSliceSourceFile,
             mode: 'contract-mode',
             llmModel: 'deepseek-chat',
-            targetSliceCount: 2,
-            sliceCountMode: 'fixed',
             minDuration: 15,
             maxDuration: 20,
             baseAlgorithm: 'scene',
@@ -8095,7 +15104,7 @@ async function run() {
     assertEqual(
       mismatchedTimingNativeVideoSliceCommands.find((entry) => entry.kind === 'slice')?.request?.clips?.length,
       2,
-      'video slice native timing mismatch test requests two planned clips',
+      'video slice native timing mismatch test derives two planned clips from two complete transcript stories',
     );
     assertEqual(
       mismatchedTimingNativeVideoSliceTasks[0]?.status,
@@ -8113,8 +15122,133 @@ async function run() {
     services.configureAutoCutApprovedAiSdkBridge(null);
 
     resetStorage();
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    const mismatchedAudioActivityNativeVideoSliceCommands = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        contractVersion: 'contract-test',
+        hostKind: 'native-host',
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        mismatchedAudioActivityNativeVideoSliceCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'mismatched-audio-activity-native-slice-asset',
+          sandboxPath: `${configuredOutputDirectory}/inputs/mismatched-audio-activity-native-slice-asset.mp4`,
+          byteSize: 765000,
+          name: 'mismatched-audio-activity-native-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 90000,
+        };
+      },
+      transcribeMedia: async (request) => {
+        mismatchedAudioActivityNativeVideoSliceCommands.push({ kind: 'transcribe', request });
+        return createContentDerivedTwoStoryNativeVideoSliceTranscriptResult(
+          request,
+          'mismatched-audio-activity-native-slice-transcript-task',
+          configuredOutputDirectory,
+        );
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'mismatched audio activity native video slice speech preflight contract',
+      }),
+      sliceVideo: async (request) => {
+        mismatchedAudioActivityNativeVideoSliceCommands.push({ kind: 'slice', request });
+        return {
+          taskUuid: 'mismatched-audio-activity-native-slice-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: `${configuredOutputDirectory}/tasks/mismatched-audio-activity-native-slice-task`,
+          ffmpegExecutable: 'ffmpeg',
+          slices: request.clips.map((clip, index) => {
+            const output = createNativeTaskOutputArtifact(
+              'mismatched-audio-activity-native-slice-task',
+              `mismatched-audio-activity-native-slice-artifact-${index + 1}.mp4`,
+              configuredOutputDirectory,
+            );
+            const thumbnail = createNativeTaskCoverArtifact(
+              'mismatched-audio-activity-native-slice-task',
+              `mismatched-audio-activity-native-slice-thumb-${index + 1}.jpg`,
+              configuredOutputDirectory,
+            );
+            return {
+              artifactUuid: `mismatched-audio-activity-native-slice-artifact-${index + 1}`,
+              artifactPath: output.artifactPath,
+              thumbnailArtifactUuid: `mismatched-audio-activity-native-slice-thumb-${index + 1}`,
+              thumbnailArtifactPath: thumbnail.artifactPath,
+              taskOutputDir: output.taskOutputDir,
+              byteSize: 234567 + index,
+              thumbnailByteSize: 12345 + index,
+              format: 'mp4',
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+              audioActivityAnalysisFilter: index === 0 ? 'not-a-supported-post-cut-filter' : clip.audioActivityAnalysisFilter,
+            };
+          }),
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    const mismatchedAudioActivityNativeVideoSliceSourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/mismatched-audio-activity-native-source.mp4',
+      'mismatched-audio-activity-native-source.mp4',
+    );
+    await assertRejects(
+      () =>
+        withImmediateTimers(async () =>
+          processVideoSlice({
+            fileId: 'asset-source-mismatched-audio-activity-native-video-slice',
+            file: mismatchedAudioActivityNativeVideoSliceSourceFile,
+            mode: 'contract-mode',
+            llmModel: 'deepseek-chat',
+            minDuration: 15,
+            maxDuration: 20,
+            baseAlgorithm: 'scene',
+            highlightEngine: 'emotion',
+            enableNoiseReduction: true,
+            enableCoughFilter: true,
+            enableRepeatFilter: true,
+          }),
+        ),
+      'slice artifact 1 audioActivityAnalysisFilter must match the post-cut cleanup noise reduction decision',
+      'video slice native audio activity metadata mismatch rejects invalid post-cut filter evidence',
+    );
+    const mismatchedAudioActivityNativeVideoSliceTasks = readScopedStoredArray(services, 'tasks');
+    assertEqual(
+      mismatchedAudioActivityNativeVideoSliceCommands.find((entry) => entry.kind === 'slice')?.request?.clips?.length,
+      2,
+      'video slice native audio activity metadata mismatch test derives two planned clips from two complete transcript stories',
+    );
+    assertEqual(
+      mismatchedAudioActivityNativeVideoSliceTasks[0]?.status,
+      types.AUTOCUT_TASK_STATUS.failed,
+      'video slice native audio activity metadata mismatch marks the task failed when native returns invalid post-cut evidence',
+    );
+    assertIncludes(
+      String(mismatchedAudioActivityNativeVideoSliceTasks[0]?.errorMessage ?? ''),
+      'audioActivityAnalysisFilter must match the post-cut cleanup noise reduction decision',
+      'video slice native audio activity metadata mismatch stores the invalid post-cut evidence reason',
+    );
+    assertEqual(readScopedStoredArray(services, 'assets').length, 0, 'video slice native audio activity metadata mismatch does not persist generated assets');
+    assertEqual(readScopedStoredArray(services, 'messages').length, 0, 'video slice native audio activity metadata mismatch does not persist success messages');
+    services.resetAutoCutNativeHostClient();
+    services.configureAutoCutApprovedAiSdkBridge(null);
+
+    resetStorage();
     const invalidLlmVideoSliceWorkflowCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         contractVersion: 'contract-test',
         hostKind: 'native-host',
@@ -8134,7 +15268,7 @@ async function run() {
         videoConvertCommandReady: false,
         videoEnhanceCommandReady: false,
         speechTranscriptionCommandReady: true,
-        speechTranscriptionToolchainReady: false,
+        speechTranscriptionToolchainReady: true,
         speechTranscriptionProbeCommandReady: true,
         speechTranscriptionFileSelectCommandReady: true,
         llmHttpCommandReady: false,
@@ -8149,7 +15283,12 @@ async function run() {
         ffmpegToolchainResolverReady: true,
         ffmpegBundledReady: false,
         ffmpegExecutionReady: false,
-        supportedCommands: ['autocut_import_media_file', 'autocut_transcribe_media', 'autocut_slice_video'],
+        supportedCommands: [
+          'autocut_import_media_file',
+          'autocut_transcribe_media',
+          'autocut_analyze_video_slice_audio_activity',
+          'autocut_slice_video',
+        ],
       }),
       getDatabaseHealth: async () => ({
         ready: true,
@@ -8176,6 +15315,8 @@ async function run() {
           byteSize: 654000,
           name: 'invalid-llm-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
         };
       },
@@ -8184,6 +15325,8 @@ async function run() {
         byteSize: 654000,
         name: 'invalid-llm-source.mp4',
         mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
         mimeType: 'video/mp4',
       }),
       extractAudio: async () => {
@@ -8269,9 +15412,7 @@ async function run() {
               byteSize: 234567,
               thumbnailByteSize: 12345,
               format: 'mp4',
-              startMs: clip.startMs,
-              durationMs: clip.durationMs,
-              label: clip.label,
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
             };
           }),
         };
@@ -8415,8 +15556,30 @@ async function run() {
     );
     assertEqual(
       invalidLlmSliceCommand?.request?.clips?.[0]?.label,
-      'Why invalid plans still need transcript fallback',
-      'video slice workflow keeps transcript-assisted labels when the configured LLM returns an invalid plan',
+      'Why invalid plans still need transcript fallback. Becaus',
+      'video slice workflow keeps Smart Cut Engine transcript-derived labels when the configured LLM returns an invalid ID review',
+    );
+    assertArrayIncludes(
+      invalidLlmSliceCommand?.request?.clips?.[0]?.risks,
+      'smart-cut-engine',
+      'video slice workflow marks native clip requests with Smart Cut Engine evidence when the configured LLM returns an invalid ID review',
+    );
+    assertArrayNotIncludes(
+      invalidLlmSliceCommand?.request?.clips?.[0]?.risks,
+      'fallback-plan',
+      'video slice workflow does not restore legacy fallback-plan risk when the configured LLM returns an invalid ID review',
+    );
+    const invalidLlmTask = readScopedStoredArray(services, 'tasks')
+      .find((task) => task.nativeTaskId === 'invalid-llm-slice-task');
+    assertArrayIncludes(
+      invalidLlmTask?.sliceResults?.[0]?.risks,
+      'smart-cut-engine',
+      'video slice workflow records Smart Cut Engine evidence on slice results when the configured LLM returns an invalid ID review',
+    );
+    assertArrayNotIncludes(
+      invalidLlmTask?.sliceResults?.[0]?.risks,
+      'fallback-plan',
+      'video slice workflow does not persist legacy fallback-plan risk when the configured LLM returns an invalid ID review',
     );
     services.resetAutoCutNativeHostClient();
     services.configureAutoCutApprovedAiSdkBridge(null);
@@ -8457,7 +15620,7 @@ async function run() {
     resetStorage();
     const shortSourceSliceCommands = [];
     const shortSourceBridgeRequests = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         videoSliceCommandReady: true,
@@ -8473,6 +15636,8 @@ async function run() {
           byteSize: 123000,
           name: 'short-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 4000,
         };
@@ -8506,7 +15671,7 @@ async function run() {
         return {
           taskUuid: 'short-source-slice-task',
           sourceAssetUuid: request.assetUuid,
-          taskOutputDir: 'D:/autocut-configured-output/tasks/short-source-slice-task/outputs',
+          taskOutputDir: 'D:/autocut-configured-output/tasks/short-source-slice-task',
           ffmpegExecutable: 'ffmpeg',
           slices: [],
         };
@@ -8577,7 +15742,7 @@ async function run() {
 
     resetStorage();
     const unknownDurationShortTranscriptCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         videoSliceCommandReady: true,
@@ -8593,6 +15758,8 @@ async function run() {
           byteSize: 456000,
           name: 'unknown-duration-short-transcript.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
         };
       },
@@ -8602,8 +15769,8 @@ async function run() {
           artifactUuid: 'unknown-duration-short-transcript-artifact',
           taskUuid: 'unknown-duration-short-transcript-task',
           sourceAssetUuid: request.assetUuid,
-          transcriptPath: 'D:/autocut-configured-output/tasks/unknown-duration-short-transcript-task/outputs/transcript.json',
-          taskOutputDir: 'D:/autocut-configured-output/tasks/unknown-duration-short-transcript-task/outputs',
+          transcriptPath: 'D:/autocut-configured-output/tasks/unknown-duration-short-transcript-task/transcript.json',
+          taskOutputDir: 'D:/autocut-configured-output/tasks/unknown-duration-short-transcript-task',
           language: 'auto',
           text: 'Short speech only',
           segments: [
@@ -8653,9 +15820,7 @@ async function run() {
               byteSize: 123456,
               thumbnailByteSize: 1234,
               format: 'mp4',
-              startMs: request.clips[0].startMs,
-              durationMs: request.clips[0].durationMs,
-              label: request.clips[0].label,
+              ...copyNativeVideoSliceClipEvidence(request.clips[0], request.noiseReduction),
             },
           ],
         };
@@ -8685,7 +15850,7 @@ async function run() {
     );
     const unknownDurationShortTranscriptSliceCommand = unknownDurationShortTranscriptCommands.find((entry) => entry.kind === 'slice');
     const unknownDurationShortTranscriptTask = readScopedStoredArray(services, 'tasks')
-      .find((task) => task.id === 'unknown-duration-short-transcript-slice-task');
+      .find((task) => task.nativeTaskId === 'unknown-duration-short-transcript-slice-task');
     assertRule(
       Boolean(unknownDurationShortTranscriptSliceCommand),
       'video slice workflow renders a short speech-aligned clip when imported media duration is unknown but STT has verified speech evidence',
@@ -8715,7 +15880,7 @@ async function run() {
     resetStorage();
     const isolatedMicroSpeechCommands = [];
     const isolatedMicroSpeechBridgeRequests = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         videoSliceCommandReady: true,
@@ -8731,6 +15896,8 @@ async function run() {
           byteSize: 789000,
           name: 'isolated-micro-speech.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 90000,
         };
@@ -8814,9 +15981,7 @@ async function run() {
             byteSize: 223344,
             thumbnailByteSize: 1234,
             format: 'mp4',
-            startMs: clip.startMs,
-            durationMs: clip.durationMs,
-            label: clip.label,
+            ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
           })),
         };
       },
@@ -8851,8 +16016,6 @@ async function run() {
         targetPlatform: 'douyin',
         targetAspectRatio: '9:16',
         videoObjectFit: 'cover',
-        sliceCountMode: 'qualityFirst',
-        targetSliceCount: 3,
         minDuration: 15,
         maxDuration: 60,
         baseAlgorithm: 'scene',
@@ -8872,17 +16035,21 @@ async function run() {
     );
     const isolatedMicroSpeechSliceRequest = isolatedMicroSpeechCommands.find((entry) => entry.kind === 'slice')?.request;
     const isolatedMicroSpeechTask = readScopedStoredArray(services, 'tasks')
-      .find((task) => task.id === 'isolated-micro-speech-slice-task');
+      .find((task) => task.nativeTaskId === 'isolated-micro-speech-slice-task');
     assertRule(
-      isolatedMicroSpeechPrompt?.candidateWindows?.every((candidate) => candidate.risks?.includes('sparse-transcript-speech')),
-      'video slice workflow labels sparse transcript fallback candidates for LLM review',
+      isolatedMicroSpeechPrompt?.candidates?.every((candidate) => candidate.risks?.includes('sparse-transcript-speech')),
+      'video slice workflow labels sparse transcript Smart Cut Engine candidates for ID-only LLM review',
     );
     assertRule(
       isolatedMicroSpeechSliceRequest?.clips?.length >= 1,
       'video slice workflow calls native slicing for isolated micro speech when STT evidence is verified',
     );
     assertRule(
-      isolatedMicroSpeechSliceRequest?.clips?.every((clip) => clip.durationMs >= 1000 && clip.durationMs < 3000),
+      isolatedMicroSpeechSliceRequest?.clips?.length >= 2,
+      'video slice workflow keeps far-apart isolated micro speech windows separate instead of merging them into one long discontinuous clip',
+    );
+    assertRule(
+      isolatedMicroSpeechSliceRequest?.clips?.every((clip) => clip.durationMs >= 1000),
       'video slice workflow renders isolated micro speech as short speech-aligned windows instead of silent padded clips',
     );
     assertRule(
@@ -8896,14 +16063,602 @@ async function run() {
     );
     assertRule(
       isolatedMicroSpeechTask?.sliceResults?.every((slice) => slice.risks?.includes('sparse-transcript-speech')),
-      'video slice workflow records sparse transcript review risk on isolated micro speech slice results',
+      'video slice workflow records sparse transcript review risk on isolated micro speech Smart Cut Engine slice results',
     );
     services.configureAutoCutApprovedAiSdkBridge(null);
 
     resetStorage();
+    const wenan5DesktopUiSliceCommands = [];
+    let wenan5DesktopUiTranscriptSegments = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        wenan5DesktopUiSliceCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'wenan5-desktop-ui-slice-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/wenan5-desktop-ui.mp4',
+          byteSize: 789000,
+          name: 'wenan5-desktop-ui.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 182360,
+        };
+      },
+      transcribeMedia: async (request) => {
+        wenan5DesktopUiSliceCommands.push({ kind: 'transcribe', request });
+        const output = createNativeTaskOutputArtifact(
+          'wenan5-desktop-ui-transcript-task',
+          'wenan5-desktop-ui-transcript.json',
+          configuredOutputDirectory,
+        );
+        const segments = [
+          [0, 22600, '\\u806a\\u660e\\u7684\\u7f8e\\u56fd\\u7559\\u5b66\\u6d77\\u5f52\\u518d\\u53bb\\u7f8e\\u56fd\\u751f\\u6d3b\\uff0c\\u65e9\\u5c31\\u4e0d\\u6324\\u7559\\u5b66\\u7b7e\\uff0c\\u65e9\\u5c31\\u4e0d\\u4f1a\\u518d\\u53bb\\u6324\\u82e6\\u903c\\u7684\\u7559\\u5b66\\u7b7e\\uff0c\\u4e5f\\u522b\\u53bb\\u5e7b\\u60f3\\u8fdb\\u4e2d\\u8d8a\\u7684\\u5de5\\u94b1\\u4e86\\u3002'],
+          [26600, 43740, '\\u806a\\u660e\\u7684\\u7f8e\\u56fd\\u7559\\u5b66\\u6d77\\u5f52\\u60f3\\u518d\\u53bb\\u7f8e\\u56fd\\u751f\\u6d3b\\uff0c\\u4e0d\\u4f1a\\u518d\\u53bb\\u6324\\u82e6\\u903c\\u7684\\u7559\\u5b66\\u7b7e\\uff0c\\u66f4\\u52a0\\u4e0d\\u4f1a\\u53bb\\uff0c\\u66f4\\u52a0\\u4e0d\\u4f1a\\u6302\\u7740\\u811a\\u53bb\\u8df3\\u8fdb\\u4e2d\\u8d8a\\u7684\\u5de5\\u94b1\\u3002'],
+          [53200, 66260, '\\u4ed6\\u4eec\\u4f1a\\u7528\\u8fd9\\u4e07\\u8bbf\\u5b66\\u7684\\u8def\\u5f84\\u7ed9\\u81ea\\u5df1\\u548c\\u5bb6\\u4eba\\u94fa\\u5c31\\u4e00\\u6761\\u901a\\u5411\\u7f8e\\u56fd\\u7684\\u5934\\u7b49\\u8231\\u673a\\u7968\\u3002'],
+          [73420, 86260, '\\u6211\\u505a\\u7f8e\\u56fd\\u8bbf\\u5b6616\\u5e74\\uff0c\\u5e2e\\u52a9\\u51e0\\u767e\\u4f4d\\u7f8e\\u56fd\\u7559\\u5b66\\u6d77\\u5f52\\uff0c\\u5e2e\\u52a9\\u51e0\\u767e\\u4f4d\\u6d77\\u5f52\\u91cd\\u65b0\\u6740\\u56de\\u7f8e\\u56fd\\u3002'],
+          [90760, 109240, '\\u8fd9\\u4e07\\u8bbf\\u5b66\\u4e0d\\u780d\\u4f60\\u7684\\u6bd5\\u4e1a\\u8fde\\u7ebf\\uff0c\\u53ea\\u8981\\u4f60\\u6709\\u4e00\\u5b9a\\u7684\\u884c\\u4e1a\\u7ecf\\u9a8c\\uff0c\\u53ea\\u8981\\u4f60\\u6709\\u4e00\\u5b9a\\u7684\\u884c\\u4e1a\\u7ecf\\u9a8c\\u5c31\\u80fd\\u7533\\u8bf7\\uff0c\\u6700\\u5feb\\u4e09\\u4e2a\\u6708\\u5e26\\u7740\\u5bb6\\u4eba\\u4e00\\u8d77\\u53bb\\u7f8e\\u56fd\\uff0c\\u957f\\u671f\\u7684\\u5408\\u6cd5\\u3002'],
+          [110240, 115060, '\\u5e26\\u7740\\u5bb6\\u4eba\\u4e00\\u8d77\\u53bb\\u7f8e\\u56fd\\uff0c\\u957f\\u671f\\u7684\\u8f7b\\u677e\\u81ea\\u5728\\u7684\\u751f\\u6d3b\\u3002'],
+          [115060, 128880, '\\u6700\\u5feb\\u4e09\\u4e2a\\u6708\\u5c31\\u80fd\\u5e26\\u7740\\u5bb6\\u4eba\\u5408\\u6cd5\\u5165\\u5883\\uff0c\\u91cd\\u56de\\u4f60\\u719f\\u6089\\u7684\\u7f8e\\u56fd\\u751f\\u6d3b\\u3002'],
+          [128880, 136460, '\\u540c\\u65f6\\u7ed9\\u81ea\\u5df1\\u7559\\u8db3\\uff0c\\u540c\\u65f6\\u7ed9\\u81ea\\u5df1\\u7559\\u8db3\\uff0c\\u957f\\u671f\\u7684\\u53d1\\u5c55\\u56f0\\u4ef6\\u3002'],
+          [136460, 148740, '\\u5f88\\u591a\\u4eba\\u89c9\\u5f97\\u56de\\u7f8e\\u56fd\\uff0c\\u5c31\\u8981\\u5148\\u653e\\u5f03\\u56fd\\u5185\\u7684\\u4e00\\u5207\\uff0c\\u8d4c\\u4e00\\u628a\\u3002'],
+          [151740, 164700, '\\u6211\\u544a\\u8bc9\\u4f60\\uff0c\\u9ad8\\u8ba4\\u77e5\\u7684\\u6d77\\u5f52\\uff0c\\u5c31\\u662f\\u5148\\u7ed9\\u81ea\\u5df1\\u548c\\u5bb6\\u4eba\\u62ff\\u4e00\\u5f20\\uff0c\\u5c31\\u662f\\u5148\\u7ed9\\u81ea\\u5df1\\u548c\\u5bb6\\u4eba\\u62ff\\u4e00\\u5f20\\u8fdb\\u53ef\\u653b\\uff0c\\u9000\\u53ef\\u626f\\u7684\\u5165\\u573a\\u5238\\u3002'],
+          [164700, 170200, '\\u8fd9\\u5176\\u5b9e\\u633a\\u5570\\u55e6\\u7684\\u3002'],
+          [170200, 175640, '\\u4f60\\u60f3\\u957f\\u671f\\u5728\\u7f8e\\u56fd\\u751f\\u6d3b\\uff0c\\u8fd9\\u5176\\u5b9e\\u633a\\u5570\\u55e6\\u7684\\u3002'],
+          [178060, 182380, "I'll show you the same thing. I'll show you the same thing. I'll show you the same thing."],
+        ].map(([startMs, endMs, text]) => ({
+          startMs,
+          endMs,
+          text: text.includes('\\u') ? decodeEscapedText(text) : text,
+          speaker: 'Speaker 1',
+        }));
+        wenan5DesktopUiTranscriptSegments = segments;
+        return {
+          artifactUuid: 'wenan5-desktop-ui-transcript-artifact',
+          taskUuid: 'wenan5-desktop-ui-transcript-task',
+          sourceAssetUuid: request.assetUuid,
+          transcriptPath: output.artifactPath,
+          taskOutputDir: output.taskOutputDir,
+          language: request.language ?? 'auto',
+          text: segments.map((segment) => segment.text).join(' '),
+          segments,
+          ffmpegExecutable: 'ffmpeg',
+          speechExecutable: 'whisper-cli',
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'wenan5 desktop UI speech preflight contract',
+      }),
+      sliceVideo: async (request) => {
+        wenan5DesktopUiSliceCommands.push({ kind: 'slice', request });
+        const taskOutputDir = createNativeTaskOutputArtifact(
+          'wenan5-desktop-ui-slice-task',
+          'wenan5-desktop-ui-slice-artifact-1.mp4',
+          configuredOutputDirectory,
+        ).taskOutputDir;
+        const subtitlesRequested = Array.isArray(request.subtitleSegments) && request.subtitleSegments.length > 0;
+        return {
+          taskUuid: 'wenan5-desktop-ui-slice-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir,
+          ffmpegExecutable: 'ffmpeg',
+          slices: request.clips.map((clip, index) => {
+            const output = createNativeTaskOutputArtifact(
+              'wenan5-desktop-ui-slice-task',
+              `wenan5-desktop-ui-slice-artifact-${index + 1}.mp4`,
+              configuredOutputDirectory,
+            );
+            const thumbnail = createNativeTaskCoverArtifact(
+              'wenan5-desktop-ui-slice-task',
+              `wenan5-desktop-ui-slice-thumb-${index + 1}.jpg`,
+              configuredOutputDirectory,
+            );
+            const subtitle = createNativeTaskOutputArtifact(
+              'wenan5-desktop-ui-slice-task',
+              `wenan5-desktop-ui-slice-subtitle-${index + 1}.srt`,
+              configuredOutputDirectory,
+            );
+            return {
+              artifactUuid: `wenan5-desktop-ui-slice-artifact-${index + 1}`,
+              artifactPath: output.artifactPath,
+              thumbnailArtifactUuid: `wenan5-desktop-ui-slice-thumb-${index + 1}`,
+              thumbnailArtifactPath: thumbnail.artifactPath,
+              taskOutputDir: output.taskOutputDir,
+              byteSize: 234567 + index,
+              thumbnailByteSize: 12345 + index,
+              ...(subtitlesRequested
+                ? {
+                    subtitleArtifactUuid: `wenan5-desktop-ui-slice-subtitle-${index + 1}`,
+                    subtitleArtifactPath: subtitle.artifactPath,
+                    subtitleByteSize: 1234 + index,
+                    subtitleFormat: 'srt',
+                  }
+                : {}),
+              format: 'mp4',
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+            };
+          }),
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services, { language: 'en' });
+    const wenan5DesktopUiSourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/wenan5-desktop-ui.mp4',
+      'wenan5-desktop-ui.mp4',
+    );
+    const wenan5DesktopUiResult = await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-wenan5-desktop-ui',
+        file: wenan5DesktopUiSourceFile,
+        mode: 'contract-mode',
+        llmModel: 'deepseek-v4-flash',
+        targetPlatform: 'douyin',
+        targetAspectRatio: '9:16',
+        videoObjectFit: 'contain',
+        idealDuration: 45,
+        continuityLevel: 'standard',
+        minDuration: 30,
+        maxDuration: 70,
+        baseAlgorithm: 'nlp',
+        highlightEngine: 'emotion',
+        enableNoiseReduction: true,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSubtitles: true,
+        subtitleMode: 'both',
+      }),
+    );
+    const wenan5DesktopUiTranscribeRequest = wenan5DesktopUiSliceCommands.find((entry) => entry.kind === 'transcribe')?.request;
+    const wenan5DesktopUiSliceRequest = wenan5DesktopUiSliceCommands.find((entry) => entry.kind === 'slice')?.request;
+    const wenan5DesktopUiTask = readScopedStoredArray(services, 'tasks')
+      .find((task) => task.id === wenan5DesktopUiResult.taskId);
+    assertEqual(
+      wenan5DesktopUiTranscribeRequest?.language,
+      'auto',
+      'Smart Slice desktop upload uses automatic STT language detection even when the saved default speech language is English',
+    );
+    assertRule(
+      (wenan5DesktopUiSliceRequest?.clips?.length ?? 0) >= 2,
+      `Smart Slice desktop upload renders multiple wenan5 transcript clips instead of failing with no renderable timestamped segment (${wenan5DesktopUiSliceRequest?.clips?.length ?? 0})`,
+    );
+    assertRule(
+      wenan5DesktopUiSliceRequest?.clips?.every((clip) =>
+        clip.durationMs >= 1_000 &&
+          clip.durationMs <= 70_000 &&
+          (clip.transcriptSegmentCount ?? 0) > 0 &&
+          Boolean(clip.transcriptText?.trim())
+      ),
+      'Smart Slice desktop upload sends renderable transcript-backed wenan5 clips to native slicing',
+    );
+    assertSmartSliceNativeRenderRequestClipsReady(
+      wenan5DesktopUiSliceRequest?.clips,
+      182_360,
+      'Smart Slice desktop upload sends native-ready non-overlapping wenan5 clip timing',
+    );
+    assertRule(
+      wenan5DesktopUiSliceRequest?.clips?.some((clip) =>
+        clip.transcriptText?.includes(decodeEscapedText('\\u53ea\\u8981\\u4f60\\u6709\\u4e00\\u5b9a\\u7684\\u884c\\u4e1a\\u7ecf\\u9a8c')) &&
+          clip.transcriptText?.includes(decodeEscapedText('\\u6700\\u5feb\\u4e09\\u4e2a\\u6708\\u5c31\\u80fd\\u5e26\\u7740\\u5bb6\\u4eba\\u5408\\u6cd5\\u5165\\u5883'))
+      ),
+      'Smart Slice desktop upload keeps the application condition and legal-entry payoff together in the wenan5 native clip request',
+    );
+    assertRule(
+      wenan5DesktopUiSliceRequest?.clips?.every((clip) =>
+        !clip.transcriptText?.includes(decodeEscapedText('\\u5570\\u55e6')) &&
+          !clip.transcriptText?.includes('show you the same thing')
+      ),
+      'Smart Slice desktop upload excludes NG and re-recording tail transcript from native slice requests',
+    );
+    assertRule(
+      getUncoveredSmartSliceTranscriptSegments(
+        wenan5DesktopUiSliceRequest?.clips,
+        wenan5DesktopUiTranscriptSegments,
+      ).length === 0,
+      'Smart Slice desktop upload native clip request covers every eligible source speech-to-text segment',
+    );
+    assertEqual(
+      wenan5DesktopUiTask?.status,
+      types.AUTOCUT_TASK_STATUS.completed,
+      'Smart Slice desktop upload completes the coarse wenan5 transcript workflow',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
+    const wenan5RealTranscriptDesktopUiSliceCommands = [];
+    let wenan5RealTranscriptDesktopUiSegments = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        wenan5RealTranscriptDesktopUiSliceCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'wenan5-real-transcript-desktop-ui-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/wenan5-real-transcript-desktop-ui.mp4',
+          byteSize: 1312141320,
+          name: 'wenan5-real-transcript-desktop-ui.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 182360,
+        };
+      },
+      transcribeMedia: async (request) => {
+        wenan5RealTranscriptDesktopUiSliceCommands.push({ kind: 'transcribe', request });
+        const output = createNativeTaskOutputArtifact(
+          'wenan5-real-transcript-desktop-ui-transcript-task',
+          'wenan5-real-transcript-desktop-ui-transcript.json',
+          configuredOutputDirectory,
+        );
+        const segments = readWenan5RealSpeechTranscriptSegments();
+        wenan5RealTranscriptDesktopUiSegments = segments;
+        return {
+          artifactUuid: 'wenan5-real-transcript-desktop-ui-transcript-artifact',
+          taskUuid: 'wenan5-real-transcript-desktop-ui-transcript-task',
+          sourceAssetUuid: request.assetUuid,
+          transcriptPath: output.artifactPath,
+          taskOutputDir: output.taskOutputDir,
+          language: request.language ?? 'auto',
+          text: segments.map((segment) => segment.text).join(' '),
+          segments,
+          ffmpegExecutable: 'ffmpeg',
+          speechExecutable: 'whisper-cli',
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'wenan5 real transcript desktop UI speech preflight contract',
+      }),
+      sliceVideo: async (request) => {
+        wenan5RealTranscriptDesktopUiSliceCommands.push({ kind: 'slice', request });
+        const taskOutputDir = createNativeTaskOutputArtifact(
+          'wenan5-real-transcript-desktop-ui-slice-task',
+          'wenan5-real-transcript-desktop-ui-slice-artifact-1.mp4',
+          configuredOutputDirectory,
+        ).taskOutputDir;
+        const subtitlesRequested = Array.isArray(request.subtitleSegments) && request.subtitleSegments.length > 0;
+        return {
+          taskUuid: 'wenan5-real-transcript-desktop-ui-slice-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir,
+          ffmpegExecutable: 'ffmpeg',
+          slices: request.clips.map((clip, index) => {
+            const output = createNativeTaskOutputArtifact(
+              'wenan5-real-transcript-desktop-ui-slice-task',
+              `wenan5-real-transcript-desktop-ui-slice-artifact-${index + 1}.mp4`,
+              configuredOutputDirectory,
+            );
+            const thumbnail = createNativeTaskCoverArtifact(
+              'wenan5-real-transcript-desktop-ui-slice-task',
+              `wenan5-real-transcript-desktop-ui-slice-thumb-${index + 1}.jpg`,
+              configuredOutputDirectory,
+            );
+            const subtitle = createNativeTaskOutputArtifact(
+              'wenan5-real-transcript-desktop-ui-slice-task',
+              `wenan5-real-transcript-desktop-ui-slice-subtitle-${index + 1}.srt`,
+              configuredOutputDirectory,
+            );
+            return {
+              artifactUuid: `wenan5-real-transcript-desktop-ui-slice-artifact-${index + 1}`,
+              artifactPath: output.artifactPath,
+              thumbnailArtifactUuid: `wenan5-real-transcript-desktop-ui-slice-thumb-${index + 1}`,
+              thumbnailArtifactPath: thumbnail.artifactPath,
+              taskOutputDir: output.taskOutputDir,
+              byteSize: 345678 + index,
+              thumbnailByteSize: 23456 + index,
+              ...(subtitlesRequested
+                ? {
+                    subtitleArtifactUuid: `wenan5-real-transcript-desktop-ui-slice-subtitle-${index + 1}`,
+                    subtitleArtifactPath: subtitle.artifactPath,
+                    subtitleByteSize: 2345 + index,
+                    subtitleFormat: 'srt',
+                  }
+                : {}),
+              format: 'mp4',
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+            };
+          }),
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services, { language: 'en' });
+    const wenan5RealTranscriptDesktopUiSourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/wenan5-real-transcript-desktop-ui.mp4',
+      'wenan5-real-transcript-desktop-ui.mp4',
+      { byteSize: 1312141320 },
+    );
+    const wenan5RealTranscriptDesktopUiResult = await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-wenan5-real-transcript-desktop-ui',
+        file: wenan5RealTranscriptDesktopUiSourceFile,
+        mode: 'contract-mode',
+        llmModel: 'deepseek-v4-flash',
+        targetPlatform: 'douyin',
+        targetAspectRatio: '9:16',
+        videoObjectFit: 'contain',
+        idealDuration: 45,
+        continuityLevel: 'standard',
+        minDuration: 30,
+        maxDuration: 70,
+        baseAlgorithm: 'nlp',
+        highlightEngine: 'emotion',
+        enableNoiseReduction: true,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSubtitles: true,
+        subtitleMode: 'both',
+      }),
+    );
+    const wenan5RealTranscriptDesktopUiTranscribeRequest =
+      wenan5RealTranscriptDesktopUiSliceCommands.find((entry) => entry.kind === 'transcribe')?.request;
+    const wenan5RealTranscriptDesktopUiSliceRequest =
+      wenan5RealTranscriptDesktopUiSliceCommands.find((entry) => entry.kind === 'slice')?.request;
+    const wenan5RealTranscriptDesktopUiTask = readScopedStoredArray(services, 'tasks')
+      .find((task) => task.id === wenan5RealTranscriptDesktopUiResult.taskId);
+    assertEqual(
+      wenan5RealTranscriptDesktopUiTranscribeRequest?.language,
+      'auto',
+      'Smart Slice real wenan5 transcript desktop upload still uses automatic STT language detection',
+    );
+    assertEqual(
+      wenan5RealTranscriptDesktopUiSegments.length,
+      35,
+      'Smart Slice real wenan5 transcript desktop upload consumes the full real whisper transcript fixture',
+    );
+    assertRule(
+      (wenan5RealTranscriptDesktopUiSliceRequest?.clips?.length ?? 0) >= 4,
+      `Smart Slice real wenan5 transcript desktop upload renders multiple clips from real STT instead of ${wenan5RealTranscriptDesktopUiSliceRequest?.clips?.length ?? 0}`,
+    );
+    assertSmartSliceNativeRenderRequestClipsReady(
+      wenan5RealTranscriptDesktopUiSliceRequest?.clips,
+      182_360,
+      'Smart Slice real wenan5 transcript desktop upload sends native-ready non-overlapping clip timing',
+    );
+    assertRule(
+      getUncoveredSmartSliceTranscriptSegments(
+        wenan5RealTranscriptDesktopUiSliceRequest?.clips,
+        wenan5RealTranscriptDesktopUiSegments,
+      ).length === 0,
+      'Smart Slice real wenan5 transcript desktop upload native clip request covers every eligible real STT segment',
+    );
+    assertRule(
+      wenan5RealTranscriptDesktopUiSliceRequest?.clips?.every((clip) =>
+        !clip.transcriptText?.includes(decodeEscapedText('\\u5570\\u55e6')) &&
+          !clip.transcriptText?.includes(decodeEscapedText('\\u91cd\\u65b0\\u5f55')) &&
+          !clip.transcriptText?.includes(decodeEscapedText('\\u81ea\\u4e8e\\u53d1\\u6325'))
+      ),
+      'Smart Slice real wenan5 transcript desktop upload excludes NG, re-recording, and tail ad-lib transcript text',
+    );
+    assertRule(
+      wenan5RealTranscriptDesktopUiSliceRequest?.clips?.some((clip) =>
+        clip.transcriptText?.includes(decodeEscapedText('\\u53ea\\u8981\\u4f60\\u6709\\u4e00\\u5b9a\\u7684\\u884c\\u4e1a\\u7ecf\\u9a8c')) &&
+          clip.transcriptText?.includes(decodeEscapedText('\\u6700\\u5feb\\u4e09\\u4e2a\\u6708\\u5c31\\u80fd\\u5e26\\u7740\\u5bb6\\u4eba\\u5408\\u6cd5\\u5165\\u5883'))
+      ),
+      'Smart Slice real wenan5 transcript desktop upload keeps application condition and legal-entry payoff together',
+    );
+    assertEqual(
+      wenan5RealTranscriptDesktopUiTask?.status,
+      types.AUTOCUT_TASK_STATUS.completed,
+      'Smart Slice real wenan5 transcript desktop upload completes through the service workflow',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
+    const nonRenderableTranscriptDiagnosticsCommands = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        nonRenderableTranscriptDiagnosticsCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'non-renderable-transcript-diagnostics-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/non-renderable-transcript-diagnostics.mp4',
+          byteSize: 789000,
+          name: 'non-renderable-transcript-diagnostics.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 90000,
+        };
+      },
+      transcribeMedia: async (request) => {
+        nonRenderableTranscriptDiagnosticsCommands.push({ kind: 'transcribe', request });
+        const output = createNativeTaskOutputArtifact(
+          'non-renderable-transcript-diagnostics-task',
+          'non-renderable-transcript-diagnostics.json',
+          configuredOutputDirectory,
+        );
+        return {
+          artifactUuid: 'non-renderable-transcript-diagnostics-artifact',
+          taskUuid: 'non-renderable-transcript-diagnostics-task',
+          sourceAssetUuid: request.assetUuid,
+          transcriptPath: output.artifactPath,
+          taskOutputDir: output.taskOutputDir,
+          language: request.language ?? 'auto',
+          text: 'Renderable text that is too brief. Another renderable text that is too brief.',
+          segments: [
+            {
+              startMs: 10000,
+              endMs: 10400,
+              text: 'Renderable text that is too brief.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 40000,
+              endMs: 40400,
+              text: 'Another renderable text that is too brief.',
+              speaker: 'Speaker 1',
+            },
+          ],
+          ffmpegExecutable: 'ffmpeg',
+          speechExecutable: 'whisper-cli',
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'non-renderable transcript diagnostics speech preflight contract',
+      }),
+      analyzeVideoSliceAudioActivity: async (request) => {
+        nonRenderableTranscriptDiagnosticsCommands.push({ kind: 'analyze-audio-boundaries', request });
+        throw new Error('audio activity analysis must not run when planning produced no renderable transcript-backed clip');
+      },
+      sliceVideo: async (request) => {
+        nonRenderableTranscriptDiagnosticsCommands.push({ kind: 'slice', request });
+        throw new Error('sliceVideo must not run when planning produced no renderable transcript-backed clip');
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    const nonRenderableTranscriptDiagnosticsFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/non-renderable-transcript-diagnostics.mp4',
+      'non-renderable-transcript-diagnostics.mp4',
+    );
+    await assertRejects(
+      () =>
+        withImmediateTimers(async () =>
+          processVideoSlice({
+            fileId: 'asset-source-non-renderable-transcript-diagnostics',
+            file: nonRenderableTranscriptDiagnosticsFile,
+            mode: 'contract-mode',
+            llmModel: 'deepseek-v4-flash',
+            targetPlatform: 'douyin',
+            targetAspectRatio: '9:16',
+            videoObjectFit: 'cover',
+            minDuration: 15,
+            maxDuration: 60,
+            baseAlgorithm: 'scene',
+            highlightEngine: 'keyword',
+            enableNoiseReduction: true,
+            enableCoughFilter: true,
+            enableRepeatFilter: true,
+            enableSubtitles: false,
+          }),
+        ),
+      'AutoCut transcript speech has no renderable timestamped segment',
+      'video slice workflow rejects transcript-backed planning when every STT segment is too short to render',
+    );
+    const nonRenderableTranscriptDiagnosticsTask = readScopedStoredArray(services, 'tasks')[0];
+    assertEqual(
+      nonRenderableTranscriptDiagnosticsTask?.status,
+      types.AUTOCUT_TASK_STATUS.failed,
+      'video slice non-renderable transcript workflow marks the task failed',
+    );
+    assertIncludes(
+      nonRenderableTranscriptDiagnosticsTask?.errorMessage ?? '',
+      'Runtime params:',
+      'video slice non-renderable transcript failure exposes runtime params in the user-facing error',
+    );
+    assertIncludes(
+      nonRenderableTranscriptDiagnosticsTask?.errorMessage ?? '',
+      'sourceDurationMs=90000',
+      'video slice non-renderable transcript failure exposes source duration in the user-facing error',
+    );
+    assertIncludes(
+      nonRenderableTranscriptDiagnosticsTask?.errorMessage ?? '',
+      'minDurationMs=15000',
+      'video slice non-renderable transcript failure exposes normalized minimum duration in the user-facing error',
+    );
+    assertIncludes(
+      nonRenderableTranscriptDiagnosticsTask?.errorMessage ?? '',
+      'targetPlatform=douyin',
+      'video slice non-renderable transcript failure exposes target platform in the user-facing error',
+    );
+    assertIncludes(
+      nonRenderableTranscriptDiagnosticsTask?.errorMessage ?? '',
+      'transcriptSegmentCount=2',
+      'video slice non-renderable transcript failure exposes transcript segment count in the user-facing error',
+    );
+    assertIncludes(
+      nonRenderableTranscriptDiagnosticsTask?.errorMessage ?? '',
+      'longestSegmentDurationMs=400',
+      'video slice non-renderable transcript failure exposes the longest STT segment duration in the user-facing error',
+    );
+    assertIncludes(
+      nonRenderableTranscriptDiagnosticsTask?.errorMessage ?? '',
+      'transcriptCandidateCount=0',
+      'video slice non-renderable transcript failure exposes candidate count in the user-facing error',
+    );
+    assertIncludes(
+      nonRenderableTranscriptDiagnosticsTask?.failureDiagnostics ?? '',
+      'Smart Slice planning failure context:',
+      'video slice non-renderable transcript failure stores structured planning diagnostics',
+    );
+    assertIncludes(
+      nonRenderableTranscriptDiagnosticsTask?.failureDiagnostics ?? '',
+      '"sourceAssetUuid": "non-renderable-transcript-diagnostics-asset"',
+      'video slice non-renderable transcript diagnostics identify the native source asset',
+    );
+    assertIncludes(
+      nonRenderableTranscriptDiagnosticsTask?.failureDiagnostics ?? '',
+      '"sampleSegments"',
+      'video slice non-renderable transcript diagnostics include bounded transcript samples',
+    );
+    assertIncludes(
+      nonRenderableTranscriptDiagnosticsTask?.failureDiagnostics ?? '',
+      'Renderable text that is too brief.',
+      'video slice non-renderable transcript diagnostics include a bounded text preview',
+    );
+    assertRule(
+      !nonRenderableTranscriptDiagnosticsCommands.some((entry) => entry.kind === 'slice'),
+      'video slice workflow does not render when planning diagnostics reject non-renderable transcript segments',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
     const sparseTranscriptSliceCommands = [];
     const sparseTranscriptBridgeRequests = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         videoSliceCommandReady: true,
@@ -8919,6 +16674,8 @@ async function run() {
           byteSize: 654000,
           name: 'sparse-transcript-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 90000,
         };
@@ -9008,9 +16765,7 @@ async function run() {
             byteSize: 234567,
             thumbnailByteSize: 12345,
             format: 'mp4',
-            startMs: clip.startMs,
-            durationMs: clip.durationMs,
-            label: clip.label,
+            ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
           })),
         };
       },
@@ -9029,20 +16784,18 @@ async function run() {
       async createChatCompletion(request, runtime) {
         sparseTranscriptBridgeRequests.push({ request, runtime });
         const prompt = JSON.parse(request.messages?.[1]?.content ?? '{}');
-        const selectedCandidate =
-          prompt.candidateWindows?.find((candidate) => candidate.risks?.includes('transcript-repeat-filtered')) ??
-          prompt.candidateWindows?.[0];
+        const rankedCandidates = [
+          ...(prompt.candidates?.filter((candidate) => candidate.risks?.includes('transcript-repeat-filtered')) ?? []),
+          ...(prompt.candidates?.filter((candidate) => !candidate.risks?.includes('transcript-repeat-filtered')) ?? []),
+        ];
         return {
           id: 'sparse-transcript-plan',
           model: request.model,
-          content: JSON.stringify([
-            {
-              candidateId: selectedCandidate?.id,
-              title: 'Trimmed speech candidate',
-              qualityScore: 0.9,
-              continuityScore: 0.9,
-            },
-          ]),
+          content: JSON.stringify({
+            rankedCandidateIds: rankedCandidates.map((candidate) => candidate.id),
+            referencedUnitIds: prompt.contentUnits?.map((unit) => unit.id) ?? [],
+            reviewNotes: ['Trimmed speech candidate'],
+          }),
           runtime,
         };
       },
@@ -9061,8 +16814,6 @@ async function run() {
         targetPlatform: 'douyin',
         targetAspectRatio: '9:16',
         videoObjectFit: 'cover',
-        sliceCountMode: 'qualityFirst',
-        targetSliceCount: 3,
         minDuration: 15,
         maxDuration: 60,
         baseAlgorithm: 'scene',
@@ -9078,15 +16829,15 @@ async function run() {
     );
     const sparseTranscriptSliceRequest = sparseTranscriptSliceCommands.find((entry) => entry.kind === 'slice')?.request;
     const sparseTranscriptTask = readScopedStoredArray(services, 'tasks')
-      .find((task) => task.id === 'sparse-transcript-slice-task');
+      .find((task) => task.nativeTaskId === 'sparse-transcript-slice-task');
     assertEqual(
-      sparseTranscriptPrompt?.candidateWindows?.length,
+      sparseTranscriptPrompt?.candidates?.length,
       2,
-      'video slice workflow removes repeated speech-to-text candidate windows before asking the LLM planner',
+      'video slice workflow removes repeated speech-to-text candidates before asking the Smart Cut Engine LLM reviewer',
     );
     assertRule(
-      sparseTranscriptPrompt?.candidateWindows?.some((candidate) => candidate.risks?.includes('transcript-repeat-filtered')),
-      'video slice workflow tells the LLM when repeated speech-to-text content was filtered',
+      sparseTranscriptPrompt?.candidates?.some((candidate) => candidate.risks?.includes('transcript-repeat-filtered')),
+      'video slice workflow tells the Smart Cut Engine LLM reviewer when repeated speech-to-text content was filtered',
     );
     assertRule(
       sparseTranscriptSliceRequest?.clips?.every((clip) => clip.durationMs < 7000),
@@ -9109,7 +16860,7 @@ async function run() {
     resetStorage();
     const transcriptCandidateSliceCommands = [];
     const transcriptCandidateBridgeRequests = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         videoSliceCommandReady: true,
@@ -9125,6 +16876,8 @@ async function run() {
           byteSize: 654000,
           name: 'transcript-candidate-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 62000,
         };
@@ -9203,9 +16956,7 @@ async function run() {
               byteSize: 234567,
               thumbnailByteSize: 12345,
               format: 'mp4',
-              startMs: request.clips[0].startMs,
-              durationMs: request.clips[0].durationMs,
-              label: request.clips[0].label,
+              ...copyNativeVideoSliceClipEvidence(request.clips[0], request.noiseReduction),
             },
           ],
         };
@@ -9226,25 +16977,22 @@ async function run() {
         transcriptCandidateBridgeRequests.push({ request, runtime });
         const prompt = JSON.parse(request.messages?.[1]?.content ?? '{}');
         const selectedCandidate =
-          prompt.candidateWindows?.find((candidate) => candidate.transcriptSegmentCount === 3) ??
-          prompt.candidateWindows?.find((candidate) => candidate.speechEndMs === 41000) ??
-          prompt.candidateWindows?.[0];
+          prompt.candidates?.find((candidate) => String(candidate.title ?? '').includes('complete short-video payoff')) ??
+          prompt.candidates?.[0];
+        const rankedCandidateIds = [
+          selectedCandidate?.id,
+          ...(prompt.candidates?.map((candidate) => candidate.id) ?? []),
+        ].filter((candidateId, index, ids) =>
+          typeof candidateId === 'string' && candidateId && ids.indexOf(candidateId) === index
+        );
         return {
           id: 'transcript-candidate-plan',
           model: request.model,
-          content: JSON.stringify([
-            {
-              candidateId: selectedCandidate?.id,
-              startMs: 12000,
-              durationMs: 15000,
-              title: '爆发原因',
-              summary: 'Explains the spike cause and audience pain point.',
-              reason: 'Complete setup and payoff for a coherent short video.',
-              qualityScore: 0.92,
-              continuityScore: 0.88,
-              risks: ['needs-cover-title'],
-            },
-          ]),
+          content: JSON.stringify({
+            rankedCandidateIds,
+            referencedUnitIds: prompt.contentUnits?.map((unit) => unit.id) ?? [],
+            reviewNotes: ['Selected complete transcript-derived candidate by stable ID.'],
+          }),
           runtime,
         };
       },
@@ -9263,8 +17011,6 @@ async function run() {
         targetPlatform: 'douyin',
         targetAspectRatio: '9:16',
         videoObjectFit: 'cover',
-        sliceCountMode: 'qualityFirst',
-        targetSliceCount: 3,
         idealDuration: 45,
         continuityLevel: 'standard',
         customKeywords: ['retention'],
@@ -9281,131 +17027,82 @@ async function run() {
     const transcriptCandidatePrompt = JSON.parse(
       transcriptCandidateBridgeRequests[0]?.request?.messages?.[1]?.content ?? '{}',
     );
-    const transcriptCandidateWindow =
-      transcriptCandidatePrompt?.candidateWindows?.find((candidate) => candidate.transcriptSegmentCount === 3) ??
-      transcriptCandidatePrompt?.candidateWindows?.find((candidate) => candidate.speechEndMs === 41000) ??
-      transcriptCandidatePrompt?.candidateWindows?.[0];
+    const transcriptCandidateReviewCandidate =
+      transcriptCandidatePrompt?.candidates?.find((candidate) =>
+        String(candidate.title ?? '').includes('complete short-video payoff')
+      ) ??
+      transcriptCandidatePrompt?.candidates?.[0];
+    const transcriptCandidateReviewUnit =
+      transcriptCandidatePrompt?.contentUnits?.find((unit) =>
+        String(unit.text ?? '').includes('complete short-video payoff')
+      ) ??
+      transcriptCandidatePrompt?.contentUnits?.[0];
     const transcriptCandidateSliceRequest = transcriptCandidateSliceCommands.find((entry) => entry.kind === 'slice')?.request;
     const transcriptCandidateTask = readScopedStoredArray(services, 'tasks')
-      .find((task) => task.id === 'transcript-candidate-slice-task');
+      .find((task) => task.nativeTaskId === 'transcript-candidate-slice-task');
     assertRule(
-      Boolean(transcriptCandidateWindow),
-      'video slice workflow sends transcript-derived candidate windows to the LLM planner',
+      Boolean(transcriptCandidateReviewCandidate),
+      'video slice workflow sends Smart Cut Engine candidate ids to the ID-only LLM reviewer',
     );
-    assertEqual(
-      transcriptCandidateWindow?.transcriptSegmentCount,
-      3,
-      'video slice workflow sends transcript segment counts in transcript-derived candidate windows',
+    assertRule(
+      Array.isArray(transcriptCandidateReviewCandidate?.unitIds) &&
+        transcriptCandidateReviewCandidate.unitIds.length > 0,
+      'video slice workflow sends candidate-to-content-unit links to the ID-only LLM reviewer',
     );
-    assertEqual(
-      transcriptCandidateWindow?.transcriptCoverageScore,
-      1,
-      'video slice workflow sends transcript coverage scores in transcript-derived candidate windows',
-    );
-    assertEqual(
-      transcriptCandidateWindow?.speechContinuityGrade,
-      'repaired',
-      'video slice workflow sends speech continuity grades in transcript-derived candidate windows',
-    );
-    assertEqual(
-      typeof transcriptCandidateWindow?.storyShape,
-      'string',
-      'video slice workflow sends story-shape metadata in transcript-derived candidate windows',
+    assertRule(
+      Boolean(transcriptCandidateReviewUnit?.id) &&
+        String(transcriptCandidateReviewUnit?.text ?? '').includes('complete short-video payoff'),
+      'video slice workflow sends transcript-derived content units to the ID-only LLM reviewer',
     );
     assertNumberBetween(
-      transcriptCandidateWindow?.boundaryQualityScore,
+      transcriptCandidateReviewUnit?.completenessScore,
       0.65,
       1,
-      'video slice workflow sends boundary quality scores in transcript-derived candidate windows',
-    );
-    assertRule(
-      ['strong', 'contextual', 'weak'].includes(transcriptCandidateWindow?.hookStrength),
-      'video slice workflow sends hook strength grades in transcript-derived candidate windows',
-    );
-    assertRule(
-      ['complete', 'soft', 'open'].includes(transcriptCandidateWindow?.endingCompleteness),
-      'video slice workflow sends ending completeness grades in transcript-derived candidate windows',
+      'video slice workflow sends content-unit completeness evidence to the ID-only LLM reviewer',
     );
     assertNumberBetween(
-      transcriptCandidateWindow?.contentArcScore,
+      transcriptCandidateReviewUnit?.continuityScore,
       0.65,
       1,
-      'video slice workflow sends content-arc scores in transcript-derived candidate windows',
-    );
-    assertRule(
-      ['complete', 'partial', 'thin'].includes(transcriptCandidateWindow?.contentArcGrade),
-      'video slice workflow sends content-arc grades in transcript-derived candidate windows',
-    );
-    assertArrayIncludes(
-      transcriptCandidateWindow?.contentArcStages,
-      'payoff',
-      'video slice workflow sends detected content-arc stages in transcript-derived candidate windows',
+      'video slice workflow sends content-unit continuity evidence to the ID-only LLM reviewer',
     );
     assertNumberBetween(
-      transcriptCandidateWindow?.topicCoherenceScore,
+      transcriptCandidateReviewUnit?.publishabilityScore,
       0.65,
       1,
-      'video slice workflow sends topic coherence scores in transcript-derived candidate windows',
+      'video slice workflow sends content-unit publishability evidence to the ID-only LLM reviewer',
+    );
+    assertNotOwnProperty(
+      transcriptCandidatePrompt,
+      'requestedClipCount',
+      'video slice workflow does not send requested clip counts to the ID-only LLM reviewer',
+    );
+    assertNotOwnProperty(
+      transcriptCandidatePrompt,
+      'candidateWindows',
+      'video slice workflow does not send legacy timestamp candidate windows to the ID-only LLM reviewer',
+    );
+    assertNotOwnProperty(
+      transcriptCandidatePrompt,
+      'transcriptTimeline',
+      'video slice workflow does not send legacy raw transcript timeline prompts to the ID-only LLM reviewer',
     );
     assertRule(
-      ['strong', 'mixed', 'weak'].includes(transcriptCandidateWindow?.topicCoherenceGrade),
-      'video slice workflow sends topic coherence grades in transcript-derived candidate windows',
+      transcriptCandidatePrompt?.rules?.some((rule) =>
+        rule.includes('Rank every executable candidate id once')
+      ),
+      'video slice workflow tells the ID-only LLM reviewer to rank stable candidate ids',
     );
     assertRule(
-      typeof transcriptCandidateWindow?.topicShiftCount === 'number',
-      'video slice workflow sends topic shift counts in transcript-derived candidate windows',
-    );
-    assertRule(
-      Array.isArray(transcriptCandidateWindow?.topicKeywords),
-      'video slice workflow sends topic keywords in transcript-derived candidate windows',
-    );
-    assertNumberBetween(
-      transcriptCandidateWindow?.platformReadinessScore,
-      0.65,
-      1,
-      'video slice workflow sends platform readiness scores in transcript-derived candidate windows',
-    );
-    assertRule(
-      ['ready', 'review', 'reject'].includes(transcriptCandidateWindow?.platformReadinessGrade),
-      'video slice workflow sends platform readiness grades in transcript-derived candidate windows',
-    );
-    assertRule(
-      Array.isArray(transcriptCandidateWindow?.platformReadinessIssues),
-      'video slice workflow sends platform readiness issue tags in transcript-derived candidate windows',
-    );
-    assertNumberBetween(
-      transcriptCandidateWindow?.sentenceBoundaryIntegrityScore,
-      0,
-      1,
-      'video slice workflow sends sentence boundary integrity scores in transcript-derived candidate windows',
-    );
-    assertRule(
-      ['clean', 'repaired', 'broken'].includes(transcriptCandidateWindow?.sentenceBoundaryIntegrityGrade),
-      'video slice workflow sends sentence boundary integrity grades in transcript-derived candidate windows',
-    );
-    assertRule(
-      Array.isArray(transcriptCandidateWindow?.sentenceBoundaryIssues),
-      'video slice workflow sends sentence boundary issue tags in transcript-derived candidate windows',
-    );
-    assertEqual(
-      transcriptCandidatePrompt?.requestedClipCount,
-      3,
-      'video slice workflow sends the strategy target slice count to the LLM planner',
-    );
-    assertEqual(
-      transcriptCandidatePrompt?.planningPolicy?.sourceDurationMs,
-      62000,
-      'video slice workflow sends imported media duration to the LLM planner policy',
-    );
-    assertEqual(
-      transcriptCandidatePrompt?.publishingTarget?.aspectRatio,
-      '9:16',
-      'video slice workflow sends target publishing aspect ratio to the LLM planner',
+      transcriptCandidatePrompt?.rules?.some((rule) =>
+        rule.includes('Do not output timestamps')
+      ),
+      'video slice workflow tells the ID-only LLM reviewer not to output timestamps',
     );
     assertEqual(
       transcriptCandidatePrompt?.customKeywords?.[0],
       'retention',
-      'video slice workflow sends custom keywords to the LLM planner',
+      'video slice workflow sends custom keywords to the ID-only LLM reviewer',
     );
     assertEqual(
       transcriptCandidateSliceRequest?.renderProfile?.targetAspectRatio,
@@ -9434,8 +17131,8 @@ async function run() {
     );
     assertEqual(
       transcriptCandidateSliceRequest?.clips?.[0]?.outputFileName,
-      '01-爆发原因.mp4',
-      'video slice workflow preserves non-English LLM smart-slice titles in native output filenames',
+      '01-watch-this-case-background.mp4',
+      'video slice workflow preserves Smart Cut Engine transcript-derived titles in native output filenames',
     );
     assertRule(
       transcriptCandidateSliceRequest?.clips?.every((clip, index, clips) =>
@@ -9444,19 +17141,19 @@ async function run() {
       'video slice workflow keeps repaired transcript candidate clips non-overlapping',
     );
     assertEqual(
-      transcriptCandidateTask?.sliceResults?.[0]?.qualityScore,
-      0.92,
-      'video slice workflow preserves AI quality score on task slice results',
+      typeof transcriptCandidateTask?.sliceResults?.[0]?.qualityScore,
+      'number',
+      'video slice workflow preserves deterministic Smart Cut Engine quality evidence on task slice results',
     );
     assertEqual(
       transcriptCandidateTask?.sliceResults?.[0]?.name,
-      '01-爆发原因.mp4',
-      'video slice workflow names persisted slice results from non-English LLM smart-slice titles',
+      '01-watch-this-case-background.mp4',
+      'video slice workflow names persisted slice results from Smart Cut Engine transcript-derived titles',
     );
     assertEqual(
-      transcriptCandidateTask?.sliceResults?.[0]?.continuityScore,
-      0.88,
-      'video slice workflow preserves AI continuity score on task slice results',
+      typeof transcriptCandidateTask?.sliceResults?.[0]?.continuityScore,
+      'number',
+      'video slice workflow preserves deterministic Smart Cut Engine continuity evidence on task slice results',
     );
     assertEqual(
       typeof transcriptCandidateTask?.sliceResults?.[0]?.storyShape,
@@ -9465,18 +17162,27 @@ async function run() {
     );
     assertEqual(
       transcriptCandidateTask?.sliceResults?.[0]?.summary,
-      'Explains the spike cause and audience pain point.',
-      'video slice workflow preserves AI summary on task slice results',
+      'Speech-to-text window: Watch this case background. Then the real spike comes from concentrated user pain. So this is the complete short-video payoff.',
+      'video slice workflow preserves deterministic Smart Cut Engine summary on task slice results',
     );
     assertEqual(
       transcriptCandidateTask?.sliceResults?.[0]?.reason,
-      'Complete setup and payoff for a coherent short video.',
-      'video slice workflow preserves AI selection reason on task slice results',
+      'Planner selected a continuous speech-to-text window and aligned slice boundaries to transcript segment edges for complete voice content.',
+      'video slice workflow preserves deterministic Smart Cut Engine selection reason on task slice results',
     );
-    assertEqual(
-      transcriptCandidateTask?.sliceResults?.[0]?.risks?.[0],
-      'needs-cover-title',
-      'video slice workflow preserves AI publishing risks on task slice results',
+    assertArrayIncludes(
+      transcriptCandidateTask?.sliceResults?.[0]?.risks,
+      'semantic-story-merged',
+      'video slice workflow records deterministic semantic-story merge risks on task slice results',
+    );
+    assertArrayIncludes(
+      transcriptCandidateTask?.sliceResults?.[0]?.risks,
+      'connector-repaired',
+      'video slice workflow preserves deterministic transcript boundary repair risks on task slice results',
+    );
+    assertRule(
+      !transcriptCandidateTask?.sliceResults?.[0]?.risks?.includes('needs-cover-title'),
+      'video slice workflow ignores LLM-invented candidate-id risks on task slice results',
     );
     assertEqual(
       transcriptCandidateTask?.sliceResults?.[0]?.sourceStartMs,
@@ -9505,7 +17211,7 @@ async function run() {
     );
     assertEqual(
       transcriptCandidateTask?.sliceResults?.[0]?.transcriptText,
-      transcriptCandidateWindow?.text,
+      'Watch this case background. Then the real spike comes from concentrated user pain. So this is the complete short-video payoff.',
       'video slice workflow records repaired transcript text on slice results',
     );
     assertEqual(
@@ -9623,7 +17329,7 @@ async function run() {
     resetStorage();
     const longTranscriptPromptCommands = [];
     const longTranscriptPromptBridgeRequests = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         videoSliceCommandReady: true,
@@ -9639,6 +17345,8 @@ async function run() {
           byteSize: 654000,
           name: 'long-transcript-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 2_100_000,
         };
@@ -9711,9 +17419,7 @@ async function run() {
               byteSize: 234567,
               thumbnailByteSize: 12345,
               format: 'mp4',
-              startMs: request.clips[0].startMs,
-              durationMs: request.clips[0].durationMs,
-              label: request.clips[0].label,
+              ...copyNativeVideoSliceClipEvidence(request.clips[0], request.noiseReduction),
             },
           ],
         };
@@ -9734,19 +17440,22 @@ async function run() {
         longTranscriptPromptBridgeRequests.push({ request, runtime });
         const prompt = JSON.parse(request.messages?.[1]?.content ?? '{}');
         const selectedCandidate =
-          prompt.candidateWindows?.find((candidate) => (candidate.speechStartMs ?? candidate.startMs) > 1_800_000) ??
-          prompt.candidateWindows?.[0];
+          prompt.candidates?.find((candidate) => String(candidate.title ?? '').includes('creator analytics')) ??
+          prompt.candidates?.[0];
+        const rankedCandidateIds = [
+          selectedCandidate?.id,
+          ...(prompt.candidates?.map((candidate) => candidate.id) ?? []),
+        ].filter((candidateId, index, ids) =>
+          typeof candidateId === 'string' && candidateId && ids.indexOf(candidateId) === index
+        );
         return {
           id: 'long-transcript-prompt-plan',
           model: request.model,
-          content: JSON.stringify([
-            {
-              candidateId: selectedCandidate?.id,
-              title: 'Late creator analytics payoff',
-              qualityScore: 0.9,
-              continuityScore: 0.9,
-            },
-          ]),
+          content: JSON.stringify({
+            rankedCandidateIds,
+            referencedUnitIds: prompt.contentUnits?.map((unit) => unit.id) ?? [],
+            reviewNotes: ['Ranked late creator analytics candidate by stable ID.'],
+          }),
           runtime,
         };
       },
@@ -9764,8 +17473,6 @@ async function run() {
         targetPlatform: 'douyin',
         targetAspectRatio: '9:16',
         videoObjectFit: 'cover',
-        sliceCountMode: 'qualityFirst',
-        targetSliceCount: 5,
         minDuration: 5,
         maxDuration: 15,
         baseAlgorithm: 'scene',
@@ -9779,23 +17486,23 @@ async function run() {
       longTranscriptPromptBridgeRequests[0]?.request?.messages?.[1]?.content ?? '{}',
     );
     assertRule(
-      longTranscriptPrompt?.candidateWindows?.some((candidate) => (candidate.speechStartMs ?? candidate.startMs) > 1_800_000),
-      'video slice workflow sends late high-value transcript candidate windows to the LLM planner',
+      longTranscriptPrompt?.candidates?.some((candidate) => String(candidate.title ?? '').includes('creator analytics')),
+      'video slice workflow sends late high-value Smart Cut Engine candidates to the ID-only LLM reviewer',
     );
     assertRule(
-      longTranscriptPrompt?.transcriptTimeline?.some((segment) => String(segment.text).includes('creator analytics')),
-      'video slice workflow includes candidate-adjacent late transcript context instead of only the first transcript segments',
+      longTranscriptPrompt?.contentUnits?.some((unit) => String(unit.text ?? '').includes('creator analytics')),
+      'video slice workflow includes late transcript-derived content units instead of only the first transcript segments',
     );
     assertRule(
-      (longTranscriptPrompt?.transcriptTimeline?.length ?? 0) <= 80,
-      'video slice workflow keeps the transcript timeline prompt bounded after candidate-centered sampling',
+      (longTranscriptPrompt?.contentUnits?.length ?? 0) <= 80,
+      'video slice workflow keeps ID-only LLM review content units bounded for long transcripts',
     );
     services.resetAutoCutNativeHostClient();
     services.configureAutoCutApprovedAiSdkBridge(null);
 
     resetStorage();
     const nativeExtractorTextWorkflowCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         contractVersion: 'contract-test',
         hostKind: 'native-host',
@@ -9857,6 +17564,8 @@ async function run() {
           byteSize: 765000,
           name: 'native-extractor-text.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
         };
       },
@@ -9865,6 +17574,8 @@ async function run() {
         byteSize: 765000,
         name: 'native-extractor-text.mp4',
         mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
         mimeType: 'video/mp4',
       }),
       selectLocalVideoFile: async () => null,
@@ -10092,8 +17803,117 @@ async function run() {
     services.resetAutoCutNativeHostClient();
 
     resetStorage();
-    const extractorTextAudioVideoCommands = [];
+    const smartSliceMissingNativeRenderCommands = [];
     services.configureAutoCutNativeHostClient({
+      getCapabilities: async () => ({
+        contractVersion: 'contract-test',
+        hostKind: 'native-host',
+        databaseContractReady: true,
+        sqliteMigrationReady: true,
+        databaseHealthCommandReady: true,
+        ffmpegProbeCommandReady: true,
+        mediaImportCommandReady: true,
+        mediaFileDescribeCommandReady: true,
+        localVideoFileSelectCommandReady: true,
+        localDirectorySelectCommandReady: true,
+        audioExtractionCommandReady: false,
+        audioExtractionFromAssetReady: false,
+        videoGifCommandReady: false,
+        videoSliceCommandReady: false,
+        videoSliceAudioActivityAnalysisCommandReady: false,
+        videoCompressCommandReady: false,
+        videoConvertCommandReady: false,
+        videoEnhanceCommandReady: false,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        speechTranscriptionFileSelectCommandReady: true,
+        llmHttpCommandReady: false,
+        llmSecretStoreReady: false,
+        nativeTaskQueryCommandReady: true,
+        nativeTaskCancelCommandReady: false,
+        nativeTaskRecoveryCommandReady: false,
+        nativeTaskRetryCommandReady: false,
+        nativeTaskProgressEventsReady: false,
+        nativeWorkerLeaseReady: true,
+        ffmpegToolchainManifestReady: true,
+        ffmpegToolchainResolverReady: true,
+        ffmpegBundledReady: false,
+        ffmpegExecutionReady: false,
+        supportedCommands: ['autocut_import_media_file', 'autocut_transcribe_media'],
+      }),
+      importMediaFile: async (request) => {
+        smartSliceMissingNativeRenderCommands.push({ kind: 'import', request });
+        throw new Error('Smart Slice must not import media when native video slicing is unavailable');
+      },
+      transcribeMedia: async (request) => {
+        smartSliceMissingNativeRenderCommands.push({ kind: 'transcribe', request });
+        throw new Error('Smart Slice must not transcribe when native video slicing is unavailable');
+      },
+      sliceVideo: async (request) => {
+        smartSliceMissingNativeRenderCommands.push({ kind: 'slice', request });
+        throw new Error('Smart Slice must not render when native video slicing is unavailable');
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services, {
+      modelPath: 'D:/models/ggml-large-v3-turbo.gguf',
+    });
+    const smartSliceMissingNativeRenderSourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/smart-slice-missing-native-render.mp4',
+      'smart-slice-missing-native-render.mp4',
+    );
+    await assertRejects(
+      () =>
+        withImmediateTimers(async () =>
+          processVideoSlice({
+            fileId: 'asset-source-smart-slice-missing-native-render',
+            file: smartSliceMissingNativeRenderSourceFile,
+            mode: 'contract-mode',
+            llmModel: 'deepseek-chat',
+            minDuration: 15,
+            maxDuration: 60,
+            baseAlgorithm: 'scene',
+            highlightEngine: 'emotion',
+            enableNoiseReduction: true,
+            enableCoughFilter: true,
+            enableRepeatFilter: true,
+          }),
+        ),
+      'the native video slicing command is unavailable',
+      'Smart Slice native render preflight fails with the missing render command reason',
+    );
+    const smartSliceMissingNativeRenderTask = readScopedStoredArray(services, 'tasks')[0];
+    const smartSliceMissingNativeRenderMessage = String(smartSliceMissingNativeRenderTask?.errorMessage ?? '');
+    assertEqual(
+      smartSliceMissingNativeRenderTask?.status,
+      types.AUTOCUT_TASK_STATUS.failed,
+      'Smart Slice native render preflight stores a failed task',
+    );
+    assertIncludes(
+      smartSliceMissingNativeRenderMessage,
+      'the native video slicing command is unavailable',
+      'Smart Slice native render preflight stores the missing render command reason',
+    );
+    assertRule(
+      !smartSliceMissingNativeRenderMessage.includes('requires a trusted local desktop media file'),
+      'Smart Slice native render preflight does not blame trusted local source when a trusted source was provided',
+    );
+    assertRule(
+      !smartSliceMissingNativeRenderMessage.includes('speech-to-text'),
+      'Smart Slice native render preflight does not blame speech-to-text when STT is ready',
+    );
+    assertEqual(
+      smartSliceMissingNativeRenderCommands.length,
+      0,
+      'Smart Slice native render preflight does not import, transcribe, or render after a hard native capability is missing',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
+    const extractorTextAudioVideoCommands = [];
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         speechTranscriptionCommandReady: true,
@@ -10111,6 +17931,8 @@ async function run() {
           byteSize: isAudio ? 123000 : 456000,
           name: isAudio ? 'extractor-text-audio.mp3' : 'extractor-text-video.mp4',
           mediaType: isAudio ? 'audio' : 'video',
+          hasAudioStream: true,
+          hasVideoStream: !isAudio,
           mimeType: isAudio ? 'audio/mpeg' : 'video/mp4',
         };
       },
@@ -10180,13 +18002,13 @@ async function run() {
       commons,
       'D:/media/extractor-text-audio.mp3',
       'extractor-text-audio.mp3',
-      { mimeType: 'audio/mpeg', mediaType: 'audio' },
+      { mimeType: 'audio/mpeg', mediaType: 'audio', hasAudioStream: true, hasVideoStream: false },
     );
     const extractorTextVideoSourceFile = createTrustedLocalMediaFile(
       commons,
       'D:/media/extractor-text-video.mp4',
       'extractor-text-video.mp4',
-      { mimeType: 'video/mp4', mediaType: 'video' },
+      { mimeType: 'video/mp4', mediaType: 'video', hasAudioStream: true, hasVideoStream: true },
     );
     const extractorTextAudioResult = await withImmediateTimers(async () =>
       processExtractorText({
@@ -10234,8 +18056,921 @@ async function run() {
     services.resetAutoCutNativeHostClient();
 
     resetStorage();
+    const subtitleTranslateAudioCommands = [];
+    const subtitleTranslateBridgeRequests = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        subtitleTranslateAudioCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'subtitle-translate-audio-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/subtitle-translate-audio-asset.flac',
+          byteSize: 223000,
+          name: 'subtitle-translate-audio.flac',
+          mediaType: 'audio',
+          hasAudioStream: true,
+          hasVideoStream: false,
+          mimeType: 'audio/flac',
+          durationMs: 7200,
+        };
+      },
+      transcribeMedia: async (request) => {
+        subtitleTranslateAudioCommands.push({ kind: 'transcribe', request });
+        const output = createNativeTaskOutputArtifact(
+          'subtitle-translate-audio-task',
+          'subtitle-translate-audio-transcript.json',
+          configuredOutputDirectory,
+        );
+        return {
+          artifactUuid: 'subtitle-translate-audio-transcript',
+          taskUuid: 'subtitle-translate-audio-task',
+          sourceAssetUuid: request.assetUuid,
+          transcriptPath: output.artifactPath,
+          taskOutputDir: output.taskOutputDir,
+          language: request.language,
+          text: 'Hello from audio. Subtitle output works.',
+          segments: [
+            {
+              startMs: 0,
+              endMs: 2400,
+              text: 'Hello from audio.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 2600,
+              endMs: 5200,
+              text: 'Subtitle output works.',
+              speaker: 'Speaker 1',
+            },
+          ],
+          ffmpegExecutable: 'ffmpeg',
+          speechExecutable: request.executablePath,
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'subtitle translate audio speech preflight contract',
+      }),
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    await services.saveAutoCutLlmSettings({
+      ...(await services.getAutoCutSettings()).llm,
+      modelVendor: 'gemini',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      model: 'gemini-3-flash-preview',
+      apiKey: 'sk-subtitle-translate',
+    });
+    services.configureAutoCutApprovedAiSdkBridge({
+      async createChatCompletion(request, runtime) {
+        subtitleTranslateBridgeRequests.push({ request, runtime });
+        return {
+          id: 'subtitle-translation-bridge-result',
+          model: request.model,
+          runtime,
+          content: JSON.stringify({
+            segments: [
+              { index: 1, text: 'Translated hello from audio.' },
+              { index: 2, text: 'Translated subtitle output works.' },
+            ],
+          }),
+        };
+      },
+    });
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services, {
+      modelPath: 'D:/models/ggml-large-v3-turbo.gguf',
+    });
+    const subtitleTranslateAudioSourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/subtitle-translate-audio.flac',
+      'subtitle-translate-audio.flac',
+      { mimeType: 'audio/flac', mediaType: 'audio', hasAudioStream: true, hasVideoStream: false },
+    );
+    const subtitleTranslateAudioResult = await withImmediateTimers(async () =>
+      processSubtitleTranslate({
+        fileId: 'asset-source-subtitle-translate-audio',
+        file: subtitleTranslateAudioSourceFile,
+        sourceLang: 'auto',
+        targetLang: 'en',
+        keepOriginal: true,
+        hardcode: false,
+      }),
+    );
+    const subtitleTranslateAudioTask = readScopedStoredArray(services, 'tasks').find(
+      (task) => task.id === subtitleTranslateAudioResult.taskId,
+    );
+    const subtitleTranslateAudioAsset = readScopedStoredArray(services, 'assets').find(
+      (asset) => asset.sourceTaskId === subtitleTranslateAudioResult.taskId,
+    );
+    assertEqual(subtitleTranslateAudioResult.success, true, 'subtitle translate accepts trusted local audio sources');
+    assertEqual(subtitleTranslateAudioCommands[0]?.kind, 'import', 'subtitle translate imports local audio before transcription');
+    assertEqual(
+      subtitleTranslateAudioCommands[0]?.request?.sourcePath,
+      'D:/media/subtitle-translate-audio.flac',
+      'subtitle translate passes trusted audio source paths to media import',
+    );
+    assertEqual(subtitleTranslateAudioCommands[1]?.kind, 'transcribe', 'subtitle translate transcribes imported audio media');
+    assertEqual(
+      subtitleTranslateAudioCommands[1]?.request?.assetUuid,
+      'subtitle-translate-audio-asset',
+      'subtitle translate transcribes by imported audio assetUuid',
+    );
+    assertEqual(
+      subtitleTranslateAudioCommands[1]?.request?.language,
+      'auto',
+      'subtitle translate forwards the selected source language to speech transcription',
+    );
+    assertEqual(
+      subtitleTranslateAudioTask?.status,
+      types.AUTOCUT_TASK_STATUS.completed,
+      'subtitle translate audio workflow completes the persisted task',
+    );
+    assertEqual(
+      subtitleTranslateAudioTask?.transcriptText,
+      'Hello from audio. Subtitle output works.',
+      'subtitle translate stores transcript text from trusted audio media',
+    );
+    assertEqual(
+      subtitleTranslateAudioTask?.translationText,
+      'Translated hello from audio. Translated subtitle output works.',
+      'subtitle translate stores target-language translation text from the approved AI SDK bridge',
+    );
+    assertEqual(
+      subtitleTranslateAudioTask?.translationSegments?.[0]?.text,
+      'Translated hello from audio.',
+      'subtitle translate stores structured target-language subtitle segments',
+    );
+    assertEqual(
+      subtitleTranslateBridgeRequests.length,
+      1,
+      'subtitle translate dispatches one target-language translation request through the approved AI SDK bridge',
+    );
+    assertIncludes(
+      subtitleTranslateBridgeRequests[0]?.request?.messages?.[1]?.content ?? '',
+      '"targetLang":"en"',
+      'subtitle translate includes the selected target language in the translation prompt payload',
+    );
+    assertEqual(
+      subtitleTranslateAudioTask?.transcriptSegments?.length,
+      2,
+      'subtitle translate stores structured transcript segments from trusted audio media',
+    );
+    assertEqual(
+      subtitleTranslateAudioTask?.subtitleFormat,
+      'srt',
+      'subtitle translate stores the generated subtitle format on the completed task',
+    );
+    assertRule(
+      Boolean(subtitleTranslateAudioTask?.subtitleUrl),
+      'subtitle translate stores a downloadable subtitle URL on the completed task',
+    );
+    const subtitleTranslateAudioSubtitleText = await readObjectUrlText(subtitleTranslateAudioTask?.subtitleUrl);
+    assertIncludes(
+      subtitleTranslateAudioSubtitleText,
+      'Hello from audio.',
+      'subtitle translate keepOriginal=true writes source-language text into the generated SRT',
+    );
+    assertIncludes(
+      subtitleTranslateAudioSubtitleText,
+      'Translated hello from audio.',
+      'subtitle translate writes target-language text into the generated SRT',
+    );
+    assertEqual(
+      subtitleTranslateAudioAsset?.type,
+      'doc',
+      'subtitle translate stores the SRT subtitle as a document asset',
+    );
+    assertRule(
+      subtitleTranslateAudioAsset?.name?.endsWith('.srt'),
+      'subtitle translate generated document asset uses an SRT filename',
+    );
+    services.resetAutoCutNativeHostClient();
+    services.configureAutoCutApprovedAiSdkBridge(null);
+
+    resetStorage();
+    const subtitleTranslateHardcodeCommands = [];
+    const subtitleTranslateHardcodeBridgeRequests = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        subtitleTranslateHardcodeCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'subtitle-translate-hardcode-video-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/subtitle-translate-hardcode-video-asset.mp4',
+          byteSize: 923000,
+          name: 'subtitle-translate-hardcode-video.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 7200,
+        };
+      },
+      transcribeMedia: async (request) => {
+        subtitleTranslateHardcodeCommands.push({ kind: 'transcribe', request });
+        const output = createNativeTaskOutputArtifact(
+          'subtitle-translate-hardcode-transcript-task',
+          'subtitle-translate-hardcode-transcript.json',
+          configuredOutputDirectory,
+        );
+        return {
+          artifactUuid: 'subtitle-translate-hardcode-transcript',
+          taskUuid: 'subtitle-translate-hardcode-transcript-task',
+          sourceAssetUuid: request.assetUuid,
+          transcriptPath: output.artifactPath,
+          taskOutputDir: output.taskOutputDir,
+          language: request.language,
+          text: 'Hello from video. Hard subtitle output works.',
+          segments: [
+            {
+              startMs: 0,
+              endMs: 2400,
+              text: 'Hello from video.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 2600,
+              endMs: 5200,
+              text: 'Hard subtitle output works.',
+              speaker: 'Speaker 1',
+            },
+          ],
+          ffmpegExecutable: 'ffmpeg',
+          speechExecutable: request.executablePath,
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'subtitle translate hardcode speech preflight contract',
+      }),
+      sliceVideo: async (request) => {
+        subtitleTranslateHardcodeCommands.push({ kind: 'slice', request });
+        const output = createNativeTaskOutputArtifact(
+          'subtitle-translate-hardcode-render-task',
+          'subtitle-translate-hardcode-video.mp4',
+          configuredOutputDirectory,
+        );
+        const thumbnail = createNativeTaskOutputArtifact(
+          'subtitle-translate-hardcode-render-task',
+          'cover/subtitle-translate-hardcode-video.jpg',
+          configuredOutputDirectory,
+        );
+        const subtitle = createNativeTaskOutputArtifact(
+          'subtitle-translate-hardcode-render-task',
+          'subtitle-translate-hardcode-video.srt',
+          configuredOutputDirectory,
+        );
+        return {
+          taskUuid: 'subtitle-translate-hardcode-render-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: output.taskOutputDir,
+          ffmpegExecutable: 'ffmpeg',
+          slices: [
+            {
+              artifactUuid: 'subtitle-translate-hardcode-video-artifact',
+              artifactPath: output.artifactPath,
+              thumbnailArtifactUuid: 'subtitle-translate-hardcode-cover',
+              thumbnailArtifactPath: thumbnail.artifactPath,
+              subtitleArtifactUuid: 'subtitle-translate-hardcode-subtitle',
+              subtitleArtifactPath: subtitle.artifactPath,
+              taskOutputDir: output.taskOutputDir,
+              byteSize: 823000,
+              thumbnailByteSize: 12000,
+              subtitleByteSize: 900,
+              subtitleFormat: 'srt',
+              format: 'mp4',
+              startMs: request.clips[0]?.startMs ?? 0,
+              durationMs: request.clips[0]?.durationMs ?? 7200,
+              label: request.clips[0]?.label ?? 'Translated subtitle video',
+              transcriptText: request.clips[0]?.transcriptText,
+              transcriptSegments: request.clips[0]?.transcriptSegments,
+              transcriptSegmentCount: request.clips[0]?.transcriptSegmentCount,
+              transcriptCoverageScore: request.clips[0]?.transcriptCoverageScore,
+              speechContinuityGrade: request.clips[0]?.speechContinuityGrade,
+              sourceStartMs: request.clips[0]?.sourceStartMs,
+              sourceEndMs: request.clips[0]?.sourceEndMs,
+              speechStartMs: request.clips[0]?.speechStartMs,
+              speechEndMs: request.clips[0]?.speechEndMs,
+            },
+          ],
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    await services.saveAutoCutLlmSettings({
+      ...(await services.getAutoCutSettings()).llm,
+      modelVendor: 'gemini',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      model: 'gemini-3-flash-preview',
+      apiKey: 'sk-subtitle-hardcode',
+    });
+    services.configureAutoCutApprovedAiSdkBridge({
+      async createChatCompletion(request, runtime) {
+        subtitleTranslateHardcodeBridgeRequests.push({ request, runtime });
+        return {
+          id: 'subtitle-hardcode-translation-bridge-result',
+          model: request.model,
+          runtime,
+          content: JSON.stringify({
+            segments: [
+              { index: 1, text: 'Translated hello from video.' },
+              { index: 2, text: 'Translated hard subtitle output works.' },
+            ],
+          }),
+        };
+      },
+    });
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services, {
+      modelPath: 'D:/models/ggml-large-v3-turbo.gguf',
+    });
+    const subtitleTranslateHardcodeSourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/subtitle-translate-hardcode-video.mp4',
+      'subtitle-translate-hardcode-video.mp4',
+      { mimeType: 'video/mp4', mediaType: 'video', hasAudioStream: true, hasVideoStream: true },
+    );
+    const subtitleTranslateHardcodeResult = await withImmediateTimers(async () =>
+      processSubtitleTranslate({
+        fileId: 'asset-source-subtitle-translate-hardcode-video',
+        file: subtitleTranslateHardcodeSourceFile,
+        sourceLang: 'auto',
+        targetLang: 'en',
+        keepOriginal: true,
+        hardcode: true,
+      }),
+    );
+    const subtitleTranslateHardcodeTask = readScopedStoredArray(services, 'tasks').find(
+      (task) => task.id === subtitleTranslateHardcodeResult.taskId,
+    );
+    const subtitleTranslateHardcodeAssets = readScopedStoredArray(services, 'assets').filter(
+      (asset) => asset.sourceTaskId === subtitleTranslateHardcodeResult.taskId,
+    );
+    const subtitleTranslateHardcodeSliceCommand = subtitleTranslateHardcodeCommands.find((entry) => entry.kind === 'slice');
+    assertEqual(subtitleTranslateHardcodeResult.success, true, 'subtitle translate hardcode video workflow reports success');
+    assertEqual(subtitleTranslateHardcodeSliceCommand?.request?.subtitleMode, 'both', 'subtitle translate hardcode video requests burned video plus SRT sidecar');
+    assertEqual(subtitleTranslateHardcodeSliceCommand?.request?.subtitleFormat, 'srt', 'subtitle translate hardcode video requests SRT subtitle data');
+    assertIncludes(
+      joinSubtitleCueCoverageText(subtitleTranslateHardcodeSliceCommand?.request?.subtitleSegments),
+      'Hello from video.',
+      'subtitle translate hardcode video forwards source-language subtitle text when keepOriginal is enabled',
+    );
+    assertIncludes(
+      joinSubtitleCueCoverageText(subtitleTranslateHardcodeSliceCommand?.request?.subtitleSegments),
+      'Translated hello from video.',
+      'subtitle translate hardcode video forwards target-language subtitle text for burned rendering',
+    );
+    assertEqual(
+      subtitleTranslateHardcodeSliceCommand?.request?.clips?.[0]?.durationMs,
+      7200,
+      'subtitle translate hardcode video renders the whole imported source duration',
+    );
+    assertEqual(
+      subtitleTranslateHardcodeTask?.videoUrl,
+      'asset://localhost/D%3A%2Fautocut-configured-output%2Ftasks%2Fsubtitle-translate-hardcode-render-task%2Fsubtitle-translate-hardcode-video.mp4',
+      'subtitle translate hardcode video stores the rendered video asset URL on the completed task',
+    );
+    assertEqual(
+      subtitleTranslateHardcodeTask?.nativeTaskId,
+      'subtitle-translate-hardcode-render-task',
+      'subtitle translate hardcode video records the native render task id',
+    );
+    assertEqual(
+      subtitleTranslateHardcodeTask?.subtitleUrl,
+      'asset://localhost/D%3A%2Fautocut-configured-output%2Ftasks%2Fsubtitle-translate-hardcode-render-task%2Fsubtitle-translate-hardcode-video.srt',
+      'subtitle translate hardcode video prefers the native task-scoped SRT sidecar URL',
+    );
+    assertRule(
+      subtitleTranslateHardcodeAssets.some((asset) => asset.type === 'video' && asset.url === subtitleTranslateHardcodeTask?.videoUrl),
+      'subtitle translate hardcode video persists the rendered video as a generated video asset',
+    );
+    assertRule(
+      subtitleTranslateHardcodeAssets.some((asset) => asset.type === 'doc' && asset.url === subtitleTranslateHardcodeTask?.subtitleUrl),
+      'subtitle translate hardcode video persists the native SRT sidecar as a generated document asset',
+    );
+    assertEqual(
+      subtitleTranslateHardcodeBridgeRequests.length,
+      1,
+      'subtitle translate hardcode video still dispatches exactly one approved AI SDK translation request',
+    );
+    services.resetAutoCutNativeHostClient();
+    services.configureAutoCutApprovedAiSdkBridge(null);
+
+    resetStorage();
+    const subtitleTranslateHardcodeNoVideoCommands = [];
+    const subtitleTranslateHardcodeNoVideoBridgeRequests = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        subtitleTranslateHardcodeNoVideoCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'subtitle-translate-hardcode-no-video-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/subtitle-translate-hardcode-no-video.flac',
+          byteSize: 123000,
+          name: 'subtitle-translate-hardcode-no-video.flac',
+          mediaType: 'audio',
+          hasAudioStream: true,
+          hasVideoStream: false,
+          mimeType: 'audio/flac',
+          durationMs: 7200,
+        };
+      },
+      transcribeMedia: async (request) => {
+        subtitleTranslateHardcodeNoVideoCommands.push({ kind: 'transcribe', request });
+        throw new Error('subtitle hardcode must not transcribe audio-only media before rejecting the missing video stream');
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'subtitle translate hardcode no-video speech preflight contract',
+      }),
+      sliceVideo: async (request) => {
+        subtitleTranslateHardcodeNoVideoCommands.push({ kind: 'slice', request });
+        throw new Error('subtitle hardcode must not render audio-only media without a video stream');
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    await services.saveAutoCutLlmSettings({
+      ...(await services.getAutoCutSettings()).llm,
+      modelVendor: 'gemini',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      model: 'gemini-3-flash-preview',
+      apiKey: 'sk-subtitle-hardcode-no-video',
+    });
+    services.configureAutoCutApprovedAiSdkBridge({
+      async createChatCompletion(request, runtime) {
+        subtitleTranslateHardcodeNoVideoBridgeRequests.push({ request, runtime });
+        throw new Error('subtitle hardcode must not translate audio-only media before rejecting the missing video stream');
+      },
+    });
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services, {
+      modelPath: 'D:/models/ggml-large-v3-turbo.gguf',
+    });
+    await assertRejects(
+      () => withImmediateTimers(async () =>
+        processSubtitleTranslate({
+          fileId: 'asset-source-subtitle-translate-hardcode-no-video',
+          file: createTrustedLocalMediaFile(
+            commons,
+            'D:/media/subtitle-translate-hardcode-no-video.flac',
+            'subtitle-translate-hardcode-no-video.flac',
+            { mimeType: 'audio/flac', mediaType: 'audio', hasAudioStream: true, hasVideoStream: false },
+          ),
+          sourceLang: 'auto',
+          targetLang: 'en',
+          keepOriginal: false,
+          hardcode: true,
+        }),
+      ),
+      'requires source media with a video stream',
+      'subtitle translate hardcode rejects trusted audio-only media before transcription, translation, or rendering',
+    );
+    assertEqual(
+      subtitleTranslateHardcodeNoVideoCommands.map((entry) => entry.kind).join(','),
+      'import',
+      'subtitle translate hardcode imports once for stream evidence and never runs transcription or rendering without video',
+    );
+    assertEqual(
+      subtitleTranslateHardcodeNoVideoBridgeRequests.length,
+      0,
+      'subtitle translate hardcode does not dispatch AI translation before rejecting audio-only media',
+    );
+    const subtitleTranslateHardcodeNoVideoTask = readScopedStoredArray(services, 'tasks')[0];
+    assertEqual(
+      subtitleTranslateHardcodeNoVideoTask?.status,
+      types.AUTOCUT_TASK_STATUS.failed,
+      'subtitle translate hardcode stores a failed task for audio-only source media',
+    );
+    assertIncludes(
+      subtitleTranslateHardcodeNoVideoTask?.errorMessage ?? '',
+      'requires source media with a video stream',
+      'subtitle translate hardcode stores the no-video stream reason on the failed task',
+    );
+    services.resetAutoCutNativeHostClient();
+    services.configureAutoCutApprovedAiSdkBridge(null);
+
+    resetStorage();
+    const voiceTranslateAudioCommands = [];
+    const voiceTranslateBridgeRequests = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        voiceTranslateAudioCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'voice-translate-audio-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/voice-translate-audio-asset.m4a',
+          byteSize: 323000,
+          name: 'voice-translate-audio.m4a',
+          mediaType: 'audio',
+          hasAudioStream: true,
+          hasVideoStream: false,
+          mimeType: 'audio/mp4',
+          durationMs: 6400,
+        };
+      },
+      transcribeMedia: async (request) => {
+        voiceTranslateAudioCommands.push({ kind: 'transcribe', request });
+        const output = createNativeTaskOutputArtifact(
+          'voice-translate-audio-task',
+          'voice-translate-audio-transcript.json',
+          configuredOutputDirectory,
+        );
+        return {
+          artifactUuid: 'voice-translate-audio-transcript',
+          taskUuid: 'voice-translate-audio-task',
+          sourceAssetUuid: request.assetUuid,
+          transcriptPath: output.artifactPath,
+          taskOutputDir: output.taskOutputDir,
+          language: request.language,
+          text: 'Voice workflow recognizes audio.',
+          segments: [
+            {
+              startMs: 500,
+              endMs: 4200,
+              text: 'Voice workflow recognizes audio.',
+              speaker: 'Narrator',
+            },
+          ],
+          ffmpegExecutable: 'ffmpeg',
+          speechExecutable: request.executablePath,
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'voice translate audio speech preflight contract',
+      }),
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    await services.saveAutoCutLlmSettings({
+      ...(await services.getAutoCutSettings()).llm,
+      modelVendor: 'gemini',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      model: 'gemini-3-flash-preview',
+      apiKey: 'sk-voice-translate',
+    });
+    services.configureAutoCutApprovedAiSdkBridge({
+      async createChatCompletion(request, runtime) {
+        voiceTranslateBridgeRequests.push({ request, runtime });
+        return {
+          id: 'voice-translation-bridge-result',
+          model: request.model,
+          runtime,
+          content: JSON.stringify({
+            segments: [
+              { index: 1, text: 'Voice workflow translated audio.' },
+            ],
+          }),
+        };
+      },
+    });
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services, {
+      language: 'en',
+      modelPath: 'D:/models/ggml-large-v3-turbo.gguf',
+    });
+    const voiceTranslateAudioSourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/voice-translate-audio.m4a',
+      'voice-translate-audio.m4a',
+      { mimeType: 'audio/mp4', mediaType: 'audio', hasAudioStream: true, hasVideoStream: false },
+    );
+    const voiceTranslateAudioResult = await withImmediateTimers(async () =>
+      processVoiceTranslate({
+        fileId: 'asset-source-voice-translate-audio',
+        file: voiceTranslateAudioSourceFile,
+        sourceLang: 'en',
+        targetLang: 'zh',
+      }),
+    );
+    const voiceTranslateAudioTask = readScopedStoredArray(services, 'tasks').find(
+      (task) => task.id === voiceTranslateAudioResult.taskId,
+    );
+    const voiceTranslateAudioAsset = readScopedStoredArray(services, 'assets').find(
+      (asset) => asset.sourceTaskId === voiceTranslateAudioResult.taskId,
+    );
+    assertEqual(voiceTranslateAudioResult.success, true, 'voice translate accepts trusted local audio sources');
+    assertEqual(voiceTranslateAudioCommands[0]?.kind, 'import', 'voice translate imports local audio before transcription');
+    assertEqual(
+      voiceTranslateAudioCommands[0]?.request?.sourcePath,
+      'D:/media/voice-translate-audio.m4a',
+      'voice translate passes trusted audio source paths to media import',
+    );
+    assertEqual(voiceTranslateAudioCommands[1]?.kind, 'transcribe', 'voice translate transcribes imported audio media');
+    assertEqual(
+      voiceTranslateAudioCommands[1]?.request?.language,
+      'en',
+      'voice translate forwards the selected source language to speech transcription',
+    );
+    assertEqual(
+      voiceTranslateAudioTask?.status,
+      types.AUTOCUT_TASK_STATUS.completed,
+      'voice translate audio workflow completes the persisted task',
+    );
+    assertEqual(
+      voiceTranslateAudioTask?.transcriptText,
+      'Voice workflow recognizes audio.',
+      'voice translate stores transcript text from trusted audio media',
+    );
+    assertEqual(
+      voiceTranslateAudioTask?.translationText,
+      'Voice workflow translated audio.',
+      'voice translate stores target-language translation text from the approved AI SDK bridge',
+    );
+    assertEqual(
+      voiceTranslateAudioTask?.translationSegments?.[0]?.text,
+      'Voice workflow translated audio.',
+      'voice translate stores structured target-language translation subtitle segments',
+    );
+    assertEqual(
+      voiceTranslateBridgeRequests.length,
+      1,
+      'voice translate dispatches one target-language translation request through the approved AI SDK bridge',
+    );
+    assertIncludes(
+      voiceTranslateBridgeRequests[0]?.request?.messages?.[1]?.content ?? '',
+      '"targetLang":"zh"',
+      'voice translate includes the selected target language in the translation prompt payload',
+    );
+    assertEqual(
+      voiceTranslateAudioTask?.transcriptSegments?.[0]?.speaker,
+      'Narrator',
+      'voice translate preserves speaker labels from trusted audio media',
+    );
+    assertEqual(
+      voiceTranslateAudioTask?.subtitleFormat,
+      'srt',
+      'voice translate stores the generated voice-translation transcript subtitle format',
+    );
+    assertRule(
+      Boolean(voiceTranslateAudioTask?.subtitleUrl),
+      'voice translate stores a downloadable transcript subtitle URL on the completed task',
+    );
+    assertRule(
+      !voiceTranslateAudioTask?.videoUrl,
+      'voice translate does not claim a dubbed video output when no native TTS or video dubbing engine exists',
+    );
+    assertEqual(
+      voiceTranslateAudioAsset?.type,
+      'doc',
+      'voice translate stores its transcript/subtitle output as a document asset',
+    );
+    services.resetAutoCutNativeHostClient();
+    services.configureAutoCutApprovedAiSdkBridge(null);
+
+    for (const audioStreamGuardWorkflow of [
+      {
+        name: 'extractor audio',
+        operation: 'audio extraction',
+        process: () => processAudioExtraction({
+          fileId: 'asset-source-audio-extraction-no-audio',
+          file: createTrustedLocalMediaFile(
+            commons,
+            'D:/media/audio-extraction-no-audio.mp4',
+            'audio-extraction-no-audio.mp4',
+            { mimeType: 'video/mp4', mediaType: 'video', hasAudioStream: false, hasVideoStream: true },
+          ),
+          format: 'wav',
+          quality: '192',
+          channel: 'stereo',
+        }),
+      },
+      {
+        name: 'extractor text',
+        operation: 'speech transcription',
+        process: () => processExtractorText({
+          fileId: 'asset-source-extractor-text-no-audio',
+          file: createTrustedLocalMediaFile(
+            commons,
+            'D:/media/extractor-text-no-audio.mp4',
+            'extractor-text-no-audio.mp4',
+            { mimeType: 'video/mp4', mediaType: 'video', hasAudioStream: false, hasVideoStream: true },
+          ),
+          language: 'auto',
+          format: 'raw',
+          separateSpeakers: false,
+        }),
+      },
+      {
+        name: 'subtitle translate',
+        operation: 'subtitle translation',
+        process: () => processSubtitleTranslate({
+          fileId: 'asset-source-subtitle-translate-no-audio',
+          file: createTrustedLocalMediaFile(
+            commons,
+            'D:/media/subtitle-translate-no-audio.mp4',
+            'subtitle-translate-no-audio.mp4',
+            { mimeType: 'video/mp4', mediaType: 'video', hasAudioStream: false, hasVideoStream: true },
+          ),
+          sourceLang: 'auto',
+          targetLang: 'en',
+          keepOriginal: false,
+          hardcode: false,
+        }),
+      },
+      {
+        name: 'voice translate',
+        operation: 'voice translation',
+        process: () => processVoiceTranslate({
+          fileId: 'asset-source-voice-translate-no-audio',
+          file: createTrustedLocalMediaFile(
+            commons,
+            'D:/media/voice-translate-no-audio.mp4',
+            'voice-translate-no-audio.mp4',
+            { mimeType: 'video/mp4', mediaType: 'video', hasAudioStream: false, hasVideoStream: true },
+          ),
+          sourceLang: 'auto',
+          targetLang: 'en',
+        }),
+      },
+    ]) {
+      resetStorage();
+      const audioStreamProbeCommands = [];
+      configureAutoCutNativeHostClient(
+        services,
+        createAudioStreamProbeNativeHostClient(
+          audioStreamProbeCommands,
+          audioStreamGuardWorkflow.operation,
+        ),
+      );
+      await assertRejects(
+        () => withImmediateTimers(audioStreamGuardWorkflow.process),
+        'requires source media with an audio stream',
+        `${audioStreamGuardWorkflow.name} rejects trusted video sources without an audio stream before native audio work`,
+      );
+      assertEqual(
+        audioStreamProbeCommands.map((entry) => entry.kind).join(','),
+        'import',
+        `${audioStreamGuardWorkflow.name} imports once for stream evidence and never runs transcription or extraction without audio`,
+      );
+      const failedAudioStreamTask = readScopedStoredArray(services, 'tasks')[0];
+      assertEqual(
+        failedAudioStreamTask?.status,
+        types.AUTOCUT_TASK_STATUS.failed,
+        `${audioStreamGuardWorkflow.name} stores a failed task for no-audio source media`,
+      );
+      assertIncludes(
+        failedAudioStreamTask?.errorMessage ?? '',
+        'requires source media with an audio stream',
+        `${audioStreamGuardWorkflow.name} stores the no-audio stream reason on the failed task`,
+      );
+      services.resetAutoCutNativeHostClient();
+    }
+
+    for (const videoStreamGuardWorkflow of [
+      {
+        name: 'video gif',
+        operation: 'video GIF generation',
+        expectedCommandName: 'generateGif',
+        process: () => processVideoGif({
+          fileId: 'asset-source-video-gif-no-video',
+          file: createTrustedLocalMediaFile(
+            commons,
+            'D:/media/video-gif-no-video.flac',
+            'video-gif-no-video.flac',
+            { mimeType: 'audio/flac', mediaType: 'audio', hasAudioStream: true, hasVideoStream: false },
+          ),
+          fps: '12',
+          resolution: '720p',
+          dither: true,
+        }),
+      },
+      {
+        name: 'video compress',
+        operation: 'video compression',
+        expectedCommandName: 'compressVideo',
+        process: () => processVideoCompress({
+          fileId: 'asset-source-video-compress-no-video',
+          file: createTrustedLocalMediaFile(
+            commons,
+            'D:/media/video-compress-no-video.flac',
+            'video-compress-no-video.flac',
+            { mimeType: 'audio/flac', mediaType: 'audio', hasAudioStream: true, hasVideoStream: false },
+          ),
+          compressionMode: 'balanced',
+        }),
+      },
+      {
+        name: 'video convert',
+        operation: 'video conversion',
+        expectedCommandName: 'convertVideo',
+        process: () => processVideoConvert({
+          fileId: 'asset-source-video-convert-no-video',
+          file: createTrustedLocalMediaFile(
+            commons,
+            'D:/media/video-convert-no-video.flac',
+            'video-convert-no-video.flac',
+            { mimeType: 'audio/flac', mediaType: 'audio', hasAudioStream: true, hasVideoStream: false },
+          ),
+          targetFormat: 'mp4',
+          videoCodec: 'h264',
+          audioCodec: 'aac',
+          resolution: '1080p',
+        }),
+      },
+      {
+        name: 'video enhance',
+        operation: 'video enhancement',
+        expectedCommandName: 'enhanceVideo',
+        process: () => processVideoEnhance({
+          fileId: 'asset-source-video-enhance-no-video',
+          file: createTrustedLocalMediaFile(
+            commons,
+            'D:/media/video-enhance-no-video.flac',
+            'video-enhance-no-video.flac',
+            { mimeType: 'audio/flac', mediaType: 'audio', hasAudioStream: true, hasVideoStream: false },
+          ),
+          targetResolution: '1080p',
+          enhanceMode: 'real',
+          frameRate: '60',
+        }),
+      },
+    ]) {
+      resetStorage();
+      const videoStreamProbeCommands = [];
+      configureAutoCutNativeHostClient(
+        services,
+        createVideoStreamProbeNativeHostClient(
+          videoStreamProbeCommands,
+          videoStreamGuardWorkflow.operation,
+        ),
+      );
+      await assertRejects(
+        () => withImmediateTimers(videoStreamGuardWorkflow.process),
+        'requires source media with a video stream',
+        `${videoStreamGuardWorkflow.name} rejects trusted audio sources without a video stream before native video work`,
+      );
+      assertEqual(
+        videoStreamProbeCommands.map((entry) => entry.kind).join(','),
+        'import',
+        `${videoStreamGuardWorkflow.name} imports once for stream evidence and never runs ${videoStreamGuardWorkflow.expectedCommandName} without video`,
+      );
+      const failedVideoStreamTask = readScopedStoredArray(services, 'tasks')[0];
+      assertEqual(
+        failedVideoStreamTask?.status,
+        types.AUTOCUT_TASK_STATUS.failed,
+        `${videoStreamGuardWorkflow.name} stores a failed task for no-video source media`,
+      );
+      assertIncludes(
+        failedVideoStreamTask?.errorMessage ?? '',
+        'requires source media with a video stream',
+        `${videoStreamGuardWorkflow.name} stores the no-video stream reason on the failed task`,
+      );
+      services.resetAutoCutNativeHostClient();
+    }
+
+    resetStorage();
     const nativeExtractorTextEmptyTranscriptCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         speechTranscriptionCommandReady: true,
@@ -10250,6 +18985,8 @@ async function run() {
           byteSize: 654000,
           name: 'empty-transcript-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 32000,
         };
@@ -10325,7 +19062,7 @@ async function run() {
 
     resetStorage();
     const nativeSliceSubtitleFailureCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         videoSliceCommandReady: true,
@@ -10341,6 +19078,8 @@ async function run() {
           byteSize: 654000,
           name: 'subtitle-required-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 42000,
         };
@@ -10416,8 +19155,467 @@ async function run() {
     services.resetAutoCutNativeHostClient();
 
     resetStorage();
+    const nativeSliceNoContentTranscriptCommands = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        nativeSliceNoContentTranscriptCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'no-content-transcript-slice-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/no-content-transcript-source.mp4',
+          byteSize: 654000,
+          name: 'no-content-transcript-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 42000,
+        };
+      },
+      transcribeMedia: async (request) => {
+        nativeSliceNoContentTranscriptCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'no-content-transcript-task',
+          configuredOutputDirectory,
+          [
+            {
+              startMs: 0,
+              endMs: 12_000,
+              text: '[BLANK_AUDIO]',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 12_500,
+              endMs: 24_000,
+              text: 'um uh hmm',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'no content transcript speech preflight contract',
+      }),
+      sliceVideo: async (request) => {
+        nativeSliceNoContentTranscriptCommands.push({ kind: 'slice', request });
+        throw new Error('sliceVideo must not run when STT returned no real content evidence');
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services, {
+      modelPath: 'D:/models/ggml-large-v3-turbo.gguf',
+      language: 'zh',
+    });
+    const noContentTranscriptSliceSourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/no-content-transcript-source.mp4',
+      'no-content-transcript-source.mp4',
+    );
+    await assertRejects(
+      () =>
+        withImmediateTimers(async () =>
+          processVideoSlice({
+            fileId: 'asset-source-no-content-transcript-slice',
+            file: noContentTranscriptSliceSourceFile,
+            mode: 'contract-mode',
+            llmModel: 'deepseek-v4-flash',
+            minDuration: 15,
+            maxDuration: 60,
+            baseAlgorithm: 'scene',
+            highlightEngine: 'emotion',
+            enableNoiseReduction: true,
+            enableCoughFilter: true,
+            enableRepeatFilter: true,
+            enableSubtitles: true,
+            subtitleMode: 'both',
+          }),
+        ),
+      'Smart slicing requires real transcript content evidence before automatic clip planning',
+      'video slice workflow fails closed when speech-to-text only returns silence or filler transcript segments',
+    );
+    const noContentTranscriptTask = readScopedStoredArray(services, 'tasks')[0];
+    assertEqual(
+      noContentTranscriptTask?.status,
+      types.AUTOCUT_TASK_STATUS.failed,
+      'video slice no-content transcript workflow marks the task failed',
+    );
+    assertRule(
+      !nativeSliceNoContentTranscriptCommands.some((entry) => entry.kind === 'slice'),
+      'video slice workflow does not render when speech-to-text has no real transcript content evidence',
+    );
+    assertEqual(
+      readScopedStoredArray(services, 'assets').length,
+      0,
+      'video slice no-content transcript workflow does not persist generated slice assets',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
+    const tailClampedTranscriptCommands = [];
+    const tailClampedTranscriptBridgeRequests = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        tailClampedTranscriptCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'tail-clamped-transcript-slice-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/tail-clamped-transcript-source.mp4',
+          byteSize: 654000,
+          name: 'tail-clamped-transcript-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 60_000,
+        };
+      },
+      transcribeMedia: async (request) => {
+        tailClampedTranscriptCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'tail-clamped-transcript-task',
+          configuredOutputDirectory,
+          [
+            ...Array.from({ length: 11 }, (_, index) => ({
+              startMs: index * 1_000,
+              endMs: index * 1_000 + 500,
+              text: 'um',
+              speaker: 'Speaker 1',
+            })),
+            {
+              startMs: 30_000,
+              endMs: 43_000,
+              text: 'Why tail timestamp repair matters is that speech-to-text can round the final boundary beyond the container duration.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 43_200,
+              endMs: 60_900,
+              text: 'Because the tail example shows the real payoff, so the solution clamps only the final segment and preserves the complete story.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 59_980,
+              endMs: 61_100,
+              text: 'um',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'tail-clamped transcript speech preflight contract',
+      }),
+      analyzeVideoSliceAudioActivity: async (request) => {
+        tailClampedTranscriptCommands.push({ kind: 'analyze-audio-boundaries', request });
+        return createNativeVideoSliceAudioActivityAnalysisResult(request);
+      },
+      sliceVideo: async (request) => {
+        tailClampedTranscriptCommands.push({ kind: 'slice', request });
+        const output = createNativeTaskOutputArtifact(
+          'tail-clamped-transcript-slice-task',
+          request.clips[0]?.outputFileName ?? 'tail-clamped-transcript-slice.mp4',
+          configuredOutputDirectory,
+        );
+        const thumbnail = createNativeTaskCoverArtifact(
+          'tail-clamped-transcript-slice-task',
+          'tail-clamped-transcript-thumb.jpg',
+          configuredOutputDirectory,
+        );
+        return {
+          taskUuid: 'tail-clamped-transcript-slice-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: output.taskOutputDir,
+          ffmpegExecutable: 'ffmpeg',
+          slices: request.clips.map((clip, index) => ({
+            artifactUuid: `tail-clamped-transcript-slice-artifact-${index + 1}`,
+            artifactPath: index === 0
+              ? output.artifactPath
+              : createNativeTaskOutputArtifact(
+                  'tail-clamped-transcript-slice-task',
+                  `tail-clamped-transcript-slice-artifact-${index + 1}.mp4`,
+                  configuredOutputDirectory,
+                ).artifactPath,
+            thumbnailArtifactUuid: `tail-clamped-transcript-thumb-${index + 1}`,
+            thumbnailArtifactPath: index === 0
+              ? thumbnail.artifactPath
+              : createNativeTaskCoverArtifact(
+                  'tail-clamped-transcript-slice-task',
+                  `tail-clamped-transcript-thumb-${index + 1}.jpg`,
+                  configuredOutputDirectory,
+                ).artifactPath,
+            taskOutputDir: output.taskOutputDir,
+            byteSize: 234567 + index,
+            thumbnailByteSize: 12345 + index,
+            format: 'mp4',
+            ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+          })),
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    services.configureAutoCutApprovedAiSdkBridge({
+      async createChatCompletion(request, runtime) {
+        tailClampedTranscriptBridgeRequests.push({ request, runtime });
+        const prompt = JSON.parse(request.messages?.[1]?.content ?? '{}');
+        const selectedCandidate =
+          prompt.candidates?.find((candidate) => String(candidate.title ?? '').includes('final real source')) ??
+          prompt.candidates?.[0];
+        const rankedCandidateIds = [
+          selectedCandidate?.id,
+          ...(prompt.candidates?.map((candidate) => candidate.id) ?? []),
+        ].filter((candidateId, index, ids) =>
+          typeof candidateId === 'string' && candidateId && ids.indexOf(candidateId) === index
+        );
+        return {
+          id: 'tail-clamped-transcript-plan',
+          model: request.model,
+          content: JSON.stringify({
+            rankedCandidateIds,
+            referencedUnitIds: prompt.contentUnits?.map((unit) => unit.id) ?? [],
+            reviewNotes: ['Selected source-bounded tail candidate by stable ID.'],
+          }),
+          runtime,
+        };
+      },
+    });
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await services.saveAutoCutLlmSettings({
+      ...(await services.getAutoCutSettings()).llm,
+      apiKey: 'sk-tail-clamped-transcript-secret',
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services, {
+      modelPath: 'D:/models/ggml-large-v3-turbo.gguf',
+      language: 'zh',
+    });
+    await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-tail-clamped-transcript-slice',
+        file: createTrustedLocalMediaFile(
+          commons,
+          'D:/media/tail-clamped-transcript-source.mp4',
+          'tail-clamped-transcript-source.mp4',
+        ),
+        mode: 'contract-mode',
+        llmModel: 'deepseek-v4-flash',
+        minDuration: 10,
+        maxDuration: 40,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'keyword',
+        enableNoiseReduction: true,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSubtitles: false,
+      }),
+    );
+    const tailClampedTranscriptPrompt = JSON.parse(
+      tailClampedTranscriptBridgeRequests[0]?.request?.messages?.[1]?.content ?? '{}',
+    );
+    const tailClampedTranscriptSliceRequest = tailClampedTranscriptCommands
+      .find((entry) => entry.kind === 'slice')?.request;
+    const tailClampedTranscriptTask = readScopedStoredArray(services, 'tasks')
+      .find((task) => task.nativeTaskId === 'tail-clamped-transcript-slice-task');
+    assertRule(
+      tailClampedTranscriptPrompt?.contentUnits?.some((unit) => String(unit.text ?? '').includes('tail example shows the real payoff')),
+      'video slice workflow exposes the source-bounded final STT segment as a content unit before ID-only LLM review',
+    );
+    assertRule(
+      tailClampedTranscriptPrompt?.candidates?.every((candidate) =>
+        Array.isArray(candidate.unitIds) &&
+          candidate.unitIds.every((unitId) => tailClampedTranscriptPrompt.contentUnits?.some((unit) => unit.id === unitId))
+      ),
+      'video slice workflow prompts the ID-only LLM reviewer only with candidates backed by source-bounded content units',
+    );
+    assertRule(
+      Array.isArray(tailClampedTranscriptPrompt?.contentUnits) &&
+        tailClampedTranscriptPrompt.contentUnits.every((unit) => !String(unit.text ?? '').includes('um')),
+      'video slice workflow drops tail filler that crosses the imported media end before ID-only LLM review',
+    );
+    assertRule(
+      tailClampedTranscriptSliceRequest?.clips?.every((clip) =>
+        (clip.sourceEndMs ?? clip.startMs + clip.durationMs) <= 60_000 &&
+          clip.transcriptSegments?.every((segment) => segment.endMs <= 60_000)
+      ),
+      'video slice workflow sends native rendering only source-bounded transcript segments after tail timestamp repair',
+    );
+    assertRule(
+      tailClampedTranscriptSliceRequest?.clips?.every((clip) =>
+        clip.transcriptSegments?.every((segment) => !(segment.text === 'um' && segment.startMs >= 59_000))
+      ),
+      'video slice workflow keeps source-bounded native clip transcript evidence free of tail filler noise',
+    );
+    assertEqual(
+      tailClampedTranscriptTask?.status,
+      types.AUTOCUT_TASK_STATUS.completed,
+      'video slice workflow completes when the final real-content STT segment lightly exceeds source duration before a tail filler segment',
+    );
+    assertRule(
+      tailClampedTranscriptTask?.sliceResults?.every((slice) =>
+        (slice.sourceEndMs ?? 0) <= 60_000 &&
+          slice.transcriptSegments?.every((segment) => segment.endMs <= 60_000)
+      ),
+      'video slice workflow persists source-bounded structured transcript segments after tail timestamp repair',
+    );
+    services.configureAutoCutApprovedAiSdkBridge(null);
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
+    const nativeSliceOutOfSourceTranscriptCommands = [];
+    let outOfSourceTranscriptLlmCallCount = 0;
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        nativeSliceOutOfSourceTranscriptCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'out-of-source-transcript-slice-asset',
+          sandboxPath: 'D:/autocut-configured-output/inputs/out-of-source-transcript-source.mp4',
+          byteSize: 654000,
+          name: 'out-of-source-transcript-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 60_000,
+        };
+      },
+      transcribeMedia: async (request) => {
+        nativeSliceOutOfSourceTranscriptCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'out-of-source-transcript-task',
+          configuredOutputDirectory,
+          [
+            {
+              startMs: 2_000,
+              endMs: 18_000,
+              text: 'The valid story starts and ends inside the imported source duration.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 58_000,
+              endMs: 65_000,
+              text: 'This speech-to-text timestamp extends beyond the imported source duration.',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'out-of-source transcript speech preflight contract',
+      }),
+      sliceVideo: async (request) => {
+        nativeSliceOutOfSourceTranscriptCommands.push({ kind: 'slice', request });
+        throw new Error('sliceVideo must not run when STT timestamps exceed source duration');
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    services.configureAutoCutApprovedAiSdkBridge({
+      async createChatCompletion(request, runtime) {
+        outOfSourceTranscriptLlmCallCount += 1;
+        return {
+          id: 'out-of-source-transcript-llm-plan',
+          model: request.model,
+          content: JSON.stringify([{ candidateId: 'transcript-1', title: 'Valid internal clip' }]),
+          runtime,
+        };
+      },
+    });
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await services.saveAutoCutLlmSettings({
+      ...(await services.getAutoCutSettings()).llm,
+      apiKey: 'sk-out-of-source-transcript-secret',
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services, {
+      modelPath: 'D:/models/ggml-large-v3-turbo.gguf',
+      language: 'zh',
+    });
+    const outOfSourceTranscriptSliceSourceFile = createTrustedLocalMediaFile(
+      commons,
+      'D:/media/out-of-source-transcript-source.mp4',
+      'out-of-source-transcript-source.mp4',
+    );
+    await assertRejects(
+      () =>
+        withImmediateTimers(async () =>
+          processVideoSlice({
+            fileId: 'asset-source-out-of-source-transcript-slice',
+            file: outOfSourceTranscriptSliceSourceFile,
+            mode: 'contract-mode',
+            llmModel: 'deepseek-v4-flash',
+            minDuration: 15,
+            maxDuration: 60,
+            baseAlgorithm: 'scene',
+            highlightEngine: 'emotion',
+            enableNoiseReduction: true,
+            enableCoughFilter: true,
+            enableRepeatFilter: true,
+            enableSubtitles: true,
+            subtitleMode: 'both',
+          }),
+        ),
+      'transcript segment 2 to stay inside the imported media duration before clip planning',
+      'video slice workflow fails closed before LLM planning when STT timestamps exceed source duration',
+    );
+    assertEqual(
+      outOfSourceTranscriptLlmCallCount,
+      0,
+      'video slice workflow does not prompt the LLM with out-of-source STT timestamp evidence',
+    );
+    assertRule(
+      !nativeSliceOutOfSourceTranscriptCommands.some((entry) => entry.kind === 'slice'),
+      'video slice workflow does not render when STT timestamps exceed source duration',
+    );
+    services.configureAutoCutApprovedAiSdkBridge(null);
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
     const nativeSliceSubtitleUnavailableCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         videoSliceCommandReady: true,
@@ -10432,6 +19630,8 @@ async function run() {
           byteSize: 654000,
           name: 'subtitle-unavailable-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 42000,
         };
@@ -10477,7 +19677,7 @@ async function run() {
 
     resetStorage();
     const nativeVideoSliceLlmPlanCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         contractVersion: 'contract-test',
         hostKind: 'native-host',
@@ -10537,6 +19737,8 @@ async function run() {
           byteSize: 654000,
           name: 'native-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
           durationMs: 32000,
         };
@@ -10546,6 +19748,8 @@ async function run() {
         byteSize: 654000,
         name: 'native-source.mp4',
         mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
         mimeType: 'video/mp4',
       }),
       extractAudio: async () => {
@@ -10560,17 +19764,24 @@ async function run() {
           artifactUuid: 'native-slice-llm-transcript-artifact',
           taskUuid: 'native-slice-llm-transcript-task',
           sourceAssetUuid: request.assetUuid,
-          transcriptPath: 'D:/autocut-configured-output/tasks/native-slice-llm-transcript-task/outputs/transcript.json',
-          taskOutputDir: 'D:/autocut-configured-output/tasks/native-slice-llm-transcript-task/outputs',
+          transcriptPath: 'D:/autocut-configured-output/tasks/native-slice-llm-transcript-task/transcript.json',
+          taskOutputDir: 'D:/autocut-configured-output/tasks/native-slice-llm-transcript-task',
           language: request.language ?? 'auto',
           text:
             'Why LLM plans still need speech checks is simple. Because a model can choose bad timing, the problem appears before rendering. So use the verified transcript result and the final answer works.',
           segments: [
             {
               startMs: 0,
+              endMs: 9_200,
+              text:
+                'Why LLM plans still need speech checks is simple. Because a model can choose bad timing, the problem appears before rendering.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 9_250,
               endMs: 20_200,
               text:
-                'Why LLM plans still need speech checks is simple. Because a model can choose bad timing, the problem appears before rendering. So use the verified transcript result and the final answer works.',
+                'So use the verified transcript result and the final answer works.',
               speaker: 'Speaker 1',
             },
           ],
@@ -10616,7 +19827,7 @@ async function run() {
               `native-slice-llm-subtitle-${index + 1}.srt`,
               configuredOutputDirectory,
             );
-            const subtitleRequested = request.subtitleFormat === 'srt' && request.subtitleMode !== 'burned';
+            const subtitleRequested = request.subtitleFormat === 'srt' && request.subtitleMode !== 'none';
             return {
               artifactUuid: `native-slice-llm-artifact-${index + 1}`,
               artifactPath: output.artifactPath,
@@ -10634,9 +19845,7 @@ async function run() {
               byteSize: 234567,
               thumbnailByteSize: 12345,
               format: 'mp4',
-              startMs: clip.startMs,
-              durationMs: clip.durationMs,
-              label: clip.label,
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
             };
           }),
         };
@@ -10699,7 +19908,7 @@ async function run() {
         ffmpegExecutable: 'ffmpeg',
       }),
       createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
-    });
+    }, { taskEvidenceCommands: nativeVideoSliceLlmPlanCommands });
     await services.saveAutoCutLlmSettings({
       ...(await services.getAutoCutSettings()).llm,
       apiKey: 'sk-llm-plan-secret',
@@ -10783,12 +19992,92 @@ async function run() {
       ),
       'video slice LLM workflow returns non-overlapping normalized clips',
     );
+    const llmPlanSpeechToTextEvidenceWrite = nativeVideoSliceLlmPlanCommands.find(
+      (entry) => entry.kind === 'task-evidence' && entry.request?.relativePath === 'evidence/speech-to-text.json',
+    );
+    const llmPlanNormalizedTranscriptEvidenceWrite = nativeVideoSliceLlmPlanCommands.find(
+      (entry) => entry.kind === 'task-evidence' && entry.request?.relativePath === 'evidence/transcript.normalized.json',
+    );
+    const llmPlanSemanticSegmentationEvidenceWrite = nativeVideoSliceLlmPlanCommands.find(
+      (entry) => entry.kind === 'task-evidence' && entry.request?.relativePath === 'evidence/semantic-segmentation.json',
+    );
+    const llmPlanTask = readScopedStoredArray(services, 'tasks').find((task) => task.type === types.AUTOCUT_TASK_TYPE.videoSlice);
+    assertEqual(
+      llmPlanSpeechToTextEvidenceWrite?.request?.workflowTaskId,
+      llmPlanTask?.id,
+      'video slice LLM workflow writes speech-to-text evidence under the Smart Slice workflow task id',
+    );
+    assertEqual(
+      llmPlanSpeechToTextEvidenceWrite?.request?.contentJson?.schema,
+      'smart-slice.speech-to-text.v1',
+      'video slice LLM workflow writes versioned speech-to-text JSON evidence',
+    );
+    assertEqual(
+      llmPlanSpeechToTextEvidenceWrite?.request?.contentJson?.segments?.length,
+      2,
+      'video slice LLM workflow speech-to-text evidence stores the normalized segment timeline',
+    );
+    assertEqual(
+      llmPlanNormalizedTranscriptEvidenceWrite?.request?.workflowTaskId,
+      llmPlanTask?.id,
+      'video slice LLM workflow writes normalized transcript evidence under the Smart Slice workflow task id',
+    );
+    assertEqual(
+      llmPlanNormalizedTranscriptEvidenceWrite?.request?.contentJson?.schema,
+      'smart-slice.transcript-artifact.v1',
+      'video slice LLM workflow writes versioned normalized transcript artifact JSON evidence',
+    );
+    assertEqual(
+      llmPlanNormalizedTranscriptEvidenceWrite?.request?.contentJson?.transcript?.schema,
+      'smart-slice.transcript.v1',
+      'video slice LLM workflow normalized transcript evidence stores the canonical transcript schema',
+    );
+    assertEqual(
+      llmPlanNormalizedTranscriptEvidenceWrite?.request?.contentJson?.transcript?.speakers?.[0]?.id,
+      'speaker-1',
+      'video slice LLM workflow normalized transcript evidence records stable speaker identifiers',
+    );
+    assertEqual(
+      llmPlanNormalizedTranscriptEvidenceWrite?.request?.contentJson?.transcript?.segments?.[0]?.speakerId,
+      'speaker-1',
+      'video slice LLM workflow normalized transcript evidence maps segments to speaker identifiers',
+    );
+    assertEqual(
+      llmPlanSemanticSegmentationEvidenceWrite?.request?.workflowTaskId,
+      llmPlanTask?.id,
+      'video slice LLM workflow writes semantic segmentation evidence under the Smart Slice workflow task id',
+    );
+    assertEqual(
+      llmPlanSemanticSegmentationEvidenceWrite?.request?.contentJson?.schema,
+      'smart-slice.semantic-segmentation.v1',
+      'video slice LLM workflow writes versioned semantic segmentation JSON evidence',
+    );
+    assertOwnProperty(
+      llmPlanSemanticSegmentationEvidenceWrite?.request?.contentJson ?? {},
+      'llmReviewAudit',
+      'video slice LLM workflow semantic evidence records the model review audit payload',
+    );
+    assertEqual(
+      llmPlanTask?.executionCheckpoint?.artifacts?.['speech-to-text']?.speechToTextEvidence?.relativePath,
+      'evidence/speech-to-text.json',
+      'video slice LLM workflow checkpoint references the speech-to-text evidence artifact',
+    );
+    assertEqual(
+      llmPlanTask?.executionCheckpoint?.artifacts?.['speech-to-text']?.normalizedTranscriptEvidence?.relativePath,
+      'evidence/transcript.normalized.json',
+      'video slice LLM workflow checkpoint references the normalized transcript evidence artifact',
+    );
+    assertEqual(
+      llmPlanTask?.executionCheckpoint?.artifacts?.['plan-clips']?.semanticSegmentationEvidence?.relativePath,
+      'evidence/semantic-segmentation.json',
+      'video slice LLM workflow checkpoint references the semantic segmentation evidence artifact',
+    );
     services.configureAutoCutApprovedAiSdkBridge(null);
     services.resetAutoCutNativeHostClient();
 
     resetStorage();
     const nativeVideoCompressWorkflowCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         contractVersion: 'contract-test',
         hostKind: 'native-host',
@@ -10841,6 +20130,8 @@ async function run() {
           byteSize: 987654,
           name: 'native-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
         };
       },
@@ -10849,6 +20140,8 @@ async function run() {
         byteSize: 987654,
         name: 'native-source.mp4',
         mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
         mimeType: 'video/mp4',
       }),
       extractAudio: async () => {
@@ -10936,7 +20229,7 @@ async function run() {
     );
     assertEqual(
       nativeVideoCompressWorkflowTask?.videoUrl,
-      'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fnative-compress-task%2Foutputs%2Fnative-compress-artifact.mp4',
+      'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fnative-compress-task%2Fnative-compress-artifact.mp4',
       'video compress native workflow converts native artifact paths to safe asset URLs',
     );
     assertEqual(
@@ -10973,7 +20266,7 @@ async function run() {
 
     resetStorage();
     const escapedNativeVideoCompressWorkflowCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         contractVersion: 'contract-test',
         hostKind: 'native-host',
@@ -11026,6 +20319,8 @@ async function run() {
           byteSize: 987654,
           name: 'escaped-native-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
         };
       },
@@ -11034,6 +20329,8 @@ async function run() {
         byteSize: 987654,
         name: 'escaped-native-source.mp4',
         mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
         mimeType: 'video/mp4',
       }),
       extractAudio: async () => {
@@ -11048,8 +20345,8 @@ async function run() {
           artifactUuid: 'escaped-native-compress-artifact',
           taskUuid: 'escaped-native-compress-task',
           sourceAssetUuid: request.assetUuid,
-          artifactPath: 'D:/autocut/media/tasks/escaped-native-compress-task/compressed.mp4',
-          taskOutputDir: 'D:/autocut/media/tasks/escaped-native-compress-task/outputs',
+          artifactPath: 'D:/autocut/media/tasks/escaped-native-compress-task/../compressed.mp4',
+          taskOutputDir: 'D:/autocut/media/tasks/escaped-native-compress-task',
           byteSize: 345678,
           originalByteSize: 987654,
           format: 'mp4',
@@ -11113,7 +20410,7 @@ async function run() {
 
     resetStorage();
     const dotSegmentEscapedNativeVideoCompressWorkflowCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         contractVersion: 'contract-test',
         hostKind: 'native-host',
@@ -11149,6 +20446,8 @@ async function run() {
           byteSize: 987654,
           name: 'dot-segment-escaped-native-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
         };
       },
@@ -11157,6 +20456,8 @@ async function run() {
         byteSize: 987654,
         name: 'dot-segment-escaped-native-source.mp4',
         mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
         mimeType: 'video/mp4',
       }),
       extractAudio: async () => {
@@ -11171,8 +20472,8 @@ async function run() {
           artifactUuid: 'dot-segment-escaped-native-compress-artifact',
           taskUuid: 'dot-segment-escaped-native-compress-task',
           sourceAssetUuid: request.assetUuid,
-          artifactPath: 'D:/autocut/media/tasks/dot-segment-escaped-native-compress-task/outputs/../compressed.mp4',
-          taskOutputDir: 'D:/autocut/media/tasks/dot-segment-escaped-native-compress-task/outputs',
+          artifactPath: 'D:/autocut/media/tasks/dot-segment-escaped-native-compress-task/../compressed.mp4',
+          taskOutputDir: 'D:/autocut/media/tasks/dot-segment-escaped-native-compress-task',
           byteSize: 345678,
           originalByteSize: 987654,
           format: 'mp4',
@@ -11236,7 +20537,7 @@ async function run() {
 
     resetStorage();
     const nativeVideoConvertWorkflowCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         contractVersion: 'contract-test',
         hostKind: 'native-host',
@@ -11289,6 +20590,8 @@ async function run() {
           byteSize: 987654,
           name: 'native-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
         };
       },
@@ -11297,6 +20600,8 @@ async function run() {
         byteSize: 987654,
         name: 'native-source.mp4',
         mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
         mimeType: 'video/mp4',
       }),
       extractAudio: async () => {
@@ -11401,7 +20706,7 @@ async function run() {
     );
     assertEqual(
       nativeVideoConvertWorkflowTask?.videoUrl,
-      'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fnative-convert-task%2Foutputs%2Fnative-convert-artifact.webm',
+      'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fnative-convert-task%2Fnative-convert-artifact.webm',
       'video convert native workflow converts native artifact paths to safe asset URLs',
     );
     assertEqual(
@@ -11423,7 +20728,7 @@ async function run() {
 
     resetStorage();
     const nativeVideoEnhanceWorkflowCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         contractVersion: 'contract-test',
         hostKind: 'native-host',
@@ -11476,6 +20781,8 @@ async function run() {
           byteSize: 987654,
           name: 'native-source.mp4',
           mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
           mimeType: 'video/mp4',
         };
       },
@@ -11484,6 +20791,8 @@ async function run() {
         byteSize: 987654,
         name: 'native-source.mp4',
         mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
         mimeType: 'video/mp4',
       }),
       extractAudio: async () => {
@@ -11582,7 +20891,7 @@ async function run() {
     );
     assertEqual(
       nativeVideoEnhanceWorkflowTask?.videoUrl,
-      'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fnative-enhance-task%2Foutputs%2Fnative-enhance-artifact.mp4',
+      'asset://localhost/D%3A%2Fautocut%2Fmedia%2Ftasks%2Fnative-enhance-task%2Fnative-enhance-artifact.mp4',
       'video enhance native workflow converts native artifact paths to safe asset URLs',
     );
     assertEqual(
@@ -11608,7 +20917,7 @@ async function run() {
     const taskDeleteEvents = captureEvents(services, 'taskDeleted');
     const task = {
       id: 'contract-task',
-      type: '瑙嗛鍘嬬缉',
+      type: types.AUTOCUT_TASK_TYPE.videoSlice,
       name: 'contract.mp4',
       status: types.AUTOCUT_TASK_STATUS.pending,
       progress: 0,
@@ -11631,6 +20940,264 @@ async function run() {
     assertEqual(taskUpdateEvents.details[0]?.progress, 100, 'updateTask dispatches taskUpdated with merged progress');
     assertEqual(taskDeleteEvents.details[0]?.id, task.id, 'deleteTask dispatches taskDeleted with the deleted task id');
     assertRule(storedTasks.every((storedTask) => storedTask.id !== task.id), 'deleteTask removes the task from persisted storage');
+
+    resetStorage();
+    services.resetAutoCutNativeHostClient();
+    const editableTranscriptTask = {
+      id: 'editable-transcript-local-task',
+      type: types.AUTOCUT_TASK_TYPE.videoSlice,
+      name: 'editable-transcript.mp4',
+      status: types.AUTOCUT_TASK_STATUS.completed,
+      progress: 100,
+      createdAt: '2026-05-05T00:00:00.000Z',
+      resultCount: 1,
+      sourceFileId: 'editable-transcript-source-asset',
+      generatedAssetIds: ['editable-transcript-slice'],
+      sliceResults: [
+        {
+          id: 'editable-transcript-slice',
+          name: 'slice-001.mp4',
+          title: 'Editable transcript slice',
+          duration: 12,
+          size: 123456,
+          resolution: '1080p',
+          thumbnailUrl: 'blob:editable-thumb',
+          url: 'blob:editable-video',
+          sourceStartMs: 1000,
+          sourceEndMs: 13000,
+          speechStartMs: 1200,
+          speechEndMs: 12200,
+          transcriptText: 'Original first line. Original second line.',
+          transcriptSegments: [
+            { startMs: 1200, endMs: 6200, text: 'Original first line.', speaker: 'Speaker 1' },
+            { startMs: 6400, endMs: 12200, text: 'Original second line.', speaker: 'Speaker 1' },
+          ],
+          transcriptSegmentCount: 2,
+          transcriptCoverageScore: 0.96,
+          speechContinuityGrade: 'strong',
+        },
+      ],
+    };
+    const transcriptUpdateEvents = captureEvents(services, 'taskUpdated');
+    await withImmediateTimers(async () => {
+      await services.addTask(editableTranscriptTask);
+      await services.updateTaskSliceTranscript(editableTranscriptTask.id, 'editable-transcript-slice', [
+        { startMs: 1200, endMs: 6200, text: 'Corrected first line.', speaker: 'Speaker 1' },
+        { startMs: 6400, endMs: 12200, text: 'Corrected second line with   normalized spacing.', speaker: 'Speaker 1' },
+      ]);
+    });
+    transcriptUpdateEvents.stop();
+    const editableStoredTask = readScopedStoredArray(services, 'tasks').find((storedTask) => storedTask.id === editableTranscriptTask.id);
+    assertEqual(
+      editableStoredTask?.sliceResults?.[0]?.transcriptText,
+      'Corrected first line. Corrected second line with normalized spacing.',
+      'updateTaskSliceTranscript stores corrected transcriptText from edited segments',
+    );
+    assertEqual(
+      editableStoredTask?.sliceResults?.[0]?.transcriptSegmentCount,
+      2,
+      'updateTaskSliceTranscript keeps transcriptSegmentCount in sync with edited segments',
+    );
+    assertEqual(
+      transcriptUpdateEvents.details.at(-1)?.sliceResults?.[0]?.transcriptSegments?.[1]?.text,
+      'Corrected second line with normalized spacing.',
+      'updateTaskSliceTranscript dispatches taskUpdated with normalized edited transcript segments',
+    );
+    assertEqual(
+      editableStoredTask?.sliceResults?.[0]?.transcriptCorrection?.source,
+      'task-detail',
+      'updateTaskSliceTranscript records task-detail as the transcript correction source',
+    );
+    assertEqual(
+      editableStoredTask?.sliceResults?.[0]?.transcriptCorrection?.originalTranscriptText,
+      'Original first line. Original second line.',
+      'updateTaskSliceTranscript preserves the original transcript text for correction audit',
+    );
+    assertEqual(
+      editableStoredTask?.sliceResults?.[0]?.transcriptCorrection?.correctionCount,
+      2,
+      'updateTaskSliceTranscript records how many transcript segments were corrected',
+    );
+    assertRule(
+      typeof editableStoredTask?.sliceResults?.[0]?.transcriptCorrection?.correctedAt === 'string' &&
+        !Number.isNaN(Date.parse(editableStoredTask.sliceResults[0].transcriptCorrection.correctedAt)),
+      'updateTaskSliceTranscript records a machine-readable transcript correction timestamp',
+    );
+
+    resetStorage();
+    const partiallyEditedTranscriptTask = {
+      ...editableTranscriptTask,
+      id: 'partially-edited-transcript-local-task',
+      sliceResults: [
+        {
+          ...editableTranscriptTask.sliceResults[0],
+          id: 'partially-edited-transcript-slice',
+        },
+      ],
+    };
+    await withImmediateTimers(async () => {
+      await services.addTask(partiallyEditedTranscriptTask);
+      await services.updateTaskSliceTranscript(partiallyEditedTranscriptTask.id, 'partially-edited-transcript-slice', [
+        { startMs: 1200, endMs: 6200, text: 'Original first line.', speaker: 'Speaker 1' },
+        { startMs: 6400, endMs: 12200, text: 'Corrected only the second line.', speaker: 'Speaker 1' },
+      ]);
+    });
+    const partiallyEditedStoredTask = readScopedStoredArray(services, 'tasks')
+      .find((storedTask) => storedTask.id === partiallyEditedTranscriptTask.id);
+    assertEqual(
+      partiallyEditedStoredTask?.sliceResults?.[0]?.transcriptCorrection?.correctionCount,
+      1,
+      'updateTaskSliceTranscript counts only transcript segments whose normalized text or speaker changed',
+    );
+
+    resetStorage();
+    const nativeEditableTranscriptEvents = captureEvents(services, 'taskUpdated');
+    configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command) => {
+      if (command === 'autocut_host_capabilities') {
+        return {
+          contractVersion: 'editable-native-transcript-test',
+          hostKind: 'native-host',
+          databaseContractReady: true,
+          sqliteMigrationReady: true,
+          databaseHealthCommandReady: true,
+          ffmpegProbeCommandReady: true,
+          mediaImportCommandReady: true,
+          mediaFileDescribeCommandReady: true,
+          localMediaFileSelectCommandReady: true,
+          localVideoFileSelectCommandReady: true,
+          localDirectorySelectCommandReady: true,
+          localMediaPreviewDirectoryScopeCommandReady: true,
+          openArtifactInFolderCommandReady: true,
+          audioExtractionCommandReady: true,
+          audioExtractionFromAssetReady: true,
+          videoGifCommandReady: true,
+          videoSliceCommandReady: true,
+          videoCompressCommandReady: true,
+          videoConvertCommandReady: true,
+          videoEnhanceCommandReady: true,
+          speechTranscriptionCommandReady: true,
+          speechTranscriptionToolchainReady: true,
+          speechTranscriptionProbeCommandReady: true,
+          speechTranscriptionFileSelectCommandReady: true,
+          speechTranscriptionModelDownloadCommandReady: true,
+          speechTranscriptionExecutableDownloadCommandReady: true,
+          llmHttpCommandReady: true,
+          llmSecretStoreReady: true,
+          nativeTaskQueryCommandReady: true,
+          nativeTaskCancelCommandReady: true,
+          nativeTaskRecoveryCommandReady: true,
+          nativeTaskRetryCommandReady: true,
+          nativeTaskProgressEventsReady: true,
+          nativeWorkerLeaseReady: true,
+          ffmpegToolchainManifestReady: true,
+          ffmpegToolchainResolverReady: true,
+          ffmpegBundledReady: true,
+          ffmpegExecutionReady: true,
+          supportedCommands: ['autocut_host_capabilities', 'autocut_list_native_tasks'],
+        };
+      }
+      if (command === 'autocut_list_native_tasks') {
+        return [
+          {
+            uuid: 'editable-native-transcript-task',
+            taskType: 6,
+            status: 2,
+            progress: 100,
+            sourceAssetUuid: 'editable-native-source-asset',
+            inputJson: JSON.stringify({
+              operation: 'videoSlice',
+              assetUuid: 'editable-native-source-asset',
+              sourceName: 'editable-native.mp4',
+              outputFormat: 'mp4',
+            }),
+            outputJson: JSON.stringify({
+              name: 'slice-001.mp4',
+              assetUuid: 'editable-native-source-asset',
+              taskOutputDir: 'D:/autocut/media/tasks/editable-native-transcript-task',
+              sliceCount: 1,
+              sliceResults: [
+                {
+                  artifactUuid: 'editable-native-slice',
+                  artifactPath: 'D:/autocut/media/tasks/editable-native-transcript-task/slice-001.mp4',
+                  thumbnailArtifactUuid: 'editable-native-thumb',
+                  thumbnailArtifactPath: 'D:/autocut/media/tasks/editable-native-transcript-task/cover/slice-001.jpg',
+                  subtitleArtifactUuid: 'editable-native-subtitle',
+                  subtitleArtifactPath: 'D:/autocut/media/tasks/editable-native-transcript-task/slice-001.srt',
+                  taskOutputDir: 'D:/autocut/media/tasks/editable-native-transcript-task',
+                  byteSize: 123456,
+                  thumbnailByteSize: 1234,
+                  subtitleByteSize: 456,
+                  subtitleFormat: 'srt',
+                  format: 'mp4',
+                  startMs: 1000,
+                  durationMs: 12000,
+                  label: 'Native editable',
+                  sourceStartMs: 1000,
+                  sourceEndMs: 13000,
+                  speechStartMs: 1200,
+                  speechEndMs: 12800,
+                  boundaryPaddingBeforeMs: 200,
+                  boundaryPaddingAfterMs: 200,
+                  transcriptText: 'Original native transcript text.',
+                  transcriptSegments: [
+                    {
+                      startMs: 1200,
+                      endMs: 12800,
+                      text: 'Original native transcript text.',
+                      speaker: 'Speaker 1',
+                    },
+                  ],
+                  transcriptSegmentCount: 1,
+                  transcriptCoverageScore: 0.96,
+                  speechContinuityGrade: 'strong',
+                  ...createRecoveredSmartSliceAudioCleanupEvidence({
+                    audioActivityEndMs: 12800,
+                    trailingSilenceMs: 200,
+                  }),
+                },
+              ],
+            }),
+            createdAt: '2026-05-05T00:00:00.000Z',
+            updatedAt: '2026-05-05T00:05:00.000Z',
+            stages: [],
+            events: [],
+            workerLeases: [],
+          },
+        ];
+      }
+      throw new Error(`Unexpected editable native transcript command: ${command}`);
+    }, {
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    }));
+    await withImmediateTimers(async () => {
+      await services.updateTaskSliceTranscript('editable-native-transcript-task', 'editable-native-slice', [
+        { startMs: 1200, endMs: 12800, text: 'Corrected native transcript text.', speaker: 'Speaker 1' },
+      ]);
+    });
+    nativeEditableTranscriptEvents.stop();
+    const nativeEditableTasks = await withImmediateTimers(() => services.getTasks());
+    const nativeEditableTask = nativeEditableTasks.find((candidate) => candidate.id === 'editable-native-transcript-task');
+    assertEqual(
+      nativeEditableTask?.sliceResults?.[0]?.transcriptText,
+      'Corrected native transcript text.',
+      'updateTaskSliceTranscript creates a local transcript override for native-only slice tasks',
+    );
+    assertEqual(
+      nativeEditableTranscriptEvents.details.at(-1)?.sliceResults?.[0]?.transcriptText,
+      'Corrected native transcript text.',
+      'updateTaskSliceTranscript dispatches a merged taskUpdated event for native-only transcript edits',
+    );
+    assertEqual(
+      nativeEditableTask?.sliceResults?.[0]?.transcriptCorrection?.source,
+      'task-detail',
+      'updateTaskSliceTranscript preserves transcript correction audit metadata after native task recovery merge',
+    );
+    assertEqual(
+      nativeEditableTask?.sliceResults?.[0]?.transcriptCorrection?.originalTranscriptText,
+      'Original native transcript text.',
+      'updateTaskSliceTranscript preserves recovered native transcript text as the correction audit baseline',
+    );
+    services.resetAutoCutNativeHostClient();
 
     resetStorage();
     const bulkTaskDeleteEvents = captureEvents(services, 'taskDeleted');
@@ -11694,7 +21261,7 @@ async function run() {
     const bulkNativeTaskCommands = [];
     const bulkNativeTaskDeleteEvents = captureEvents(services, 'taskDeleted');
     const bulkNativeTaskUpdateEvents = captureEvents(services, 'taskUpdated');
-    services.configureAutoCutNativeHostClient(services.createAutoCutNativeHostClient(async (command, args) => {
+    configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command, args) => {
       bulkNativeTaskCommands.push({ command, args });
       if (command === 'autocut_host_capabilities') {
         return {
@@ -11753,7 +21320,7 @@ async function run() {
             progress: 100,
             sourceAssetUuid: 'asset-native-bulk-delete',
             inputJson: '{"name":"native-delete.mp4"}',
-            outputJson: '{"artifactUuid":"artifact-native-bulk-delete","artifactPath":"D:/autocut/media/tasks/native-bulk-delete/outputs/native-delete.mp4","byteSize":1234}',
+            outputJson: '{"artifactUuid":"artifact-native-bulk-delete","artifactPath":"D:/autocut/media/tasks/native-bulk-delete/native-delete.mp4","byteSize":1234}',
             createdAt: '2026-05-05T01:00:00.000Z',
             updatedAt: '2026-05-05T01:01:00.000Z',
             stages: [],
@@ -11895,10 +21462,1047 @@ async function run() {
     services.resetAutoCutNativeHostClient();
 
     resetStorage();
+    const localMappedNativeTaskCommands = [];
+    const localMappedTaskUpdateEvents = captureEvents(services, 'taskUpdated');
+    const localMappedTaskDeleteEvents = captureEvents(services, 'taskDeleted');
+    configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command, args) => {
+      localMappedNativeTaskCommands.push({ command, args });
+      if (command === 'autocut_host_capabilities') {
+        return {
+          contractVersion: 'local-mapped-native-task-operations-test',
+          hostKind: 'native-host',
+          nativeTaskQueryCommandReady: true,
+          nativeTaskCancelCommandReady: true,
+          nativeTaskRetryCommandReady: true,
+          supportedCommands: [
+            'autocut_host_capabilities',
+            'autocut_list_native_tasks',
+            'autocut_cancel_native_task',
+            'autocut_retry_native_task',
+          ],
+        };
+      }
+      if (command === 'autocut_list_native_tasks') {
+        const snapshots = [
+          {
+            uuid: 'native-local-mapped-delete',
+            taskType: 6,
+            status: 2,
+            progress: 100,
+            sourceAssetUuid: 'asset-local-mapped-delete',
+            inputJson: '{"name":"local-mapped-delete.mp4"}',
+            outputJson: '{}',
+            createdAt: '2026-05-05T02:00:00.000Z',
+            updatedAt: '2026-05-05T02:01:00.000Z',
+            stages: [],
+            events: [],
+            workerLeases: [],
+          },
+          {
+            uuid: 'native-local-mapped-cancel',
+            taskType: 6,
+            status: 1,
+            progress: 45,
+            sourceAssetUuid: 'asset-local-mapped-cancel',
+            inputJson: '{"name":"local-mapped-cancel.mp4"}',
+            outputJson: '{}',
+            createdAt: '2026-05-05T02:02:00.000Z',
+            updatedAt: '2026-05-05T02:03:00.000Z',
+            stages: [],
+            events: [],
+            workerLeases: [],
+          },
+          {
+            uuid: 'native-local-mapped-retry',
+            taskType: 6,
+            status: 3,
+            progress: 15,
+            sourceAssetUuid: 'asset-local-mapped-retry',
+            inputJson: '{"name":"local-mapped-retry.mp4"}',
+            outputJson: '{}',
+            errorMessage: 'post-render validation failed',
+            createdAt: '2026-05-05T02:04:00.000Z',
+            updatedAt: '2026-05-05T02:05:00.000Z',
+            stages: [],
+            events: [],
+            workerLeases: [],
+          },
+        ];
+        if (args?.request?.taskUuid) {
+          return snapshots.filter((snapshot) => snapshot.uuid === args.request.taskUuid);
+        }
+        return snapshots;
+      }
+      if (command === 'autocut_cancel_native_task') {
+        return {
+          taskUuid: args.request.taskUuid,
+          status: 4,
+          canceled: true,
+          message: 'local mapped cancel requested',
+        };
+      }
+      if (command === 'autocut_retry_native_task') {
+        return {
+          taskUuid: args.request.taskUuid,
+          retryTaskUuid: `${args.request.taskUuid}-retry`,
+          status: 1,
+          retried: true,
+          message: 'local mapped retry queued',
+        };
+      }
+      throw new Error(`Unexpected local mapped native task command: ${command}`);
+    }));
+    await withImmediateTimers(async () => {
+      await services.addTask({
+        id: 'local-mapped-delete',
+        nativeTaskId: 'native-local-mapped-delete',
+        type: types.AUTOCUT_TASK_TYPE.videoSlice,
+        name: 'local mapped delete.mp4',
+        status: types.AUTOCUT_TASK_STATUS.completed,
+        progress: 100,
+        createdAt: '2026-05-05T02:00:00.000Z',
+      });
+      await services.addTask({
+        id: 'local-mapped-cancel',
+        nativeTaskId: 'native-local-mapped-cancel',
+        type: types.AUTOCUT_TASK_TYPE.videoSlice,
+        name: 'local mapped cancel.mp4',
+        status: types.AUTOCUT_TASK_STATUS.processing,
+        progress: 45,
+        createdAt: '2026-05-05T02:02:00.000Z',
+      });
+      await services.addTask({
+        id: 'local-mapped-retry',
+        nativeTaskId: 'native-local-mapped-retry',
+        type: types.AUTOCUT_TASK_TYPE.videoSlice,
+        name: 'local mapped retry.mp4',
+        status: types.AUTOCUT_TASK_STATUS.failed,
+        progress: 15,
+        errorMessage: 'post-render validation failed',
+        createdAt: '2026-05-05T02:04:00.000Z',
+      });
+    });
+    const localMappedDeleteResult = await services.deleteTasks(['local-mapped-delete']);
+    const localMappedCancelResult = await services.cancelTasks(['local-mapped-cancel']);
+    const localMappedRetryResult = await services.retryTasks(['local-mapped-retry']);
+    localMappedTaskUpdateEvents.stop();
+    localMappedTaskDeleteEvents.stop();
+    const localMappedDismissedNativeTaskIds = readScopedStoredArray(services, 'dismissedNativeTasks');
+    const localMappedVisibleTasksAfterDelete = await withImmediateTimers(() => services.getTasks());
+    assertDeepEqual(
+      localMappedDeleteResult.deletedTaskIds,
+      ['local-mapped-delete'],
+      'deleteTasks returns local task ids when deleting a task mapped to a native ops_task',
+    );
+    assertIncludes(
+      localMappedDismissedNativeTaskIds,
+      'native-local-mapped-delete',
+      'deleteTasks tombstones the native ops_task id when deleting a local task mapped by nativeTaskId',
+    );
+    assertRule(
+      localMappedVisibleTasksAfterDelete.every((task) =>
+        task.id !== 'local-mapped-delete' && task.id !== 'native-local-mapped-delete'
+      ),
+      'deleteTasks hides the recovered native ops_task after deleting its mapped local task',
+    );
+    assertDeepEqual(
+      localMappedCancelResult.canceledTaskIds,
+      ['local-mapped-cancel'],
+      'cancelTasks returns local task ids when canceling a task mapped to a native ops_task',
+    );
+    assertDeepEqual(
+      localMappedRetryResult.retriedTaskIds,
+      ['local-mapped-retry'],
+      'retryTasks returns local task ids when retrying a task mapped to a native ops_task',
+    );
+    assertDeepEqual(
+      localMappedNativeTaskCommands
+        .filter((entry) => entry.command === 'autocut_cancel_native_task')
+        .map((entry) => entry.args.request.taskUuid),
+      ['native-local-mapped-cancel'],
+      'cancelTasks forwards nativeTaskId, not the local task id, for mapped local tasks',
+    );
+    assertDeepEqual(
+      localMappedNativeTaskCommands
+        .filter((entry) => entry.command === 'autocut_retry_native_task')
+        .map((entry) => entry.args.request.taskUuid),
+      ['native-local-mapped-retry'],
+      'retryTasks forwards nativeTaskId, not the local task id, for mapped local tasks',
+    );
+    assertRule(
+      localMappedTaskUpdateEvents.details.some((detail) =>
+        detail.id === 'local-mapped-cancel' &&
+        detail.nativeTaskId === 'native-local-mapped-cancel'
+      ) &&
+        localMappedTaskUpdateEvents.details.some((detail) =>
+          detail.id === 'local-mapped-retry' &&
+          detail.nativeTaskId === 'native-local-mapped-retry-retry'
+        ),
+      'cancelTasks and retryTasks dispatch local task updates while preserving the native task mapping',
+    );
+    assertDeepEqual(
+      localMappedTaskDeleteEvents.details.map((detail) => detail.id),
+      ['local-mapped-delete'],
+      'deleteTasks dispatches local taskDeleted ids for mapped local tasks',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
+    const singleLocalMappedDeleteEvents = captureEvents(services, 'taskDeleted');
+    configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command, args) => {
+      if (command === 'autocut_host_capabilities') {
+        return {
+          contractVersion: 'single-local-mapped-native-delete-test',
+          hostKind: 'native-host',
+          nativeTaskQueryCommandReady: true,
+          supportedCommands: [
+            'autocut_host_capabilities',
+            'autocut_list_native_tasks',
+          ],
+        };
+      }
+      if (command === 'autocut_list_native_tasks') {
+        const snapshots = [
+          {
+            uuid: 'native-single-local-mapped-delete',
+            taskType: 6,
+            status: 2,
+            progress: 100,
+            sourceAssetUuid: 'asset-single-local-mapped-delete',
+            inputJson: '{"name":"single-local-mapped-delete.mp4"}',
+            outputJson: '{}',
+            createdAt: '2026-05-05T02:10:00.000Z',
+            updatedAt: '2026-05-05T02:11:00.000Z',
+            stages: [],
+            events: [],
+            workerLeases: [],
+          },
+        ];
+        if (args?.request?.taskUuid) {
+          return snapshots.filter((snapshot) => snapshot.uuid === args.request.taskUuid);
+        }
+        return snapshots;
+      }
+      throw new Error(`Unexpected single local mapped native delete command: ${command}`);
+    }));
+    await services.addTask({
+      id: 'single-local-mapped-delete',
+      nativeTaskId: 'native-single-local-mapped-delete',
+      type: types.AUTOCUT_TASK_TYPE.videoSlice,
+      name: 'single local mapped delete.mp4',
+      status: types.AUTOCUT_TASK_STATUS.completed,
+      progress: 100,
+      createdAt: '2026-05-05T02:10:00.000Z',
+    });
+    await services.deleteTask('single-local-mapped-delete');
+    singleLocalMappedDeleteEvents.stop();
+    const singleLocalMappedDismissedNativeTaskIds = readScopedStoredArray(services, 'dismissedNativeTasks');
+    const singleLocalMappedVisibleTasksAfterDelete = await withImmediateTimers(() => services.getTasks());
+    assertIncludes(
+      singleLocalMappedDismissedNativeTaskIds,
+      'native-single-local-mapped-delete',
+      'deleteTask tombstones the native ops_task id when deleting a local task mapped by nativeTaskId',
+    );
+    assertRule(
+      singleLocalMappedVisibleTasksAfterDelete.every((task) =>
+        task.id !== 'single-local-mapped-delete' && task.id !== 'native-single-local-mapped-delete'
+      ),
+      'deleteTask hides the recovered native ops_task after deleting its mapped local task',
+    );
+    assertDeepEqual(
+      singleLocalMappedDeleteEvents.details.map((detail) => detail.id),
+      ['single-local-mapped-delete'],
+      'deleteTask dispatches the local taskDeleted id for mapped local tasks',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
     const emptyAssets = await services.getAssets();
     const emptyStorageInfo = await services.getStorageInfo();
     assertEqual(emptyAssets.length, 0, 'getAssets does not seed asset center data from mock/default assets');
     assertEqual(emptyStorageInfo.used, 0, 'getStorageInfo reports zero used bytes for a clean workspace');
+
+    resetStorage();
+    const nativeVideoDedupFingerprintRequests = [];
+    const nativeVideoDedupIdentityRequests = [];
+    const nativeVideoDedupFileRevisionByPath = new Map([
+      ['D:/autocut/media/tasks/source/camera-a.mp4', 1000],
+      ['D:/autocut/media/tasks/target/renamed-upload.mov', 2000],
+    ]);
+    const nativeVideoDedupShaByPath = new Map([
+      ['D:/autocut/media/tasks/source/camera-a.mp4', 'a'.repeat(64)],
+      ['D:/autocut/media/tasks/target/renamed-upload.mov', 'a'.repeat(64)],
+    ]);
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        videoDedupFingerprintCommandReady: true,
+        videoDedupFileIdentityCommandReady: true,
+        supportedCommands: ['autocut_fingerprint_video_file', 'autocut_probe_video_file_identity'],
+      }),
+      probeVideoFileIdentity: async (request) => {
+        nativeVideoDedupIdentityRequests.push(request);
+        return {
+          sourcePath: request.sourcePath.replace('/autocut/media/', '/autocut-canonical/media/'),
+          byteSize: 4096,
+          modifiedAtMs: nativeVideoDedupFileRevisionByPath.get(request.sourcePath) ?? 0,
+          fileIdentityVersion: '2026-05-15.video-file-identity.v1',
+        };
+      },
+      fingerprintVideoFile: async (request) => {
+        nativeVideoDedupFingerprintRequests.push(request);
+        return {
+          sourcePath: request.sourcePath.replace('/autocut/media/', '/autocut-canonical/media/'),
+          byteSize: 4096,
+          modifiedAtMs: nativeVideoDedupFileRevisionByPath.get(request.sourcePath) ?? 0,
+          sha256: nativeVideoDedupShaByPath.get(request.sourcePath) ?? 'f'.repeat(64),
+          algorithm: 'sha256',
+          fingerprintVersion: '2026-05-15.video-file-fingerprint.v1',
+          fileIdentityVersion: '2026-05-15.video-file-identity.v1',
+        };
+      },
+    });
+    await withImmediateTimers(async () => {
+      await services.addAsset({
+        id: 'native-dedup-source',
+        name: 'camera-a.mp4',
+        type: 'video',
+        size: 4096,
+        artifactPath: 'D:/autocut/media/tasks/source/camera-a.mp4',
+        createdAt: '2026-05-05T00:00:00.000Z',
+        updatedAt: '2026-05-05T00:00:00.000Z',
+      });
+      await services.addAsset({
+        id: 'native-dedup-target',
+        name: 'renamed-upload.mov',
+        type: 'video',
+        size: 8192,
+        artifactPath: 'D:/autocut/media/tasks/target/renamed-upload.mov',
+        createdAt: '2026-05-05T00:01:00.000Z',
+        updatedAt: '2026-05-05T00:01:00.000Z',
+      });
+    });
+    const nativeVideoDedupReport = await withImmediateTimers(() =>
+      services.analyzeAutoCutVideoDedup({
+        mode: 'standard',
+        sourceAssetIds: ['native-dedup-source'],
+        referenceAssetIds: ['native-dedup-target'],
+        strategies: ['exact-file-hash'],
+        sensitivity: 'forensic',
+        minMatchDurationMs: 8000,
+        ignoreIntroOutro: true,
+        introOutroMaxDurationMs: 12000,
+        actionMode: 'review-before-action',
+      })
+    );
+    assertEqual(
+      nativeVideoDedupFingerprintRequests.length,
+      2,
+      'video dedup exact-file-hash uses native SHA-256 fingerprints for source and reference artifacts',
+    );
+    assertDeepEqual(
+      nativeVideoDedupFingerprintRequests.map((request) => request.sourcePath),
+      [
+        'D:/autocut/media/tasks/source/camera-a.mp4',
+        'D:/autocut/media/tasks/target/renamed-upload.mov',
+      ],
+      'video dedup exact-file-hash fingerprints each local artifact path through the native host',
+    );
+    assertEqual(
+      nativeVideoDedupReport.matches[0]?.matchKind,
+      'exact',
+      'video dedup exact-file-hash uses native SHA-256 fingerprints to match renamed files without relying on name metadata',
+    );
+    assertRule(
+      nativeVideoDedupReport.matches[0]?.evidence?.[0]?.detail?.includes('Native SHA-256'),
+      'video dedup exact-file-hash reports native SHA-256 evidence details for human review',
+    );
+
+    const cachedNativeVideoDedupReport = await withImmediateTimers(() =>
+      services.analyzeAutoCutVideoDedup({
+        mode: 'standard',
+        sourceAssetIds: ['native-dedup-source'],
+        referenceAssetIds: ['native-dedup-target'],
+        strategies: ['exact-file-hash'],
+        sensitivity: 'forensic',
+        minMatchDurationMs: 8000,
+        ignoreIntroOutro: true,
+        introOutroMaxDurationMs: 12000,
+        actionMode: 'review-before-action',
+      })
+    );
+    assertEqual(
+      nativeVideoDedupFingerprintRequests.length,
+      2,
+      'video dedup exact-file-hash reuses cached native SHA-256 fingerprints on repeated analysis of unchanged artifacts',
+    );
+    assertEqual(
+      nativeVideoDedupIdentityRequests.length,
+      2,
+      'video dedup exact-file-hash validates cached SHA-256 fingerprints with lightweight native file identity probes',
+    );
+    assertDeepEqual(
+      nativeVideoDedupIdentityRequests.map((request) => request.sourcePath),
+      [
+        'D:/autocut/media/tasks/source/camera-a.mp4',
+        'D:/autocut/media/tasks/target/renamed-upload.mov',
+      ],
+      'video dedup exact-file-hash probes each cached local artifact identity without rescanning file bytes',
+    );
+    assertEqual(
+      cachedNativeVideoDedupReport.matches[0]?.matchKind,
+      'exact',
+      'video dedup exact-file-hash keeps exact duplicate results when native fingerprints are served from cache',
+    );
+
+    nativeVideoDedupFileRevisionByPath.set('D:/autocut/media/tasks/target/renamed-upload.mov', 3000);
+    nativeVideoDedupShaByPath.set('D:/autocut/media/tasks/target/renamed-upload.mov', 'b'.repeat(64));
+    await withImmediateTimers(() =>
+      services.analyzeAutoCutVideoDedup({
+        mode: 'standard',
+        sourceAssetIds: ['native-dedup-source'],
+        referenceAssetIds: ['native-dedup-target'],
+        strategies: ['exact-file-hash'],
+        sensitivity: 'forensic',
+        minMatchDurationMs: 8000,
+        ignoreIntroOutro: true,
+        introOutroMaxDurationMs: 12000,
+        actionMode: 'review-before-action',
+      })
+    );
+    assertEqual(
+      nativeVideoDedupFingerprintRequests.length,
+      3,
+      'video dedup exact-file-hash invalidates only the changed artifact fingerprint cache entry after native identity changes',
+    );
+    assertDeepEqual(
+      nativeVideoDedupFingerprintRequests.map((request) => request.sourcePath),
+      [
+        'D:/autocut/media/tasks/source/camera-a.mp4',
+        'D:/autocut/media/tasks/target/renamed-upload.mov',
+        'D:/autocut/media/tasks/target/renamed-upload.mov',
+      ],
+      'video dedup exact-file-hash does not rescan unchanged local artifacts after native identity cache invalidation',
+    );
+    assertEqual(
+      nativeVideoDedupIdentityRequests.length,
+      4,
+      'video dedup exact-file-hash keeps cache validation lightweight even when one cached artifact identity changes',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
+    const nativeVideoDedupVisualEvidenceRequests = [];
+    const nativeVideoDedupVisualIdentityRequests = [];
+    const nativeVideoDedupVisualRevisionByPath = new Map([
+      ['D:/autocut/media/imports/conference-keynote-original.mp4', 1000],
+      ['D:/autocut/media/imports/social-publish-remux.mov', 2000],
+    ]);
+    const createNativeVideoDedupVisualEvidence = (assetUuid) => ({
+      taskUuid: `visual-evidence-${assetUuid}`,
+      sourceAssetUuid: assetUuid,
+      provider: 'ffmpeg-scene',
+      profile: 'scene-index-v1',
+      ready: true,
+      shots: [
+        { id: `${assetUuid}-shot-001`, startMs: 0, endMs: 6200, confidence: 0.96 },
+        { id: `${assetUuid}-shot-002`, startMs: 6200, endMs: 15200, confidence: 0.94 },
+        { id: `${assetUuid}-shot-003`, startMs: 15200, endMs: 24100, confidence: 0.95 },
+      ],
+      sceneBoundaries: [
+        { startMs: 0, endMs: 6200 },
+        { startMs: 6200, endMs: 15200 },
+        { startMs: 15200, endMs: 24100 },
+      ],
+      frameQuality: [
+        { atMs: 0, blurScore: 0.18, exposureScore: 0.82, stabilityScore: 0.91 },
+        { atMs: 6200, blurScore: 0.2, exposureScore: 0.81, stabilityScore: 0.9 },
+        { atMs: 15200, blurScore: 0.19, exposureScore: 0.83, stabilityScore: 0.89 },
+      ],
+      frameFingerprints: [
+        {
+          atMs: 0,
+          algorithm: 'ahash-8x8-luma-v1',
+          hash: '3c3c3c3c3c3c3c3c',
+          meanLuma: 0.42,
+          histogram: [0.06, 0.12, 0.2, 0.24, 0.18, 0.1, 0.06, 0.04],
+        },
+        {
+          atMs: 6200,
+          algorithm: 'ahash-8x8-luma-v1',
+          hash: '3c3c7e7e7e7e3c3c',
+          meanLuma: 0.5,
+          histogram: [0.04, 0.08, 0.16, 0.26, 0.22, 0.14, 0.07, 0.03],
+        },
+        {
+          atMs: 15200,
+          algorithm: 'ahash-8x8-luma-v1',
+          hash: '18183c3c3c3c1818',
+          meanLuma: 0.46,
+          histogram: [0.05, 0.1, 0.18, 0.24, 0.21, 0.12, 0.07, 0.03],
+        },
+      ],
+      diagnostics: ['ffmpeg-scene provider threshold=0.32 minShotDurationMs=1600'],
+    });
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        visualEvidenceExtractionContractReady: true,
+        visualEvidenceExtractionCommandReady: true,
+        visualEvidenceExtractionAdapterReady: true,
+        videoDedupFileIdentityCommandReady: true,
+        supportedCommands: ['autocut_extract_visual_evidence', 'autocut_probe_video_file_identity'],
+      }),
+      probeVideoFileIdentity: async (request) => {
+        nativeVideoDedupVisualIdentityRequests.push(request);
+        return {
+          sourcePath: request.sourcePath.replace('/autocut/media/', '/autocut-canonical/media/'),
+          byteSize: request.sourcePath.endsWith('conference-keynote-original.mp4') ? 98_000_000 : 54_000_000,
+          modifiedAtMs: nativeVideoDedupVisualRevisionByPath.get(request.sourcePath) ?? 0,
+          fileIdentityVersion: '2026-05-15.video-file-identity.v1',
+        };
+      },
+      extractVisualEvidence: async (request) => {
+        nativeVideoDedupVisualEvidenceRequests.push(request);
+        return createNativeVideoDedupVisualEvidence(request.assetUuid);
+      },
+    });
+    await withImmediateTimers(async () => {
+      await services.addAsset({
+        id: 'native-visual-dedup-source',
+        name: 'conference-keynote-original.mp4',
+        type: 'video',
+        size: 98_000_000,
+        artifactPath: 'D:/autocut/media/imports/conference-keynote-original.mp4',
+        createdAt: '2026-05-05T00:10:00.000Z',
+        updatedAt: '2026-05-05T00:10:00.000Z',
+      });
+      await services.addAsset({
+        id: 'native-visual-dedup-target',
+        name: '社媒发布版-完全改名.mov',
+        type: 'video',
+        size: 54_000_000,
+        artifactPath: 'D:/autocut/media/imports/social-publish-remux.mov',
+        createdAt: '2026-05-05T00:11:00.000Z',
+        updatedAt: '2026-05-05T00:11:00.000Z',
+      });
+    });
+    const nativeVisualVideoDedupReport = await withImmediateTimers(() =>
+      services.analyzeAutoCutVideoDedup({
+        mode: 'deep-audit',
+        sourceAssetIds: ['native-visual-dedup-source'],
+        referenceAssetIds: ['native-visual-dedup-target'],
+        strategies: ['visual-fingerprint'],
+        sensitivity: 'balanced',
+        minMatchDurationMs: 8000,
+        ignoreIntroOutro: false,
+        introOutroMaxDurationMs: 0,
+        actionMode: 'review-before-action',
+      })
+    );
+    assertDeepEqual(
+      nativeVideoDedupVisualEvidenceRequests.map((request) => ({
+        assetUuid: request.assetUuid,
+        visualEvidenceProfile: request.visualEvidenceProfile,
+        includeFrameQuality: request.includeFrameQuality,
+      })),
+      [
+        {
+          assetUuid: 'native-visual-dedup-source',
+          visualEvidenceProfile: 'scene-index-v1',
+          includeFrameQuality: true,
+        },
+        {
+          assetUuid: 'native-visual-dedup-target',
+          visualEvidenceProfile: 'scene-index-v1',
+          includeFrameQuality: true,
+        },
+      ],
+      'video dedup visual-fingerprint extracts native visual evidence for each selected asset',
+    );
+    assertEqual(
+      nativeVisualVideoDedupReport.matches[0]?.matchKind,
+      'near-duplicate',
+      'video dedup visual-fingerprint uses native scene evidence to match renamed and resized videos without metadata-token overlap',
+    );
+    assertRule(
+      nativeVisualVideoDedupReport.matches[0]?.evidence?.[0]?.detail?.includes('Native visual evidence'),
+      'video dedup visual-fingerprint reports native visual evidence details for human review',
+    );
+    assertEqual(
+      nativeVideoDedupVisualIdentityRequests.length,
+      2,
+      'video dedup visual-fingerprint records lightweight native file identity when caching visual evidence',
+    );
+
+    const cachedNativeVisualVideoDedupReport = await withImmediateTimers(() =>
+      services.analyzeAutoCutVideoDedup({
+        mode: 'deep-audit',
+        sourceAssetIds: ['native-visual-dedup-source'],
+        referenceAssetIds: ['native-visual-dedup-target'],
+        strategies: ['visual-fingerprint'],
+        sensitivity: 'balanced',
+        minMatchDurationMs: 8000,
+        ignoreIntroOutro: false,
+        introOutroMaxDurationMs: 0,
+        actionMode: 'review-before-action',
+      })
+    );
+    assertEqual(
+      nativeVideoDedupVisualEvidenceRequests.length,
+      2,
+      'video dedup visual-fingerprint reuses cached native visual evidence on repeated analysis of unchanged artifacts',
+    );
+    assertEqual(
+      nativeVideoDedupVisualIdentityRequests.length,
+      4,
+      'video dedup visual-fingerprint validates cached visual evidence with lightweight native file identity probes',
+    );
+    assertDeepEqual(
+      nativeVideoDedupVisualIdentityRequests.slice(-2).map((request) => request.sourcePath),
+      [
+        'D:/autocut/media/imports/conference-keynote-original.mp4',
+        'D:/autocut/media/imports/social-publish-remux.mov',
+      ],
+      'video dedup visual-fingerprint probes cached local artifact identity without re-extracting visual evidence',
+    );
+    assertEqual(
+      cachedNativeVisualVideoDedupReport.matches[0]?.matchKind,
+      'near-duplicate',
+      'video dedup visual-fingerprint keeps visual duplicate results when native evidence is served from cache',
+    );
+
+    nativeVideoDedupVisualRevisionByPath.set('D:/autocut/media/imports/social-publish-remux.mov', 3000);
+    await withImmediateTimers(() =>
+      services.analyzeAutoCutVideoDedup({
+        mode: 'deep-audit',
+        sourceAssetIds: ['native-visual-dedup-source'],
+        referenceAssetIds: ['native-visual-dedup-target'],
+        strategies: ['visual-fingerprint'],
+        sensitivity: 'balanced',
+        minMatchDurationMs: 8000,
+        ignoreIntroOutro: false,
+        introOutroMaxDurationMs: 0,
+        actionMode: 'review-before-action',
+      })
+    );
+    assertEqual(
+      nativeVideoDedupVisualEvidenceRequests.length,
+      3,
+      'video dedup visual-fingerprint invalidates only changed visual evidence cache entry after native identity changes',
+    );
+    assertEqual(
+      nativeVideoDedupVisualIdentityRequests.length,
+      7,
+      'video dedup visual-fingerprint keeps cache validation lightweight even when one cached visual evidence identity changes',
+    );
+    assertDeepEqual(
+      nativeVideoDedupVisualEvidenceRequests.map((request) => request.sourcePath),
+      [
+        'D:/autocut/media/imports/conference-keynote-original.mp4',
+        'D:/autocut/media/imports/social-publish-remux.mov',
+        'D:/autocut/media/imports/social-publish-remux.mov',
+      ],
+      'video dedup visual-fingerprint does not re-extract unchanged local artifact visual evidence after identity cache invalidation',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
+    const nativeVideoDedupStructureOnlyVisualEvidenceRequests = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        visualEvidenceExtractionContractReady: true,
+        visualEvidenceExtractionCommandReady: true,
+        visualEvidenceExtractionAdapterReady: true,
+        supportedCommands: ['autocut_extract_visual_evidence'],
+      }),
+      extractVisualEvidence: async (request) => {
+        nativeVideoDedupStructureOnlyVisualEvidenceRequests.push(request);
+        const { frameFingerprints, ...structureOnlyEvidence } = createNativeVideoDedupVisualEvidence(request.assetUuid);
+        return structureOnlyEvidence;
+      },
+    });
+    await withImmediateTimers(async () => {
+      await services.addAsset({
+        id: 'native-visual-structure-source',
+        name: 'talking-head-lesson.mp4',
+        type: 'video',
+        size: 72_000_000,
+        artifactPath: 'D:/autocut/media/imports/talking-head-lesson.mp4',
+        createdAt: '2026-05-05T00:10:20.000Z',
+        updatedAt: '2026-05-05T00:10:20.000Z',
+      });
+      await services.addAsset({
+        id: 'native-visual-structure-target',
+        name: 'city-broll-same-cuts.mov',
+        type: 'video',
+        size: 71_000_000,
+        artifactPath: 'D:/autocut/media/imports/city-broll-same-cuts.mov',
+        createdAt: '2026-05-05T00:10:30.000Z',
+        updatedAt: '2026-05-05T00:10:30.000Z',
+      });
+    });
+    const structureOnlyVisualDedupReport = await withImmediateTimers(() =>
+      services.analyzeAutoCutVideoDedup({
+        mode: 'deep-audit',
+        sourceAssetIds: ['native-visual-structure-source'],
+        referenceAssetIds: ['native-visual-structure-target'],
+        strategies: ['visual-fingerprint'],
+        sensitivity: 'balanced',
+        minMatchDurationMs: 8000,
+        ignoreIntroOutro: false,
+        introOutroMaxDurationMs: 0,
+        actionMode: 'review-before-action',
+      })
+    );
+    assertDeepEqual(
+      nativeVideoDedupStructureOnlyVisualEvidenceRequests.map((request) => ({
+        assetUuid: request.assetUuid,
+        includeFrameFingerprint: request.includeFrameFingerprint,
+      })),
+      [
+        {
+          assetUuid: 'native-visual-structure-source',
+          includeFrameFingerprint: true,
+        },
+        {
+          assetUuid: 'native-visual-structure-target',
+          includeFrameFingerprint: true,
+        },
+      ],
+      'video dedup visual-fingerprint requests perceptual frame fingerprints even when native provider returns structure-only evidence',
+    );
+    assertEqual(
+      structureOnlyVisualDedupReport.matches.length,
+      0,
+      'video dedup visual-fingerprint does not auto-match structure-only native visual evidence without perceptual frame content',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
+    const nativeVideoDedupDifferentContentRequests = [];
+    const createNativeVideoDedupVisualEvidenceWithContent = (assetUuid, frameHashes) => ({
+      ...createNativeVideoDedupVisualEvidence(assetUuid),
+      frameFingerprints: frameHashes.map((hash, index) => ({
+        atMs: [0, 6200, 15200][index] ?? index * 6200,
+        algorithm: 'ahash-8x8-luma-v1',
+        hash,
+        meanLuma: index % 2 === 0 ? 0.24 : 0.76,
+        histogram: index % 2 === 0
+          ? [0.78, 0.12, 0.04, 0.02, 0.02, 0.01, 0.01, 0]
+          : [0, 0.01, 0.01, 0.02, 0.02, 0.04, 0.12, 0.78],
+      })),
+    });
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        visualEvidenceExtractionContractReady: true,
+        visualEvidenceExtractionCommandReady: true,
+        visualEvidenceExtractionAdapterReady: true,
+        supportedCommands: ['autocut_extract_visual_evidence'],
+      }),
+      extractVisualEvidence: async (request) => {
+        nativeVideoDedupDifferentContentRequests.push(request);
+        return createNativeVideoDedupVisualEvidenceWithContent(
+          request.assetUuid,
+          request.assetUuid === 'native-visual-content-source'
+            ? ['0000000000000000', '00ff00ff00ff00ff', '0f0f0f0f0f0f0f0f']
+            : ['ffffffffffffffff', 'ff00ff00ff00ff00', 'f0f0f0f0f0f0f0f0'],
+        );
+      },
+    });
+    await withImmediateTimers(async () => {
+      await services.addAsset({
+        id: 'native-visual-content-source',
+        name: 'training-room-wide.mp4',
+        type: 'video',
+        size: 88_000_000,
+        artifactPath: 'D:/autocut/media/imports/training-room-wide.mp4',
+        createdAt: '2026-05-05T00:11:10.000Z',
+        updatedAt: '2026-05-05T00:11:10.000Z',
+      });
+      await services.addAsset({
+        id: 'native-visual-content-target',
+        name: 'product-broll-same-tempo.mov',
+        type: 'video',
+        size: 87_000_000,
+        artifactPath: 'D:/autocut/media/imports/product-broll-same-tempo.mov',
+        createdAt: '2026-05-05T00:11:20.000Z',
+        updatedAt: '2026-05-05T00:11:20.000Z',
+      });
+    });
+    const differentContentVisualDedupReport = await withImmediateTimers(() =>
+      services.analyzeAutoCutVideoDedup({
+        mode: 'deep-audit',
+        sourceAssetIds: ['native-visual-content-source'],
+        referenceAssetIds: ['native-visual-content-target'],
+        strategies: ['visual-fingerprint'],
+        sensitivity: 'balanced',
+        minMatchDurationMs: 8000,
+        ignoreIntroOutro: false,
+        introOutroMaxDurationMs: 0,
+        actionMode: 'review-before-action',
+      })
+    );
+    assertDeepEqual(
+      nativeVideoDedupDifferentContentRequests.map((request) => ({
+        assetUuid: request.assetUuid,
+        includeFrameFingerprint: request.includeFrameFingerprint,
+      })),
+      [
+        {
+          assetUuid: 'native-visual-content-source',
+          includeFrameFingerprint: true,
+        },
+        {
+          assetUuid: 'native-visual-content-target',
+          includeFrameFingerprint: true,
+        },
+      ],
+      'video dedup visual-fingerprint requests native perceptual frame fingerprints for picture-content evidence',
+    );
+    assertEqual(
+      differentContentVisualDedupReport.matches.length,
+      0,
+      'video dedup visual-fingerprint does not mark different picture content as duplicate just because scene timing matches',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
+    const nativeVideoDedupAudioFingerprintRequests = [];
+    const createNativeVideoDedupAudioFingerprint = (assetUuid, hash = '5f'.repeat(32), energyBuckets = [8, 12, 26, 64, 128, 154, 92, 40]) => ({
+      taskUuid: `audio-fingerprint-${assetUuid}`,
+      sourceAssetUuid: assetUuid,
+      provider: 'ffmpeg-audio',
+      profile: 'audio-energy-v1',
+      ready: true,
+      durationMs: 24_000,
+      sampleRateHz: 16_000,
+      windowDurationMs: 1_000,
+      fingerprint: {
+        algorithm: 'audio-energy-v1',
+        hash,
+        energyBuckets,
+        silenceRatio: 0.08,
+        spectralCentroidBuckets: [12, 18, 28, 46, 55, 50, 34, 20],
+      },
+      diagnostics: ['ffmpeg-audio provider sampleRateHz=16000 windowDurationMs=1000'],
+    });
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        audioFingerprintCommandReady: true,
+        audioFingerprintAdapterReady: true,
+        supportedCommands: ['autocut_extract_audio_fingerprint'],
+      }),
+      fingerprintAudio: async (request) => {
+        nativeVideoDedupAudioFingerprintRequests.push(request);
+        return createNativeVideoDedupAudioFingerprint(request.assetUuid);
+      },
+    });
+    await withImmediateTimers(async () => {
+      await services.addAsset({
+        id: 'native-audio-dedup-source',
+        name: 'speaker-session-alpha.mp4',
+        type: 'video',
+        size: 41_000_000,
+        artifactPath: 'D:/autocut/media/imports/speaker-session-alpha.mp4',
+        createdAt: '2026-05-05T00:11:30.000Z',
+        updatedAt: '2026-05-05T00:11:30.000Z',
+      });
+      await services.addAsset({
+        id: 'native-audio-dedup-target',
+        name: 'random-camera-roll.mov',
+        type: 'video',
+        size: 64_000_000,
+        artifactPath: 'D:/autocut/media/imports/random-camera-roll.mov',
+        createdAt: '2026-05-05T00:11:40.000Z',
+        updatedAt: '2026-05-05T00:11:40.000Z',
+      });
+    });
+    const nativeAudioVideoDedupReport = await withImmediateTimers(() =>
+      services.analyzeAutoCutVideoDedup({
+        mode: 'deep-audit',
+        sourceAssetIds: ['native-audio-dedup-source'],
+        referenceAssetIds: ['native-audio-dedup-target'],
+        strategies: ['audio-fingerprint'],
+        sensitivity: 'balanced',
+        minMatchDurationMs: 8000,
+        ignoreIntroOutro: false,
+        introOutroMaxDurationMs: 0,
+        actionMode: 'review-before-action',
+      })
+    );
+    assertDeepEqual(
+      nativeVideoDedupAudioFingerprintRequests.map((request) => ({
+        assetUuid: request.assetUuid,
+        sourcePath: request.sourcePath,
+        fingerprintProfile: request.fingerprintProfile,
+        sampleRateHz: request.sampleRateHz,
+        windowDurationMs: request.windowDurationMs,
+      })),
+      [
+        {
+          assetUuid: 'native-audio-dedup-source',
+          sourcePath: 'D:/autocut/media/imports/speaker-session-alpha.mp4',
+          fingerprintProfile: 'audio-energy-v1',
+          sampleRateHz: 16_000,
+          windowDurationMs: 1_000,
+        },
+        {
+          assetUuid: 'native-audio-dedup-target',
+          sourcePath: 'D:/autocut/media/imports/random-camera-roll.mov',
+          fingerprintProfile: 'audio-energy-v1',
+          sampleRateHz: 16_000,
+          windowDurationMs: 1_000,
+        },
+      ],
+      'video dedup audio-fingerprint extracts native audio fingerprints for each selected asset',
+    );
+    assertEqual(
+      nativeAudioVideoDedupReport.matches[0]?.matchKind,
+      'same-audio',
+      'video dedup audio-fingerprint uses native audio evidence to match renamed videos without metadata-token overlap',
+    );
+    assertRule(
+      nativeAudioVideoDedupReport.matches[0]?.evidence?.[0]?.detail?.includes('Native audio fingerprint'),
+      'video dedup audio-fingerprint reports native audio evidence details for human review',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
+    const nativeVideoDedupDifferentAudioRequests = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        audioFingerprintCommandReady: true,
+        audioFingerprintAdapterReady: true,
+        supportedCommands: ['autocut_extract_audio_fingerprint'],
+      }),
+      fingerprintAudio: async (request) => {
+        nativeVideoDedupDifferentAudioRequests.push(request);
+        return request.assetUuid === 'native-audio-content-source'
+          ? createNativeVideoDedupAudioFingerprint(request.assetUuid, '00'.repeat(32), [4, 8, 12, 16, 20, 24, 28, 32])
+          : createNativeVideoDedupAudioFingerprint(request.assetUuid, 'ff'.repeat(32), [240, 220, 200, 180, 160, 140, 120, 100]);
+      },
+    });
+    await withImmediateTimers(async () => {
+      await services.addAsset({
+        id: 'native-audio-content-source',
+        name: 'weekly-lesson-final.mp4',
+        type: 'video',
+        size: 51_000_000,
+        artifactPath: 'D:/autocut/media/imports/weekly-lesson-final.mp4',
+        createdAt: '2026-05-05T00:11:50.000Z',
+        updatedAt: '2026-05-05T00:11:50.000Z',
+      });
+      await services.addAsset({
+        id: 'native-audio-content-target',
+        name: 'weekly-lesson-copy.mov',
+        type: 'video',
+        size: 50_000_000,
+        artifactPath: 'D:/autocut/media/imports/weekly-lesson-copy.mov',
+        createdAt: '2026-05-05T00:12:00.000Z',
+        updatedAt: '2026-05-05T00:12:00.000Z',
+      });
+    });
+    const differentAudioVideoDedupReport = await withImmediateTimers(() =>
+      services.analyzeAutoCutVideoDedup({
+        mode: 'deep-audit',
+        sourceAssetIds: ['native-audio-content-source'],
+        referenceAssetIds: ['native-audio-content-target'],
+        strategies: ['audio-fingerprint'],
+        sensitivity: 'balanced',
+        minMatchDurationMs: 8000,
+        ignoreIntroOutro: false,
+        introOutroMaxDurationMs: 0,
+        actionMode: 'review-before-action',
+      })
+    );
+    assertDeepEqual(
+      nativeVideoDedupDifferentAudioRequests.map((request) => ({
+        assetUuid: request.assetUuid,
+        sourcePath: request.sourcePath,
+      })),
+      [
+        {
+          assetUuid: 'native-audio-content-source',
+          sourcePath: 'D:/autocut/media/imports/weekly-lesson-final.mp4',
+        },
+        {
+          assetUuid: 'native-audio-content-target',
+          sourcePath: 'D:/autocut/media/imports/weekly-lesson-copy.mov',
+        },
+      ],
+      'video dedup audio-fingerprint passes local artifactPath to native audio fingerprint extraction for asset-library files',
+    );
+    assertEqual(
+      differentAudioVideoDedupReport.matches.length,
+      0,
+      'video dedup audio-fingerprint does not fall back to metadata-token proxy when native audio fingerprints prove different audio',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
+    const nativeArtifactPathVideoDedupVisualEvidenceRequests = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        visualEvidenceExtractionContractReady: true,
+        visualEvidenceExtractionCommandReady: true,
+        visualEvidenceExtractionAdapterReady: true,
+        supportedCommands: ['autocut_extract_visual_evidence'],
+      }),
+      extractVisualEvidence: async (request) => {
+        nativeArtifactPathVideoDedupVisualEvidenceRequests.push(request);
+        return createNativeVideoDedupVisualEvidence(request.assetUuid);
+      },
+    });
+    await withImmediateTimers(async () => {
+      await services.addAsset({
+        id: 'artifact-path-visual-dedup-source',
+        name: 'camera-export-01.mp4',
+        type: 'video',
+        size: 123_000_000,
+        artifactPath: 'D:/autocut/library/camera-export-01.mp4',
+        createdAt: '2026-05-05T00:12:00.000Z',
+        updatedAt: '2026-05-05T00:12:00.000Z',
+      });
+      await services.addAsset({
+        id: 'artifact-path-visual-dedup-target',
+        name: 'publish-copy-random-title.mov',
+        type: 'video',
+        size: 66_000_000,
+        artifactPath: 'D:/autocut/library/publish-copy-random-title.mov',
+        createdAt: '2026-05-05T00:13:00.000Z',
+        updatedAt: '2026-05-05T00:13:00.000Z',
+      });
+    });
+    await withImmediateTimers(() =>
+      services.analyzeAutoCutVideoDedup({
+        mode: 'deep-audit',
+        sourceAssetIds: ['artifact-path-visual-dedup-source'],
+        referenceAssetIds: ['artifact-path-visual-dedup-target'],
+        strategies: ['visual-fingerprint'],
+        sensitivity: 'balanced',
+        minMatchDurationMs: 8000,
+        ignoreIntroOutro: false,
+        introOutroMaxDurationMs: 0,
+        actionMode: 'review-before-action',
+      })
+    );
+    assertDeepEqual(
+      nativeArtifactPathVideoDedupVisualEvidenceRequests.map((request) => ({
+        assetUuid: request.assetUuid,
+        sourcePath: request.sourcePath,
+      })),
+      [
+        {
+          assetUuid: 'artifact-path-visual-dedup-source',
+          sourcePath: 'D:/autocut/library/camera-export-01.mp4',
+        },
+        {
+          assetUuid: 'artifact-path-visual-dedup-target',
+          sourcePath: 'D:/autocut/library/publish-copy-random-title.mov',
+        },
+      ],
+      'video dedup visual-fingerprint passes local artifactPath to native visual evidence extraction for asset-library files',
+    );
+    services.resetAutoCutNativeHostClient();
 
     resetStorage();
     const assetAddedEvents = captureEvents(services, 'assetAdded');
@@ -12051,7 +22655,7 @@ async function run() {
 
       throw new Error(`Unexpected settings native host command: ${command}`);
     });
-    services.configureAutoCutNativeHostClient(createSettingsNativeHostClient());
+    configureAutoCutNativeHostClient(services, createSettingsNativeHostClient());
     const settingsEvents = captureEvents(services, 'settingsUpdated');
     const defaultSettings = await services.getAutoCutSettings();
     assertEqual(defaultSettings.llm.modelVendor, 'deepseek', 'AutoCut LLM settings default to DeepSeek');
@@ -12067,8 +22671,8 @@ async function run() {
     assertEqual(defaultSettings.speechTranscription.configured, false, 'AutoCut local speech-to-text defaults to not configured');
     assertEqual(
       defaultSettings.speechTranscription.providerId,
-      'local-whisper-cli',
-      'AutoCut speech-to-text provider defaults to the stable local Whisper CLI provider id',
+      'openai-transcription',
+      'AutoCut speech-to-text provider defaults to the commercial cloud STT provider id',
     );
     assertRule(
       Array.isArray(types.AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER_DEFINITIONS),
@@ -12137,6 +22741,11 @@ async function run() {
       'local speech model preset registry pins a SHA-256 model digest before native download is allowed',
     );
     assertEqual(
+      whisperCppLargeTurboPreset?.sha256,
+      '394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2',
+      'local speech model preset registry pins the verified Hugging Face LFS digest for ggml-large-v3-turbo-q5_0.bin',
+    );
+    assertEqual(
       whisperCppLargeTurboPreset?.fileName.endsWith('.bin') || whisperCppLargeTurboPreset?.fileName.endsWith('.gguf'),
       true,
       'local speech model preset registry only advertises model files compatible with the accepted local extensions',
@@ -12192,6 +22801,66 @@ async function run() {
       services.resolveAutoCutRecommendedLocalSpeechTranscriptionModelPreset('local-whisper-cli')?.id,
       'whisper-cpp-large-v3-turbo-q5',
       'resolveAutoCutRecommendedLocalSpeechTranscriptionModelPreset returns the guided offline Whisper default for local STT',
+    );
+    assertRule(
+      Array.isArray(types.AUTOCUT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESETS) &&
+        types.AUTOCUT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESETS.some((preset) =>
+          preset.id === 'smart-slice-fast-preview' &&
+          preset.executionProfile === 'fast-preview' &&
+          preset.localWhisper?.chunkParallelism === 4 &&
+          preset.localWhisper?.chunkSourceStrategy === 'source-direct' &&
+          !Object.prototype.hasOwnProperty.call(preset.localWhisper?.decode ?? {}, 'audioContext') &&
+          preset.localWhisper?.decode?.beamSize === 1 &&
+          preset.localWhisper?.decode?.bestOf === 1 &&
+          preset.localWhisper?.decode?.noFallback === true
+        ) &&
+        types.AUTOCUT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESETS.some((preset) =>
+          preset.id === 'smart-slice-quality-local' &&
+          preset.executionProfile === 'quality' &&
+          preset.localWhisper?.chunkSourceStrategy === 'audio-first' &&
+          !preset.localWhisper?.decode
+        ),
+      'STT workflow preset registry defines product-facing Smart Slice fast-preview stable performance decode and quality-local strategies',
+    );
+    const balancedWorkflowPreset = services.resolveAutoCutSpeechTranscriptionWorkflowPreset('smart-slice-balanced-local');
+    assertEqual(
+      balancedWorkflowPreset.localWhisper?.chunkSourceStrategy,
+      'source-direct',
+      'resolveAutoCutSpeechTranscriptionWorkflowPreset uses source-direct chunking for balanced long-video local STT',
+    );
+    assertDeepEqual(
+      balancedWorkflowPreset.localWhisper?.decode,
+      {
+        beamSize: 1,
+        bestOf: 1,
+        noFallback: true,
+      },
+      'resolveAutoCutSpeechTranscriptionWorkflowPreset exposes balanced local Whisper stable decode settings from measured CPU performance',
+    );
+    const fastPreviewWorkflowPreset = services.resolveAutoCutSpeechTranscriptionWorkflowPreset('smart-slice-fast-preview');
+    assertEqual(
+      fastPreviewWorkflowPreset.providerId,
+      'local-whisper-cli',
+      'resolveAutoCutSpeechTranscriptionWorkflowPreset resolves the fast Smart Slice preset to the local provider until API/GPU providers are explicitly configured',
+    );
+    assertEqual(
+      fastPreviewWorkflowPreset.localWhisper?.chunkParallelism,
+      4,
+      'resolveAutoCutSpeechTranscriptionWorkflowPreset exposes native long-video Whisper chunk parallelism for the fast Smart Slice preset',
+    );
+    assertEqual(
+      fastPreviewWorkflowPreset.localWhisper?.chunkSourceStrategy,
+      'source-direct',
+      'resolveAutoCutSpeechTranscriptionWorkflowPreset uses source-direct chunking for fast-preview long-video local STT',
+    );
+    assertDeepEqual(
+      fastPreviewWorkflowPreset.localWhisper?.decode,
+      {
+        beamSize: 1,
+        bestOf: 1,
+        noFallback: true,
+      },
+      'resolveAutoCutSpeechTranscriptionWorkflowPreset exposes fast-preview stable local Whisper decode settings from measured CPU performance',
     );
     browserDownloadRequests.length = 0;
     services.downloadAutoCutLocalSpeechTranscriptionModelPreset('whisper-cpp-large-v3-turbo-q5');
@@ -12306,7 +22975,7 @@ async function run() {
       lastProbeDiagnostics: ['stale probe must be cleared after model auto setup'],
     });
     const nativeSpeechModelDownloadRequests = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         speechTranscriptionModelDownloadCommandReady: true,
       }),
@@ -12374,7 +23043,255 @@ async function run() {
       undefined,
       'setupAutoCutLocalSpeechTranscriptionModelPreset clears stale local STT probe diagnostics after changing modelPath',
     );
-    services.configureAutoCutNativeHostClient({
+    await services.saveAutoCutSpeechTranscriptionSettings({
+      ...configuredLocalSpeechModel.settings.speechTranscription,
+      modelPath: '',
+    });
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        speechTranscriptionModelDownloadCommandReady: true,
+      }),
+      downloadSpeechTranscriptionModel: async (request) => ({
+        providerId: request.providerId,
+        presetId: request.presetId,
+        fileName: request.fileName,
+        modelPath: 'D:/autocut/media/models/speech/ggml-large-v3-turbo-q5_0.bin',
+        byteSize: 573571072,
+        downloaded: true,
+        sourceUrl: request.url,
+        sha256: ` ${request.sha256.toUpperCase()} `,
+      }),
+    });
+    const normalizedChecksumLocalSpeechModel = await services.setupAutoCutLocalSpeechTranscriptionModelPreset('whisper-cpp-large-v3-turbo-q5');
+    assertEqual(
+      normalizedChecksumLocalSpeechModel.modelPath,
+      'D:/autocut/media/models/speech/ggml-large-v3-turbo-q5_0.bin',
+      'setupAutoCutLocalSpeechTranscriptionModelPreset accepts native SHA-256 digests with harmless case and whitespace differences',
+    );
+    await services.saveAutoCutSpeechTranscriptionSettings({
+      ...normalizedChecksumLocalSpeechModel.settings.speechTranscription,
+      modelPath: '',
+    });
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        speechTranscriptionModelDownloadCommandReady: true,
+      }),
+      downloadSpeechTranscriptionModel: async (request) => ({
+        providerId: request.providerId,
+        presetId: request.presetId,
+        fileName: request.fileName,
+        modelPath: 'D:/autocut/media/models/speech/ggml-large-v3-turbo-q5_0.bin',
+        byteSize: 573571072,
+        downloaded: true,
+        sourceUrl: request.url,
+        sha256: request.sha256,
+      }),
+    });
+    const existingLocalSpeechModel = await services.setupAutoCutLocalSpeechTranscriptionModelPreset('whisper-cpp-large-v3-turbo-q5');
+    assertEqual(
+      existingLocalSpeechModel.downloaded,
+      true,
+      'setupAutoCutLocalSpeechTranscriptionModelPreset reports a verified existing native model as already downloaded',
+    );
+    assertEqual(
+      existingLocalSpeechModel.settings.speechTranscription.modelPath,
+      'D:/autocut/media/models/speech/ggml-large-v3-turbo-q5_0.bin',
+      'setupAutoCutLocalSpeechTranscriptionModelPreset saves the verified existing native modelPath',
+    );
+    await services.saveAutoCutSpeechTranscriptionSettings({
+      ...existingLocalSpeechModel.settings.speechTranscription,
+      modelPath: '',
+      lastProbeReady: true,
+      lastProbeDiagnostics: ['stale probe must be cleared after UI-yielded setup'],
+    });
+    let nativeDownloadSawUiFrameYield = false;
+    const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+    const originalWindowRequestAnimationFrame = globalThis.window?.requestAnimationFrame;
+    let restoreUiFrameYieldProbe = () => undefined;
+    try {
+      globalThis.requestAnimationFrame = (callback) => {
+        nativeDownloadSawUiFrameYield = true;
+        callback(0);
+        return 1;
+      };
+      if (globalThis.window) {
+        globalThis.window.requestAnimationFrame = globalThis.requestAnimationFrame;
+      }
+      restoreUiFrameYieldProbe = () => {
+        if (originalRequestAnimationFrame === undefined) {
+          delete globalThis.requestAnimationFrame;
+        } else {
+          globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+        }
+        if (globalThis.window) {
+          if (originalWindowRequestAnimationFrame === undefined) {
+            delete globalThis.window.requestAnimationFrame;
+          } else {
+            globalThis.window.requestAnimationFrame = originalWindowRequestAnimationFrame;
+          }
+        }
+      };
+      configureAutoCutNativeHostClient(services, {
+        getCapabilities: async () => ({
+          speechTranscriptionModelDownloadCommandReady: true,
+        }),
+        downloadSpeechTranscriptionModel: async (request) => {
+          assertRule(
+            nativeDownloadSawUiFrameYield,
+            'setupAutoCutLocalSpeechTranscriptionModelPreset yields one browser frame before starting the heavy native STT model download',
+          );
+          return {
+            providerId: request.providerId,
+            presetId: request.presetId,
+            fileName: request.fileName,
+            modelPath: 'D:/autocut/media/models/speech/ggml-large-v3-turbo-q5_0.bin',
+            byteSize: 573571072,
+            downloaded: true,
+            sourceUrl: request.url,
+            sha256: request.sha256,
+          };
+        },
+      });
+      await services.setupAutoCutLocalSpeechTranscriptionModelPreset('whisper-cpp-large-v3-turbo-q5');
+    } finally {
+      restoreUiFrameYieldProbe();
+    }
+    await services.saveAutoCutSpeechTranscriptionSettings({
+      ...configuredLocalSpeechModel.settings.speechTranscription,
+      modelPath: '',
+      lastProbeReady: true,
+      lastProbeDiagnostics: ['stale probe must be cleared after coalesced model setup'],
+    });
+    const concurrentNativeSpeechModelDownloadRequests = [];
+    let releaseConcurrentNativeSpeechModelDownload = () => undefined;
+    const concurrentNativeSpeechModelDownloadGate = new Promise((resolve) => {
+      releaseConcurrentNativeSpeechModelDownload = resolve;
+    });
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        speechTranscriptionModelDownloadCommandReady: true,
+      }),
+      downloadSpeechTranscriptionModel: async (request) => {
+        concurrentNativeSpeechModelDownloadRequests.push(request);
+        await concurrentNativeSpeechModelDownloadGate;
+        return {
+          providerId: request.providerId,
+          presetId: request.presetId,
+          fileName: request.fileName,
+          modelPath: 'D:/autocut/media/models/speech/ggml-large-v3-turbo-q5_0.bin',
+          byteSize: 573571072,
+          downloaded: true,
+          sourceUrl: request.url,
+          sha256: request.sha256,
+        };
+      },
+    });
+    const concurrentNativeSpeechModelSetupEvents = captureEvents(services, 'speechTranscriptionModelDownloadProgress');
+    const firstConcurrentNativeSpeechModelSetup = services.setupAutoCutLocalSpeechTranscriptionModelPreset('whisper-cpp-large-v3-turbo-q5');
+    await flushMicrotasks();
+    const secondConcurrentNativeSpeechModelSetup = services.setupAutoCutLocalSpeechTranscriptionModelPreset('whisper-cpp-large-v3-turbo-q5');
+    await flushMicrotasks();
+    releaseConcurrentNativeSpeechModelDownload();
+    const [firstConcurrentNativeSpeechModelResult, secondConcurrentNativeSpeechModelResult] = await Promise.all([
+      firstConcurrentNativeSpeechModelSetup,
+      secondConcurrentNativeSpeechModelSetup,
+    ]);
+    concurrentNativeSpeechModelSetupEvents.stop();
+    assertEqual(
+      concurrentNativeSpeechModelDownloadRequests.length,
+      1,
+      'setupAutoCutLocalSpeechTranscriptionModelPreset coalesces concurrent setup requests for the same local STT model into one native download',
+    );
+    assertEqual(
+      firstConcurrentNativeSpeechModelResult.modelPath,
+      secondConcurrentNativeSpeechModelResult.modelPath,
+      'coalesced local STT model setup callers receive the same verified native model path',
+    );
+    assertEqual(
+      concurrentNativeSpeechModelSetupEvents.details.filter((event) => event.phase === 'started').length,
+      1,
+      'coalesced local STT model setup emits one visible native download start event',
+    );
+    assertEqual(
+      concurrentNativeSpeechModelSetupEvents.details.filter((event) => event.phase === 'completed').length,
+      1,
+      'coalesced local STT model setup emits one visible native download completion event',
+    );
+    await services.saveAutoCutSpeechTranscriptionSettings({
+      ...firstConcurrentNativeSpeechModelResult.settings.speechTranscription,
+      executablePath: 'D:/tools/old-whisper-cli.exe',
+      modelPath: '',
+      language: 'auto',
+      lastProbeReady: true,
+      lastProbeDiagnostics: ['stale probe must be cleared after preserving in-flight edits'],
+    });
+    const inFlightEditedSpeechModelDownloadRequests = [];
+    let releaseInFlightEditedSpeechModelDownload = () => undefined;
+    const inFlightEditedSpeechModelDownloadGate = new Promise((resolve) => {
+      releaseInFlightEditedSpeechModelDownload = resolve;
+    });
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        speechTranscriptionModelDownloadCommandReady: true,
+      }),
+      downloadSpeechTranscriptionModel: async (request) => {
+        inFlightEditedSpeechModelDownloadRequests.push(request);
+        await services.saveAutoCutSpeechTranscriptionSettings({
+          ...firstConcurrentNativeSpeechModelResult.settings.speechTranscription,
+          executablePath: 'D:/tools/new-whisper-cli.exe',
+          modelPath: '',
+          language: 'zh',
+          lastProbeReady: true,
+          lastProbeDiagnostics: ['edited while model download was still in flight'],
+        });
+        await inFlightEditedSpeechModelDownloadGate;
+        return {
+          providerId: request.providerId,
+          presetId: request.presetId,
+          fileName: request.fileName,
+          modelPath: 'D:/autocut/media/models/speech/ggml-large-v3-turbo-q5_0.bin',
+          byteSize: 573571072,
+          downloaded: true,
+          sourceUrl: request.url,
+          sha256: request.sha256,
+        };
+      },
+    });
+    const inFlightEditedSpeechModelSetup = services.setupAutoCutLocalSpeechTranscriptionModelPreset('whisper-cpp-large-v3-turbo-q5');
+    await flushMicrotasks();
+    releaseInFlightEditedSpeechModelDownload();
+    const inFlightEditedSpeechModelResult = await inFlightEditedSpeechModelSetup;
+    assertEqual(
+      inFlightEditedSpeechModelDownloadRequests.length,
+      1,
+      'setupAutoCutLocalSpeechTranscriptionModelPreset downloads once while preserving in-flight user edits',
+    );
+    assertEqual(
+      inFlightEditedSpeechModelResult.settings.speechTranscription.executablePath,
+      'D:/tools/new-whisper-cli.exe',
+      'setupAutoCutLocalSpeechTranscriptionModelPreset preserves executablePath changes made while the native model download is in flight',
+    );
+    assertEqual(
+      inFlightEditedSpeechModelResult.settings.speechTranscription.language,
+      'zh',
+      'setupAutoCutLocalSpeechTranscriptionModelPreset preserves language changes made while the native model download is in flight',
+    );
+    assertEqual(
+      inFlightEditedSpeechModelResult.settings.speechTranscription.modelPath,
+      'D:/autocut/media/models/speech/ggml-large-v3-turbo-q5_0.bin',
+      'setupAutoCutLocalSpeechTranscriptionModelPreset still persists the verified modelPath after preserving in-flight settings edits',
+    );
+    assertEqual(
+      inFlightEditedSpeechModelResult.settings.speechTranscription.lastProbeReady,
+      undefined,
+      'setupAutoCutLocalSpeechTranscriptionModelPreset clears stale probe readiness after preserving in-flight settings edits',
+    );
+    assertEqual(
+      inFlightEditedSpeechModelResult.settings.speechTranscription.lastProbeDiagnostics,
+      undefined,
+      'setupAutoCutLocalSpeechTranscriptionModelPreset clears stale probe diagnostics after preserving in-flight settings edits',
+    );
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         speechTranscriptionModelDownloadCommandReady: true,
       }),
@@ -12394,7 +23311,7 @@ async function run() {
       'speech recognition model download did not finish',
       'setupAutoCutLocalSpeechTranscriptionModelPreset rejects incomplete native model downloads before saving modelPath',
     );
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         speechTranscriptionModelDownloadCommandReady: false,
       }),
@@ -12425,10 +23342,11 @@ async function run() {
       language: 'auto',
     });
     const localSpeechSetupCommands = [];
-    services.configureAutoCutNativeHostClient({
+    let localSpeechSetupModelInstalled = false;
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         speechTranscriptionCommandReady: true,
-        speechTranscriptionToolchainReady: false,
+        speechTranscriptionToolchainReady: localSpeechSetupModelInstalled,
         speechTranscriptionProbeCommandReady: true,
         speechTranscriptionModelDownloadCommandReady: true,
       }),
@@ -12453,6 +23371,7 @@ async function run() {
       },
       downloadSpeechTranscriptionModel: async (request) => {
         localSpeechSetupCommands.push({ kind: 'download-model', request });
+        localSpeechSetupModelInstalled = true;
         return {
           providerId: request.providerId,
           presetId: request.presetId,
@@ -12547,6 +23466,11 @@ async function run() {
       'initializeAutoCutLocalSpeechTranscriptionSetup returns ready status after local executable, model, and probe all verify',
     );
     assertEqual(
+      initializedLocalSpeechSetup.status.capabilities.toolchainReady,
+      true,
+      'initializeAutoCutLocalSpeechTranscriptionSetup returns final refreshed local STT capability status after automatic model setup',
+    );
+    assertEqual(
       initializedLocalSpeechSetup.settings.speechTranscription.executablePath,
       'D:/Program Files/SDKWork Video Cut/resources/binaries/windows-x86_64/whisper-cli.exe',
       'initializeAutoCutLocalSpeechTranscriptionSetup persists native-discovered packaged Whisper executablePath',
@@ -12561,8 +23485,26 @@ async function run() {
       true,
       'initializeAutoCutLocalSpeechTranscriptionSetup marks the local STT provider tested only after a fresh successful probe',
     );
+    const refreshedSamePathModelCommandCount = localSpeechSetupCommands.length;
+    await services.setupAutoCutLocalSpeechTranscriptionModelPreset('whisper-cpp-large-v3-turbo-q5');
+    const initializedAfterSamePathModelRefresh = await services.initializeAutoCutLocalSpeechTranscriptionSetup();
+    assertEqual(
+      localSpeechSetupCommands[refreshedSamePathModelCommandCount]?.kind,
+      'download-model',
+      'setupAutoCutLocalSpeechTranscriptionModelPreset can refresh the recommended local STT model at the same path',
+    );
+    assertEqual(
+      localSpeechSetupCommands[refreshedSamePathModelCommandCount + 1]?.kind,
+      'probe',
+      'initializeAutoCutLocalSpeechTranscriptionSetup re-probes after a same-path local STT model refresh instead of reusing stale ready cache',
+    );
+    assertEqual(
+      initializedAfterSamePathModelRefresh.status.readiness,
+      'ready',
+      'initializeAutoCutLocalSpeechTranscriptionSetup reports ready only after revalidating the same-path refreshed local STT model',
+    );
     await services.saveAutoCutSpeechTranscriptionSettings({
-      ...initializedLocalSpeechSetup.settings.speechTranscription,
+      ...initializedAfterSamePathModelRefresh.settings.speechTranscription,
       modelPath: '',
     });
     const staleReadyCacheCommandCount = localSpeechSetupCommands.length;
@@ -12589,7 +23531,7 @@ async function run() {
       language: 'auto',
     });
     const blockedExecutableSetupCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         speechTranscriptionCommandReady: true,
         speechTranscriptionToolchainReady: false,
@@ -12669,7 +23611,7 @@ async function run() {
       language: 'auto',
     });
     const staleMissingExecutableSetupCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         speechTranscriptionCommandReady: true,
         speechTranscriptionToolchainReady: false,
@@ -12702,7 +23644,7 @@ async function run() {
       'inspectAutoCutLocalSpeechTranscriptionSetup reports executable runtime download as disabled even when whisper-cli is missing',
     );
     const discoveredSidecarSetupCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         speechTranscriptionCommandReady: true,
         speechTranscriptionToolchainReady: true,
@@ -12769,7 +23711,7 @@ async function run() {
       language: 'auto',
     });
     const missingExecutableSetupCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         speechTranscriptionCommandReady: true,
         speechTranscriptionToolchainReady: false,
@@ -12866,6 +23808,184 @@ async function run() {
       false,
       'inspectAutoCutLocalSpeechTranscriptionSetup continues to fail closed until whisper-cli itself is verified',
     );
+
+    await services.saveAutoCutSpeechTranscriptionSettings({
+      ...settingsAfterMissingExecutableSetup.speechTranscription,
+      executablePath: '',
+      modelPath: '',
+      language: 'auto',
+    });
+    const concurrentSpeechSetupCommands = [];
+    let releaseConcurrentSpeechSetupDownload = () => undefined;
+    const concurrentSpeechSetupDownloadGate = new Promise((resolve) => {
+      releaseConcurrentSpeechSetupDownload = resolve;
+    });
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: false,
+        speechTranscriptionProbeCommandReady: true,
+        speechTranscriptionModelDownloadCommandReady: true,
+        speechTranscriptionExecutableDownloadCommandReady: false,
+      }),
+      probeSpeechTranscription: async (request) => {
+        concurrentSpeechSetupCommands.push({ kind: 'probe', request });
+        const executablePath = request.executablePath || 'D:/Program Files/SDKWork Video Cut/resources/binaries/windows-x86_64/whisper-cli.exe';
+        const modelPath = request.modelPath ?? '';
+        return {
+          ready: Boolean(executablePath && modelPath),
+          executableReady: Boolean(executablePath),
+          modelReady: Boolean(modelPath),
+          executablePath,
+          modelPath,
+          sourceKind: 'bundled-sidecar',
+          diagnostics: modelPath ? [] : ['AutoCut local speech transcription modelPath is not configured.'],
+          defaultExecutableDirectory: 'D:/Program Files/SDKWork Video Cut/resources/binaries/windows-x86_64',
+          defaultExecutablePath: 'D:/Program Files/SDKWork Video Cut/resources/binaries/windows-x86_64/whisper-cli.exe',
+          defaultModelDirectory: 'D:/autocut/media/models/speech',
+          defaultModelPath: 'D:/autocut/media/models/speech/ggml-large-v3-turbo-q5_0.bin',
+          executableStrategy: 'Settings executablePath > SDKWORK_AUTOCUT_WHISPER_EXECUTABLE > verified bundled sidecar > PATH/Homebrew/apt/common local whisper-cli',
+          ...(modelPath ? { versionLine: 'concurrent setup whisper sidecar' } : {}),
+        };
+      },
+      downloadSpeechTranscriptionModel: async (request) => {
+        concurrentSpeechSetupCommands.push({ kind: 'download-model', request });
+        await concurrentSpeechSetupDownloadGate;
+        return {
+          providerId: request.providerId,
+          presetId: request.presetId,
+          fileName: request.fileName,
+          modelPath: 'D:/autocut/media/models/speech/ggml-large-v3-turbo-q5_0.bin',
+          byteSize: 573571072,
+          downloaded: true,
+          sourceUrl: request.url,
+          sha256: request.sha256,
+        };
+      },
+    });
+    const concurrentSpeechSetupEvents = captureEvents(services, 'speechTranscriptionModelDownloadProgress');
+    const firstConcurrentSetup = services.initializeAutoCutLocalSpeechTranscriptionSetup();
+    await flushMicrotasks();
+    const secondConcurrentSetup = services.initializeAutoCutLocalSpeechTranscriptionSetup();
+    await flushMicrotasks();
+    releaseConcurrentSpeechSetupDownload();
+    const [firstConcurrentSetupResult, secondConcurrentSetupResult] = await Promise.all([
+      firstConcurrentSetup,
+      secondConcurrentSetup,
+    ]);
+    concurrentSpeechSetupEvents.stop();
+    assertEqual(
+      firstConcurrentSetupResult.status.readiness,
+      'ready',
+      'first concurrent local STT initialization receives the shared ready result',
+    );
+    assertEqual(
+      secondConcurrentSetupResult.status.readiness,
+      'ready',
+      'second concurrent local STT initialization receives the shared ready result',
+    );
+    assertDeepEqual(
+      concurrentSpeechSetupCommands.map((command) => command.kind),
+      ['probe', 'download-model', 'probe'],
+      'concurrent local STT initialization performs one probe-download-probe sequence instead of duplicating heavy native work',
+    );
+    assertEqual(
+      concurrentSpeechSetupCommands.filter((command) => command.kind === 'download-model').length,
+      1,
+      'initializeAutoCutLocalSpeechTranscriptionSetup coalesces concurrent model initialization into a single native download',
+    );
+    assertEqual(
+      concurrentSpeechSetupEvents.details.filter((event) => event.phase === 'started').length,
+      1,
+      'concurrent local STT initialization emits one visible model download start event',
+    );
+    assertEqual(
+      concurrentSpeechSetupEvents.details.filter((event) => event.phase === 'completed').length,
+      1,
+      'concurrent local STT initialization emits one visible model download completion event',
+    );
+    await services.saveAutoCutSpeechTranscriptionSettings({
+      ...firstConcurrentSetupResult.settings.speechTranscription,
+      executablePath: 'D:/tools/whisper-cli.exe',
+      modelPath: '',
+      language: 'auto',
+      lastProbeReady: true,
+      lastProbeDiagnostics: ['stale probe must be cleared after UI-yielded initialization'],
+    });
+    let initializationDownloadSawUiFrameYield = false;
+    const originalInitializationRequestAnimationFrame = globalThis.requestAnimationFrame;
+    const originalInitializationWindowRequestAnimationFrame = globalThis.window?.requestAnimationFrame;
+    let restoreInitializationUiFrameYieldProbe = () => undefined;
+    try {
+      globalThis.requestAnimationFrame = (callback) => {
+        initializationDownloadSawUiFrameYield = true;
+        callback(0);
+        return 1;
+      };
+      if (globalThis.window) {
+        globalThis.window.requestAnimationFrame = globalThis.requestAnimationFrame;
+      }
+      restoreInitializationUiFrameYieldProbe = () => {
+        if (originalInitializationRequestAnimationFrame === undefined) {
+          delete globalThis.requestAnimationFrame;
+        } else {
+          globalThis.requestAnimationFrame = originalInitializationRequestAnimationFrame;
+        }
+        if (globalThis.window) {
+          if (originalInitializationWindowRequestAnimationFrame === undefined) {
+            delete globalThis.window.requestAnimationFrame;
+          } else {
+            globalThis.window.requestAnimationFrame = originalInitializationWindowRequestAnimationFrame;
+          }
+        }
+      };
+      let initializationProbeModelPath = '';
+      configureAutoCutNativeHostClient(services, {
+        getCapabilities: async () => ({
+          speechTranscriptionModelDownloadCommandReady: true,
+          speechTranscriptionProbeCommandReady: true,
+          speechTranscriptionCommandReady: true,
+          speechTranscriptionToolchainReady: true,
+        }),
+        probeSpeechTranscription: async (request) => ({
+          ready: Boolean(request.executablePath && initializationProbeModelPath),
+          executableReady: Boolean(request.executablePath),
+          modelReady: Boolean(initializationProbeModelPath),
+          executablePath: request.executablePath,
+          modelPath: initializationProbeModelPath,
+          sourceKind: 'settings',
+          diagnostics: initializationProbeModelPath ? [] : ['AutoCut local speech transcription modelPath is not configured.'],
+          defaultExecutablePath: 'D:/tools/whisper-cli.exe',
+          defaultModelPath: 'D:/autocut/media/models/speech/ggml-large-v3-turbo-q5_0.bin',
+          executableStrategy: 'Settings executablePath > verified bundled sidecar > PATH/Homebrew/apt/common local whisper-cli',
+        }),
+        downloadSpeechTranscriptionModel: async (request) => {
+          assertRule(
+            initializationDownloadSawUiFrameYield,
+            'initializeAutoCutLocalSpeechTranscriptionSetup yields one browser frame before starting the heavy native STT model download',
+          );
+          initializationProbeModelPath = 'D:/autocut/media/models/speech/ggml-large-v3-turbo-q5_0.bin';
+          return {
+            providerId: request.providerId,
+            presetId: request.presetId,
+            fileName: request.fileName,
+            modelPath: initializationProbeModelPath,
+            byteSize: 573571072,
+            downloaded: true,
+            sourceUrl: request.url,
+            sha256: request.sha256,
+          };
+        },
+      });
+      const uiYieldedInitialization = await services.initializeAutoCutLocalSpeechTranscriptionSetup();
+      assertEqual(
+        uiYieldedInitialization.status.readiness,
+        'ready',
+        'UI-yielded local STT initialization still returns ready after the final probe verifies the downloaded model',
+      );
+    } finally {
+      restoreInitializationUiFrameYieldProbe();
+    }
     await services.saveAutoCutSpeechTranscriptionSettings({
       ...settingsAfterMissingExecutableSetup.speechTranscription,
       executablePath: '',
@@ -12876,7 +23996,7 @@ async function run() {
       ...defaultSettings.workspace,
       outputDirectory: '',
     });
-    services.configureAutoCutNativeHostClient(createSettingsNativeHostClient());
+    configureAutoCutNativeHostClient(services, createSettingsNativeHostClient());
     await assertRejects(
       () => services.resolveAutoCutLocalSpeechTranscriptionModelPreset({
         ...resolvedLocalSpeechModelPreset,
@@ -13341,7 +24461,7 @@ async function run() {
     assertEqual(speechTranscriptionSettings.speechTranscription.configured, true, 'saveAutoCutSpeechTranscriptionSettings marks the local speech-to-text toolchain as configured');
     const invalidProviderSettings = await services.saveAutoCutSpeechTranscriptionSettings({
       ...speechTranscriptionSettings.speechTranscription,
-      providerId: '文案提取',
+      providerId: '閺傚洦顢嶉幓鎰絿',
     });
     assertEqual(
       invalidProviderSettings.speechTranscription.providerId,
@@ -13407,6 +24527,220 @@ async function run() {
     assertEqual(speechTranscriptionRuntimeConfig.language, 'zh', 'resolveAutoCutSpeechTranscriptionRuntimeConfig returns the saved default speech language');
     assertEqual(speechTranscriptionProbe.ready, true, 'testAutoCutSpeechTranscriptionProvider reports native probe readiness');
     assertEqual(speechTranscriptionSettingsAfterProbe.speechTranscription.lastProbeReady, true, 'testAutoCutSpeechTranscriptionProvider stores the latest probe readiness on settings');
+    const subtitlePacedWorkflowCommands = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        subtitlePacedWorkflowCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'subtitle-paced-native-slice-asset',
+          sandboxPath: `${configuredOutputDirectory}/inputs/subtitle-paced-native-slice-asset.mp4`,
+          byteSize: 3000000,
+          name: 'subtitle-paced.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 90000,
+          width: 1080,
+          height: 1920,
+        };
+      },
+      transcribeMedia: async (request) => {
+        subtitlePacedWorkflowCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'subtitle-paced-transcript-task',
+          configuredOutputDirectory,
+          [
+            {
+              startMs: 0,
+              endMs: 3700,
+              text:
+                'Why native validation matters is simple.',
+              speaker: 'Speaker 1',
+              words: [
+                { startMs: 0, endMs: 650, text: 'Why' },
+                { startMs: 650, endMs: 1200, text: 'native' },
+                { startMs: 1200, endMs: 1900, text: 'validation' },
+                { startMs: 1900, endMs: 2500, text: 'matters' },
+                { startMs: 2500, endMs: 3100, text: 'is' },
+                { startMs: 3100, endMs: 3700, text: 'simple.' },
+              ],
+            },
+            {
+              startMs: 3720,
+              endMs: 8500,
+              text:
+                'Because bad native validation can break review, the native validation problem must be caught before assets are saved.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 8520,
+              endMs: 19000,
+              text:
+                'So native validation verifies every result and the native validation workflow stays safe.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 40000,
+              endMs: 48500,
+              text:
+                'What makes artifact checks reliable is clear. The artifact check shows missing artifact thumbnails before publishing, creating an artifact conflict for reviewers.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 48520,
+              endMs: 59000,
+              text:
+                '\u771f\u6b63\u597d\u7684\u5b57\u5e55\u5e94\u8be5\u8ddf\u7740\u8bb2\u8bdd\u4e00\u70b9\u4e00\u70b9\u51fa\u73b0\u3002\u5b83\u4e0d\u80fd\u628a\u4e00\u6574\u53e5\u8bdd\u957f\u65f6\u95f4\u538b\u5728\u753b\u9762\u5e95\u90e8\u3002\u8fd9\u6837\u624d\u80fd\u4fdd\u6301\u89c2\u770b\u8282\u594f\u6e05\u695a\u3002',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: Boolean(request.executablePath && request.modelPath),
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'settings',
+        diagnostics: [],
+      }),
+      analyzeVideoSliceAudioActivity: async (request) => {
+        subtitlePacedWorkflowCommands.push({ kind: 'analyze-audio-boundaries', request });
+        return createNativeVideoSliceAudioActivityAnalysisResult(request);
+      },
+      sliceVideo: async (request) => {
+        subtitlePacedWorkflowCommands.push({ kind: 'slice', request });
+        const slices = request.clips.map((clip, index) => {
+          const output = createNativeTaskOutputArtifact(
+            'subtitle-paced-native-slice-render-task',
+            clip.outputFileName ?? `subtitle-paced-slice-${index + 1}.mp4`,
+            configuredOutputDirectory,
+          );
+          const thumbnail = createNativeTaskCoverArtifact(
+            'subtitle-paced-native-slice-render-task',
+            `subtitle-paced-thumb-${index + 1}.jpg`,
+            configuredOutputDirectory,
+          );
+          const subtitle = createNativeTaskOutputArtifact(
+            'subtitle-paced-native-slice-render-task',
+            `subtitle-paced-subtitle-${index + 1}.srt`,
+            configuredOutputDirectory,
+          );
+          return {
+            artifactUuid: `subtitle-paced-native-slice-artifact-${index + 1}`,
+            artifactPath: output.artifactPath,
+            thumbnailArtifactUuid: `subtitle-paced-native-slice-thumb-${index + 1}`,
+            thumbnailArtifactPath: thumbnail.artifactPath,
+            taskOutputDir: output.taskOutputDir,
+            byteSize: 234567 + index,
+            thumbnailByteSize: 12345 + index,
+            subtitleArtifactUuid: `subtitle-paced-native-slice-subtitle-${index + 1}`,
+            subtitleArtifactPath: subtitle.artifactPath,
+            subtitleByteSize: 1234 + index,
+            subtitleFormat: 'srt',
+            format: 'mp4',
+            ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+          };
+        });
+        return {
+          taskUuid: 'subtitle-paced-native-slice-render-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: slices[0]?.taskOutputDir ?? configuredOutputDirectory,
+          ffmpegExecutable: 'ffmpeg',
+          slices,
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services, {
+      language: speechTranscriptionSettingsAfterProbe.speechTranscription.language,
+    });
+    await withImmediateTimers(() => processVideoSlice({
+      fileId: 'asset-source-subtitle-paced',
+      file: createTrustedLocalMediaFile(commons, 'D:/media/subtitle-paced.mp4', 'subtitle-paced.mp4'),
+      mode: 'contract-mode',
+      llmModel: 'gemini-3-flash-preview',
+      minDuration: 15,
+      idealDuration: 22,
+      maxDuration: 30,
+      baseAlgorithm: 'scene',
+      highlightEngine: 'emotion',
+      targetAspectRatio: '9:16',
+      videoObjectFit: 'contain',
+      enableCoughFilter: true,
+      enableRepeatFilter: true,
+      enableSubtitles: true,
+      subtitleMode: 'both',
+      subtitleStyleId: 'tiktok',
+      outputRootDir: configuredOutputDirectory,
+    }));
+    const subtitlePacedSliceRequest = subtitlePacedWorkflowCommands.find((command) => command.kind === 'slice')?.request;
+    assertEqual(
+      subtitlePacedSliceRequest?.subtitleFormat,
+      'srt',
+      'video slice native workflow requests SRT subtitles when Smart Slice subtitles are enabled',
+    );
+    assertEqual(
+      subtitlePacedSliceRequest?.subtitleMode,
+      'both',
+      'video slice native workflow preserves the requested subtitle publish mode',
+    );
+    assertRule(
+      (subtitlePacedSliceRequest?.subtitleSegments?.length ?? 0) >= 5,
+      'video slice native workflow splits long STT transcript segments into paced subtitle cues before native rendering',
+    );
+    assertRule(
+      subtitlePacedSliceRequest?.subtitleSegments?.every((segment) =>
+        typeof segment.text === 'string' &&
+        normalizeSubtitleCueText(segment.text).length <= 52 &&
+        segment.endMs > segment.startMs &&
+        segment.endMs - segment.startMs <= 4500
+      ),
+      'video slice native workflow keeps subtitle cues short enough to follow speech progress, complete short sentences, and fit vertical video',
+    );
+    assertRule(
+      subtitlePacedSliceRequest?.subtitleSegments?.some((segment) =>
+        segment.text.startsWith('Why native validation matters') &&
+        !segment.text.includes('before assets are saved')
+      ),
+      'video slice native workflow emits the first paced subtitle chunk in transcript order',
+    );
+    assertRule(
+      subtitlePacedSliceRequest?.subtitleSegments?.some((segment) =>
+        normalizeSubtitleCueText(segment.text) === 'Why native validation matters is simple.' &&
+        segment.startMs === 0 &&
+        segment.endMs === 3700
+      ),
+      'video slice native workflow uses STT word timestamps to pace subtitles at spoken-word boundaries',
+    );
+    const cjkSubtitleSegments = subtitlePacedSliceRequest?.subtitleSegments?.filter((segment) =>
+      /\p{Script=Han}/u.test(segment.text),
+    ) ?? [];
+    assertRule(
+      cjkSubtitleSegments.length >= 3,
+      'video slice native workflow splits long CJK STT transcript segments into multiple paced subtitle cues',
+    );
+    assertRule(
+      cjkSubtitleSegments.every((segment) =>
+        countSubtitleCueDisplayUnits(segment.text) <= 40 &&
+        segment.endMs - segment.startMs <= 4500
+      ),
+      'video slice native workflow keeps CJK subtitle cues compact enough for vertical video, complete short sentences, and speech-progress pacing',
+    );
+    assertRule(
+      !cjkSubtitleSegments.some((segment) => segment.text.includes('閼板奔绗夐弰顖欑閺佹潙褰炵拠婵嬫毐閺冨爼妫块崢瀣躬閻㈠娼版惔鏇㈠劥瑜板崬鎼风憴鍌滄箙')),
+      'video slice native workflow never forwards a full long CJK sentence as one static subtitle overlay',
+    );
+    services.resetAutoCutNativeHostClient();
     assertEqual(
       changedSpeechTranscriptionSettingsAfterProbe.speechTranscription.lastProbeReady,
       undefined,
@@ -13430,7 +24764,7 @@ async function run() {
       modelPath: 'D:/models/ggml-large-v3-turbo.gguf',
     });
     const unverifiedLocalProviderTranscriptionRequests = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         speechTranscriptionCommandReady: true,
@@ -13490,7 +24824,7 @@ async function run() {
     });
     const autoInitializedLocalProviderCommands = [];
     const autoInitializedSpeechDiagnostics = await captureConsoleDiagnosticsAsync(async () => {
-      services.configureAutoCutNativeHostClient({
+      configureAutoCutNativeHostClient(services, {
         getCapabilities: async () => ({
           mediaImportCommandReady: true,
           speechTranscriptionCommandReady: true,
@@ -13588,7 +24922,7 @@ async function run() {
       language: 'auto',
     });
     const bundledSidecarLocalProviderCommands = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         speechTranscriptionCommandReady: true,
@@ -13690,7 +25024,7 @@ async function run() {
     });
     const missingExecutableLocalProviderCommands = [];
     const missingExecutableSpeechDiagnostics = await captureConsoleDiagnosticsAsync(async () => {
-      services.configureAutoCutNativeHostClient({
+      configureAutoCutNativeHostClient(services, {
         getCapabilities: async () => ({
           mediaImportCommandReady: true,
           speechTranscriptionCommandReady: true,
@@ -13756,7 +25090,7 @@ async function run() {
       language: speechTranscriptionSettingsAfterProbe.speechTranscription.language,
     });
     const incompleteLocalProviderTranscriptionRequests = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         speechTranscriptionCommandReady: true,
@@ -13802,7 +25136,7 @@ async function run() {
       language: speechTranscriptionSettingsAfterProbe.speechTranscription.language,
     });
     const missingProbeCommandTranscriptionRequests = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         speechTranscriptionCommandReady: true,
@@ -13834,7 +25168,7 @@ async function run() {
     });
     const localProviderTranscriptionRequests = [];
     const localProviderExecutionProbeRequests = [];
-    services.configureAutoCutNativeHostClient({
+    configureAutoCutNativeHostClient(services, {
       getCapabilities: async () => ({
         mediaImportCommandReady: true,
         speechTranscriptionCommandReady: true,
@@ -13867,6 +25201,243 @@ async function run() {
       'transcribeAutoCutMediaWithConfiguredProvider performs a fresh execution preflight probe before local STT dispatch',
     );
     assertEqual(localProviderTranscription.segments.length, 2, 'transcribeAutoCutMediaWithConfiguredProvider returns normalized local provider segments');
+    assertSegmentsOrderedAndNonOverlapping(
+      localProviderTranscription.segments,
+      'transcribeAutoCutMediaWithConfiguredProvider returns local STT segments as an ordered non-overlapping timeline',
+    );
+    await saveVerifiedLocalSpeechTranscriptionSettings(services, {
+      language: speechTranscriptionSettingsAfterProbe.speechTranscription.language,
+    });
+    const fastPreviewLocalProviderRequests = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+      }),
+      probeSpeechTranscription: async (request) => ({
+        ready: Boolean(request.executablePath && request.modelPath),
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'fast preview STT workflow preset contract',
+      }),
+      transcribeMedia: async (request) => {
+        fastPreviewLocalProviderRequests.push(request);
+        return createStandardNativeVideoSliceTranscriptResult(request, 'provider-local-fast-preview-transcript-task');
+      },
+    });
+    const fastPreviewLocalProviderTranscription = await services.transcribeAutoCutMediaWithConfiguredProvider({
+      assetUuid: 'provider-local-fast-preview-asset',
+      language: 'auto',
+      outputRootDir: 'D:/autocut/media',
+      workflowPurpose: 'smart-slice-transcript-evidence',
+      sttPresetId: 'smart-slice-fast-preview',
+    });
+    assertEqual(
+      fastPreviewLocalProviderTranscription.sttPresetId,
+      'smart-slice-fast-preview',
+      'transcribeAutoCutMediaWithConfiguredProvider returns the resolved STT workflow preset id for Smart Slice evidence',
+    );
+    assertEqual(
+      fastPreviewLocalProviderTranscription.executionProfile,
+      'fast-preview',
+      'transcribeAutoCutMediaWithConfiguredProvider returns the resolved STT execution profile for Smart Slice evidence',
+    );
+    assertEqual(
+      fastPreviewLocalProviderRequests[0]?.sttPresetId,
+      'smart-slice-fast-preview',
+      'transcribeAutoCutMediaWithConfiguredProvider forwards the selected STT workflow preset id to native transcription',
+    );
+    assertEqual(
+      fastPreviewLocalProviderRequests[0]?.sttExecutionProfile,
+      'fast-preview',
+      'transcribeAutoCutMediaWithConfiguredProvider forwards the selected STT execution profile to native transcription',
+    );
+    assertEqual(
+      fastPreviewLocalProviderRequests[0]?.whisperChunkParallelism,
+      4,
+      'transcribeAutoCutMediaWithConfiguredProvider forwards fast-preview chunk parallelism to native long-video STT',
+    );
+    assertEqual(
+      fastPreviewLocalProviderRequests[0]?.whisperChunkThreadCount,
+      2,
+      'transcribeAutoCutMediaWithConfiguredProvider forwards fast-preview per-chunk thread count to native long-video STT',
+    );
+    assertEqual(
+      fastPreviewLocalProviderRequests[0]?.whisperChunkSourceStrategy,
+      'source-direct',
+      'transcribeAutoCutMediaWithConfiguredProvider forwards fast-preview source-direct chunking to native long-video STT',
+    );
+    assertNotOwnProperty(
+      fastPreviewLocalProviderRequests[0],
+      'whisperAudioContext',
+      'transcribeAutoCutMediaWithConfiguredProvider does not forward hallucination-prone audio context truncation by default',
+    );
+    assertEqual(
+      fastPreviewLocalProviderRequests[0]?.whisperBeamSize,
+      1,
+      'transcribeAutoCutMediaWithConfiguredProvider forwards fast-preview local Whisper beam size to native STT',
+    );
+    assertEqual(
+      fastPreviewLocalProviderRequests[0]?.whisperBestOf,
+      1,
+      'transcribeAutoCutMediaWithConfiguredProvider forwards fast-preview local Whisper best-of count to native STT',
+    );
+    assertEqual(
+      fastPreviewLocalProviderRequests[0]?.whisperNoFallback,
+      true,
+      'transcribeAutoCutMediaWithConfiguredProvider forwards fast-preview local Whisper no-fallback mode to native STT',
+    );
+    await saveVerifiedLocalSpeechTranscriptionSettings(services, {
+      language: speechTranscriptionSettingsAfterProbe.speechTranscription.language,
+    });
+    const repeatedSpeechPhrase = decodeEscapedText('\\u540c\\u65f6\\u7ed9\\u81ea\\u5df1\\u7559\\u8db3');
+    const repeatedSpeechTail = decodeEscapedText('\\u957f\\u671f\\u7684\\u53d1\\u5c55\\u56f0\\u4ef6');
+    const repeatedSpeechText = `${repeatedSpeechPhrase},${repeatedSpeechPhrase},${repeatedSpeechTail}.`;
+    const repeatedSpeechRequests = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+      }),
+      transcribeMedia: async (request) => {
+        repeatedSpeechRequests.push(request);
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          `provider-local-repeat-dedupe-${repeatedSpeechRequests.length}`,
+          'D:/autocut/media',
+          [
+            {
+              startMs: 1000,
+              endMs: 7200,
+              text: repeatedSpeechText,
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 7600,
+              endMs: 12200,
+              text: 'Keep the rest of the transcript intact.',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: Boolean(request.executablePath && request.modelPath),
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'settings',
+        diagnostics: [],
+        versionLine: 'provider repeated speech dedupe contract',
+      }),
+    });
+    const dedupedRepeatedSpeechTranscription = await services.transcribeAutoCutMediaWithConfiguredProvider({
+      assetUuid: 'provider-local-repeat-dedupe-asset',
+      language: 'auto',
+      outputRootDir: 'D:/autocut/media',
+      dedupeRepeatedSpeech: true,
+    });
+    const preservedRepeatedSpeechTranscription = await services.transcribeAutoCutMediaWithConfiguredProvider({
+      assetUuid: 'provider-local-repeat-preserve-asset',
+      language: 'auto',
+      outputRootDir: 'D:/autocut/media',
+      dedupeRepeatedSpeech: false,
+    });
+    assertEqual(
+      repeatedSpeechRequests[0]?.dedupeRepeatedSpeech,
+      true,
+      'transcribeAutoCutMediaWithConfiguredProvider forwards enabled STT repeated-speech dedupe to the provider request',
+    );
+    assertEqual(
+      repeatedSpeechRequests[1]?.dedupeRepeatedSpeech,
+      false,
+      'transcribeAutoCutMediaWithConfiguredProvider forwards disabled STT repeated-speech dedupe to the provider request',
+    );
+    assertEqual(
+      dedupedRepeatedSpeechTranscription.segments[0]?.text,
+      `${repeatedSpeechPhrase},${repeatedSpeechTail}.`,
+      'transcribeAutoCutMediaWithConfiguredProvider removes adjacent repeated speech phrases during STT normalization when enabled',
+    );
+    assertRule(
+      !dedupedRepeatedSpeechTranscription.text.includes(`${repeatedSpeechPhrase},${repeatedSpeechPhrase}`),
+      'transcribeAutoCutMediaWithConfiguredProvider returns aggregate transcript text without adjacent repeated speech when STT dedupe is enabled',
+    );
+    assertEqual(
+      preservedRepeatedSpeechTranscription.segments[0]?.text,
+      repeatedSpeechText,
+      'transcribeAutoCutMediaWithConfiguredProvider preserves repeated speech phrases when STT dedupe is disabled',
+    );
+    await saveVerifiedLocalSpeechTranscriptionSettings(services, {
+      language: speechTranscriptionSettingsAfterProbe.speechTranscription.language,
+    });
+    const secondsScaleLocalProviderRequests = [];
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        mediaImportCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+      }),
+      transcribeMedia: async (request) => {
+        secondsScaleLocalProviderRequests.push(request);
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'provider-local-seconds-scale-transcript-task',
+          'D:/autocut/media',
+          [
+            {
+              startMs: 0,
+              endMs: 8.5,
+              text:
+                'Why provider timestamp normalization matters is simple. Because tiny speech ranges break planning, the provider result must be repaired before storage.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 8.52,
+              endMs: 19,
+              text:
+                'So the transcription service converts seconds-scale millisecond fields into a standard millisecond timeline.',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: Boolean(request.executablePath && request.modelPath),
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'settings',
+        diagnostics: [],
+        versionLine: 'provider seconds timestamp contract',
+      }),
+    });
+    const secondsScaleLocalProviderTranscription = await services.transcribeAutoCutMediaWithConfiguredProvider({
+      assetUuid: 'provider-local-seconds-scale-asset',
+      language: 'en',
+      outputRootDir: 'D:/autocut/media',
+    });
+    assertEqual(
+      secondsScaleLocalProviderTranscription.segments.at(-1)?.endMs,
+      19_000,
+      'transcribeAutoCutMediaWithConfiguredProvider normalizes seconds-scale startMs/endMs provider timestamps to milliseconds',
+    );
+    assertSegmentsOrderedAndNonOverlapping(
+      secondsScaleLocalProviderTranscription.segments,
+      'transcribeAutoCutMediaWithConfiguredProvider keeps seconds-normalized provider timestamps ordered and non-overlapping',
+    );
+    assertEqual(
+      secondsScaleLocalProviderRequests.length,
+      1,
+      'transcribeAutoCutMediaWithConfiguredProvider still dispatches seconds-scale provider transcription exactly once',
+    );
+    await saveVerifiedLocalSpeechTranscriptionSettings(services, {
+      language: speechTranscriptionSettingsAfterProbe.speechTranscription.language,
+    });
     assertEqual(
       localProviderTranscriptionRequests[0]?.providerId,
       'local-whisper-cli',
@@ -13997,10 +25568,173 @@ async function run() {
       outputRootDir: 'D:/autocut/media',
     });
     assertEqual(configuredApiProviderTranscription.providerId, 'openai-transcription', 'API STT provider transcription result records the selected provider id');
+    assertEqual(
+      configuredApiProviderTranscription.standardTranscript?.schema,
+      'smart-slice.transcript.v1',
+      'API STT provider transcription returns the canonical Smart Slice transcript schema',
+    );
+    assertEqual(
+      configuredApiProviderTranscription.standardTranscript?.segments?.[0]?.speakerId,
+      'speaker-1',
+      'API STT provider transcription normalizes speaker labels into stable speaker ids',
+    );
+    assertEqual(
+      configuredApiProviderTranscription.standardTranscript?.speakers?.[0]?.label,
+      'Speaker 1',
+      'API STT provider transcription records speaker labels for diarization-aware planning',
+    );
     assertEqual(configuredApiProviderTranscription.segments[0]?.text, 'API provider transcript.', 'API STT provider bridge returns normalized transcript segments');
     assertEqual(apiProviderBridgeCalls.length, 1, 'configured API STT provider dispatches exactly once through the standard provider bridge');
     assertEqual(apiProviderBridgeCalls[0]?.runtime.providerId, 'openai-transcription', 'API STT provider bridge receives the selected provider runtime');
     assertEqual(apiProviderBridgeCalls[0]?.runtime.sessionApiKey, 'sk-stt-openai-provider', 'API STT provider bridge receives the API key only inside runtime bridge context');
+    const smartSliceCloudPreset = types.AUTOCUT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESETS.find((preset) => preset.id === 'smart-slice-cloud-stt');
+    assertEqual(
+      smartSliceCloudPreset?.available,
+      true,
+      'Smart Slice cloud STT workflow preset is available as the commercial default provider route',
+    );
+    assertEqual(
+      smartSliceCloudPreset?.recommended,
+      true,
+      'Smart Slice cloud STT workflow preset is marked as the commercial recommended mode',
+    );
+    assertEqual(
+      types.AUTOCUT_DEFAULT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESET_ID,
+      'smart-slice-cloud-stt',
+      'Smart Slice default STT workflow preset uses cloud STT for commercial large-video throughput',
+    );
+    assertEqual(
+      types.AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER_DEFINITIONS.find((provider) => provider.id === 'openai-transcription')
+        ?.capabilities.supportsSpeakerDiarization,
+      true,
+      'OpenAI STT provider declares speaker diarization support for multi-speaker Smart Slice modes',
+    );
+    services.configureAutoCutSpeechTranscriptionProviderBridge({
+      async transcribe(request, runtime) {
+        return {
+          artifactUuid: 'api-provider-unsorted-overlap-artifact',
+          taskUuid: 'api-provider-unsorted-overlap-task',
+          sourceAssetUuid: request.assetUuid,
+          transcriptPath: '',
+          taskOutputDir: request.outputRootDir ?? '',
+          language: request.language ?? runtime.language,
+          segments: [
+            {
+              startMs: 4_000,
+              endMs: 7_000,
+              text: 'Second API sentence.',
+            },
+            {
+              startMs: 1_000,
+              endMs: 4_050,
+              text: 'First API sentence.',
+            },
+          ],
+          providerId: runtime.providerId,
+        };
+      },
+    });
+    const normalizedApiProviderTimeline = await services.transcribeAutoCutMediaWithConfiguredProvider({
+      assetUuid: 'api-provider-unsorted-overlap-asset',
+      language: 'en',
+      outputRootDir: 'D:/autocut/media',
+    });
+    assertDeepEqual(
+      normalizedApiProviderTimeline.segments.map((segment) => ({
+        startMs: segment.startMs,
+        endMs: segment.endMs,
+        text: segment.text,
+      })),
+      [
+        {
+          startMs: 1_000,
+          endMs: 4_050,
+          text: 'First API sentence.',
+        },
+        {
+          startMs: 4_050,
+          endMs: 7_000,
+          text: 'Second API sentence.',
+        },
+      ],
+      'transcribeAutoCutMediaWithConfiguredProvider sorts and repairs lightly overlapping provider STT segments',
+    );
+    assertSegmentsOrderedAndNonOverlapping(
+      normalizedApiProviderTimeline.segments,
+      'transcribeAutoCutMediaWithConfiguredProvider normalizes provider STT segments into a stable planning timeline',
+    );
+    services.configureAutoCutSpeechTranscriptionProviderBridge({
+      async transcribe() {
+        return {
+          artifactUuid: 'api-provider-tail-filler-overlap-artifact',
+          taskUuid: 'api-provider-tail-filler-overlap-task',
+          segments: [
+            {
+              startMs: 43_200,
+              endMs: 60_900,
+              text: 'Because the tail example shows the real payoff, so the solution clamps only the final segment and preserves the complete story.',
+            },
+            {
+              startMs: 59_980,
+              endMs: 61_100,
+              text: 'um',
+            },
+          ],
+        };
+      },
+    });
+    const normalizedApiProviderTailFillerTimeline = await services.transcribeAutoCutMediaWithConfiguredProvider({
+      assetUuid: 'api-provider-tail-filler-overlap-asset',
+      language: 'en',
+      outputRootDir: 'D:/autocut/media',
+    });
+    assertDeepEqual(
+      normalizedApiProviderTailFillerTimeline.segments.map((segment) => ({
+        startMs: segment.startMs,
+        endMs: segment.endMs,
+        text: segment.text,
+      })),
+      [
+        {
+          startMs: 43_200,
+          endMs: 60_900,
+          text: 'Because the tail example shows the real payoff, so the solution clamps only the final segment and preserves the complete story.',
+        },
+      ],
+      'transcribeAutoCutMediaWithConfiguredProvider drops severely overlapping low-information filler instead of rejecting the STT timeline',
+    );
+    assertSegmentsOrderedAndNonOverlapping(
+      normalizedApiProviderTailFillerTimeline.segments,
+      'transcribeAutoCutMediaWithConfiguredProvider keeps tail filler overlap repair output ordered and non-overlapping',
+    );
+    services.configureAutoCutSpeechTranscriptionProviderBridge({
+      async transcribe() {
+        return {
+          artifactUuid: 'api-provider-severe-overlap-artifact',
+          taskUuid: 'api-provider-severe-overlap-task',
+          segments: [
+            {
+              startMs: 1_000,
+              endMs: 4_500,
+              text: 'First severe overlap sentence.',
+            },
+            {
+              startMs: 4_000,
+              endMs: 7_000,
+              text: 'Second severe overlap sentence.',
+            },
+          ],
+        };
+      },
+    });
+    await assertRejects(
+      () => services.transcribeAutoCutMediaWithConfiguredProvider({
+        assetUuid: 'api-provider-severe-overlap-asset',
+        language: 'en',
+      }),
+      'overlapping speech segments',
+      'transcribeAutoCutMediaWithConfiguredProvider rejects provider STT segments whose overlap exceeds the repair tolerance',
+    );
     services.configureAutoCutSpeechTranscriptionProviderBridge({
       async transcribe() {
         return {
@@ -14216,7 +25950,7 @@ async function run() {
     const isolatedRuntimeLlmSecretValues = new Map();
     const isolatedRuntimeSecretCommands = [];
     services.configureAutoCutRuntimeEnvironment('dev');
-    services.configureAutoCutNativeHostClient(services.createAutoCutNativeHostClient(async (command, args) => {
+    configureAutoCutNativeHostClient(services, services.createAutoCutNativeHostClient(async (command, args) => {
       isolatedRuntimeSecretCommands.push({ command, args });
       if (command === 'autocut_host_capabilities') {
         return {
@@ -14367,7 +26101,6 @@ async function run() {
         name: 'slicer with external URL instead of desktop local source',
         process: processVideoSlice,
         params: {
-          fileId: 'asset-source-slicer-url',
           url: 'https://video.example.com/source.mp4',
           mode: 'contract-mode',
           llmModel: 'gpt-4o',
@@ -14380,8 +26113,8 @@ async function run() {
           enableRepeatFilter: true,
           enableSubtitles: true,
         },
-        expectFailedTask: true,
-        expectedMessagePart: 'trusted local desktop media file',
+        expectFailedTask: false,
+        expectedMessagePart: 'external URL sources yet',
       },
       {
         name: 'extractor text with unsupported browser fallback',
@@ -14482,8 +26215,6 @@ async function run() {
           file: workflowVideoFile('voice-translate.mp4'),
           sourceLang: 'zh',
           targetLang: 'en',
-          voiceCloneSync: true,
-          bgmHandling: 'keep',
         },
         expectFailedTask: true,
         expectedMessagePart: 'trusted local desktop media file',
@@ -14624,8 +26355,6 @@ async function run() {
         params: {
           sourceLang: 'zh',
           targetLang: 'en',
-          voiceCloneSync: true,
-          bgmHandling: 'keep',
         },
       },
     ];

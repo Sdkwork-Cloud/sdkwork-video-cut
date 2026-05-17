@@ -27,11 +27,21 @@ const defaultManifestRelativePath = path.join(
   'speech-transcription.toolchain.json',
 );
 const defaultManifestPath = path.join(repositoryRoot, defaultManifestRelativePath);
+const AUTOCUT_SPEECH_ACCELERATION_BACKENDS = new Set([
+  'cpu',
+  'cuda',
+  'vulkan',
+  'metal',
+  'coreml',
+  'openvino',
+  'kompute',
+]);
 
 export function createAutoCutSpeechSidecarPlan({
   manifestPath = defaultManifestPath,
   platform,
   sourcePath,
+  accelerationBackend,
   acceptLicense = false,
   dryRun = false,
 } = {}) {
@@ -72,11 +82,15 @@ export function createAutoCutSpeechSidecarPlan({
     platformRelativeDirectory,
     sidecarRoot,
   });
+  const resolvedAccelerationBackend = accelerationBackend
+    ? normalizeAccelerationBackend(accelerationBackend)
+    : inferAutoCutSpeechSidecarAccelerationBackend({ companionFiles });
   const nextManifest = structuredClone(manifest);
   nextManifest.platforms[normalizedPlatform].integrity = {
     sha256,
     byteSize,
   };
+  nextManifest.platforms[normalizedPlatform].accelerationBackend = resolvedAccelerationBackend;
   nextManifest.platforms[normalizedPlatform].companionFiles = companionFiles.map((file) => ({
     relativePath: file.relativePath,
     integrity: file.integrity,
@@ -92,6 +106,7 @@ export function createAutoCutSpeechSidecarPlan({
     binaryName: platformEntry.binaryName,
     sha256,
     byteSize,
+    accelerationBackend: resolvedAccelerationBackend,
     companionFiles,
     bundledReady: true,
     platformBundledReady: true,
@@ -148,6 +163,7 @@ export function createAutoCutSpeechSidecarReadinessReport({
   assertInsideDirectory(sidecarPath, sidecarRoot);
   const sidecarPresent = fs.existsSync(sidecarPath) && fs.statSync(sidecarPath).isFile();
   const integrity = normalizeIntegrity(platformEntry.integrity);
+  const accelerationBackend = normalizeAccelerationBackend(platformEntry.accelerationBackend);
   const placeholderIntegrity = isPlaceholderIntegrity(integrity);
   const integrityReady = sidecarPresent && !placeholderIntegrity && verifySidecarIntegrity(sidecarPath, integrity);
   const companionFiles = normalizeCompanionFileReports(platformEntry.companionFiles, sidecarRoot);
@@ -193,6 +209,7 @@ export function createAutoCutSpeechSidecarReadinessReport({
     sidecarPresent,
     placeholderIntegrity,
     integrityReady,
+    accelerationBackend,
     companionFiles,
     companionFilesReady,
     requireBundled: Boolean(requireBundled),
@@ -248,6 +265,7 @@ function validateManifest(manifest) {
     throw new Error('speech toolchain manifest license metadata must be complete.');
   }
   for (const [platformKey, platformEntry] of Object.entries(manifest.platforms ?? {})) {
+    normalizeAccelerationBackend(platformEntry?.accelerationBackend);
     for (const companionFile of platformEntry?.companionFiles ?? []) {
       validateRelativePath(companionFile.relativePath);
       const integrity = normalizeIntegrity(companionFile.integrity);
@@ -256,6 +274,14 @@ function validateManifest(manifest) {
       }
     }
   }
+}
+
+function normalizeAccelerationBackend(value) {
+  const backend = String(value ?? 'cpu').trim().toLowerCase();
+  if (!AUTOCUT_SPEECH_ACCELERATION_BACKENDS.has(backend)) {
+    throw new Error(`speech sidecar accelerationBackend must be one of ${Array.from(AUTOCUT_SPEECH_ACCELERATION_BACKENDS).join(', ')}.`);
+  }
+  return backend;
 }
 
 function normalizeIntegrity(integrity) {
@@ -314,6 +340,31 @@ function discoverAutoCutSpeechSidecarCompanionFiles({
         },
       };
     });
+}
+
+function inferAutoCutSpeechSidecarAccelerationBackend({ companionFiles }) {
+  const companionNames = companionFiles
+    .map((file) => file.relativePath.toLowerCase())
+    .join('\n');
+  if (companionNames.includes('ggml-cuda') || companionNames.includes('cublas') || companionNames.includes('cudart')) {
+    return 'cuda';
+  }
+  if (companionNames.includes('ggml-vulkan') || companionNames.includes('vulkan')) {
+    return 'vulkan';
+  }
+  if (companionNames.includes('openvino')) {
+    return 'openvino';
+  }
+  if (companionNames.includes('ggml-kompute') || companionNames.includes('kompute')) {
+    return 'kompute';
+  }
+  if (companionNames.includes('coreml') || companionNames.includes('core-ml')) {
+    return 'coreml';
+  }
+  if (companionNames.includes('ggml-metal') || companionNames.includes('metal')) {
+    return 'metal';
+  }
+  return 'cpu';
 }
 
 function isAutoCutSpeechSidecarCompanionFile(platform, fileName) {
@@ -435,6 +486,13 @@ function parseArgs(argv) {
         commandName: 'AutoCut speech sidecar preparation',
       });
       options.sourcePath = option.value;
+      index = option.nextIndex;
+    } else if (arg === '--acceleration-backend') {
+      const option = readAutoCutCliOptionValue(args, index, {
+        optionName: arg,
+        commandName: 'AutoCut speech sidecar preparation',
+      });
+      options.accelerationBackend = option.value;
       index = option.nextIndex;
     } else if (arg === '--manifest') {
       const option = readAutoCutCliOptionValue(args, index, {

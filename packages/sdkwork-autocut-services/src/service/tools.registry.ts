@@ -79,6 +79,16 @@ export const AUTOCUT_TOOL_DEFINITIONS: AutoCutToolDefinition[] = [
     route: '/video-enhance',
   },
   {
+    id: 'video-dedup',
+    nameKey: 'tool.videoDedup.name',
+    defaultName: 'Video deduplication',
+    icon: 'copy',
+    category: 'ai',
+    descriptionKey: 'tool.videoDedup.description',
+    defaultDescription: 'Detect exact, near-duplicate, audio, visual, semantic, and template reuse across videos.',
+    route: '/video-dedup',
+  },
+  {
     id: 'subtitle-translate',
     nameKey: 'tool.subtitleTranslate.name',
     defaultName: 'Subtitle translation',

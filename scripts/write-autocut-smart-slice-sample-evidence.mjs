@@ -20,6 +20,9 @@ import {
   readAutoCutCliOptionValue,
 } from './autocut-cli-args.mjs';
 import {
+  AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD,
+} from '../packages/sdkwork-autocut-types/src/index.ts';
+import {
   createAutoCutHostPlatformKey,
   normalizeAutoCutReleasePlatform,
 } from './autocut-release-platforms.mjs';
@@ -37,6 +40,19 @@ const sliceOneThumbnailRelativePath = 'artifacts/smart-slice-media/smart-slice-s
 const sliceTwoThumbnailRelativePath = 'artifacts/smart-slice-media/smart-slice-sample-02.jpg';
 const sliceOneSubtitleRelativePath = 'artifacts/smart-slice-media/smart-slice-sample-01.srt';
 const sliceTwoSubtitleRelativePath = 'artifacts/smart-slice-media/smart-slice-sample-02.srt';
+const sampleAudioCleanupEvidence = {
+  audioCleanupProfile: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.audioCleanupProfile,
+  noiseReductionApplied: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.defaultNoiseReductionApplied,
+  boundaryDecisionSource: 'combined',
+  audioActivityAnalysisFilter: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.defaultNoiseReductionApplied
+    ? AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.requiredAudioActivityAnalysisFilter
+    : AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.rawAudioActivityAnalysisFilter,
+  leadingSilenceMs: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.maxLeadingSilenceMs,
+  trailingSilenceMs: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.maxTrailingSilenceMs,
+  leadingSilenceTrimMs: 0,
+  trailingSilenceTrimMs: 0,
+  tailTreatment: 'none',
+};
 
 export function createAutoCutSmartSliceSampleEvidencePlan({
   rootDir = process.cwd(),
@@ -174,6 +190,7 @@ export function writeAutoCutSmartSliceSampleEvidence({
     task: {
       resultCount: taskValidation.summary.totalSlices,
       blockers: taskValidation.blockers,
+      reviewWarnings: taskValidation.reviewWarnings,
     },
     ffmpeg: {
       path: plan.ffmpegPath,
@@ -182,6 +199,7 @@ export function writeAutoCutSmartSliceSampleEvidence({
     quality: {
       summary: quality.evidence.summary,
       blockers: quality.evidence.blockers,
+      reviewWarnings: quality.evidence.reviewWarnings,
     },
     mediaArtifacts: {
       summary: mediaArtifacts.evidence.summary,
@@ -287,6 +305,10 @@ function createSampleTaskEvidence(plan) {
         speechEndMs: 41700,
         boundaryPaddingBeforeMs: 200,
         boundaryPaddingAfterMs: 250,
+        ...sampleAudioCleanupEvidence,
+        audioActivityStartMs: 200,
+        audioActivityEndMs: 41700,
+        audioActivityConfidence: 0.92,
         transcriptText: [
           'Why short videos fail is simple.',
           'The opening hides the result.',
@@ -336,13 +358,17 @@ function createSampleTaskEvidence(plan) {
         sentenceBoundaryIntegrityScore: 0.84,
         sentenceBoundaryIntegrityGrade: 'repaired',
         sentenceBoundaryIssues: ['sentence-open-ending-repaired'],
-        risks: [],
+        risks: ['connector-repaired'],
         sourceStartMs: 44000,
         sourceEndMs: 80000,
         speechStartMs: 44200,
         speechEndMs: 79750,
         boundaryPaddingBeforeMs: 200,
         boundaryPaddingAfterMs: 250,
+        ...sampleAudioCleanupEvidence,
+        audioActivityStartMs: 44200,
+        audioActivityEndMs: 79750,
+        audioActivityConfidence: 0.91,
         transcriptText: [
           'The practical fix is to show the outcome first.',
           'Use one clear example to prove the point.',

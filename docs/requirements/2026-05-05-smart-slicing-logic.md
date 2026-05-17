@@ -138,7 +138,7 @@ validateAutoCutProcessingSource({ ...params, allowExternalUrl: true });
 
 校验通过后立即创建本地 `AppTask`：
 
-1. `id = createAutoCutId('newTask')`
+1. `id = createAutoCutTaskId('slice')`
 2. `name = file.name`，否则 URL hostname/URL，否则 `视频切片_<mode>.mp4`
 3. `type = 视频切片`
 4. `status = pending`
@@ -393,7 +393,7 @@ request 字段：
 每次 native 切片创建一个 `ops_task` 和一个任务输出目录：
 
 ```text
-{outputRootDir}/tasks/{task_uuid}/outputs/
+{outputRootDir}/tasks/{task_uuid}/
 ```
 
 `ops_task.input_json` 记录：

@@ -10,7 +10,9 @@ import {
   addAsset,
   addMessage,
   addTask,
+  assertAutoCutMediaHasAudioStream,
   createAutoCutId,
+  createAutoCutTaskId,
   createAutoCutTaskName,
   createAutoCutTextObjectUrl,
   createAutoCutTimestamp,
@@ -41,7 +43,7 @@ type CompletedExtractorTextTaskData = Pick<
 function createExtractorTextTask(params: ExtractorTextParams): AppTask {
   const createdAt = createAutoCutTimestamp();
   return {
-    id: createAutoCutId('newTask'),
+    id: createAutoCutTaskId('text'),
     name: createAutoCutTaskName({ file: params.file, fallbackSourceName: 'source-transcript.txt', createdAt }),
     type: AUTOCUT_TASK_TYPE.textExtraction,
     status: AUTOCUT_TASK_STATUS.pending,
@@ -208,6 +210,7 @@ export async function processExtractorText(params: ExtractorTextParams) {
         sourcePath: desktopSourcePath,
         ...(outputRootDir ? { outputRootDir } : {}),
       });
+      assertAutoCutMediaHasAudioStream(importedMedia, 'speech transcription');
       await updateTask(newTask.id, {
         status: AUTOCUT_TASK_STATUS.processing,
         progress: 45,

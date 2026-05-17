@@ -4,8 +4,10 @@ import {
   addAsset,
   addMessage,
   addTask,
+  assertAutoCutMediaHasVideoStream,
   assertAutoCutNativeArtifactInsideTaskOutputDir,
   createAutoCutId,
+  createAutoCutTaskId,
   createAutoCutTaskName,
   createAutoCutTimestamp,
   failAutoCutProcessingTask,
@@ -23,7 +25,7 @@ function resolveDesktopSourcePath(file: File | null | undefined) {
 function createVideoGifTask(params: VideoGifParams): AppTask {
   const createdAt = createAutoCutTimestamp();
   return {
-    id: createAutoCutId('newTask'),
+    id: createAutoCutTaskId('gif'),
     name: createAutoCutTaskName({ file: params.file, fallbackSourceName: 'source-video.mp4', createdAt }),
     type: AUTOCUT_TASK_TYPE.videoGif,
     status: AUTOCUT_TASK_STATUS.pending,
@@ -94,6 +96,7 @@ export async function processVideoGif(params: VideoGifParams) {
         sourcePath: desktopSourcePath,
         ...(outputRootDir ? { outputRootDir } : {}),
       });
+      assertAutoCutMediaHasVideoStream(importedMedia, 'video GIF generation');
       await updateTask(newTask.id, {
         status: AUTOCUT_TASK_STATUS.processing,
         progress: 60,

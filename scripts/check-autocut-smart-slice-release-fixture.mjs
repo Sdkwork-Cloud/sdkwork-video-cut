@@ -26,6 +26,9 @@ import {
   normalizeAutoCutCliArgs,
   readAutoCutCliOptionValue,
 } from './autocut-cli-args.mjs';
+import {
+  AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD,
+} from '../packages/sdkwork-autocut-types/src/index.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const releaseFixtureSchemaVersion = '2026-05-06.autocut-smart-slice-release-fixture.v1';
@@ -34,6 +37,20 @@ const qualityEvidenceRelativePath = 'artifacts/release/autocut-smart-slice-quali
 const mediaArtifactsEvidenceRelativePath = 'artifacts/release/autocut-smart-slice-media-artifacts-evidence.json';
 const releaseEvidenceRelativePath = 'artifacts/release/autocut-release-evidence.json';
 const defaultFixtureReportRelativePath = 'artifacts/release/autocut-smart-slice-release-fixture.json';
+const fixtureAudioCleanupEvidence = {
+  audioCleanupProfile: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.audioCleanupProfile,
+  noiseReductionApplied: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.defaultNoiseReductionApplied,
+  boundaryDecisionSource: 'combined',
+  audioActivityConfidence: 0.94,
+  audioActivityAnalysisFilter: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.defaultNoiseReductionApplied
+    ? AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.requiredAudioActivityAnalysisFilter
+    : AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.rawAudioActivityAnalysisFilter,
+  leadingSilenceMs: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.maxLeadingSilenceMs,
+  trailingSilenceMs: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.maxTrailingSilenceMs,
+  leadingSilenceTrimMs: 0,
+  trailingSilenceTrimMs: 0,
+  tailTreatment: 'none',
+};
 
 export function createAutoCutSmartSliceReleaseFixtureReport({
   rootDir,
@@ -96,11 +113,14 @@ export function createAutoCutSmartSliceReleaseFixtureReport({
       smartSliceQualityReady: qualityResult.ready,
       smartSliceMediaArtifactsReady: mediaArtifactsResult.ready,
       commercialReleaseReady: commercialReadiness.ready,
+      reviewWarningSlices: taskValidation.summary.reviewWarningSlices,
+      reviewWarningCount: taskValidation.summary.reviewWarningCount,
     },
     taskValidation: {
       ready: taskValidation.ready,
       blockers: taskValidation.blockers,
       summary: taskValidation.summary,
+      reviewWarnings: taskValidation.reviewWarnings,
     },
     smartSliceQuality: qualityResult,
     smartSliceMediaArtifacts: mediaArtifactsResult,
@@ -345,13 +365,16 @@ function createSmartSliceResultFixture({
     sentenceBoundaryIntegrityScore: sentenceBoundaryIntegrityGrade === 'clean' ? 0.92 : 0.84,
     sentenceBoundaryIntegrityGrade,
     sentenceBoundaryIssues,
-    risks: [],
+    risks: sentenceBoundaryIntegrityGrade === 'repaired' ? ['connector-repaired'] : [],
     sourceStartMs,
     sourceEndMs,
     speechStartMs,
     speechEndMs,
     boundaryPaddingBeforeMs: Math.max(0, speechStartMs - sourceStartMs),
     boundaryPaddingAfterMs: Math.max(0, sourceEndMs - speechEndMs),
+    ...fixtureAudioCleanupEvidence,
+    audioActivityStartMs: speechStartMs,
+    audioActivityEndMs: speechEndMs,
     transcriptText,
     transcriptSegments,
     transcriptCoverageScore,
@@ -491,6 +514,7 @@ function writeQualityEvidenceIfPossible(rootDir, generatedAt, taskReady) {
     path: toPosixRelative(rootDir, result.outputPath),
     blockers: result.evidence.blockers,
     summary: result.evidence.summary,
+    reviewWarnings: result.evidence.reviewWarnings,
   };
 }
 

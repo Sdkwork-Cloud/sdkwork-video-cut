@@ -90,7 +90,7 @@ desktop media sandbox and writes `media_asset`. Processing commands must then
 use `assetUuid` as the boundary, not raw filesystem paths. The configured
 workspace `outputDirectory` is passed to native commands as `outputRootDir`.
 Audio extraction resolves `media_asset.source_uri`, writes the generated file
-under `{outputRootDir}/tasks/{task_uuid}/outputs/`, writes `ops_task` and
+under `{outputRootDir}/tasks/{task_uuid}/`, writes `ops_task` and
 `ops_stage_run`, and registers `media_artifact.source_asset_uuid` so every
 generated artifact remains traceable to the imported source asset. The same
 output directory rule applies to GIF generation, video compression, video
@@ -105,8 +105,8 @@ must create one `media_artifact` row per generated slice and one JPEG thumbnail
 `media_artifact` row per slice. When real local speech-to-text segments are
 supplied with `subtitleFormat: "srt"`, it must also create one SRT subtitle
 `media_artifact` row per slice that has overlapping transcript text. All slice
-files, thumbnails, and subtitle files must be stored under the same
-`{outputRootDir}/tasks/{task_uuid}/outputs/` directory.
+and subtitle files must be stored under `{outputRootDir}/tasks/{task_uuid}/`;
+thumbnail files must be stored under `{outputRootDir}/tasks/{task_uuid}/cover/`.
 `ops_task.input_json` must persist `assetUuid`, `outputFormat`, `clips`, optional
 `subtitleFormat`, optional `subtitleStyleId`, optional `subtitleSegments`, and
 the configured `outputRootDir` when present. `ops_task.output_json` must include
@@ -163,7 +163,7 @@ stages, or artifacts, because those rows are the audit trail for the original
 attempt.
 When a workspace `outputDirectory` was configured, `ops_task.input_json` must
 include `outputRootDir`. Retry must restore it so retried artifacts remain under
-`{outputRootDir}/tasks/{task_uuid}/outputs/` instead of silently falling back to
+`{outputRootDir}/tasks/{task_uuid}/` instead of silently falling back to
 the app data media root.
 
 Native task progress uses the existing `ops` tables. The current snapshot is

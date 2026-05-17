@@ -1,13 +1,13 @@
 import { processSubtitleTranslate } from '../service/subtitleTranslateService';
 import { useState, useEffect } from 'react';
-import { Card, Button, FileUpload, TaskFailureState } from '@sdkwork/autocut-commons';
+import { Card, Button, FileUpload, TaskFailureState, useAutoCutCommonLabels, useToast } from '@sdkwork/autocut-commons';
 
 import { Upload, Play, Type, Languages, Activity, Download, CheckCircle2 } from 'lucide-react';
-import { useToast } from '@sdkwork/autocut-commons';
 import { downloadAutoCutUrl, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic, selectAutoCutTrustedLocalMediaFile, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
 import { AUTOCUT_TASK_STATUS, isAutoCutTaskActiveStatus, type AppTask } from '@sdkwork/autocut-types';
 
 export function SubtitleTranslatePage() {
+  const commonLabels = useAutoCutCommonLabels();
   const [file, setFile] = useState<File | null>(null);
   const [sourceLang] = useState('auto');
   const [targetLang, setTargetLang] = useState('zh');
@@ -86,8 +86,10 @@ export function SubtitleTranslatePage() {
               <FileUpload
                 file={file}
                 onChange={setFile}
-                accept="video/*"
-                trustedFileSourceSelector={() => selectAutoCutTrustedLocalMediaFile(['video'])}
+                accept="audio/*,video/*"
+                labels={commonLabels.fileUpload}
+                requiredStreams={hardcode ? { audio: true, video: true } : { audio: true }}
+                trustedFileSourceSelector={() => selectAutoCutTrustedLocalMediaFile(['audio', 'video'])}
               />
             </Card>
 
@@ -186,8 +188,9 @@ export function SubtitleTranslatePage() {
                     errorMessage={activeTask.errorMessage}
                     onCopyErrorMessage={writeAutoCutClipboardText}
                     onRetry={handleProcess}
+                    labels={commonLabels.taskFailure}
                   />
-               ) : activeTask?.status === AUTOCUT_TASK_STATUS.completed && activeTask.videoUrl ? (
+               ) : activeTask?.status === AUTOCUT_TASK_STATUS.completed && (activeTask.videoUrl || activeTask.subtitleUrl || activeTask.transcriptText) ? (
                   <Card className="flex flex-col items-center justify-center border-[#222] bg-[#111] overflow-hidden">
                     <div className="p-4 bg-[#151515] w-full border-b border-[#222] flex justify-between items-center">
                        <div className="flex items-center gap-3">
@@ -197,11 +200,17 @@ export function SubtitleTranslatePage() {
                          <span className="font-bold">字幕生成完成</span>
                        </div>
                     </div>
-                    <div className="w-full max-h-[60vh] bg-black flex items-center justify-center relative">
-                      <video src={activeTask.videoUrl} controls className="w-full h-full max-h-[500px] object-contain" />
-                    </div>
+                    {activeTask.videoUrl ? (
+                      <div className="w-full max-h-[60vh] bg-black flex items-center justify-center relative">
+                        <video src={activeTask.videoUrl} controls className="w-full h-full max-h-[500px] object-contain" />
+                      </div>
+                    ) : (
+                      <div className="w-full max-h-[60vh] overflow-y-auto custom-scrollbar bg-black/30 p-6">
+                        <pre className="whitespace-pre-wrap text-sm leading-relaxed text-gray-200 font-mono">{activeTask.transcriptText}</pre>
+                      </div>
+                    )}
                     <div className="p-6 bg-[#151515] w-full border-t border-[#222] flex justify-center">
-                       <Button onClick={() => handleDownload(activeTask.videoUrl, `${activeTask.name}_subtitled.mp4`)} size="lg" className="bg-indigo-600 hover:bg-indigo-500">
+                       <Button onClick={() => handleDownload(activeTask.videoUrl || activeTask.subtitleUrl, activeTask.videoUrl ? `${activeTask.name}_subtitled.mp4` : `${activeTask.name}.srt`)} size="lg" className="bg-indigo-600 hover:bg-indigo-500">
                          <Download size={18} className="mr-2" /> 下载压制后的视频
                        </Button>
                     </div>

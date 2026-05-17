@@ -25,6 +25,7 @@ const allowedDesktopPackageEntries = new Set([
   'package.json',
   'public',
   'rust-toolchain.toml',
+  'specs',
   'src',
   'src-tauri',
   'tsconfig.json',
@@ -40,6 +41,7 @@ const allowedDesktopTauriEntries = new Set([
   'database',
   'gen',
   'icons',
+  'specs',
   'src',
   'target',
   'tauri.conf.json',
@@ -102,6 +104,16 @@ const allowedScriptFiles = new Set([
   'scripts/check-autocut-release-workflow.test.mjs',
   'scripts/check-autocut-slicer-planner.mjs',
   'scripts/check-autocut-service-behavior.mjs',
+  'scripts/check-autocut-baidunetdisk-real-media-slice.mjs',
+  'scripts/check-autocut-generic-real-media-slice.mjs',
+  'scripts/check-autocut-generic-real-media-slice.test.mjs',
+  'scripts/check-autocut-large-media-baseline.mjs',
+  'scripts/check-autocut-large-media-baseline.test.mjs',
+  'scripts/check-autocut-smart-slice-performance-benchmark.mjs',
+  'scripts/check-autocut-smart-slice-performance-benchmark.test.mjs',
+  'scripts/check-autocut-wenan5-real-media-slice.e2e.mjs',
+  'scripts/check-autocut-wenan5-real-media-slice.mjs',
+  'scripts/check-autocut-wenan5-real-media-slice.test.mjs',
   'scripts/check-autocut-workspace-typecheck.mjs',
   'scripts/check-autocut-workspace-typecheck.test.mjs',
   'scripts/clean-autocut-generated.mjs',
@@ -111,22 +123,50 @@ const allowedScriptFiles = new Set([
   'scripts/prepare-autocut-ffmpeg-sidecar.test.mjs',
   'scripts/prepare-autocut-release-sidecars.mjs',
   'scripts/prepare-autocut-release-sidecars.test.mjs',
+  'scripts/prepare-autocut-speech-gpu-runtime.mjs',
+  'scripts/prepare-autocut-speech-gpu-runtime.test.mjs',
   'scripts/prepare-autocut-speech-sidecar.mjs',
   'scripts/prepare-autocut-speech-sidecar.test.mjs',
+  'scripts/run-autocut-vite.mjs',
+  'scripts/run-autocut-vite.test.mjs',
   'scripts/check-autocut-release-smoke-preflight.mjs',
   'scripts/check-autocut-release-smoke-preflight.test.mjs',
   'scripts/check-autocut-commercial-release-readiness.mjs',
   'scripts/check-autocut-commercial-release-readiness.test.mjs',
   'scripts/check-autocut-smart-slice-release-fixture.mjs',
   'scripts/check-autocut-smart-slice-release-fixture.test.mjs',
+  'scripts/check-autocut-smart-slice-execution-evidence.mjs',
+  'scripts/check-autocut-smart-slice-execution-evidence.test.mjs',
   'scripts/check-autocut-smart-slice-task-evidence.mjs',
   'scripts/check-autocut-smart-slice-task-evidence.test.mjs',
+  'scripts/check-smart-cut-engine-audit-trace.mjs',
+  'scripts/check-smart-cut-engine-candidate-selection.mjs',
+  'scripts/check-smart-cut-engine-content-unit-evidence-link.mjs',
+  'scripts/check-smart-cut-engine-content-units.mjs',
+  'scripts/check-smart-cut-engine-interfaces.mjs',
+  'scripts/check-smart-cut-engine-evidence-quality.mjs',
+  'scripts/check-smart-cut-engine-execution-package.mjs',
+  'scripts/check-smart-cut-engine-filter-effects.mjs',
+  'scripts/check-smart-cut-engine-filter-plan.mjs',
+  'scripts/check-smart-cut-engine-llm-review.mjs',
+  'scripts/check-smart-cut-engine-native-contract.mjs',
+  'scripts/check-smart-cut-engine-pipeline.mjs',
+  'scripts/check-smart-cut-engine-registry.mjs',
+  'scripts/check-smart-cut-engine-render-artifacts.mjs',
+  'scripts/check-smart-cut-engine-render-contract.mjs',
+  'scripts/check-smart-cut-engine-semantic-boundary.mjs',
+  'scripts/check-smart-cut-engine-speaker-alignment.mjs',
+  'scripts/check-smart-cut-engine-speech-semantic.mjs',
+  'scripts/check-smart-cut-engine-speaker-corrections.mjs',
+  'scripts/check-smart-cut-engine-standard.mjs',
   'scripts/sign-autocut-release-installers.mjs',
   'scripts/sign-autocut-release-installers.test.mjs',
   'scripts/sync-autocut-app-manifest-release-evidence.mjs',
   'scripts/sync-autocut-app-manifest-release-evidence.test.mjs',
   'scripts/write-autocut-installer-signature-evidence.mjs',
   'scripts/write-autocut-installer-signature-evidence.test.mjs',
+  'scripts/write-autocut-large-media-stt-baseline.mjs',
+  'scripts/write-autocut-large-media-stt-baseline.test.mjs',
   'scripts/write-autocut-package-sbom-files.mjs',
   'scripts/write-autocut-package-sbom-files.test.mjs',
   'scripts/write-autocut-sbom-evidence.mjs',
@@ -148,6 +188,12 @@ const allowedDocs = new Set([
   'docs/release/CHANGELOG.md',
   'docs/requirements/2026-05-05-smart-slicing-logic.md',
   'docs/requirements/2026-05-05-smart-slicing-short-video-implementation-review.md',
+  'docs/specs/smart-cut-engine/00-smart-cut-engine-master-spec.md',
+  'docs/specs/smart-cut-engine/01-industry-slicer-taxonomy.md',
+  'docs/specs/smart-cut-engine/02-speech-semantic-and-speaker-pipeline.md',
+  'docs/specs/smart-cut-engine/03-filter-validator-render-spec.md',
+  'docs/specs/smart-cut-engine/04-rust-native-engine-spec.md',
+  'docs/specs/smart-cut-engine/05-rewrite-implementation-plan.md',
   'docs/superpowers/plans/2026-05-04-autocut-desktop-standardization.md',
   'docs/superpowers/plans/2026-05-06-smart-slicing-phase-one.md',
 ]);
@@ -155,6 +201,7 @@ const requiredDatabaseContractDoc = 'docs/architecture/17-autocut-database-contr
 const requiredStorageServicePath = 'packages/sdkwork-autocut-services/src/service/storage.service.ts';
 const legacyStorageServicePath = 'packages/sdkwork-autocut-services/src/service/storage.ts';
 const requiredRuntimeEnvironmentServicePath = 'packages/sdkwork-autocut-services/src/service/runtime-environment.service.ts';
+const requiredWorkflowPreferencesServicePath = 'packages/sdkwork-autocut-services/src/service/workflow-preferences.service.ts';
 const requiredSettingsServicePath = 'packages/sdkwork-autocut-services/src/service/settings.service.ts';
 const requiredI18nServicePath = 'packages/sdkwork-autocut-services/src/service/i18n.service.ts';
 const requiredI18nResourcesServicePath = 'packages/sdkwork-autocut-services/src/service/i18n-resources.service.ts';
@@ -213,6 +260,7 @@ const allowedRootEntries = new Set([
   'pnpm-workspace.yaml',
   'scripts',
   'sdkwork.app.config.json',
+  'specs',
   'tsconfig.json',
 ]);
 const requiredRoutePaths = [
@@ -229,6 +277,7 @@ const requiredRoutePaths = [
   '/video-compress',
   '/video-convert',
   '/video-enhance',
+  '/video-dedup',
   '/subtitle-translate',
   '/voice-translate',
   '/settings',
@@ -246,6 +295,7 @@ const requiredLazyPackages = [
   '@sdkwork/autocut-video-compress',
   '@sdkwork/autocut-video-convert',
   '@sdkwork/autocut-video-enhance',
+  '@sdkwork/autocut-video-dedup',
   '@sdkwork/autocut-subtitle-translate',
   '@sdkwork/autocut-voice-translate',
   '@sdkwork/autocut-settings',
@@ -398,7 +448,9 @@ const requiredNativeHostClientServiceMarkers = [
   'autocut_recover_native_tasks',
   'autocut_retry_native_task',
   'autocut_transcribe_media',
+  'autocut_extract_visual_evidence',
   'autocut_extract_audio',
+  'autocut_extract_audio_fingerprint',
   'autocut_generate_gif',
   'autocut_slice_video',
   'autocut_compress_video',
@@ -419,6 +471,8 @@ const requiredNativeHostClientServiceMarkers = [
   'nativeTaskProgressEventsReady',
   'nativeWorkerLeaseReady',
   'audioExtractionFromAssetReady',
+  'audioFingerprintCommandReady',
+  'audioFingerprintAdapterReady',
   'videoGifCommandReady',
   'videoSliceCommandReady',
   'videoCompressCommandReady',
@@ -426,6 +480,15 @@ const requiredNativeHostClientServiceMarkers = [
   'videoEnhanceCommandReady',
   'speechTranscriptionCommandReady',
   'speechTranscriptionToolchainReady',
+  'visualEvidenceExtractionContractReady',
+  'visualEvidenceExtractionCommandReady',
+  'visualEvidenceExtractionAdapterReady',
+  'AutoCutVisualEvidenceExtractionRequest',
+  'AutoCutVisualEvidenceExtractionResult',
+  'extractVisualEvidence',
+  'AutoCutAudioFingerprintRequest',
+  'AutoCutAudioFingerprintResult',
+  'fingerprintAudio',
   'AutoCutSpeechTranscriptionRequest',
   'AutoCutSpeechTranscriptionResult',
   'AutoCutSpeechTranscriptionSegment',
@@ -508,6 +571,8 @@ const requiredNativeHostMarkers = [
   'nativeWorkerLeaseReady',
   'audioExtractionCommandReady',
   'audioExtractionFromAssetReady',
+  'audioFingerprintCommandReady',
+  'audioFingerprintAdapterReady',
   'videoGifCommandReady',
   'videoSliceCommandReady',
   'videoCompressCommandReady',
@@ -515,6 +580,9 @@ const requiredNativeHostMarkers = [
   'videoEnhanceCommandReady',
   'speechTranscriptionCommandReady',
   'speechTranscriptionToolchainReady',
+  'visualEvidenceExtractionContractReady',
+  'visualEvidenceExtractionCommandReady',
+  'visualEvidenceExtractionAdapterReady',
   'llmHttpCommandReady',
   'llmSecretStoreReady',
   'ffmpegToolchainManifestReady',
@@ -552,13 +620,17 @@ const requiredNativeMediaRuntimeMarkers = [
   'AutoCutFfmpegToolchainManifest',
   'AUTOCUT_FFMPEG_TOOLCHAIN_MANIFEST_JSON',
   'AUTOCUT_MEDIA_TASK_DIR',
-  'AUTOCUT_MEDIA_TASK_OUTPUT_DIR',
   'AutoCutMediaImportRequest',
   'AutoCutMediaImportResult',
   'AutoCutLocalMediaFileDescription',
   'describe_autocut_local_media_file',
   'AutoCutAudioExtractionRequest',
   'AutoCutAudioExtractionResult',
+  'output_quality',
+  'output_channel',
+  'normalize_audio_quality',
+  'normalize_audio_channel',
+  'audio_extraction_applies_quality_and_channel_contract',
   'AutoCutVideoGifRequest',
   'AutoCutVideoGifResult',
   'AutoCutVideoSliceRequest',
@@ -572,6 +644,14 @@ const requiredNativeMediaRuntimeMarkers = [
   'AutoCutSpeechTranscriptionRequest',
   'AutoCutSpeechTranscriptionResult',
   'AutoCutSpeechTranscriptionSegment',
+  'AutoCutVisualEvidenceExtractionRequest',
+  'AutoCutVisualEvidenceExtractionResult',
+  'extract_autocut_visual_evidence',
+  'autocut_extract_visual_evidence',
+  'run_ffmpeg_visual_evidence_extraction',
+  'run_tracked_visual_evidence_ffmpeg_command',
+  'parse_ffmpeg_showinfo_pts_times_to_millis',
+  'complete_ops_visual_evidence_task',
   'provider_id',
   'task_output_dir',
   'taskOutputDir',
@@ -655,6 +735,11 @@ const requiredNativeMediaRuntimeMarkers = [
   'NATIVE_MEDIA_POLL_HEARTBEAT_INTERVAL',
   'native_media_poll_throttler_can_force_final_run',
   'run_tracked_ffmpeg_command_with_progress',
+  'AutoCutNativeMediaPipeEvent',
+  'append_whisper_progress_output_args',
+  'parse_whisper_progress_percent',
+  'record_local_whisper_streaming_progress',
+  'map_local_whisper_cli_progress_to_task_progress',
   'extract_autocut_audio_from_asset',
   'generate_autocut_gif_from_asset',
   'autocut_generate_gif',
@@ -712,9 +797,10 @@ const requiredNativeMediaRuntimeMarkers = [
   'ops_task',
   'ops_stage_run',
   '.join(AUTOCUT_MEDIA_TASK_DIR)',
-  '.join(AUTOCUT_MEDIA_TASK_OUTPUT_DIR)',
   'AUTOCUT_MEDIA_TASK_COVER_DIR',
   'autocut_task_cover_dir',
+  'autocut_task_uuid',
+  'Uuid::now_v7()',
   'Command::new',
   '.args(',
   'fs::copy',
@@ -788,6 +874,7 @@ const businessPackagesWithService = new Set([
   'sdkwork-autocut-video-compress',
   'sdkwork-autocut-video-convert',
   'sdkwork-autocut-video-enhance',
+  'sdkwork-autocut-video-dedup',
   'sdkwork-autocut-video-gif',
   'sdkwork-autocut-voice-translate',
 ]);
@@ -1118,6 +1205,20 @@ const desktopTauriDefaultCapability = fs.existsSync(desktopTauriDefaultCapabilit
   ? readJson(desktopTauriDefaultCapabilityPath)
   : {};
 const rootGitignore = fs.readFileSync(path.join(rootDir, '.gitignore'), 'utf8');
+const ignoredRootDirectoryEntries = new Set(
+  rootGitignore
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) =>
+      line.endsWith('/') &&
+      !line.startsWith('!') &&
+      !line.startsWith('#') &&
+      !line.includes('*') &&
+      !line.includes('/../') &&
+      line.indexOf('/') === line.length - 1,
+    )
+    .map((line) => line.slice(0, -1)),
+);
 const rootGitAttributes = fs.existsSync(path.join(rootDir, '.gitattributes'))
   ? fs.readFileSync(path.join(rootDir, '.gitattributes'), 'utf8')
   : '';
@@ -1203,11 +1304,44 @@ const slicerServiceSource = fs.existsSync(path.join(rootDir, requiredSlicerServi
 const slicePlannerSource = fs.existsSync(path.join(rootDir, 'packages/sdkwork-autocut-slicer/src/service/slicePlanner.ts'))
   ? fs.readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-slicer/src/service/slicePlanner.ts'), 'utf8')
   : '';
+const smartCutEnginePlannerSource = fs.existsSync(path.join(rootDir, 'packages/sdkwork-autocut-slicer/src/service/smartCutEnginePlanner.ts'))
+  ? fs.readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-slicer/src/service/smartCutEnginePlanner.ts'), 'utf8')
+  : '';
 const servicesIndexSource = fs.existsSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/index.ts'))
   ? fs.readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/index.ts'), 'utf8')
   : '';
 const serviceBehaviorCheckSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-service-behavior.mjs'))
   ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-service-behavior.mjs'), 'utf8')
+  : '';
+const largeMediaBaselineSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-large-media-baseline.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-large-media-baseline.mjs'), 'utf8')
+  : '';
+const largeMediaBaselineTestSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-large-media-baseline.test.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-large-media-baseline.test.mjs'), 'utf8')
+  : '';
+const largeMediaSttBaselineSource = fs.existsSync(path.join(rootDir, 'scripts/write-autocut-large-media-stt-baseline.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/write-autocut-large-media-stt-baseline.mjs'), 'utf8')
+  : '';
+const largeMediaSttBaselineTestSource = fs.existsSync(path.join(rootDir, 'scripts/write-autocut-large-media-stt-baseline.test.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/write-autocut-large-media-stt-baseline.test.mjs'), 'utf8')
+  : '';
+const speechGpuRuntimeSource = fs.existsSync(path.join(rootDir, 'scripts/prepare-autocut-speech-gpu-runtime.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/prepare-autocut-speech-gpu-runtime.mjs'), 'utf8')
+  : '';
+const speechGpuRuntimeTestSource = fs.existsSync(path.join(rootDir, 'scripts/prepare-autocut-speech-gpu-runtime.test.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/prepare-autocut-speech-gpu-runtime.test.mjs'), 'utf8')
+  : '';
+const genericRealMediaSliceSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-generic-real-media-slice.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-generic-real-media-slice.mjs'), 'utf8')
+  : '';
+const genericRealMediaSliceTestSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-generic-real-media-slice.test.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-generic-real-media-slice.test.mjs'), 'utf8')
+  : '';
+const smartSlicePerformanceBenchmarkSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-smart-slice-performance-benchmark.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-smart-slice-performance-benchmark.mjs'), 'utf8')
+  : '';
+const smartSlicePerformanceBenchmarkTestSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-smart-slice-performance-benchmark.test.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-smart-slice-performance-benchmark.test.mjs'), 'utf8')
   : '';
 const slicerPlannerCheckSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-slicer-planner.mjs'))
   ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-slicer-planner.mjs'), 'utf8')
@@ -1220,6 +1354,9 @@ const installerSigningSource = fs.existsSync(path.join(rootDir, 'scripts/sign-au
   : '';
 const smartSliceTaskEvidenceCheckSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-smart-slice-task-evidence.mjs'))
   ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-smart-slice-task-evidence.mjs'), 'utf8')
+  : '';
+const smartSliceExecutionEvidenceCheckSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-smart-slice-execution-evidence.mjs'))
+  ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-smart-slice-execution-evidence.mjs'), 'utf8')
   : '';
 const smartSliceReleaseFixtureCheckSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-smart-slice-release-fixture.mjs'))
   ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-smart-slice-release-fixture.mjs'), 'utf8')
@@ -1308,6 +1445,7 @@ assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-featu
 assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-slicer-planner.mjs'), 'root test runs the AutoCut slicer planner contract');
 assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-service-behavior.mjs'), 'root test runs the AutoCut service behavior contract');
 assertRule(rootPackage.scripts?.test?.includes('node scripts/autocut-cli-args.test.mjs'), 'root test runs the AutoCut CLI argument normalization contract');
+assertRule(rootPackage.scripts?.test?.includes('node scripts/run-autocut-vite.test.mjs'), 'root test runs the AutoCut Vite runner dependency-link contract');
 assertRule(rootPackage.scripts?.typecheck === 'node scripts/check-autocut-workspace-typecheck.mjs', 'root typecheck uses the stable AutoCut workspace TypeScript API runner');
 assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-workspace-typecheck.test.mjs'), 'root test runs the AutoCut workspace typecheck runner contract');
 assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-workspace-typecheck.mjs'), 'root test runs the stable AutoCut workspace typecheck runner');
@@ -1319,6 +1457,8 @@ assertRule(rootPackage.scripts?.['release:preview-ready'] === 'node scripts/chec
 assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-preview-release-readiness.test.mjs'), 'root test runs the unsigned preview release readiness contract');
 assertRule(rootPackage.scripts?.['release:smart-slice-task'] === 'node scripts/check-autocut-smart-slice-task-evidence.mjs', 'root package.json defines the smart slice task evidence validation script');
 assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-smart-slice-task-evidence.test.mjs'), 'root test runs the smart slice task evidence validation contract');
+assertRule(rootPackage.scripts?.['release:smart-slice-execution-evidence'] === 'node scripts/check-autocut-smart-slice-execution-evidence.mjs', 'root package.json defines the smart slice execution evidence validation script');
+assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-smart-slice-execution-evidence.test.mjs'), 'root test runs the smart slice execution evidence validation contract');
 assertRule(rootPackage.scripts?.['release:smart-slice-quality'] === 'node scripts/write-autocut-smart-slice-quality-evidence.mjs', 'root package.json defines the smart slice quality release evidence script');
 assertRule(rootPackage.scripts?.test?.includes('node scripts/write-autocut-smart-slice-quality-evidence.test.mjs'), 'root test runs the smart slice quality evidence contract');
 assertRule(rootPackage.scripts?.['release:smart-slice-media-artifacts'] === 'node scripts/write-autocut-smart-slice-media-artifacts-evidence.mjs', 'root package.json defines the smart slice media artifacts release evidence script');
@@ -1426,13 +1566,17 @@ for (const [relativePath, sourceText] of [
   );
 }
 assertRule(indexHtmlSource.includes('<title>SDKWork Video Cut</title>'), 'desktop index.html title matches the Tauri product name');
-assertRule(rootPackage.version === '0.1.5', 'AutoCut desktop application version matches the v0.1.5 release line');
+assertRule(rootPackage.version === '0.1.6', 'AutoCut desktop application version matches the v0.1.6 release line');
 assertRule(desktopPackage.scripts?.dev?.includes('--host 127.0.0.1'), 'desktop dev binds to loopback for desktop-local development');
 assertRule(desktopPackage.scripts?.dev?.includes('--port 3000'), 'desktop dev uses the standard AutoCut web port 3000');
 assertRule(desktopPackage.scripts?.dev?.includes('--strictPort'), 'desktop dev uses strictPort for deterministic desktop-local startup');
 assertRule(desktopPackage.scripts?.['dev:tauri-web']?.includes('--host 127.0.0.1'), 'desktop dev:tauri-web binds to loopback for Tauri development');
 assertRule(desktopPackage.scripts?.['dev:tauri-web']?.includes('--port 5173'), 'desktop dev:tauri-web uses the Tauri devUrl port 5173');
 assertRule(desktopPackage.scripts?.['dev:tauri-web']?.includes('--strictPort'), 'desktop dev:tauri-web uses strictPort for deterministic Tauri startup');
+assertRule(desktopPackage.scripts?.dev?.startsWith('node ../../scripts/run-autocut-vite.mjs '), 'desktop dev uses the stable AutoCut Vite runner instead of relying on node_modules/.bin');
+assertRule(desktopPackage.scripts?.build === 'node ../../scripts/run-autocut-vite.mjs build', 'desktop build uses the stable AutoCut Vite runner instead of relying on node_modules/.bin');
+assertRule(desktopPackage.scripts?.preview === 'node ../../scripts/run-autocut-vite.mjs preview', 'desktop preview uses the stable AutoCut Vite runner instead of relying on node_modules/.bin');
+assertRule(desktopPackage.scripts?.['dev:tauri-web']?.startsWith('node ../../scripts/run-autocut-vite.mjs '), 'desktop dev:tauri-web uses the stable AutoCut Vite runner instead of relying on node_modules/.bin');
 assertRule(desktopPackage.scripts?.['tauri:before-dev'] === 'pnpm dev:tauri-web', 'desktop tauri:before-dev delegates to the deterministic Tauri web dev script');
 assertRule(rootPackage.scripts?.dev?.includes('--filter @sdkwork/autocut-desktop'), 'root dev delegates to the desktop package');
 assertRule(rootPackage.scripts?.build?.includes('--filter @sdkwork/autocut-desktop'), 'root build delegates to the desktop package');
@@ -1624,7 +1768,7 @@ assertRule(architectSource.includes('autocut_dev_settings'), 'ARCHITECT.md docum
 assertRule(architectSource.includes('autocut_release_settings'), 'ARCHITECT.md documents release-scoped browser settings storage');
 assertRule(architectSource.includes('outputDirectory'), 'ARCHITECT.md documents configurable native outputDirectory');
 assertRule(architectSource.includes('outputRootDir'), 'ARCHITECT.md documents native outputRootDir request propagation');
-assertRule(architectSource.includes('{outputRootDir}/tasks/{task_uuid}/outputs/'), 'ARCHITECT.md documents configured task output directory layout');
+assertRule(architectSource.includes('{outputRootDir}/tasks/{task_uuid}/'), 'ARCHITECT.md documents configured task output directory layout');
 assertRule(architectSource.includes('dev-default'), 'ARCHITECT.md documents dev-scoped native LLM secret names');
 assertRule(architectSource.includes('release-default'), 'ARCHITECT.md documents release-scoped native LLM secret names');
 assertRule(frontendStandardSource.includes('prepare-autocut-ffmpeg-sidecar.mjs'), 'frontend module standard documents FFmpeg sidecar preparation');
@@ -1640,7 +1784,7 @@ assertRule(frontendStandardSource.includes('autocut_dev_settings'), 'frontend mo
 assertRule(frontendStandardSource.includes('autocut_release_settings'), 'frontend module standard documents release-scoped browser settings storage');
 assertRule(frontendStandardSource.includes('outputDirectory'), 'frontend module standard documents configurable native outputDirectory');
 assertRule(frontendStandardSource.includes('outputRootDir'), 'frontend module standard documents native outputRootDir request propagation');
-assertRule(frontendStandardSource.includes('{outputRootDir}/tasks/{task_uuid}/outputs/'), 'frontend module standard documents configured task output directory layout');
+assertRule(frontendStandardSource.includes('{outputRootDir}/tasks/{task_uuid}/'), 'frontend module standard documents configured task output directory layout');
 assertRule(frontendStandardSource.includes('dev-default'), 'frontend module standard documents dev-scoped native LLM secret names');
 assertRule(frontendStandardSource.includes('release-default'), 'frontend module standard documents release-scoped native LLM secret names');
 assertRule(readmeSource.includes('pnpm prepare:ffmpeg-sidecar'), 'README documents the FFmpeg sidecar preparation command');
@@ -1655,7 +1799,7 @@ assertRule(readmeSource.includes('autocut_dev_settings'), 'README documents dev-
 assertRule(readmeSource.includes('autocut_release_settings'), 'README documents release-scoped settings storage');
 assertRule(readmeSource.includes('outputDirectory'), 'README documents configurable native outputDirectory');
 assertRule(readmeSource.includes('outputRootDir'), 'README documents native outputRootDir request propagation');
-assertRule(readmeSource.includes('{outputRootDir}/tasks/{task_uuid}/outputs/'), 'README documents configured task output directory layout');
+assertRule(readmeSource.includes('{outputRootDir}/tasks/{task_uuid}/'), 'README documents configured task output directory layout');
 assertRule(architectSource.includes('expiredLeases'), 'ARCHITECT.md documents expired worker lease recovery diagnostics');
 assertRule(architectSource.includes('deferred'), 'ARCHITECT.md documents deferred worker lease recovery diagnostics');
 
@@ -1693,6 +1837,9 @@ const storageServiceSource = fs.existsSync(path.join(rootDir, requiredStorageSer
   : '';
 const runtimeEnvironmentServiceSource = fs.existsSync(path.join(rootDir, requiredRuntimeEnvironmentServicePath))
   ? fs.readFileSync(path.join(rootDir, requiredRuntimeEnvironmentServicePath), 'utf8')
+  : '';
+const workflowPreferencesServiceSource = fs.existsSync(path.join(rootDir, requiredWorkflowPreferencesServicePath))
+  ? fs.readFileSync(path.join(rootDir, requiredWorkflowPreferencesServicePath), 'utf8')
   : '';
 const settingsServiceSource = fs.existsSync(path.join(rootDir, requiredSettingsServicePath))
   ? fs.readFileSync(path.join(rootDir, requiredSettingsServicePath), 'utf8')
@@ -1865,6 +2012,7 @@ assertRule(cargoTomlSource.includes('serde = { version = "1.0"'), 'desktop Tauri
 assertRule(cargoTomlSource.includes('serde_json = "1.0"'), 'desktop Tauri crate declares serde_json for native host diagnostics payloads');
 assertRule(cargoTomlSource.includes('sha2 = "0.10"'), 'desktop Tauri crate declares sha2 only for FFmpeg sidecar checksum verification');
 assertRule(cargoTomlSource.includes('rusqlite = { version = "0.32"'), 'desktop Tauri crate declares rusqlite after the database contract is implemented');
+assertRule(cargoTomlSource.includes('uuid = { version = "1"') && cargoTomlSource.includes('features = ["v7"]'), 'desktop Tauri crate declares uuid v7 for native task ids');
 assertRule(cargoTomlSource.includes('features = ["bundled"]'), 'desktop Tauri crate uses bundled SQLite for deterministic desktop builds');
 assertRule(cargoTomlSource.includes('rfd = { version = "0.16.0"'), 'desktop Tauri crate declares rfd for the contracted trusted local file chooser');
 assertRule(!cargoTomlSource.includes('sqlx'), 'desktop Tauri crate does not add SQLx before the database contract is implemented');
@@ -1920,7 +2068,9 @@ assertRule(
     mainRsSource.includes('commands::autocut_recover_native_tasks') &&
     mainRsSource.includes('commands::autocut_retry_native_task') &&
     mainRsSource.includes('commands::autocut_transcribe_media') &&
+    mainRsSource.includes('commands::autocut_extract_visual_evidence') &&
     mainRsSource.includes('commands::autocut_extract_audio') &&
+    mainRsSource.includes('commands::autocut_extract_audio_fingerprint') &&
     mainRsSource.includes('commands::autocut_generate_gif') &&
     mainRsSource.includes('commands::autocut_slice_video') &&
     mainRsSource.includes('commands::autocut_compress_video') &&
@@ -1957,6 +2107,9 @@ assertRule(exists(requiredNativeLlmHttpRuntimeSourcePath), 'desktop Tauri owns l
 assertRule(exists(requiredNativeLlmSecretRuntimeSourcePath), 'desktop Tauri owns llm_secret_runtime.rs');
 assertRule(exists(requiredNativeFfmpegToolchainManifestPath), 'desktop Tauri owns the FFmpeg toolchain manifest contract');
 assertRule(exists(requiredNativeSpeechToolchainManifestPath), 'desktop Tauri owns the speech-to-text toolchain manifest contract');
+assertRule(nativeSpeechToolchainManifestSource.includes('"accelerationBackend": "cpu"'), 'speech-to-text toolchain manifest declares an explicit acceleration backend per platform instead of implicit CPU/GPU inference');
+assertRule(nativeMediaRuntimeSource.includes('normalize_autocut_speech_acceleration_backend'), 'native media runtime validates speech-to-text toolchain acceleration backend metadata');
+assertRule(nativeMediaRuntimeSource.includes('speech_toolchain_resolver_carries_bundled_acceleration_backend_into_probe'), 'native media runtime tests that bundled speech acceleration backend metadata reaches GPU probing');
 assertRule(exists(requiredNativeSqliteBaselinePath), 'desktop Tauri owns SQLite baseline schema');
 assertRule(exists(requiredNativeSchemaRegistryPath), 'desktop Tauri owns schema registry baseline');
 assertRule(nativeHostCommandSource.includes('#[tauri::command]'), 'native host command is exposed through an explicit Tauri command');
@@ -1974,6 +2127,7 @@ assertRule(nativeHostCommandSource.includes('autocut_cancel_native_task'), 'nati
 assertRule(nativeHostCommandSource.includes('autocut_recover_native_tasks'), 'native host command exposes autocut_recover_native_tasks');
 assertRule(nativeHostCommandSource.includes('autocut_retry_native_task'), 'native host command exposes autocut_retry_native_task');
 assertRule(nativeHostCommandSource.includes('autocut_transcribe_media'), 'native host command exposes autocut_transcribe_media');
+assertRule(nativeHostCommandSource.includes('autocut_extract_visual_evidence'), 'native host command exposes autocut_extract_visual_evidence');
 assertRule(nativeHostCommandSource.includes('autocut_extract_audio'), 'native host command exposes autocut_extract_audio');
 assertRule(nativeHostCommandSource.includes('autocut_generate_gif'), 'native host command exposes autocut_generate_gif');
 assertRule(nativeHostCommandSource.includes('autocut_slice_video'), 'native host command exposes autocut_slice_video');
@@ -1999,6 +2153,7 @@ assertRule(
     nativeHostCommandSource.includes('media_runtime::recover_autocut_native_tasks') &&
     nativeHostCommandSource.includes('media_runtime::retry_autocut_native_task') &&
     nativeHostCommandSource.includes('media_runtime::transcribe_autocut_media_from_asset') &&
+    nativeHostCommandSource.includes('media_runtime::extract_autocut_visual_evidence') &&
     nativeHostCommandSource.includes('media_runtime::extract_autocut_audio_from_asset') &&
     nativeHostCommandSource.includes('media_runtime::generate_autocut_gif_from_asset') &&
     nativeHostCommandSource.includes('media_runtime::slice_autocut_video_from_asset') &&
@@ -2013,9 +2168,31 @@ assertRule(
     nativeHostCommandSource.includes('tauri::async_runtime::spawn_blocking') &&
     nativeHostCommandSource.includes('pub async fn autocut_import_media_file') &&
     nativeHostCommandSource.includes('pub async fn autocut_transcribe_media') &&
+    nativeHostCommandSource.includes('pub async fn autocut_extract_visual_evidence') &&
     nativeHostCommandSource.includes('pub async fn autocut_slice_video'),
-  'native host runs Smart Slice import, speech transcription, and rendering commands on a blocking worker pool instead of the Tauri main thread',
+  'native host runs Smart Slice import, speech transcription, visual evidence, and rendering commands on a blocking worker pool instead of the Tauri main thread',
 );
+for (const commandName of [
+  'autocut_host_capabilities',
+  'autocut_ffmpeg_probe',
+  'autocut_import_media_file',
+  'autocut_download_speech_transcription_model',
+  'autocut_probe_speech_transcription',
+  'autocut_extract_audio',
+  'autocut_generate_gif',
+  'autocut_slice_video',
+  'autocut_transcribe_media',
+  'autocut_extract_visual_evidence',
+  'autocut_compress_video',
+  'autocut_convert_video',
+  'autocut_enhance_video',
+]) {
+  assertRule(
+    nativeHostCommandSource.includes(`pub async fn ${commandName}`) &&
+      nativeHostCommandSource.includes(`run_autocut_blocking_native_command("${commandName}"`),
+    `native host command ${commandName} runs blocking media or STT work on the worker pool`,
+  );
+}
 assertRule(
   nativeHostCommandSource.includes('llm_http_runtime::send_autocut_llm_http_request'),
   'native host command delegates LLM HTTP requests to llm_http_runtime',
@@ -2105,11 +2282,178 @@ for (const marker of requiredNativeMediaRuntimeMarkers) {
 }
 assertRule(
   nativeMediaRuntimeSource.includes('native_media_task_writes_artifact_inside_its_task_output_directory'),
-  'media_runtime.rs tests that native task artifacts are written under media/tasks/{task_uuid}/outputs',
+  'media_runtime.rs tests that native task artifacts are written directly under media/tasks/{task_uuid}',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('native_task_uuid_uses_uuid_v7_contract') &&
+    nativeMediaRuntimeSource.includes('task-native-slice-') &&
+    nativeMediaRuntimeSource.includes('Uuid::now_v7()'),
+  'media_runtime.rs generates native task ids with a task-native type prefix and UUIDv7 suffix',
 );
 assertRule(
   nativeMediaRuntimeSource.includes('video_slice_from_asset_registers_each_slice_artifact_inside_task_output_dir'),
   'media_runtime.rs tests that native video slicing writes every slice under one task output directory',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('default_smart_slice_noise_reduction') &&
+    nativeMediaRuntimeSource.includes('smart_slice_native_requests_default_to_raw_audio_when_noise_reduction_is_omitted') &&
+    nativeMediaRuntimeSource.includes('smart_slice_native_requests_honor_disabled_noise_reduction') &&
+    nativeMediaRuntimeSource.includes('clip.noise_reduction_applied = Some(apply_audio_noise_reduction)') &&
+    nativeMediaRuntimeSource.includes('ensure_video_slice_clip_audio_cleanup_evidence') &&
+    nativeMediaRuntimeSource.includes('video_slice_rejects_invalid_audio_cleanup_evidence_before_rendering') &&
+    nativeMediaRuntimeSource.includes('video_slice_audio_activity_analysis_preserves_raw_audio_when_denoise_is_disabled') &&
+    nativeMediaRuntimeSource.includes('video_slice_audio_activity_analysis_rejects_all_silence_instead_of_stt_fallback') &&
+    !nativeMediaRuntimeSource.includes('confidence: 0.55') &&
+    !nativeMediaRuntimeSource.includes('Some(0.55)'),
+  'media_runtime.rs defaults native smart-slice cleanup to raw audio, records denoise decision evidence, rejects invalid cleanup metadata, and has no weak STT-only audio activity confidence fallback',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('should_run_video_slice_audio_cleanup_postprocess') &&
+    nativeMediaRuntimeSource.includes('AutoCutVideoSliceAudioPostprocessDecision') &&
+    nativeMediaRuntimeSource.includes('ffmpeg-video-slice-postprocess-skipped') &&
+    nativeMediaRuntimeSource.includes('postprocessSkipReason') &&
+    nativeMediaRuntimeSource.includes('video_slice_audio_postprocess_skips_upstream_audio_activity_plan_for_large_file_rendering') &&
+    nativeMediaRuntimeSource.includes('video_slice_audio_postprocess_skips_precomputed_source_segments_for_one_pass_rendering') &&
+    nativeMediaRuntimeSource.includes('video_slice_audio_postprocess_skipped_render_pass_keeps_cleanup_filters') &&
+    nativeMediaRuntimeSource.includes('create_video_slice_render_pass_clip') &&
+    nativeMediaRuntimeSource.includes('should_apply_video_slice_audio_cleanup_during_render_pass') &&
+    nativeMediaRuntimeSource.includes('video_slice_audio_postprocess_runs_only_when_cleanup_plan_is_missing') &&
+    slicerServiceSource.includes("nativeAudioPostprocessPolicy: 'use-upstream-audio-boundary-plan'") &&
+    slicerServiceSource.includes('clipsWithAudioActivityEvidence') &&
+    slicerServiceSource.includes('clipsWithSourceSegments'),
+  'native smart-slice rendering consumes the upstream cleanup plan directly, skips redundant post-cut audio analysis for large files, and exposes performance policy diagnostics',
+);
+assertRule(
+  exists('scripts/check-autocut-smart-slice-performance-benchmark.mjs') &&
+    smartSlicePerformanceBenchmarkSource.includes('smart-slice.performance-benchmark.v1') &&
+    smartSlicePerformanceBenchmarkSource.includes('runAutoCutBaiduNetdiskRealMediaSliceAcceptanceCheck') &&
+    smartSlicePerformanceBenchmarkSource.includes('runAutoCutGenericRealMediaSliceCheck') &&
+    smartSlicePerformanceBenchmarkSource.includes('runAutoCutWenan5RealMediaSliceCheck') &&
+    smartSlicePerformanceBenchmarkSource.includes('runnerOptions.transcriptPath') &&
+    smartSlicePerformanceBenchmarkSource.includes('totalElapsedMs') &&
+    smartSlicePerformanceBenchmarkSource.includes('byteSize: readFileByteSize(resolvedInputPath)') &&
+    smartSlicePerformanceBenchmarkSource.includes('totalOutputBytes') &&
+    smartSlicePerformanceBenchmarkSource.includes('thresholdResults') &&
+    smartSlicePerformanceBenchmarkSource.includes('SMART_SLICE_PERFORMANCE_TOTAL_ELAPSED_EXCEEDED') &&
+    smartSlicePerformanceBenchmarkSource.includes('SMART_SLICE_PERFORMANCE_RUN_FAILED') &&
+    smartSlicePerformanceBenchmarkTestSource.includes('createSequenceClock') &&
+    smartSlicePerformanceBenchmarkTestSource.includes('generic-real-media') &&
+    smartSlicePerformanceBenchmarkTestSource.includes('caller-provided transcripts to the generic real-media runner') &&
+    smartSlicePerformanceBenchmarkTestSource.includes('maxTotalElapsedMs') &&
+    smartSlicePerformanceBenchmarkTestSource.includes('performance-benchmark-failed.json') &&
+    rootPackage.scripts?.['benchmark:smart-slice-performance'] === 'node scripts/check-autocut-smart-slice-performance-benchmark.mjs' &&
+    rootPackage.scripts?.test?.includes('node scripts/check-autocut-smart-slice-performance-benchmark.test.mjs'),
+  'Smart Slice has a repeatable large-file performance benchmark report with input size, output bytes, timing thresholds, evidence readiness, and test coverage',
+);
+assertRule(
+  exists('scripts/check-autocut-generic-real-media-slice.mjs') &&
+    genericRealMediaSliceSource.includes('2026-05-16.autocut-generic-real-media-slice.v1') &&
+    genericRealMediaSliceSource.includes('createSmartCutEngineSlicePlan') &&
+    genericRealMediaSliceSource.includes('createTranscriptAssistedSlicePlan') &&
+    genericRealMediaSliceSource.includes('createLargeMediaTranscriptContinuityPlan') &&
+    genericRealMediaSliceSource.includes('large-media-transcript-continuity-fallback') &&
+    genericRealMediaSliceSource.includes('renderClipLimit') &&
+    genericRealMediaSliceSource.includes('smart-slice.speech-to-text.v1') &&
+    genericRealMediaSliceSource.includes('smart-slice.semantic-segmentation.v1') &&
+    genericRealMediaSliceSource.includes('smart-slice.render-artifact-manifest.v1') &&
+    genericRealMediaSliceSource.includes('nativeTranscriptPath') &&
+    genericRealMediaSliceTestSource.includes('generic real media Smart Slice contract') &&
+    genericRealMediaSliceTestSource.includes('same-source transcript') &&
+    genericRealMediaSliceTestSource.includes('large-media transcript continuity fallback merges dangling connector fragments') &&
+    rootPackage.scripts?.['baseline:generic-real-media-slice'] === 'node scripts/check-autocut-generic-real-media-slice.mjs' &&
+    rootPackage.scripts?.test?.includes('node scripts/check-autocut-generic-real-media-slice.test.mjs'),
+  'Smart Slice generic real-media runner uses same-source transcript evidence, engine-first semantic planning, bounded large-file rendering, editable SRT sidecars, and execution evidence',
+);
+assertRule(
+  exists('scripts/check-autocut-large-media-baseline.mjs') &&
+    largeMediaBaselineSource.includes('smart-slice.large-media-baseline.v1') &&
+    largeMediaBaselineSource.includes('SMART_SLICE_LARGE_MEDIA_TRANSCRIPT_MISSING') &&
+    largeMediaBaselineSource.includes('runAutoCutSmartSlicePerformanceBenchmark') &&
+    largeMediaBaselineSource.includes('smart-slice.speech-to-text.v1') &&
+    largeMediaBaselineSource.includes('normalizeSmartSliceTranscriptEvidenceText') &&
+    largeMediaBaselineSource.includes('nativeTranscriptPath') &&
+    largeMediaBaselineSource.includes('renderClipLimit') &&
+    largeMediaBaselineSource.includes('SMART_SLICE_LARGE_MEDIA_BENCHMARK_BLOCKED') &&
+    largeMediaBaselineTestSource.includes('large-media baseline must block instead of silently reusing the wenan5 transcript fixture') &&
+    largeMediaBaselineTestSource.includes('not the wenan5 fixture') &&
+    largeMediaBaselineTestSource.includes('renderClipLimit') &&
+    rootPackage.scripts?.['baseline:large-media'] === 'node scripts/check-autocut-large-media-baseline.mjs' &&
+    rootPackage.scripts?.test?.includes('node scripts/check-autocut-large-media-baseline.test.mjs'),
+  'Smart Slice large-media baseline preflights real input media, requires same-source transcript evidence, blocks fixture reuse, and gates benchmark execution',
+);
+assertRule(
+  exists('scripts/write-autocut-large-media-stt-baseline.mjs') &&
+    largeMediaSttBaselineSource.includes('smart-slice.large-media-stt-baseline.v1') &&
+    largeMediaSttBaselineSource.includes('SMART_SLICE_LARGE_MEDIA_AUDIO_EXTRACT_FAILED') &&
+    largeMediaSttBaselineSource.includes('SMART_SLICE_LARGE_MEDIA_WHISPER_FAILED') &&
+    largeMediaSttBaselineSource.includes('smart-slice.speech-to-text.v1') &&
+    largeMediaSttBaselineSource.includes('smart-slice.large-media-source-identity.v1') &&
+    largeMediaSttBaselineSource.includes('smart-slice.large-media-stt-chunks.v1') &&
+    largeMediaSttBaselineSource.includes('chunked-parallel') &&
+    largeMediaSttBaselineSource.includes('runAutoCutLargeMediaSttCommandAsync') &&
+    largeMediaSttBaselineSource.includes('--chunk-duration-ms') &&
+    largeMediaSttBaselineSource.includes('--parallelism') &&
+    largeMediaSttBaselineSource.includes('--audio-duration-ms') &&
+    largeMediaSttBaselineSource.includes('transcriptReusable') &&
+    largeMediaSttBaselineSource.includes('audioReusable') &&
+    largeMediaSttBaselineSource.includes("'-ac'") &&
+    largeMediaSttBaselineSource.includes("'16000'") &&
+    largeMediaSttBaselineSource.includes("'-ojf'") &&
+    largeMediaSttBaselineTestSource.includes('large media STT baseline writes a blocked report when audio extraction fails') &&
+    largeMediaSttBaselineTestSource.includes('reuses an already generated same-source transcript') &&
+    largeMediaSttBaselineTestSource.includes('audio should have been reused') &&
+    largeMediaSttBaselineTestSource.includes('interrupted large-media STT resumes from extracted same-source audio') &&
+    largeMediaSttBaselineTestSource.includes('large-media STT baseline transcribes audio chunks concurrently') &&
+    rootPackage.scripts?.['baseline:large-media-stt'] === 'node scripts/write-autocut-large-media-stt-baseline.mjs' &&
+    rootPackage.scripts?.test?.includes('node scripts/write-autocut-large-media-stt-baseline.test.mjs'),
+  'Smart Slice large-media STT baseline extracts mono 16k audio, resumes same-source large-file artifacts, parallelizes long-audio Whisper chunks, writes canonical STT evidence, and persists blocked reports',
+);
+assertRule(
+  exists('scripts/prepare-autocut-speech-gpu-runtime.mjs') &&
+    speechGpuRuntimeSource.includes('smart-slice.speech-gpu-runtime.v1') &&
+    speechGpuRuntimeSource.includes('AUTOCUT_SPEECH_GPU_RUNTIME_MISSING') &&
+    speechGpuRuntimeSource.includes('AUTOCUT_SPEECH_GPU_RUNTIME_UNVERIFIED') &&
+    speechGpuRuntimeSource.includes('AUTOCUT_SPEECH_GPU_RUNTIME_LICENSE_NOT_ACCEPTED') &&
+    speechGpuRuntimeSource.includes('prepareAutoCutSpeechSidecar') &&
+    speechGpuRuntimeSource.includes('runAutoCutLargeMediaSttBaseline') &&
+    speechGpuRuntimeSource.includes('-DGGML_CUDA=ON') &&
+    speechGpuRuntimeSource.includes('ggml-cuda') &&
+    speechGpuRuntimeSource.includes('cudart') &&
+    speechGpuRuntimeTestSource.includes('CPU-only runtime must not be packaged as CUDA') &&
+    speechGpuRuntimeTestSource.includes('GPU speech preparation must fail honestly') &&
+    speechGpuRuntimeTestSource.includes('prepareSpeechSidecar') &&
+    speechGpuRuntimeTestSource.includes('runSttBaseline') &&
+    rootPackage.scripts?.['prepare:speech-gpu-runtime'] === 'node scripts/prepare-autocut-speech-gpu-runtime.mjs' &&
+    rootPackage.scripts?.test?.includes('node scripts/prepare-autocut-speech-gpu-runtime.test.mjs'),
+  'Smart Slice speech GPU runtime preparation verifies real CUDA/Vulkan whisper.cpp companions, packages only verified GPU runtimes, supports local build and benchmark handoff, and records honest blockers when GPU STT cannot run',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('AUTOCUT_LONG_SPEECH_TRANSCRIPTION_THRESHOLD_MS') &&
+    nativeMediaRuntimeSource.includes('AUTOCUT_LONG_SPEECH_TRANSCRIPTION_CHUNK_DURATION_MS') &&
+    nativeMediaRuntimeSource.includes('AUTOCUT_LONG_SPEECH_TRANSCRIPTION_CHUNK_OVERLAP_MS') &&
+    nativeMediaRuntimeSource.includes('should_use_chunked_local_speech_transcription') &&
+    nativeMediaRuntimeSource.includes('run_chunked_local_whisper_transcription') &&
+    nativeMediaRuntimeSource.includes('create_autocut_speech_audio_chunk_plan') &&
+    nativeMediaRuntimeSource.includes('transcribe_local_whisper_chunks_parallel') &&
+    nativeMediaRuntimeSource.includes('merge_autocut_speech_audio_chunk_segments') &&
+    nativeMediaRuntimeSource.includes('write_merged_whisper_transcript_json') &&
+    nativeMediaRuntimeSource.includes('write_autocut_speech_chunk_manifest') &&
+    nativeMediaRuntimeSource.includes('smart-slice.large-media-stt-chunks.v1') &&
+    nativeMediaRuntimeSource.includes('SourceMediaDirect') &&
+    nativeMediaRuntimeSource.includes('source-media-direct') &&
+    nativeMediaRuntimeSource.includes('fullAudioExtracted') &&
+    nativeMediaRuntimeSource.includes('run_autocut_speech_chunk_pipeline_step') &&
+    nativeMediaRuntimeSource.includes('AutoCutSpeechChunkPipelineStep::ExtractAudio') &&
+    nativeMediaRuntimeSource.includes('AutoCutSpeechChunkPipelineStep::TranscribeAudio') &&
+    nativeMediaRuntimeSource.includes('SDKWORK_AUTOCUT_WHISPER_CHUNK_PARALLELISM') &&
+    nativeMediaRuntimeSource.includes('SDKWORK_AUTOCUT_WHISPER_CHUNK_THREADS') &&
+    nativeMediaRuntimeSource.includes('long_speech_transcription_plans_overlapping_audio_chunks_for_parallel_whisper') &&
+    nativeMediaRuntimeSource.includes('long_speech_transcription_source_chunk_extract_command_skips_video_decode') &&
+    nativeMediaRuntimeSource.includes('long_speech_transcription_writes_source_direct_chunk_manifest') &&
+    nativeMediaRuntimeSource.includes('long_speech_transcription_chunk_pipeline_resumes_finished_artifacts') &&
+    nativeMediaRuntimeSource.includes('long_speech_transcription_writes_observable_chunk_manifest') &&
+    nativeMediaRuntimeSource.includes('long_speech_transcription_writes_merged_transcript_as_parseable_whisper_json'),
+  'media_runtime.rs routes long native speech-to-text through source-direct chunked parallel Whisper, merges back to the source timeline, writes versioned chunk evidence, and tests the commercial large-file contract',
 );
 assertRule(
   nativeMediaRuntimeSource.includes('video_slice_encoder_candidates_prioritize_platform_hardware_and_end_with_cpu_fallback') &&
@@ -2127,11 +2471,11 @@ assertRule(
 );
 assertRule(
   nativeMediaRuntimeSource.includes('native_media_poll_throttler_runs_immediately_then_waits_for_interval'),
-  'media_runtime.rs tests throttled native media polling for local speech-to-text heartbeat performance',
+  'media_runtime.rs tests throttled native media polling for internal worker-lease maintenance during local speech-to-text execution',
 );
 assertRule(
   nativeMediaRuntimeSource.includes('native_media_poll_throttler_can_force_final_run'),
-  'media_runtime.rs tests the final native media heartbeat after local speech-to-text process exit',
+  'media_runtime.rs tests the final native media worker-lease poll after local speech-to-text process exit',
 );
 assertRule(
   nativeMediaRuntimeSource.includes('parse_whisper_transcript_json_accepts_segment_timeline'),
@@ -2205,7 +2549,7 @@ assertRule(
 );
 assertRule(
   nativeMediaRuntimeSource.includes('video_slice_from_asset_writes_task_scoped_srt_subtitle_artifacts') &&
-    nativeMediaRuntimeSource.includes('video_slice_burned_subtitle_mode_renders_without_srt_sidecar') &&
+    nativeMediaRuntimeSource.includes('video_slice_burned_subtitle_mode_persists_editable_srt_sidecar') &&
     nativeMediaRuntimeSource.includes('video_slice_srt_subtitles_are_clipped_to_slice_boundaries') &&
     nativeMediaRuntimeSource.includes('write_video_slice_subtitle_artifact') &&
     nativeMediaRuntimeSource.includes('normalize_video_slice_subtitle_mode') &&
@@ -2223,11 +2567,16 @@ assertRule(
   'slicerService.ts fails closed when native subtitle artifacts do not match the explicit subtitle request mode',
 );
 assertRule(
-  nativeMediaRuntimeSource.includes('VIDEO_SLICE_BURNED_SUBTITLE_FORCE_STYLE') &&
+  nativeMediaRuntimeSource.includes('build_video_slice_burned_subtitle_force_style') &&
+    nativeMediaRuntimeSource.includes('video_slice_subtitle_horizontal_margin') &&
+    nativeMediaRuntimeSource.includes('video_slice_burned_subtitle_style_preset') &&
     nativeMediaRuntimeSource.includes('Alignment=2') &&
+    nativeMediaRuntimeSource.includes('FontName=Microsoft YaHei') &&
+    nativeMediaRuntimeSource.includes('BorderStyle=1') &&
+    nativeMediaRuntimeSource.includes('Encoding=1') &&
     nativeMediaRuntimeSource.includes('MarginV=') &&
     nativeMediaRuntimeSource.includes('force_style='),
-  'media_runtime.rs forces burned speech-to-text subtitles to render bottom-centered in every generated slice video',
+  'media_runtime.rs renders burned speech-to-text subtitles bottom-centered with adaptive safe areas, CJK-safe font rendering, and selected style presets',
 );
 assertRule(
   frontendStandardSource.includes('autocut_transcribe_media') &&
@@ -2493,6 +2842,14 @@ for (const marker of [
   'writeAutoCutSmartSliceQualityEvidence',
   'writeAutoCutSmartSliceMediaArtifactsEvidence',
   'createAutoCutSmartSliceTaskEvidenceValidationReport',
+  'AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD',
+  'sampleAudioCleanupEvidence',
+  'audioCleanupProfile',
+  'noiseReductionApplied',
+  'boundaryDecisionSource',
+  'leadingSilenceTrimMs',
+  'trailingSilenceTrimMs',
+  'tailTreatment',
   'sentenceBoundaryIntegrityGrade',
   'speechContinuityGrade',
 ]) {
@@ -2509,6 +2866,14 @@ for (const marker of [
   'writeAutoCutReleaseEvidence',
   'createAutoCutCommercialReleaseReadinessReport',
   'blocked-transcript',
+  'AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD',
+  'fixtureAudioCleanupEvidence',
+  'audioCleanupProfile',
+  'noiseReductionApplied',
+  'boundaryDecisionSource',
+  'leadingSilenceTrimMs',
+  'trailingSilenceTrimMs',
+  'tailTreatment',
   'SMART_SLICE_RELEASE_EVIDENCE_NOT_READY',
   'SMART_SLICE_COMMERCIAL_READINESS_NOT_READY',
 ]) {
@@ -2529,6 +2894,30 @@ for (const marker of [
   'formatAutoCutSmartSliceTaskEvidenceValidationMessage',
 ]) {
   assertRule(smartSliceTaskEvidenceCheckSource.includes(marker), `smart slice task evidence validation check contains ${marker}`);
+}
+for (const marker of [
+  '2026-05-16.autocut-smart-slice-execution-evidence-validation.v1',
+  'smart-slice.speech-to-text.v1',
+  'smart-slice.semantic-segmentation.v1',
+  'smart-slice.review-session.v1',
+  'smart-slice.manual-edits.v1',
+  'smart-slice.review-events.v1',
+  'smart-slice.render-selection.v1',
+  'smart-slice.render-artifact-manifest.v1',
+  'SMART_SLICE_STT_EVIDENCE_MISSING',
+  'SMART_SLICE_SEMANTIC_EVIDENCE_MISSING',
+  'SMART_SLICE_STT_TIMELINE_OVERLAP',
+  'SMART_SLICE_SEMANTIC_CLIP_SPEAKER_UNKNOWN',
+  'llmReviewAuditReady',
+  'speech-to-text.json',
+  'semantic-segmentation.json',
+  'review-session.json',
+  'manual-edits.json',
+  'review-events.json',
+  'render-selection.json',
+  'render-artifact-manifest.json',
+]) {
+  assertRule(smartSliceExecutionEvidenceCheckSource.includes(marker), `smart slice execution evidence validation check contains ${marker}`);
 }
 for (const marker of [
   '2026-05-06.autocut-smart-slice-quality-evidence.v1',
@@ -2791,7 +3180,9 @@ assertRule(
     desktopReleaseWorkflowSource.includes('autocut-app-manifest-release-evidence-sync.txt') &&
     desktopReleaseWorkflowSource.includes('autocut-app-manifest-release-readiness.txt') &&
     desktopReleaseWorkflowSource.includes('autocut-release-evidence-status.json') &&
-    desktopReleaseWorkflowSource.includes('SDKWork Video Cut_0.1.5_${{ matrix.app_arch }}.app.tar.gz') &&
+    desktopReleaseWorkflowSource.includes('releaseVersion="${{ inputs.release_tag }}"') &&
+    desktopReleaseWorkflowSource.includes('releaseVersion="${releaseVersion#v}"') &&
+    desktopReleaseWorkflowSource.includes('SDKWork Video Cut_${releaseVersion}_${{ matrix.app_arch }}.app.tar.gz') &&
     desktopReleaseWorkflowSource.includes('artifacts/release/autocut-release-evidence-${{ matrix.platform }}.json'),
   'GitHub workflow builds native Windows, Linux, Intel macOS, and Apple Silicon macOS desktop release artifacts with app manifest and aggregate readiness evidence without clobbering macOS app archives',
 );
@@ -2802,6 +3193,7 @@ assertRule(
 assertRule(
     rootPackage.scripts?.test?.includes('scripts/prepare-autocut-ffmpeg-sidecar.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/prepare-autocut-speech-sidecar.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/prepare-autocut-speech-gpu-runtime.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/prepare-autocut-release-sidecars.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/autocut-cli-args.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/check-autocut-release-smoke-preflight.test.mjs') &&
@@ -2810,6 +3202,7 @@ assertRule(
     rootPackage.scripts?.test?.includes('scripts/write-autocut-installer-signature-evidence.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/write-autocut-smart-slice-sample-evidence.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/check-autocut-smart-slice-task-evidence.test.mjs') &&
+    rootPackage.scripts?.test?.includes('scripts/check-autocut-smart-slice-execution-evidence.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/write-autocut-smart-slice-quality-evidence.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/write-autocut-smart-slice-media-artifacts-evidence.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/check-autocut-smart-slice-release-fixture.test.mjs') &&
@@ -2823,7 +3216,7 @@ assertRule(
     rootPackage.scripts?.test?.includes('scripts/check-autocut-release-workflow.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/check-autocut-release-evidence-status.test.mjs') &&
     rootPackage.scripts?.test?.includes('scripts/check-autocut-commercial-release-readiness.test.mjs'),
-  'root package test script covers FFmpeg sidecar preparation, Whisper CLI speech sidecar preparation, CI release sidecar preparation, release smoke preflight, native release smoke, installer signing, installer signature, smart slice sample, smart slice task validation, smart slice quality, smart slice media artifacts, smart slice fixture, release evidence, package SBOM file generation, SBOM evidence, app manifest sync/readiness, preview readiness, multiplatform readiness, release workflow, aggregate evidence status, and commercial readiness contracts',
+  'root package test script covers FFmpeg sidecar preparation, Whisper CLI speech sidecar preparation, GPU speech runtime preparation, CI release sidecar preparation, release smoke preflight, native release smoke, installer signing, installer signature, smart slice sample, smart slice task validation, smart slice quality, smart slice media artifacts, smart slice fixture, release evidence, package SBOM file generation, SBOM evidence, app manifest sync/readiness, preview readiness, multiplatform readiness, release workflow, aggregate evidence status, and commercial readiness contracts',
 );
 assertRule(
   tauriConfig.bundle?.resources?.['binaries/ffmpeg.toolchain.json'] === 'binaries/ffmpeg.toolchain.json',
@@ -2919,6 +3312,9 @@ for (const file of listFiles(rootDir, isSecretGovernanceTextFile, shouldSkipSecr
   );
 }
 for (const rootEntry of fs.readdirSync(rootDir, { withFileTypes: true })) {
+  if (rootEntry.isDirectory() && ignoredRootDirectoryEntries.has(rootEntry.name)) {
+    continue;
+  }
   assertRule(allowedRootEntries.has(rootEntry.name), `root entry ${rootEntry.name} is allowed by the AutoCut desktop app standard`);
   if (rootEntry.isFile()) {
     assertRule(!rootEntry.name.endsWith('.log'), `root generated log ${rootEntry.name} is not present`);
@@ -2955,6 +3351,7 @@ const requiredTaskTypes = [
   'video-compress',
   'video-convert',
   'video-enhance',
+  'video-dedup',
   'subtitle-translate',
   'voice-translate',
 ];
@@ -2967,6 +3364,19 @@ assertRule(autocutTypesSource.includes('sourceTaskId?: string'), 'AppAsset recor
 assertRule(autocutTypesSource.includes('sourceTaskType?: TaskType'), 'AppAsset records sourceTaskType for generated asset traceability');
 assertRule(autocutTypesSource.includes('sourceFileId?: string'), 'AppTask records sourceFileId for selected source asset traceability');
 assertRule(autocutTypesSource.includes('generatedAssetIds?: string[]'), 'AppTask records generatedAssetIds for task result traceability');
+assertRule(
+  autocutTypesSource.includes('export interface AutoCutTranscriptCorrectionAudit') &&
+    autocutTypesSource.includes("source: 'task-detail'") &&
+    autocutTypesSource.includes('transcriptCorrection?: AutoCutTranscriptCorrectionAudit'),
+  'TaskSliceResult records structured manual transcript correction audit metadata',
+);
+assertRule(
+  autocutTypesSource.includes('AUTOCUT_SMART_SLICE_REVIEW_RISK_CATALOG') &&
+    autocutTypesSource.includes('audio-transcript-boundary-conflict') &&
+    autocutTypesSource.includes('labelKey: string') &&
+    autocutTypesSource.includes('remediationKey: string'),
+  '@sdkwork/autocut-types owns the canonical smart-slice review risk catalog with UI and evidence metadata',
+);
 assertRule(tasksPageSource.includes('Record<TaskType, React.ReactNode>'), 'TasksPage icon map is typed against every TaskType');
 assertRule(taskDetailPageSource.includes('Record<TaskType, string>'), 'TaskDetailPage reprocess route map is typed against every TaskType');
 assertRule(serviceIndexSource.includes("export * from './service/i18n.service';"), '@sdkwork/autocut-services exports the standard i18n service');
@@ -3008,6 +3418,17 @@ assertRule(
     !taskDetailPageSource.includes('object-cover'),
   'TaskDetailPage slice thumbnails follow the complete-frame preview rule and never crop generated videos',
 );
+assertRule(
+  taskDetailPageSource.includes('SMART_SLICE_EVIDENCE_PACKAGE_ITEMS') &&
+    taskDetailPageSource.includes('SMART_SLICE_EVIDENCE_STEP_IDS') &&
+    taskDetailPageSource.includes('Smart Slice Evidence Inspector') &&
+    taskDetailPageSource.includes('copiedSmartSliceEvidenceItemId') &&
+    taskDetailPageSource.includes('copySmartSliceEvidenceArtifactPath') &&
+    taskDetailPageSource.includes('openSmartSliceEvidenceArtifactLocation') &&
+    taskDetailPageSource.includes('reviewEventsEvidence') &&
+    taskDetailPageSource.includes("relativePath: 'evidence/render-artifact-manifest.json'"),
+  'TaskDetailPage exposes the canonical Smart Slice evidence package with copy and reveal actions for commercial audit handoff',
+);
 for (const taskType of requiredTaskTypes) {
   assertRule(autocutTypesSource.includes(`'${taskType}'`), `AUTOCUT_TASK_TYPES includes ${taskType}`);
   assertRule(tasksPageSource.includes(`AUTOCUT_TASK_TYPE.${toTaskTypeEnumKey(taskType)}`), `TasksPage icon map covers ${taskType}`);
@@ -3038,7 +3459,7 @@ assertRule(
   storageServiceSource.includes('`${AUTO_CUT_STORAGE_NAMESPACE}_${getAutoCutRuntimeEnvironment()}_'),
   'storage.service.ts namespaces browser key-value storage by runtime environment',
 );
-for (const storageKey of ['assets', 'tasks', 'messages', 'settings', 'workflowPreferences']) {
+for (const storageKey of ['assets', 'tasks', 'messages', 'settings', 'videoDedupFingerprints', 'videoDedupVisualEvidence', 'workflowPreferences']) {
   assertRule(storageServiceSource.includes(`${storageKey}:`), `storage.service.ts declares typed storage key ${storageKey}`);
 }
 assertRule(
@@ -3123,6 +3544,10 @@ assertRule(
   servicesIndexSource.includes("export * from './service/speech-transcription.service'") &&
     speechTranscriptionServiceSource.includes('getAutoCutSpeechTranscriptionProviderDefinitions') &&
     speechTranscriptionServiceSource.includes('getAutoCutLocalSpeechTranscriptionModelPresets') &&
+    speechTranscriptionServiceSource.includes('getAutoCutSpeechTranscriptionWorkflowPresets') &&
+    speechTranscriptionServiceSource.includes('resolveAutoCutSpeechTranscriptionWorkflowPreset') &&
+    speechTranscriptionServiceSource.includes('whisperChunkParallelism') &&
+    speechTranscriptionServiceSource.includes('whisperChunkThreadCount') &&
     !speechTranscriptionServiceSource.includes('getAutoCutLocalSpeechTranscriptionExecutablePresets') &&
     speechTranscriptionServiceSource.includes('resolveAutoCutRecommendedLocalSpeechTranscriptionModelPreset') &&
     !speechTranscriptionServiceSource.includes('resolveAutoCutRecommendedLocalSpeechTranscriptionExecutablePreset') &&
@@ -3131,6 +3556,8 @@ assertRule(
     speechTranscriptionServiceSource.includes('inspectAutoCutLocalSpeechTranscriptionSetup') &&
     speechTranscriptionServiceSource.includes('initializeAutoCutLocalSpeechTranscriptionSetup') &&
     speechTranscriptionServiceSource.includes('dispatchAutoCutSpeechTranscriptionModelDownloadProgress') &&
+    speechTranscriptionServiceSource.includes('yieldAutoCutSpeechTranscriptionUiFrame') &&
+    speechTranscriptionServiceSource.includes('requestAnimationFrame') &&
     !speechTranscriptionServiceSource.includes('dispatchAutoCutSpeechTranscriptionExecutableDownloadProgress') &&
     speechTranscriptionServiceSource.includes('downloadAutoCutLocalSpeechTranscriptionModelPreset') &&
     speechTranscriptionServiceSource.includes('copyAutoCutLocalSpeechTranscriptionModelPresetUrl') &&
@@ -3138,6 +3565,21 @@ assertRule(
     speechTranscriptionServiceSource.includes('transcribeAutoCutMediaWithConfiguredProvider') &&
     speechTranscriptionServiceSource.includes('testAutoCutSpeechTranscriptionProvider'),
   'speech-transcription.service.ts owns the standard speech-to-text provider and guided local model acquisition boundary without runtime whisper-cli download presets',
+);
+assertRule(
+  autocutTypesSource.includes('AUTOCUT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESETS') &&
+    autocutTypesSource.includes('smart-slice-cloud-stt') &&
+    autocutTypesSource.includes('smart-slice-balanced-local') &&
+    autocutTypesSource.includes('smart-slice-fast-preview') &&
+    autocutTypesSource.includes('smart-slice-quality-local') &&
+    autocutTypesSource.includes('AUTOCUT_DEFAULT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESET_ID') &&
+    workflowPreferencesServiceSource.includes('AUTOCUT_DEFAULT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESET_ID') &&
+    workflowPreferencesServiceSource.includes('VIDEO_SLICE_STT_PRESETS') &&
+    workflowPreferencesServiceSource.includes('sttPresetId: normalizeEnum') &&
+    serviceBehaviorCheckSource.includes('workflow parameter preferences default Smart Slice to the commercial cloud STT workflow preset') &&
+    serviceBehaviorCheckSource.includes('Smart Slice default STT workflow preset uses cloud STT for commercial large-video throughput') &&
+    serviceBehaviorCheckSource.includes('workflow parameter preferences persist the selected Smart Slice STT workflow preset'),
+  'Smart Slice speech-to-text workflow presets are standardized, persisted in workflow preferences, and covered by service behavior tests',
 );
 assertRule(
   !speechTranscriptionServiceSource.includes('validateAutoCutLocalSpeechTranscriptionExecutablePreset') &&
@@ -3161,7 +3603,7 @@ assertRule(
     speechTranscriptionServiceSource.includes('trusted Hugging Face source URL') &&
     speechTranscriptionServiceSource.includes("'hf-mirror.com'") &&
     speechTranscriptionServiceSource.includes('pinned SHA-256 model digest') &&
-    speechTranscriptionServiceSource.includes('modelDownload.sha256.toLowerCase() !== preset.sha256') &&
+    speechTranscriptionServiceSource.includes('normalizeAutoCutSha256Digest(modelDownload.sha256) !== normalizeAutoCutSha256Digest(preset.sha256)') &&
     speechTranscriptionServiceSource.includes('URL file name must match fileName') &&
     speechTranscriptionServiceSource.includes('ggerganov/whisper.cpp') &&
     speechTranscriptionServiceSource.includes('supported model file extension') &&
@@ -3175,21 +3617,24 @@ assertRule(
   'speech-transcription.service.ts fails closed on malformed local STT model acquisition presets and mirror URLs before browser download or clipboard copy',
 );
 assertRule(
-  settingsPageSource.includes('getAutoCutLocalSpeechTranscriptionModelPresets') &&
+    settingsPageSource.includes('getAutoCutLocalSpeechTranscriptionModelPresets') &&
     settingsPageSource.includes('setupAutoCutLocalSpeechTranscriptionModelPreset') &&
     settingsPageSource.includes('handleSetupSpeechTranscriptionModelPreset') &&
     settingsPageSource.includes('isConfiguringSpeechModel') &&
+    settingsPageSource.includes('normalizeSettingsLocalPath(settings.speechTranscription.modelPath') &&
+    settingsPageSource.includes('settings.status.downloaded') &&
     settingsPageSource.includes('downloadAutoCutLocalSpeechTranscriptionModelPreset') &&
     settingsPageSource.includes('copyAutoCutLocalSpeechTranscriptionModelPresetUrl') &&
     !settingsPageSource.includes('downloadAutoCutUrl(modelPreset.url') &&
     !settingsPageSource.includes('writeAutoCutClipboardText(modelPreset.url'),
-  'SettingsPage delegates guided local STT model acquisition actions to speech-transcription.service.ts instead of directly trusting preset URLs',
+  'SettingsPage delegates guided local STT model acquisition actions to speech-transcription.service.ts and marks verified local model presets as downloaded instead of directly trusting preset URLs',
 );
 assertRule(
-  settingsPageSource.includes('const refreshedStatus = await inspectAutoCutLocalSpeechTranscriptionSetup();') &&
+    settingsPageSource.includes('const refreshedStatus = await inspectAutoCutLocalSpeechTranscriptionSetup();') &&
     settingsPageSource.includes('setSpeechSetupStatus(refreshedStatus);') &&
-    settingsPageSource.includes('refreshedStatus.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready'),
-  'SettingsPage refreshes local STT readiness immediately after guided model setup so a saved model does not leave a stale failed status visible',
+    settingsPageSource.includes('refreshedStatus.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready') &&
+    serviceBehaviorCheckSource.includes('yields one browser frame before starting the heavy native STT model download'),
+  'SettingsPage refreshes local STT readiness immediately after guided model setup and service behavior requires a UI frame yield before heavy model download',
 );
 assertRule(
   nativeHostClientServiceSource.includes('speechTranscriptionModelDownloadCommandReady') &&
@@ -3213,6 +3658,11 @@ assertRule(
     nativeMediaRuntimeSource.includes('AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT') &&
     !nativeMediaRuntimeSource.includes('AUTOCUT_SPEECH_TRANSCRIPTION_EXECUTABLE_DOWNLOAD_PROGRESS_EVENT') &&
     nativeMediaRuntimeSource.includes('download_autocut_speech_transcription_model_file_with_progress') &&
+    nativeMediaRuntimeSource.includes('header(RANGE, format!("bytes={partial_byte_size}-"))') &&
+    nativeMediaRuntimeSource.includes('CONTENT_RANGE') &&
+    nativeMediaRuntimeSource.includes('append_to_partial') &&
+    nativeMediaRuntimeSource.includes('preserved partial .download file') &&
+    nativeMediaRuntimeSource.includes('SHA-256 checksum mismatch') &&
     nativeMediaRuntimeSource.includes('validate_autocut_speech_transcription_model_download_request') &&
     !nativeMediaRuntimeSource.includes('validate_autocut_speech_transcription_executable_download_request') &&
     nativeMediaRuntimeSource.includes('verify_file_sha256_for_label') &&
@@ -3387,6 +3837,13 @@ assertRule(
     tasksServiceSource.includes('assertNativeSlicePathInsideTaskOutputDir') &&
     tasksServiceSource.includes('enforceRecoveredNativeVideoSliceProfessionalTranscriptEvidence') &&
     tasksServiceSource.includes('missing speech-to-text transcript evidence') &&
+    tasksServiceSource.includes('assertRecoveredNativeVideoSliceAudioCleanupEvidence') &&
+    tasksServiceSource.includes('audioCleanupProfile: RECOVERED_SMART_SLICE_AUDIO_CLEANUP_PROFILE') &&
+    tasksServiceSource.includes('rawAudioActivityAnalysisFilter: RECOVERED_SMART_SLICE_RAW_AUDIO_ACTIVITY_ANALYSIS_FILTER') &&
+    tasksServiceSource.includes('acceptedBoundaryDecisionSources: RECOVERED_SMART_SLICE_ACCEPTED_BOUNDARY_DECISION_SOURCES') &&
+    tasksServiceSource.includes('acceptedTailTreatments: RECOVERED_SMART_SLICE_ACCEPTED_TAIL_TREATMENTS') &&
+    tasksServiceSource.includes('missing smart-slice audio cleanup evidence') &&
+    tasksServiceSource.includes('slicesWithAudioCleanupEvidence') &&
     tasksServiceSource.includes('createRecoveredNativeVideoSliceDebugDiagnostics') &&
     tasksServiceSource.includes('Input clip evidence:') &&
     tasksServiceSource.includes('Output slice evidence:') &&
@@ -3396,13 +3853,26 @@ assertRule(
     autocutTypesSource.includes('maxLeadingSilenceMs: 200') &&
     autocutTypesSource.includes('maxTrailingSilenceMs: 250') &&
     autocutTypesSource.includes('minTranscriptCoverageScore: 0.8') &&
+    autocutTypesSource.includes('minAudioActivityConfidence: 0.8') &&
+    autocutTypesSource.includes('maxAudioTranscriptBoundaryDisagreementMs: 1_500') &&
+    autocutTypesSource.includes('minAudioTranscriptBoundaryOverlapRatio: 0.85') &&
+    autocutTypesSource.includes("requiredAudioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08'") &&
+    autocutTypesSource.includes("rawAudioActivityAnalysisFilter: 'silencedetect=noise=-35dB:d=0.08'") &&
     tasksServiceSource.includes('AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD') &&
     tasksServiceSource.includes('speechContinuityGrade to be strong or repaired') &&
+    tasksServiceSource.includes('noise reduction decision evidence') &&
+    tasksServiceSource.includes('audioActivityStartMs/audioActivityEndMs inside the source range') &&
+    tasksServiceSource.includes('audioActivityConfidence to be at least') &&
+    tasksServiceSource.includes('audioActivityAnalysisFilter to match the recorded noise reduction decision') &&
+    tasksServiceSource.includes("assertRecoveredNativeVideoSliceMilliseconds(sliceResult.leadingSilenceMs, sliceNumber, 'leadingSilenceMs')") &&
+    tasksServiceSource.includes("assertRecoveredNativeVideoSliceMilliseconds(sliceResult.trailingSilenceMs, sliceNumber, 'trailingSilenceMs')") &&
     serviceBehaviorCheckSource.includes('fails closed when recovered speech-to-text transcript evidence is missing') &&
     serviceBehaviorCheckSource.includes('exposes the recovered transcript evidence validation stack trace for debugging') &&
     serviceBehaviorCheckSource.includes('diagnostics summarize missing request-side transcript evidence') &&
     serviceBehaviorCheckSource.includes('diagnostics summarize missing output-side transcript evidence') &&
     serviceBehaviorCheckSource.includes('does not expose generated slices without recovered transcript evidence') &&
+    serviceBehaviorCheckSource.includes('fails closed when recovered audio cleanup evidence is missing') &&
+    serviceBehaviorCheckSource.includes('does not expose generated slices without recovered audio cleanup evidence') &&
     serviceBehaviorCheckSource.includes('fails closed when recovered transcript coverage is below the professional threshold') &&
     serviceBehaviorCheckSource.includes('fails closed when recovered speech continuity is weak') &&
     serviceBehaviorCheckSource.includes('native completed slice task fails closed when an artifact escapes its task output directory') &&
@@ -3410,6 +3880,82 @@ assertRule(
     !tasksServiceSource.includes('.filter((slice): slice is TaskSliceResult => Boolean(slice))') &&
     serviceBehaviorCheckSource.includes('native completed slice tasks with corrupt output are recovered as failed AppTasks'),
   'tasks.service.ts fails closed instead of projecting corrupt, escaped, cover-bypassing, or transcript-less native smart-slice task output',
+);
+assertRule(
+  slicerServiceSource.includes('fallbackNoiseReductionApplied: SMART_SLICE_FALLBACK_NOISE_REDUCTION_APPLIED') &&
+    slicerServiceSource.includes('shouldStartSmartSliceWithNoiseReduction') &&
+    slicerServiceSource.includes('shouldAllowSmartSliceNoiseReduction') &&
+    slicerServiceSource.includes("typeof sliceResult.noiseReductionApplied !== 'boolean'") &&
+    slicerServiceSource.includes('noise reduction decision evidence') &&
+    workflowPreferencesServiceSource.includes('enableNoiseReduction: true') &&
+    slicerPageSource.includes('setNoiseReduction') &&
+    slicePlannerSource.includes('SMART_SLICE_RAW_AUDIO_ACTIVITY_ANALYSIS_FILTER') &&
+    !slicePlannerSource.includes('options.noiseReductionApplied ?? true') &&
+    serviceBehaviorCheckSource.includes('Smart Slice honors disabled denoise before audio boundary analysis for clean source audio') &&
+    serviceBehaviorCheckSource.includes('Smart Slice completes with clean raw audio cleanup evidence when callers disable denoise') &&
+    serviceBehaviorCheckSource.includes('workflow parameter preferences store disabled broadband denoise after disabled denoise input'),
+  'slicerService.ts, SlicerPage, workflow preferences, and planner default Smart Slice to raw audio while preserving explicit denoise decision evidence',
+);
+assertRule(
+  slicerServiceSource.includes('capabilities.videoSliceAudioActivityAnalysisCommandReady &&') &&
+    slicerServiceSource.includes('assertSmartSliceAudioActivityAnalysisComplete') &&
+    slicerServiceSource.includes('Array.isArray(resultEnvelope.analyses)') &&
+    slicerServiceSource.includes('analysis.confidence < MIN_SMART_SLICE_AUDIO_ACTIVITY_CONFIDENCE') &&
+    slicerServiceSource.includes('getSmartSliceRequiredAudioActivityAnalysisFilter') &&
+    slicerServiceSource.includes('SMART_SLICE_RAW_AUDIO_ACTIVITY_ANALYSIS_FILTER') &&
+    slicerServiceSource.includes('analysis.analysisFilter !== requiredAudioActivityAnalysisFilter') &&
+    smartSliceTaskEvidenceCheckSource.includes('audioActivityRangeReady') &&
+    smartSliceTaskEvidenceCheckSource.includes('rawAudioActivityAnalysisFilter') &&
+    smartSliceQualityEvidenceSource.includes('audioActivityRangeReady') &&
+    smartSliceQualityEvidenceSource.includes('rawAudioActivityAnalysisFilter') &&
+    smartSliceSampleEvidenceSource.includes('audioActivityStartMs') &&
+    slicerServiceSource.includes('createSmartSliceAudioBoundaryAnalysisRequirementLabel') &&
+    slicerServiceSource.includes('Smart slicing requires ${createSmartSliceAudioBoundaryAnalysisRequirementLabel(noiseReductionApplied)} before native rendering') &&
+    slicerServiceSource.includes('Smart slicing requires complete ${analysisRequirementLabel} for every planned clip before native rendering') &&
+    slicerServiceSource.includes('Smart slicing requires high-confidence ${analysisRequirementLabel} activity evidence before native rendering') &&
+    serviceBehaviorCheckSource.includes('Smart Slice fails closed when audio boundary analysis fails') &&
+    serviceBehaviorCheckSource.includes('Smart Slice fails preflight when audio boundary analysis capability is unavailable') &&
+    serviceBehaviorCheckSource.includes('Smart Slice rejects incomplete audio boundary analysis results') &&
+    serviceBehaviorCheckSource.includes('Smart Slice rejects malformed audio boundary analysis evidence with a standard error') &&
+    serviceBehaviorCheckSource.includes('Smart Slice rejects malformed audio boundary analysis envelopes with a standard error') &&
+    serviceBehaviorCheckSource.includes('Smart Slice rejects weak non-audio boundary analysis evidence with a standard error') &&
+    serviceBehaviorCheckSource.includes('Smart Slice does not render native slices after incomplete audio boundary analysis') &&
+    slicerServiceSource.includes('raw audio boundary analysis fallback to denoise') &&
+    !slicerServiceSource.includes('fallbackToTranscriptBoundaries'),
+  'slicerService.ts requires successful complete high-confidence audio boundary analysis before native smart-slice rendering and never falls back to transcript-only cleanup',
+);
+assertRule(
+  slicePlannerSource.includes('MAX_AUDIO_TRANSCRIPT_BOUNDARY_DISAGREEMENT_MS') &&
+    slicePlannerSource.includes('MIN_AUDIO_TRANSCRIPT_BOUNDARY_OVERLAP_RATIO') &&
+    slicePlannerSource.includes('maxAudioTranscriptBoundaryDisagreementMs: MAX_AUDIO_TRANSCRIPT_BOUNDARY_DISAGREEMENT_MS') &&
+    slicePlannerSource.includes('minAudioTranscriptBoundaryOverlapRatio: MIN_AUDIO_TRANSCRIPT_BOUNDARY_OVERLAP_RATIO') &&
+    slicePlannerSource.includes('resolveAudioTranscriptBoundaryConflictRisks') &&
+    slicePlannerSource.includes('audio-transcript-boundary-conflict') &&
+    slicePlannerSource.includes('createSemanticStoryMergeCandidates') &&
+    slicePlannerSource.includes('candidatesHaveIncompleteSemanticOverlap') &&
+    slicePlannerSource.includes('repairIncompleteSemanticStorySelections') &&
+    slicePlannerSource.includes('repairSelectedPlanSemanticStoryFragments') &&
+    slicePlannerSource.includes('SEMANTIC_STORY_FRAGMENT_BOUNDARY_TOLERANCE_MS') &&
+    slicePlannerSource.includes('speechDurationMs > maxDurationMs') &&
+    slicePlannerSource.includes('semantic-story-merged') &&
+    slicePlannerSource.includes('const qualityScore = matchedCandidate?.qualityScore ?? clampScore(clip?.qualityScore)') &&
+    slicePlannerSource.includes('const continuityScore = matchedCandidate?.continuityScore ?? clampScore(clip?.continuityScore)') &&
+    slicePlannerSource.includes('const llmRisks = matchedCandidate ? undefined : normalizePlanRisks(clip?.risks)') &&
+    slicePlannerSource.includes('selectContentDerivedReleasePlan') &&
+    slicePlannerSource.includes('selectCanonicalContentDerivedReleasePlan') &&
+    slicerPlannerCheckSource.includes('semantic continuity planning merges adjacent understood transcript segments into one continuous clip') &&
+    slicerPlannerCheckSource.includes('auto semantic continuity planning treats short same-topic pauses as one content group instead of separate output clips') &&
+    slicerPlannerCheckSource.includes('auto semantic continuity planning emits two clips for two distinct complete back-to-back stories') &&
+    slicerPlannerCheckSource.includes('semantic story merge candidates are rejected instead of truncating speech beyond the maximum clip duration') &&
+    slicerPlannerCheckSource.includes('LLM partial semantic selections are repaired to the complete merged story candidate') &&
+    slicerPlannerCheckSource.includes('LLM planning cannot omit a deterministic strong content-derived story to reduce the natural clip count') &&
+    slicerPlannerCheckSource.includes('LLM planning cannot contaminate canonical strong content groups with model-invented blocking risks') &&
+    slicerPlannerCheckSource.includes('LLM candidate-id plans preserve deterministic transcript quality scores instead of trusting model-invented scores') &&
+    slicerPlannerCheckSource.includes('LLM candidate-id plans ignore model-invented risk tags so publishability scoring stays evidence-backed') &&
+    slicerPlannerCheckSource.includes('LLM candidate-id plans fall back when every selected transcript candidate fails publishability gates after normalization') &&
+    slicerPlannerCheckSource.includes('audio cleanup boundary conflicts choose renderable audio activity boundaries instead of transcript windows with excessive trusted padding') &&
+    slicerPlannerCheckSource.includes('audio cleanup boundary conflicts preserve denoised audio activity start evidence for review'),
+  'slicePlanner.ts keeps audio-cleaned conflict clips renderable when audio activity boundaries conflict with STT evidence, keeps LLM candidate-id selections evidence-backed, and merges adjacent understood segments into complete content groups without truncating story speech',
 );
 assertRule(exists(requiredAssetsServicePath), '@sdkwork/autocut-services defines canonical assets.service.ts');
 assertRule(
@@ -3436,20 +3982,170 @@ assertRule(
   '@sdkwork/autocut-slicer defines a pure slicePlanner.ts planning kernel',
 );
 assertRule(
-  slicerServiceSource.includes("from './slicePlanner'") &&
-    slicerServiceSource.includes('buildTranscriptSliceCandidates') &&
-    slicerServiceSource.includes('getVideoSlicePlanningPolicy') &&
-    slicerServiceSource.includes('parseLlmSlicePlan') &&
+  slicerServiceSource.includes("from './smartCutEnginePlanner'") &&
+    slicerServiceSource.includes('createSmartCutEngineSlicePlan') &&
+    slicerServiceSource.includes('createSmartCutEngineLlmReview') &&
+    slicerServiceSource.includes('SmartCutEngineSlicePlanningError') &&
     slicerServiceSource.includes('validateVideoSliceParams'),
-  'slicerService.ts delegates intelligent slice planning to slicePlanner.ts',
+  'slicerService.ts delegates intelligent slice planning to the Smart Cut Engine planner',
+);
+assertRule(
+  toolsRegistrySource.includes("id: 'video-dedup'") &&
+    toolsRegistrySource.includes("route: '/video-dedup'") &&
+    toolsRegistrySource.includes("category: 'ai'"),
+  'tool catalog registers video-dedup as an AI tool with a mounted route',
+);
+assertRule(
+  servicesIndexSource.includes("export * from './service/video-dedup.service'"),
+  'services index exports the reusable video-dedup service',
+);
+assertRule(
+  autocutTypesSource.includes('VideoDedupParams') &&
+    autocutTypesSource.includes('VideoDedupReport') &&
+    autocutTypesSource.includes('VideoDuplicateGroup'),
+  'autocut types define reusable video dedup contracts',
+);
+assertRule(
+  nativeHostCommandSource.includes('pub async fn autocut_fingerprint_video_file') &&
+    nativeHostCommandSource.includes('pub async fn autocut_probe_video_file_identity') &&
+    nativeHostCommandSource.includes('fingerprint_autocut_video_file') &&
+    nativeHostCommandSource.includes('probe_autocut_video_file_identity') &&
+    mainRsSource.includes('commands::autocut_fingerprint_video_file') &&
+    mainRsSource.includes('commands::autocut_probe_video_file_identity') &&
+    nativeHostContractSource.includes('videoDedupFingerprintCommandReady') &&
+    nativeHostContractSource.includes('videoDedupFileIdentityCommandReady') &&
+    nativeHostContractSource.includes('"autocut_fingerprint_video_file"') &&
+    nativeHostContractSource.includes('"autocut_probe_video_file_identity"') &&
+    nativeMediaRuntimeSource.includes('AutoCutVideoFileFingerprintRequest') &&
+    nativeMediaRuntimeSource.includes('AutoCutVideoFileFingerprintResult') &&
+    nativeMediaRuntimeSource.includes('AutoCutVideoFileIdentityResult') &&
+    nativeMediaRuntimeSource.includes('fingerprint_autocut_video_file') &&
+    nativeMediaRuntimeSource.includes('probe_autocut_video_file_identity') &&
+    nativeMediaRuntimeSource.includes('calculate_file_sha256'),
+  'native host exposes Rust-backed streaming SHA-256 and lightweight file-identity commands for exact video dedup',
+);
+assertRule(
+  nativeHostClientServiceSource.includes('AutoCutVideoFileFingerprintRequest') &&
+    nativeHostClientServiceSource.includes('AutoCutVideoFileFingerprintResult') &&
+    nativeHostClientServiceSource.includes('AutoCutVideoFileIdentityResult') &&
+    nativeHostClientServiceSource.includes('videoDedupFingerprintCommandReady') &&
+    nativeHostClientServiceSource.includes('videoDedupFileIdentityCommandReady') &&
+    nativeHostClientServiceSource.includes('fingerprintVideoFile') &&
+    nativeHostClientServiceSource.includes('probeVideoFileIdentity') &&
+    nativeHostClientServiceSource.includes("'autocut_fingerprint_video_file'") &&
+    nativeHostClientServiceSource.includes("'autocut_probe_video_file_identity'"),
+  'native-host-client.service.ts exposes typed video dedup fingerprint and file identity client contracts',
+);
+assertRule(
+  serviceBehaviorCheckSource.includes('video dedup exact-file-hash uses native SHA-256 fingerprints') &&
+    fs.existsSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts')) &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('native-sha256') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('fingerprintVideoFile') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('probeVideoFileIdentity') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('VIDEO_DEDUP_FILE_IDENTITY_VERSION') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('videoDedupFingerprints') &&
+    serviceBehaviorCheckSource.includes('reuses cached native SHA-256 fingerprints') &&
+    serviceBehaviorCheckSource.includes('lightweight native file identity probes') &&
+    serviceBehaviorCheckSource.includes('native identity changes'),
+  'video-dedup.service.ts prefers native SHA-256 fingerprints and validates cached entries with native file identity probes',
+);
+assertRule(
+    serviceBehaviorCheckSource.includes('video dedup visual-fingerprint extracts native visual evidence for each selected asset') &&
+    serviceBehaviorCheckSource.includes('video dedup visual-fingerprint uses native scene evidence') &&
+    serviceBehaviorCheckSource.includes('video dedup visual-fingerprint passes local artifactPath to native visual evidence extraction') &&
+    serviceBehaviorCheckSource.includes('video dedup visual-fingerprint requests native perceptual frame fingerprints') &&
+    serviceBehaviorCheckSource.includes('video dedup visual-fingerprint reuses cached native visual evidence') &&
+    serviceBehaviorCheckSource.includes('video dedup visual-fingerprint validates cached visual evidence with lightweight native file identity probes') &&
+    serviceBehaviorCheckSource.includes('video dedup visual-fingerprint invalidates only changed visual evidence cache entry') &&
+    serviceBehaviorCheckSource.includes('video dedup visual-fingerprint does not auto-match structure-only native visual evidence without perceptual frame content') &&
+    serviceBehaviorCheckSource.includes('video dedup visual-fingerprint does not mark different picture content as duplicate just because scene timing matches') &&
+    fs.existsSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts')) &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('extractVisualEvidence') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('AutoCutVideoDedupVisualSignature') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('native-visual-evidence') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('includeFrameFingerprint: true') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('videoDedupVisualEvidence') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('VIDEO_DEDUP_VISUAL_EVIDENCE_CACHE_LIMIT') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('createVideoDedupVisualEvidenceCacheKey') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('doesVideoDedupVisualEvidenceCacheIdentityMatch') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('calculateNativeVideoDedupFrameFingerprintSimilarity') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('calculateNativeVideoDedupVisualSimilarity') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('contentEvidenceReady') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('visualEvidenceExtractionAdapterReady'),
+  'video-dedup.service.ts prefers native scene-index visual evidence with perceptual frame content for visual-fingerprint matching before metadata fallback and passes local artifact paths',
+);
+assertRule(
+  serviceBehaviorCheckSource.includes('video dedup audio-fingerprint extracts native audio fingerprints for each selected asset') &&
+    serviceBehaviorCheckSource.includes('video dedup audio-fingerprint uses native audio evidence') &&
+    serviceBehaviorCheckSource.includes('video dedup audio-fingerprint passes local artifactPath to native audio fingerprint extraction') &&
+    serviceBehaviorCheckSource.includes('video dedup audio-fingerprint does not fall back to metadata-token proxy when native audio fingerprints prove different audio') &&
+    fs.existsSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts')) &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('fingerprintAudio') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('AutoCutVideoDedupAudioSignature') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('native-audio-fingerprint') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('calculateNativeVideoDedupAudioSimilarity') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/video-dedup.service.ts'), 'utf8')
+      .includes('!hasNativeAudioPair') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-services/src/service/native-host-client.service.ts'), 'utf8')
+      .includes('AutoCutAudioFingerprintResult') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-desktop/src-tauri/src/media_runtime.rs'), 'utf8')
+      .includes('run_ffmpeg_audio_fingerprint_extraction') &&
+    fs
+      .readFileSync(path.join(rootDir, 'packages/sdkwork-autocut-desktop/src-tauri/src/media_runtime.rs'), 'utf8')
+      .includes('audio-energy-v1'),
+  'video-dedup.service.ts prefers native FFmpeg-backed audio fingerprints for audio-fingerprint matching and blocks metadata fallback when native audio proves different content',
 );
 assertRule(
   slicePlannerSource.includes('export function getVideoSlicePlanningPolicy') &&
-    slicePlannerSource.includes('MIN_TARGET_SLICE_COUNT') &&
-    slicePlannerSource.includes('MAX_TARGET_SLICE_COUNT') &&
+    !slicePlannerSource.includes('MAX_CONTENT_DERIVED_SLICE_COUNT') &&
+    slicePlannerSource.includes('MAX_LLM_PLAN_ITEMS_TO_INSPECT') &&
+    slicePlannerSource.includes('selectNaturalStrongContentDerivedCandidatePlan') &&
     slicePlannerSource.includes('SLICE_PLATFORM_PROFILES') &&
-    slicePlannerSource.includes('sliceCountMode') &&
-    slicePlannerSource.includes('targetSliceCount') &&
     slicePlannerSource.includes('idealDurationMs') &&
     slicePlannerSource.includes('sourceDurationMs') &&
     slicePlannerSource.includes('continuityJoinGapMs') &&
@@ -3458,22 +4154,22 @@ assertRule(
   'slicePlanner.ts centralizes smart slicing strategy policy instead of scattering fixed defaults',
 );
 assertRule(
-    slicerServiceSource.includes('requestedClipCount: planningPolicy.targetSliceCount') &&
-    slicerServiceSource.includes('sliceCountMode: planningPolicy.sliceCountMode') &&
-    slicerServiceSource.includes('idealDurationMs: planningPolicy.idealDurationMs') &&
-    slicerServiceSource.includes('resolveTrustedVideoSliceSourceDurationMs') &&
-    slicerServiceSource.includes('sourceDurationMs: sourceMedia.durationMs') &&
-    slicerServiceSource.includes('continuityJoinGapMs: planningPolicy.continuityJoinGapMs') &&
-    slicerServiceSource.includes('customKeywords: planningPolicy.customKeywords') &&
-    slicerServiceSource.includes('continuityScore: candidate.continuityScore') &&
-    slicerServiceSource.includes('risks: candidate.risks') &&
-    slicerServiceSource.includes('summary: candidate.summary'),
-  'slicerService.ts prompts AI planning with canonical strategy policy fields',
+    !slicerServiceSource.includes('requestedClipCount') &&
+    !slicerServiceSource.includes('sliceCountMode: planningPolicy.sliceCountMode') &&
+    smartCutEnginePlannerSource.includes('rankedCandidateIds') &&
+    smartCutEnginePlannerSource.includes('referencedUnitIds') &&
+    smartCutEnginePlannerSource.includes('candidates: input.candidates.map') &&
+    smartCutEnginePlannerSource.includes('contentUnits: input.contentUnits.map') &&
+    smartCutEnginePlannerSource.includes('Never return startMs, endMs, durationMs, or raw timestamps'),
+  'smartCutEnginePlanner.ts constrains AI planning to canonical candidate ids and content-unit ids',
 );
 assertRule(
-  slicerServiceSource.includes('Do not end clips at trailing connector words') &&
-    slicerServiceSource.includes('If transcript candidateWindows are present, choose candidateId'),
-  'slicerService.ts prompts the LLM to preserve speech-to-text continuity instead of selecting partial utterances',
+  smartCutEnginePlannerSource.includes('createSmartCutSpeechFirstExecutionPackage') &&
+    smartCutEnginePlannerSource.includes('contentUnitIds') &&
+    smartCutEnginePlannerSource.includes('speakerIds') &&
+    smartCutEnginePlannerSource.includes('speakerRoles') &&
+    smartCutEnginePlannerSource.includes('MISSING_MULTI_SPEAKER_DIARIZATION'),
+  'smartCutEnginePlanner.ts preserves speech continuity through content units and speaker-aware evidence',
 );
 assertRule(
   slicerServiceSource.includes('function createVideoSliceRenderProfile') &&
@@ -3503,8 +4199,33 @@ assertRule(
   'native media runtime standardizes target aspect ratio rendering for smart slices',
 );
 assertRule(
-  !slicerServiceSource.includes('requestedClipCount: DEFAULT_SLICE_COUNT'),
-  'slicerService.ts does not hard-code the requested smart slice count in LLM prompts',
+  !slicerServiceSource.includes('requestedClipCount'),
+  'slicerService.ts does not present Smart Slice as a requested clip count in LLM prompts',
+);
+assertRule(
+  slicePlannerSource.includes('export function createDeterministicSlicePlan') &&
+    slicePlannerSource.includes('return [];') &&
+    slicerPlannerCheckSource.includes('auto deterministic fallback refuses to fabricate default clip counts without transcript content evidence') &&
+    slicerPlannerCheckSource.includes('deterministic Smart Slice fallback refuses legacy fixed target counts without transcript content evidence') &&
+    slicerPlannerCheckSource.includes('auto transcript-assisted planning returns no clips when no real transcript content is available') &&
+    slicePlannerSource.includes('shouldRejectLlmPlanWithoutTranscriptEvidence') &&
+    slicerPlannerCheckSource.includes('auto LLM fallback refuses deterministic clips when no transcript content evidence is available') &&
+    slicerPlannerCheckSource.includes('no-transcript LLM plans reject raw timing windows instead of filling fabricated fallback clips') &&
+    slicerPlannerCheckSource.includes('source-duration-aware no-transcript LLM plans reject raw model timing instead of fabricating bounded clips') &&
+    slicerPlannerCheckSource.includes('transcript planning ignores legacy fixed target count and derives clip count from real continuous content groups') &&
+    slicerPlannerCheckSource.includes('invalid LLM responses cannot fall back to deterministic no-transcript clips when transcript candidates exist') &&
+    slicerPlannerCheckSource.includes('invalid LLM responses cannot fall back to weak transcript evidence that would fail native render readiness') &&
+    slicerPlannerCheckSource.includes('LLM planning drops sparse review candidates whenever strong content-derived clips exist in the selected plan') &&
+    slicerPlannerCheckSource.includes('LLM sparse-only selections fall back to the complete deterministic content group when one exists') &&
+    slicerPlannerCheckSource.includes('LLM planning cannot omit a deterministic strong content-derived story to reduce the natural clip count') &&
+    slicerPlannerCheckSource.includes('LLM planning cannot contaminate canonical strong content groups with model-invented blocking risks') &&
+    slicePlannerSource.includes('filterLlmFallbackPlanToTranscriptEvidence') &&
+    slicePlannerSource.includes('selectContentDerivedReleasePlan') &&
+    slicePlannerSource.includes('selectCanonicalContentDerivedReleasePlan') &&
+    slicePlannerSource.includes("clip.speechContinuityGrade === 'strong' || clip.speechContinuityGrade === 'repaired'") &&
+    slicePlannerSource.includes("clip.publishabilityGrade !== 'reject'") &&
+    slicePlannerSource.includes("clip.platformReadinessGrade !== 'reject'"),
+  'slicePlanner.ts refuses to fabricate Smart Slice clips or raw LLM windows without real transcript content evidence',
 );
 assertRule(
   slicePlannerSource.includes('qualityScore') &&
@@ -3516,7 +4237,6 @@ assertRule(
     slicePlannerSource.includes('missing-payoff') &&
     slicePlannerSource.includes('createNormalizedSliceTimingMetadata') &&
     slicePlannerSource.includes('timing-metadata-repaired') &&
-    slicePlannerSource.includes('createDeterministicSliceMetadata') &&
     slicePlannerSource.includes('createTranscriptSliceMetadata'),
   'slicePlanner.ts preserves explainable smart slicing metadata through deterministic normalization',
 );
@@ -3544,10 +4264,34 @@ assertRule(
   'slicePlanner.ts owns speech-to-text continuity repair and dynamic non-overlapping candidate selection instead of trusting partial LLM timings',
 );
 assertRule(
+  slicerServiceSource.includes('audio silence evidence to match trusted audio activity padding') &&
+    slicerServiceSource.includes('activity range to stay inside planned source range') &&
+    slicerServiceSource.includes('explicit STT speechStartMs and speechEndMs before native rendering') &&
+    slicerPlannerCheckSource.includes('audio cleanup refinement records only the remaining leading audio padding inside the final render window') &&
+    slicerPlannerCheckSource.includes('audio cleanup refinement derives leading silence evidence from the final render window instead of stale native metadata') &&
+    slicerPlannerCheckSource.includes('audio-only cleanup refuses to create sub-second clips from micro audio activity without STT speech boundaries') &&
+    serviceBehaviorCheckSource.includes('smart slice professional completion gate rejects stale leading silence evidence before task completion') &&
+    serviceBehaviorCheckSource.includes('smart slice native-render readiness gate rejects stale audio silence evidence after cleanup') &&
+    serviceBehaviorCheckSource.includes('smart slice native-render readiness gate rejects audio-only post-cleanup plans without explicit STT speech boundaries'),
+  'Smart Slice validates audio activity evidence, explicit STT speech boundaries, and derived silence padding consistently before native rendering and completion',
+);
+assertRule(
+  slicerServiceSource.includes('assertSmartSliceTranscriptTimelineWithinSourceDuration') &&
+    slicerServiceSource.includes('normalizeSmartSliceTranscriptTimelineForSourceDuration') &&
+    slicerServiceSource.includes('MAX_SMART_SLICE_TRANSCRIPT_SOURCE_TAIL_REPAIR_MS') &&
+    slicerServiceSource.includes("'clip planning'") &&
+    slicerServiceSource.includes("'native rendering'") &&
+    serviceBehaviorCheckSource.includes('video slice workflow exposes the source-bounded final STT segment as a content unit before ID-only LLM review') &&
+    serviceBehaviorCheckSource.includes('smart slice native-render readiness gate repairs bounded final STT tail timestamp drift consistently with clip planning') &&
+    serviceBehaviorCheckSource.includes('video slice workflow does not prompt the LLM with out-of-source STT timestamp evidence') &&
+    serviceBehaviorCheckSource.includes('smart slice native-render readiness gate rejects STT segments that extend beyond imported media duration'),
+  'Smart Slice repairs bounded final STT tail timestamp drift, then validates source-duration consistency before LLM planning and again before native rendering',
+);
+assertRule(
   slicePlannerSource.includes('MAX_LLM_PLAN_ITEMS_TO_INSPECT') &&
     slicePlannerSource.includes('Number(durationMs) <= 0') &&
-    slicerPlannerCheckSource.includes('LLM parsing skips invalid timing candidates before applying the target slice limit'),
-  'slicePlanner.ts rejects invalid LLM timing candidates before applying the target slice limit',
+    slicerPlannerCheckSource.includes('LLM parsing rejects dirty raw timing survivors when no transcript candidate evidence exists'),
+  'slicePlanner.ts rejects invalid or unsupported raw LLM timing when transcript evidence is absent',
 );
 assertRule(
   /clip\.durationMs\s*>\s*0/u.test(slicePlannerSource) &&
@@ -3567,18 +4311,25 @@ assertRule(
 assertRule(
     slicerServiceSource.includes('function toNativeSliceClipRequest') &&
     slicerServiceSource.includes('clips: nativeClips') &&
-    slicerServiceSource.includes('plannedClips.map((clip) => toNativeSliceClipRequest(clip, transcriptSegments, params))') &&
+    slicerServiceSource.includes('mergedPlannedClips.map((clip) => toNativeSliceClipRequest(clip, transcriptSegments, params))') &&
     slicerServiceSource.includes('clipTranscriptText ? { transcriptText: clipTranscriptText }') &&
     slicerServiceSource.includes('clipTranscriptSegments.length ? { transcriptSegments: clipTranscriptSegments }') &&
+    slicerServiceSource.includes('renderClip.risks ? { risks: renderClip.risks }') &&
+    slicerServiceSource.includes('sourceSegments: renderClip.sourceSegments') &&
+    slicerServiceSource.includes('renderedDurationMs: renderClip.renderedDurationMs') &&
+    slicerServiceSource.includes('removedSilenceMs: renderClip.removedSilenceMs') &&
     slicerServiceSource.includes('params.enableCoughFilter === true') &&
     slicerServiceSource.includes('audioMuteRanges.length ? { audioMuteRanges }') &&
     slicerServiceSource.includes('assertNativeSliceTimingMatchesPlan') &&
     slicerServiceSource.includes('assertNativeSlicePathInsideTaskOutputDir') &&
     slicerServiceSource.includes('assertNativeSliceTaskOutputDirMatchesResult') &&
     serviceBehaviorCheckSource.includes('video slice native escaped artifact containment') &&
-    slicerServiceSource.includes('nativeSlice.startMs !== plannedClip.startMs || nativeSlice.durationMs !== plannedClip.durationMs') &&
+    slicerServiceSource.includes('nativeSlice.startMs !== plannedClip.startMs || nativeSlice.durationMs !== expectedDurationMs') &&
+    slicerServiceSource.includes('expectedSourceSegments.reduce') &&
     slicerServiceSource.includes('plannedClips[index]') &&
-    slicerServiceSource.includes('storyShape: plannedClip.storyShape'),
+    slicerServiceSource.includes('storyShape: plannedClip.storyShape') &&
+    nativeMediaRuntimeSource.includes('-filter_complex') &&
+    nativeMediaRuntimeSource.includes('concat=n={}:v=1:a=1[vcat][acat]'),
   'slicerService.ts separates explainable planning metadata from native slice rendering requests, embeds STT evidence, and rejects mismatched native timing or escaped output paths',
 );
 assertRule(
@@ -3586,9 +4337,50 @@ assertRule(
     nativeMediaRuntimeSource.includes('pub transcript_segments: Option<Vec<AutoCutSpeechTranscriptionSegment>>') &&
     nativeMediaRuntimeSource.includes('transcript_text: slice_output.clip.transcript_text.clone()') &&
     nativeMediaRuntimeSource.includes('transcript_segments: slice_output.clip.transcript_segments.clone()') &&
+    nativeMediaRuntimeSource.includes('audio_cleanup_profile: slice_output.clip.audio_cleanup_profile.clone()') &&
+    nativeMediaRuntimeSource.includes('noise_reduction_applied: slice_output.clip.noise_reduction_applied') &&
+    nativeMediaRuntimeSource.includes('leading_silence_trim_ms: slice_output.clip.leading_silence_trim_ms') &&
+    nativeMediaRuntimeSource.includes('tail_treatment: slice_output.clip.tail_treatment.clone()') &&
+    nativeMediaRuntimeSource.includes('risks: slice_output.clip.risks.clone()') &&
     nativeMediaRuntimeSource.includes('Opening transcript survives native task output.') &&
     nativeMediaRuntimeSource.includes('"slice task output JSON must persist structured slice-level transcript segments"'),
-  'media_runtime.rs persists native smart-slice speech-to-text evidence in ops_task output_json sliceResults',
+  'media_runtime.rs persists native smart-slice speech-to-text and audio cleanup evidence in ops_task output_json sliceResults',
+);
+assertRule(
+  nativeHostClientServiceSource.includes('risks?: string[]') &&
+    tasksServiceSource.includes('readAutoCutSliceRisks') &&
+    tasksServiceSource.includes('recoveryEvidence.risks') &&
+    serviceBehaviorCheckSource.includes('video slice native workflow sends successful audio boundary refinement evidence to native rendering'),
+  'native smart-slice request, artifact, task recovery, and service behavior contracts preserve slice review risks',
+);
+assertRule(
+  taskDetailPageSource.includes('AUTOCUT_SMART_SLICE_REVIEW_RISK_CATALOG') &&
+    taskDetailPageSource.includes('getSmartSliceReviewRiskDefinition') &&
+    taskDetailPageSource.includes('taskDetail.reviewRisk.title') &&
+    i18nResourcesServiceSource.includes('AUTOCUT_TASK_DETAIL_REVIEW_RISK_ZH_CN_MESSAGES') &&
+    i18nResourcesServiceSource.includes('AUTOCUT_TASK_DETAIL_REVIEW_RISK_EN_US_MESSAGES') &&
+    smartSliceTaskEvidenceCheckSource.includes('reviewWarnings') &&
+    smartSliceTaskEvidenceCheckSource.includes('AUTOCUT_SMART_SLICE_REVIEW_RISK_CATALOG') &&
+    smartSliceQualityEvidenceSource.includes('reviewWarnings') &&
+    smartSliceQualityEvidenceSource.includes('AUTOCUT_SMART_SLICE_REVIEW_RISK_CATALOG') &&
+    smartSliceSampleEvidenceSource.includes('reviewWarnings: taskValidation.reviewWarnings') &&
+    smartSliceSampleEvidenceSource.includes('reviewWarnings: quality.evidence.reviewWarnings') &&
+    smartSliceReleaseFixtureCheckSource.includes('reviewWarningSlices: taskValidation.summary.reviewWarningSlices') &&
+    smartSliceReleaseFixtureCheckSource.includes('reviewWarnings: taskValidation.reviewWarnings') &&
+    smartSliceReleaseFixtureCheckSource.includes('reviewWarnings: result.evidence.reviewWarnings'),
+  'smart-slice review risks are catalog-driven, localized in task detail, and exported as non-blocking task, quality, sample, and release fixture evidence warnings',
+);
+assertRule(
+  tasksServiceSource.includes('transcriptCorrection: {') &&
+    tasksServiceSource.includes("source: 'task-detail'") &&
+    tasksServiceSource.includes('originalTranscriptText') &&
+    tasksServiceSource.includes('countChangedTranscriptSegments') &&
+    tasksServiceSource.includes('transcriptCorrection: localSlice.transcriptCorrection') &&
+    taskDetailPageSource.includes('selectedSlice.transcriptCorrection') &&
+    smartSliceTaskEvidenceCheckSource.includes('SMART_SLICE_TASK_TRANSCRIPT_CORRECTION_AUDIT_INVALID') &&
+    smartSliceQualityEvidenceSource.includes('correctedTranscriptSlices') &&
+    serviceBehaviorCheckSource.includes('preserves transcript correction audit metadata after native task recovery merge'),
+  'manual smart-slice transcript corrections are audited, visible, preserved through native recovery, and covered by release evidence gates',
 );
 assertRule(
   !slicerServiceSource.includes('function normalizeCandidateSlicePlan') &&
@@ -3596,13 +4388,22 @@ assertRule(
     !slicerServiceSource.includes('function parseLlmSlicePlan'),
   'slicerService.ts does not own the slice planning kernel',
 );
+assertRule(
+  !slicerServiceSource.includes('isSmartSlicePlanEquivalentToFallback') &&
+    !slicerServiceSource.includes('markSmartSliceFallbackPlan') &&
+    !slicerServiceSource.includes('parseLlmSlicePlan(result.content, planningParams, fallbackPlan, transcriptCandidates)') &&
+    smartCutEnginePlannerSource.includes('LLM reviewer returned invalid JSON') &&
+    smartCutEnginePlannerSource.includes('Smart Cut Engine will block if review coverage is incomplete'),
+  'slicerService.ts no longer preserves legacy LLM fallback planning; Smart Cut Engine blocks incomplete or invalid review evidence',
+);
 assertRule(!slicerServiceSource.includes('createSampleSliceResults'), 'slicerService.ts does not generate fake slice result lists');
 assertRule(!slicerServiceSource.includes('getAutoCutSampleSliceThumbnailUrl'), 'slicerService.ts does not assign sample thumbnails to generated slices');
 assertRule(!slicerServiceSource.includes('simulateTaskProgress'), 'slicerService.ts does not simulate automatic video slicing completion');
 assertRule(
-  slicerServiceSource.includes('failAutoCutUnsupportedNativeProcessingTask(newTask,') &&
-    slicerServiceSource.includes("'automatic slicing'"),
-  'slicerService.ts fails closed when native trusted local slicing is unavailable',
+  slicerServiceSource.includes('createSmartSliceNativePreflightErrorMessage') &&
+    slicerServiceSource.includes("reportVideoSliceStageDiagnostic('native preflight failed'") &&
+    slicerServiceSource.includes('return await failAutoCutProcessingTask(task.id, errorMessage)'),
+  'slicerService.ts fails closed with a smart-slice-specific native preflight message when trusted local slicing is unavailable',
 );
 assertRule(
   slicerServiceSource.includes('plannedClips.length === 0') &&
@@ -3613,8 +4414,8 @@ assertRule(
     serviceBehaviorCheckSource.includes('renders a short speech-aligned clip when imported media duration is unknown but STT has verified speech evidence') &&
     serviceBehaviorCheckSource.includes('keeps unknown-duration short transcript clips above the speech-aligned minimum without padding them to the requested duration') &&
     serviceBehaviorCheckSource.includes('calls native slicing for isolated micro speech when STT evidence is verified') &&
-    serviceBehaviorCheckSource.includes('labels sparse transcript fallback candidates for LLM review') &&
-    serviceBehaviorCheckSource.includes('removes repeated speech-to-text candidate windows before asking the LLM planner') &&
+    serviceBehaviorCheckSource.includes('labels sparse transcript Smart Cut Engine candidates for ID-only LLM review') &&
+    serviceBehaviorCheckSource.includes('removes repeated speech-to-text candidates before asking the Smart Cut Engine LLM reviewer') &&
     serviceBehaviorCheckSource.includes('records repeated transcript filtering on task slice results') &&
     slicerPlannerCheckSource.includes('creates reviewable speech-backed clips from isolated micro speech') &&
     slicerPlannerCheckSource.includes('English connector-chain speech-to-text planning') &&
@@ -3627,12 +4428,24 @@ const extractorTextServiceSource = fs.existsSync(path.join(rootDir, 'packages/sd
   : '';
 assertRule(
   slicerServiceSource.includes('transcribeAutoCutMediaWithConfiguredProvider') &&
+    slicerServiceSource.includes('sttPresetId: params.sttPresetId') &&
+    slicerServiceSource.includes('sttPresetId: transcription.sttPresetId') &&
+    slicerServiceSource.includes('executionProfile: transcription.executionProfile') &&
+    slicerServiceSource.includes('sttPresetId: params.sttPresetId') &&
     !slicerServiceSource.includes('nativeHostClient.transcribeMedia') &&
     !slicerServiceSource.includes('executablePath: speechRuntimeConfig.executablePath') &&
     extractorTextServiceSource.includes('transcribeAutoCutMediaWithConfiguredProvider') &&
     !extractorTextServiceSource.includes('nativeHostClient.transcribeMedia') &&
     !extractorTextServiceSource.includes('executablePath: speechRuntimeConfig.executablePath'),
   'slicer and extractor-text workflows use the STT provider boundary instead of direct native Whisper toolchain coupling',
+);
+assertRule(
+  slicerServiceSource.includes('sttPresetId: params.sttPresetId') &&
+    slicerServiceSource.includes('createSerializableSmartSliceParams') &&
+    slicerServiceSource.includes('sttPresetId: params.sttPresetId') &&
+    slicerServiceSource.includes('sttPresetId: transcription.sttPresetId') &&
+    slicerServiceSource.includes('executionProfile: transcription.executionProfile'),
+  'Smart Slice persists the selected STT workflow preset through execution params, checkpoint replay, and task evidence JSON',
 );
 assertRule(
   extractorTextServiceSource.includes('normalizeExtractedTranscriptText') &&
@@ -3654,7 +4467,11 @@ for (const relativePath of realProcessingServicePaths) {
   assertRule(!source.includes('createFallbackExtractedText'), `${relativePath} does not create fallback transcript text`);
   assertRule(!source.includes('SIMULATED_'), `${relativePath} does not persist simulated media metadata`);
   assertRule(
-    source.includes('failAutoCutUnsupportedNativeProcessingTask'),
+    source.includes('failAutoCutUnsupportedNativeProcessingTask') ||
+      (
+        relativePath === 'packages/sdkwork-autocut-slicer/src/service/slicerService.ts' &&
+        source.includes('createSmartSliceNativePreflightErrorMessage')
+      ),
     `${relativePath} fails closed when real native processing is unavailable`,
   );
   if (
@@ -3775,7 +4592,8 @@ for (const marker of [
   'createNativeTaskOutputArtifact',
   'assertNativeTaskOutputArtifact',
   'D:/autocut/media',
-  '`${outputRootDir}/tasks/${expectedTaskUuid}/outputs`',
+  '`${outputRootDir}/tasks/${expectedTaskUuid}`',
+  'createAutoCutTaskId',
   'D:/autocut-configured-output',
   'configured output directory to media import',
   'configured output directory to audio extraction',
@@ -3810,6 +4628,8 @@ assertRule(
   'Vite config exposes only the @sdkwork/autocut-* package alias',
 );
 assertRule(viteConfigSource.includes('manualChunks'), 'Vite config defines standard manual chunks for commercial desktop startup performance');
+assertRule(viteConfigSource.includes("find: 'react/jsx-runtime'"), 'Vite config aliases react/jsx-runtime to the desktop app dependency so workspace source packages build without per-package node_modules links');
+assertRule(viteConfigSource.includes("find: 'react'"), 'Vite config aliases react to the desktop app dependency for one React runtime across workspace UI packages');
 assertRule(viteConfigSource.includes('autocut-pixi'), 'Vite config isolates Pixi rendering runtime into a stable manual chunk');
 assertRule(viteConfigSource.includes('autocut-ai'), 'Vite config isolates Vercel AI SDK runtime into a stable manual chunk');
 assertRule(viteConfigSource.includes('autocut-feature-'), 'Vite config groups internal AutoCut feature packages into stable manual chunks');
@@ -3859,8 +4679,8 @@ for (const packageDirent of packageDirs) {
   assertRule(manifest.exports?.['.']?.import === './src/index.ts', `${manifest.name} exports import points to ./src/index.ts`);
   assertRule(manifest.exports?.['.']?.types === './src/index.ts', `${manifest.name} exports types points to ./src/index.ts`);
   if (dirName === desktopPackageName) {
-    assertRule(manifest.scripts?.build === 'vite build', `${manifest.name} build script is vite build`);
-    assertRule(manifest.scripts?.dev?.startsWith('vite '), `${manifest.name} dev script is package-local Vite`);
+    assertRule(manifest.scripts?.build === 'node ../../scripts/run-autocut-vite.mjs build', `${manifest.name} build script uses the stable AutoCut Vite runner`);
+    assertRule(manifest.scripts?.dev?.startsWith('node ../../scripts/run-autocut-vite.mjs '), `${manifest.name} dev script uses the stable AutoCut Vite runner`);
     assertRule(
       manifest.scripts?.['tauri:dev']?.startsWith('node ../../scripts/ensure-autocut-tauri-rust-toolchain.mjs && '),
       `${manifest.name} tauri:dev verifies the pinned Rust toolchain before launching Tauri`,
@@ -3931,6 +4751,7 @@ for (const packageDirent of packageDirs) {
     const isIdentityService = relative === 'packages/sdkwork-autocut-services/src/service/identity.service.ts';
     const isStorageService = relative === requiredStorageServicePath;
     const isNativeHostClientService = relative === requiredNativeHostClientServicePath;
+    const isNativeHostCommandConsumerService = isNativeHostClientService || relative === requiredSlicerServicePath;
     const isDownloadService = relative === requiredDownloadServicePath;
     const isProcessingSourceService = relative === requiredProcessingSourceServicePath;
     const isMediaFixturesService = relative === requiredMediaFixturesServicePath;
@@ -3946,8 +4767,16 @@ for (const packageDirent of packageDirs) {
     assertRule(!sourceText.includes('const handleUpdate = (e: any)'), `${relative} types task update event handlers without any`);
     assertRule(!sourceText.includes('const handleDelete = (e: any)'), `${relative} types task delete event handlers without any`);
     assertRule(!/\bany\b/.test(sourceText), `${relative} does not use any in package source`);
+    const hasRawTaskStatusReference =
+      /\btask\.status\s*(?:===|!==)\s*['"](pending|processing|completed|failed)['"]/u.test(sourceText) ||
+      /\b(?:newTask|updatedTask|localTask)\.status\s*(?:===|!==)\s*['"](pending|processing|completed|failed)['"]/u.test(sourceText) ||
+      [...sourceText.matchAll(/\bstatus\s*:\s*['"](pending|processing|completed|failed)['"][\s\S]{0,120}\b(?:progressMessage|errorMessage|completedAt|nativeTaskId|resultCount)\b/gu)]
+        .some((match) => {
+          const context = sourceText.slice(Math.max(0, match.index - 120), match.index + 260);
+          return !/\beventType\s*:/u.test(context) && !/\bstep\s*,/u.test(context);
+        });
     assertRule(
-      isTypesSource || !/['"](pending|processing|completed|failed)['"]/u.test(sourceText),
+      isTypesSource || !hasRawTaskStatusReference,
       `${relative} references task statuses through AUTOCUT_TASK_STATUS`,
     );
     assertRule(
@@ -3977,6 +4806,14 @@ for (const packageDirent of packageDirs) {
     assertRule(
       !isPageSource || !/window\.open\(/u.test(sourceText),
       `${relative} delegates external preview windows to AutoCut browser service helpers`,
+    );
+    assertRule(
+      !relative.endsWith('Page.tsx') ||
+        sourceText.includes('useAutoCutTranslation') ||
+        sourceText.includes('useAutoCutCommonLabels') ||
+        sourceText.includes('useTranslation') ||
+        sourceText.includes('listenAutoCutI18nLanguageChanged'),
+      `${relative} subscribes to i18n language changes so visible route copy updates immediately`,
     );
     assertRule(
       !isServiceSource || isIdentityService || !/Date\.now\(\)/u.test(sourceText),
@@ -4013,7 +4850,7 @@ for (const packageDirent of packageDirs) {
       `${relative} accesses browser key-value storage only through storage.service.ts`,
     );
     assertRule(
-      isStorageService || isNativeHostClientService || !/['"]autocut_[a-z0-9_-]+['"]/u.test(sourceText),
+      isStorageService || isNativeHostCommandConsumerService || !/['"]autocut_[a-z0-9_-]+['"]/u.test(sourceText),
       `${relative} builds AutoCut browser storage keys only through storage.service.ts`,
     );
     for (const pattern of forbiddenRemoteFixtureUrlPatterns) {
@@ -4022,7 +4859,8 @@ for (const packageDirent of packageDirs) {
         `${relative} does not reference third-party remote fixture media`,
       );
     }
-    const hasAutocutEventString = /['"]autocut-[a-z-]+['"]/.test(sourceText);
+    const hasAutocutEventString = /['"]autocut-[a-z-]+['"]/.test(sourceText) &&
+      !/['"]autocut:\/\/[^'"]+['"]/.test(sourceText);
     assertRule(
       !hasAutocutEventString || isEventService || isSpeechTranscriptionProviderService,
       `${relative} references AutoCut events through canonical service helpers`,

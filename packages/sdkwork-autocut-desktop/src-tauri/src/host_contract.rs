@@ -52,20 +52,38 @@ pub struct AutoCutHostCapabilities {
     pub audio_extraction_command_ready: bool,
     #[serde(rename = "audioExtractionFromAssetReady")]
     pub audio_extraction_from_asset_ready: bool,
+    #[serde(rename = "audioFingerprintCommandReady")]
+    pub audio_fingerprint_command_ready: bool,
+    #[serde(rename = "audioFingerprintAdapterReady")]
+    pub audio_fingerprint_adapter_ready: bool,
     #[serde(rename = "videoGifCommandReady")]
     pub video_gif_command_ready: bool,
     #[serde(rename = "videoSliceCommandReady")]
     pub video_slice_command_ready: bool,
+    #[serde(rename = "videoSliceAudioActivityAnalysisCommandReady")]
+    pub video_slice_audio_activity_analysis_command_ready: bool,
     #[serde(rename = "videoCompressCommandReady")]
     pub video_compress_command_ready: bool,
     #[serde(rename = "videoConvertCommandReady")]
     pub video_convert_command_ready: bool,
     #[serde(rename = "videoEnhanceCommandReady")]
     pub video_enhance_command_ready: bool,
+    #[serde(rename = "videoDedupFingerprintCommandReady")]
+    pub video_dedup_fingerprint_command_ready: bool,
+    #[serde(rename = "videoDedupFileIdentityCommandReady")]
+    pub video_dedup_file_identity_command_ready: bool,
     #[serde(rename = "speechTranscriptionCommandReady")]
     pub speech_transcription_command_ready: bool,
     #[serde(rename = "speechTranscriptionToolchainReady")]
     pub speech_transcription_toolchain_ready: bool,
+    #[serde(rename = "visualEvidenceExtractionContractReady")]
+    pub visual_evidence_extraction_contract_ready: bool,
+    #[serde(rename = "visualEvidenceExtractionCommandReady")]
+    pub visual_evidence_extraction_command_ready: bool,
+    #[serde(rename = "visualEvidenceExtractionAdapterReady")]
+    pub visual_evidence_extraction_adapter_ready: bool,
+    #[serde(rename = "taskEvidenceWriteCommandReady")]
+    pub task_evidence_write_command_ready: bool,
     #[serde(rename = "speechTranscriptionProbeCommandReady")]
     pub speech_transcription_probe_command_ready: bool,
     #[serde(rename = "speechTranscriptionFileSelectCommandReady")]
@@ -117,13 +135,22 @@ pub fn autocut_host_capabilities(app: Option<&AppHandle>) -> AutoCutHostCapabili
         native_worker_lease_ready: true,
         audio_extraction_command_ready: true,
         audio_extraction_from_asset_ready: true,
+        audio_fingerprint_command_ready: true,
+        audio_fingerprint_adapter_ready: true,
         video_gif_command_ready: true,
         video_slice_command_ready: true,
+        video_slice_audio_activity_analysis_command_ready: true,
         video_compress_command_ready: true,
         video_convert_command_ready: true,
         video_enhance_command_ready: true,
+        video_dedup_fingerprint_command_ready: true,
+        video_dedup_file_identity_command_ready: true,
         speech_transcription_command_ready: true,
         speech_transcription_toolchain_ready,
+        visual_evidence_extraction_contract_ready: true,
+        visual_evidence_extraction_command_ready: true,
+        visual_evidence_extraction_adapter_ready: true,
+        task_evidence_write_command_ready: true,
         speech_transcription_probe_command_ready: true,
         speech_transcription_file_select_command_ready: true,
         speech_transcription_model_download_command_ready: true,
@@ -140,6 +167,8 @@ pub fn autocut_host_capabilities(app: Option<&AppHandle>) -> AutoCutHostCapabili
             "autocut_ffmpeg_probe",
             "autocut_import_media_file",
             "autocut_describe_local_media_file",
+            "autocut_fingerprint_video_file",
+            "autocut_probe_video_file_identity",
             "autocut_select_local_media_file",
             "autocut_select_local_video_file",
             "autocut_select_local_directory",
@@ -150,9 +179,13 @@ pub fn autocut_host_capabilities(app: Option<&AppHandle>) -> AutoCutHostCapabili
             "autocut_recover_native_tasks",
             "autocut_retry_native_task",
             "autocut_extract_audio",
+            "autocut_extract_audio_fingerprint",
             "autocut_generate_gif",
             "autocut_slice_video",
+            "autocut_analyze_video_slice_audio_activity",
             "autocut_transcribe_media",
+            "autocut_extract_visual_evidence",
+            "autocut_write_task_evidence_json",
             "autocut_probe_speech_transcription",
             "autocut_select_speech_transcription_file",
             "autocut_download_speech_transcription_model",
@@ -205,10 +238,19 @@ mod tests {
         assert!(capabilities.native_worker_lease_ready);
         assert!(capabilities.video_gif_command_ready);
         assert!(capabilities.video_slice_command_ready);
+        assert!(capabilities.video_slice_audio_activity_analysis_command_ready);
+        assert!(capabilities.audio_fingerprint_command_ready);
+        assert!(capabilities.audio_fingerprint_adapter_ready);
         assert!(capabilities.video_compress_command_ready);
         assert!(capabilities.video_convert_command_ready);
         assert!(capabilities.video_enhance_command_ready);
+        assert!(capabilities.video_dedup_fingerprint_command_ready);
+        assert!(capabilities.video_dedup_file_identity_command_ready);
         assert!(capabilities.speech_transcription_command_ready);
+        assert!(capabilities.visual_evidence_extraction_contract_ready);
+        assert!(capabilities.visual_evidence_extraction_command_ready);
+        assert!(capabilities.visual_evidence_extraction_adapter_ready);
+        assert!(capabilities.task_evidence_write_command_ready);
         assert!(capabilities.speech_transcription_probe_command_ready);
         assert!(capabilities.speech_transcription_file_select_command_ready);
         assert!(capabilities.speech_transcription_model_download_command_ready);
@@ -221,6 +263,36 @@ mod tests {
         assert!(capabilities.llm_secret_store_ready);
         assert!(!capabilities.ffmpeg_bundled_ready);
         assert!(!capabilities.ffmpeg_execution_ready);
+        assert!(
+            capabilities
+                .supported_commands
+                .contains(&"autocut_analyze_video_slice_audio_activity")
+        );
+        assert!(
+            capabilities
+                .supported_commands
+                .contains(&"autocut_fingerprint_video_file")
+        );
+        assert!(
+            capabilities
+                .supported_commands
+                .contains(&"autocut_probe_video_file_identity")
+        );
+        assert!(
+            capabilities
+                .supported_commands
+                .contains(&"autocut_extract_visual_evidence")
+        );
+        assert!(
+            capabilities
+                .supported_commands
+                .contains(&"autocut_extract_audio_fingerprint")
+        );
+        assert!(
+            capabilities
+                .supported_commands
+                .contains(&"autocut_write_task_evidence_json")
+        );
     }
 
     #[test]

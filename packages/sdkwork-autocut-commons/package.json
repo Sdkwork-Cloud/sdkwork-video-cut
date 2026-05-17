@@ -1,6 +1,6 @@
 {
   "name": "@sdkwork/autocut-commons",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "type": "module",
@@ -19,7 +19,10 @@
     "test": "tsc --noEmit"
   },
   "dependencies": {
+    "@sdkwork/autocut-services": "workspace:*",
+    "@sdkwork/autocut-types": "workspace:*",
     "lucide-react": "catalog:",
-    "react": "catalog:"
+    "react": "catalog:",
+    "react-i18next": "catalog:"
   }
 }

@@ -20,4 +20,5 @@ export * from './service/task-naming.service';
 export * from './service/tasks.service';
 export * from './service/tools.service';
 export * from './service/vercel-ai-sdk-bridge.service';
+export * from './service/video-dedup.service';
 export * from './service/workflow-preferences.service';

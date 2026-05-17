@@ -56,7 +56,7 @@ native host uses the app data media root. The configured value is sent to native
 commands as `outputRootDir` and must be an absolute directory path. Imported
 source files are copied into `{outputRootDir}/inputs/`; generated files from
 audio extraction, GIF generation, compression, conversion, enhancement, and
-smoke tasks are written under `{outputRootDir}/tasks/{task_uuid}/outputs/`.
+smoke tasks are written under `{outputRootDir}/tasks/{task_uuid}/`.
 Native results expose `taskOutputDir`, and the persisted `media_artifact.uri`
 must point to a file inside that directory. Native retry restores
 `outputRootDir` from the source task `input_json` so retried task results remain

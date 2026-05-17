@@ -15,6 +15,12 @@ export function sortAutoCutRecordsByCreatedAtDesc<TRecord extends { createdAt: s
   );
 }
 
+export function sortAutoCutRecordsByUpdatedAtDesc<TRecord extends { updatedAt: string }>(records: TRecord[]) {
+  return [...records].sort((leftRecord, rightRecord) =>
+    compareAutoCutTimestampDesc(leftRecord.updatedAt, rightRecord.updatedAt),
+  );
+}
+
 export function formatAutoCutDateTime(timestamp: string) {
   const normalizedTimestamp = normalizeAutoCutTimestampForParsing(timestamp);
   const value = Date.parse(normalizedTimestamp);

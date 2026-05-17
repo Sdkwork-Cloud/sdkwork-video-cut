@@ -280,7 +280,7 @@ When subtitle generation is enabled, the slicer service must forward the real
 local transcript segments to `autocut_slice_video` as `subtitleSegments` with
 `subtitleFormat: "srt"`. The native host must generate one SRT subtitle file per
 slice only from those real segments, store it under the same
-`{outputRootDir}/tasks/{task_uuid}/outputs/` directory, register a subtitle
+`{outputRootDir}/tasks/{task_uuid}/` directory, register a subtitle
 `media_artifact`, and return `subtitleArtifactPath` plus `subtitleFormat` in the
 corresponding slice result. If no local transcript segments are available, the
 workflow must not create fake subtitle files.
@@ -305,7 +305,7 @@ back to the app data media root. Native commands receive the configured root as
 `outputRootDir`; it must be an absolute directory path. The runtime creates and
 canonicalizes the directory before use. Imported source copies are stored under
 `{outputRootDir}/inputs/`; generated task results are stored under
-`{outputRootDir}/tasks/{task_uuid}/outputs/`.
+`{outputRootDir}/tasks/{task_uuid}/`.
 
 ## 9. Domain Type Standard
 
@@ -764,7 +764,7 @@ Later media processing commands, including `autocut_extract_audio`, must accept
 rule for format conversion, and `autocut_enhance_video` follows the same rule
 for deterministic FFmpeg enhancement. Imported source files stay under
 `{outputRootDir}/inputs/`; generated native task files are written under
-`{outputRootDir}/tasks/{task_uuid}/outputs/`. Each native media operation owns
+`{outputRootDir}/tasks/{task_uuid}/`. Each native media operation owns
 exactly one task output directory. Multi-artifact operations such as intelligent
 video slicing must normalize LLM candidate clips before native execution:
 candidates are sorted by `startMs`, clamped to configured duration bounds, filled
@@ -772,7 +772,7 @@ with deterministic non-overlapping gaps until the standard clip count is
 reached, and then passed to `autocut_slice_video`. The native command must place
   every slice in that task directory, register one
   `media_artifact` row per slice, generate one JPEG thumbnail per slice in the
-  same `outputs/` directory, register a thumbnail `media_artifact` row linked to
+  `cover/` subdirectory, register a thumbnail `media_artifact` row linked to
   the slice, optionally generate one SRT subtitle artifact per slice when real
   local transcript segments were supplied, and persist
   `ops_task.output_json.sliceResults` with `artifactPath`,

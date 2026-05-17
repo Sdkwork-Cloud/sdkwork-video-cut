@@ -1,13 +1,131 @@
-import { processVideoSlice } from '../service/slicerService';
+import { analyzeVideoSlicePlan, processVideoSlice, renderVideoSlicePlan, saveVideoSliceReviewDraft } from '../service/slicerService';
 import React, { Suspense, useState, useEffect, useMemo, useRef, useImperativeHandle, forwardRef } from "react";
+import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowLeft, Play, Pause, Settings2, Scissors, CheckCircle2, MicOff, Waves, Video, RefreshCcw, XCircle, ChevronRight, Type, Download, AlertTriangle, ExternalLink, Loader2 } from "lucide-react";
-import { Button, useToast, TaskFailureState, createAutoCutTrustedLocalFile, resolveAutoCutTrustedSourcePath, type AutoCutTrustedFileSourceDescriptor } from "@sdkwork/autocut-commons";
-import { AUTOCUT_MODEL_VENDOR_PRESETS, AUTOCUT_SLICE_LLM_MODEL_OPTIONS, AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE, AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS, AUTOCUT_TASK_STATUS, AUTOCUT_TASK_TYPE, type AutoCutLocalSpeechTranscriptionSetupStatus, type AutoCutSpeechTranscriptionModelDownloadProgressEvent, type ModelVendor, type SliceMode, type SliceAlgorithm, type SliceHighlightEngine, type SliceLLM, type SliceTargetPlatform, type SliceTargetAspectRatio, type SliceVideoObjectFit, type SliceCountMode, type SliceContinuityLevel, type SliceSubtitleMode, type AppTask, type VideoSliceParams } from "@sdkwork/autocut-types";
-import { createAutoCutObjectUrl, formatAutoCutTimeOfDay, getAutoCutNativeHostClient, getAutoCutProcessingTaskErrorTaskId, getAutoCutWorkflowPreferences, getTasks, initializeAutoCutLocalSpeechTranscriptionSetup, inspectAutoCutLocalSpeechTranscriptionSetup, listenAutoCutEvent, reportAutoCutDiagnostic, resolveAutoCutLlmRuntimeConfig, revokeAutoCutObjectUrl, saveAutoCutVideoSlicePreferences, selectAutoCutTrustedLocalVideoFile, writeAutoCutClipboardText } from "@sdkwork/autocut-services";
+import { Button, useToast, TaskFailureState, VideoDedupWorkbench, useAutoCutCommonLabels, createAutoCutTrustedLocalFile, resolveAutoCutTrustedSourcePath, type AutoCutTrustedFileSourceDescriptor } from "@sdkwork/autocut-commons";
+import { AUTOCUT_DEFAULT_SMART_SLICE_SEGMENTATION_AGENT_ID, AUTOCUT_DEFAULT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESET_ID, AUTOCUT_MODEL_VENDOR_PRESETS, AUTOCUT_SLICE_LLM_MODEL_OPTIONS, AUTOCUT_SMART_SLICE_SEGMENTATION_AGENTS, AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE, AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS, AUTOCUT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESETS, AUTOCUT_TASK_STATUS, AUTOCUT_TASK_TYPE, getAutoCutSmartSliceSegmentationAgentDefinition, type AutoCutLlmRuntimeConfig, type AutoCutLocalSpeechTranscriptionSetupStatus, type AutoCutSliceManualEdit, type AutoCutSliceReviewSegment, type AutoCutSliceReviewSession, type AutoCutSmartSliceSegmentationAgentId, type AutoCutSpeechTranscriptionModelDownloadProgressEvent, type AutoCutSpeechTranscriptionWorkflowPreset, type ModelVendor, type SliceMode, type SliceLLM, type SliceTargetPlatform, type SliceTargetAspectRatio, type SliceVideoObjectFit, type SliceContinuityLevel, type SliceSegmentationDensity, type SliceSubtitleMode, type AppTask, type VideoDedupParams, type VideoDedupReport, type VideoSliceParams } from "@sdkwork/autocut-types";
+import { createAutoCutId, createAutoCutObjectUrl, createAutoCutTimestamp, createDefaultAutoCutVideoDedupParams, formatAutoCutTimeOfDay, getAutoCutNativeHostClient, getAutoCutProcessingTaskErrorTaskId, getAutoCutWorkflowPreferences, getTasks, initializeAutoCutLocalSpeechTranscriptionSetup, inspectAutoCutLocalSpeechTranscriptionSetup, listenAutoCutEvent, reportAutoCutDiagnostic, resolveAutoCutLlmRuntimeConfig, revokeAutoCutObjectUrl, saveAutoCutVideoSlicePreferences, selectAutoCutTrustedLocalVideoFile, sortAutoCutRecordsByCreatedAtDesc, writeAutoCutClipboardText } from "@sdkwork/autocut-services";
 import type { WebGLPlayerRef, TextEffectStyle, TextEffectDragPayload } from "../components/WebGLPlayer";
 
 const WebGLPlayer = React.lazy(() => import("../components/WebGLPlayer"));
+const SMART_SLICE_DEDUP_REVIEW_RISK_CODE = 'smart-dedup-review';
+const SMART_SLICE_GPU_STT_RUNTIME_REQUIRED_REASON =
+  'GPU local requires a CUDA, Vulkan, Metal, Core ML, or OpenVINO whisper.cpp runtime in Settings.';
+
+function sortSlicerTasksByCreatedAtDesc(tasks: readonly AppTask[]): AppTask[] {
+  return sortAutoCutRecordsByCreatedAtDesc([...tasks]);
+}
+
+function isSliceReviewDuplicateRiskSegment(segment: AutoCutSliceReviewSegment) {
+  return segment.status === 'duplicate' || segment.risks.includes(SMART_SLICE_DEDUP_REVIEW_RISK_CODE);
+}
+
+function mergeSlicerTaskUpdate(tasks: readonly AppTask[], updatedTask: AppTask): AppTask[] {
+  if (updatedTask.type !== AUTOCUT_TASK_TYPE.videoSlice) {
+    return tasks as AppTask[];
+  }
+
+  const taskIndex = tasks.findIndex((task) => task.id === updatedTask.id);
+  if (taskIndex < 0) {
+    return sortSlicerTasksByCreatedAtDesc([updatedTask, ...tasks]);
+  }
+
+  return tasks.map((task, index) => (index === taskIndex ? updatedTask : task));
+}
+
+function createSliceReviewSessionFromSegments(
+  baseSession: AutoCutSliceReviewSession,
+  segments: readonly AutoCutSliceReviewSegment[],
+  manualEdits: readonly AutoCutSliceManualEdit[] = [],
+): AutoCutSliceReviewSession {
+  const selectedSegmentIds = segments
+    .filter((segment) => segment.selected && segment.status === 'selected')
+    .map((segment) => segment.id);
+  return {
+    ...baseSession,
+    updatedAt: createAutoCutTimestamp(),
+    segments: segments.map((segment) => ({ ...segment })),
+    manualEdits: [...baseSession.manualEdits, ...manualEdits],
+    selectedSegmentIds,
+  };
+}
+
+function createSliceReviewManualEdit(
+  kind: AutoCutSliceManualEdit['kind'],
+  segmentIds: string[],
+  detail: Omit<Partial<AutoCutSliceManualEdit>, 'id' | 'kind' | 'segmentIds' | 'createdAt'> = {},
+): AutoCutSliceManualEdit {
+  return {
+    id: createAutoCutId('slice-manual-edit'),
+    kind,
+    segmentIds,
+    createdAt: createAutoCutTimestamp(),
+    ...detail,
+  };
+}
+
+function shouldHydrateSmartSliceReviewSessionFromTask({
+  currentTaskId,
+  nextTaskId,
+  currentDraft,
+  nextSession,
+  currentManualEditCount,
+}: {
+  currentTaskId: string;
+  nextTaskId: string;
+  currentDraft: AutoCutSliceReviewSession | null;
+  nextSession: AutoCutSliceReviewSession;
+  currentManualEditCount: number;
+}) {
+  if (
+    currentManualEditCount > 0 &&
+    currentTaskId === nextTaskId &&
+    currentDraft?.id === nextSession.id
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function filterSliceReviewTranscriptSegmentsForPreview(
+  segment: AutoCutSliceReviewSegment,
+  startMs: number,
+  endMs: number,
+) {
+  return (segment.transcriptSegments ?? [])
+    .filter((transcriptSegment) => transcriptSegment.endMs > startMs && transcriptSegment.startMs < endMs)
+    .map((transcriptSegment) => ({
+      ...transcriptSegment,
+      startMs: Math.max(startMs, transcriptSegment.startMs),
+      endMs: Math.min(endMs, transcriptSegment.endMs),
+    }))
+    .filter((transcriptSegment) => transcriptSegment.endMs > transcriptSegment.startMs);
+}
+
+function createSliceReviewTranscriptTextForPreview(segment: AutoCutSliceReviewSegment) {
+  return segment.transcriptSegments?.map((item) => item.text).filter(Boolean).join(' ') || segment.transcriptText;
+}
+
+function createSliceReviewSpeechRangeForPreview(
+  segment: AutoCutSliceReviewSegment,
+  startMs: number,
+  endMs: number,
+) {
+  const transcriptSegments = filterSliceReviewTranscriptSegmentsForPreview(segment, startMs, endMs);
+  const speechStartMs = transcriptSegments[0]?.startMs ?? segment.speechStartMs;
+  const speechEndMs = transcriptSegments.at(-1)?.endMs ?? segment.speechEndMs;
+  if (speechStartMs === undefined || speechEndMs === undefined) {
+    return {};
+  }
+  const clippedSpeechStartMs = Math.max(startMs, Math.min(endMs, Math.round(speechStartMs)));
+  const clippedSpeechEndMs = Math.max(clippedSpeechStartMs, Math.min(endMs, Math.round(speechEndMs)));
+  return {
+    speechStartMs: clippedSpeechStartMs,
+    speechEndMs: clippedSpeechEndMs,
+  };
+}
 
 function setWebGlTextEffectDragPayload(payload: TextEffectDragPayload | null) {
   void import("../components/WebGLPlayer")
@@ -131,16 +249,290 @@ interface VisibleLlmModelOption {
   label: string;
 }
 
+type SmartSliceVisibleSttWorkflowPreset = AutoCutSpeechTranscriptionWorkflowPreset & {
+  selectable: boolean;
+  uiDisabledReason?: string;
+  uiLabel: string;
+};
+
+type AutoCutTranslate = ReturnType<typeof useTranslation>['t'];
+type SmartSliceRunMode = 'auto-render' | 'review-before-render';
+type SliceReviewVisibilityFilter = 'all' | 'selected' | 'duplicates' | 'excluded';
+
 const MODES: SliceMode[] = [
-  "商品直播",
-  "单人讲解",
-  "双人连线直播",
-  "多人连线直播",
-  "在线会议",
-  "才艺表演",
-  "电影",
-  "通用",
+  'general',
+  'talking-head',
+  'commerce-live',
+  'dialogue',
+  'meeting',
+  'performance',
+  'film',
 ];
+
+const SMART_CUT_ENGINE_PIPELINE_STEPS = [
+  'Speech-to-text evidence',
+  'Speaker diarization',
+  'Semantic content units',
+  'Candidate ID review',
+  'Post-filter render',
+] as const;
+
+const SMART_CUT_ENGINE_BADGES = [
+  'Speech-first',
+  'speaker-aware',
+  'ID-only LLM',
+  'post-filter',
+] as const;
+
+type SmartCutEngineProductProfileId = 'commerce-live' | 'talking-head' | 'dialogue' | 'meeting' | 'performance' | 'film' | 'general';
+
+interface SmartCutEngineProductProfile {
+  id: SmartCutEngineProductProfileId;
+  match: RegExp;
+  title: string;
+  strategy: string;
+  primarySlicer: string;
+  executionSupport: {
+    ready: boolean;
+    status: 'speech-first-ready' | 'native-evidence-adapter-required';
+    blockerCode?: 'UNSUPPORTED_VISUAL_PRESET_EVIDENCE';
+    label: string;
+    detail: string;
+  };
+  speakerGate: 'adaptive-single-speaker' | 'required-diarization';
+  boundaryContract: string;
+  reviewContract: string;
+  publishableClipContract: string;
+  qaSplitContract: string;
+  coverContract: string;
+  outputPackage: readonly string[];
+}
+
+const SMART_CUT_ENGINE_PRODUCT_PROFILES: readonly SmartCutEngineProductProfile[] = [
+  {
+    id: 'commerce-live',
+    match: /\u5546\u54c1|\u76f4\u64ad|commerce|live/iu,
+    title: 'Commerce live highlight',
+    strategy: 'Product proof, offer context, and conversion-ready complete speech units.',
+    primarySlicer: 'commerce-live + speech-semantic',
+    executionSupport: {
+      ready: true,
+      status: 'speech-first-ready',
+      label: 'Speech-first ready',
+      detail: 'Routes to the commerce-live product preset through STT, speaker evidence, semantic content units, ID-only review, and post-boundary filters.',
+    },
+    speakerGate: 'adaptive-single-speaker',
+    boundaryContract: 'Do not split proof, price, objection, and call-to-action units.',
+    reviewContract: 'Rank candidate ids by product value and keyword intent only.',
+    publishableClipContract: 'Single publishable vertical clip under 90s with stable upper-body framing.',
+    qaSplitContract: 'Not Q/A-first; preserve offer context and product proof as one selling arc.',
+    coverContract: 'Auto cover must combine the core question, product proof, and clean brand frame.',
+    outputPackage: ['Vertical clip', 'Transcript evidence', 'Cover frame', 'Audit manifest'],
+  },
+  {
+    id: 'talking-head',
+    match: /\u5355\u4eba|\u8bb2\u89e3|talking|teacher|course/iu,
+    title: 'Talking-head semantic lesson',
+    strategy: 'One speaker, one complete idea arc, strong opening and payoff.',
+    primarySlicer: 'speech-semantic',
+    executionSupport: {
+      ready: true,
+      status: 'speech-first-ready',
+      label: 'Speech-first ready',
+      detail: 'Runs the default STT-first semantic slicer with rule-based single-speaker evidence for talking-head sources.',
+    },
+    speakerGate: 'adaptive-single-speaker',
+    boundaryContract: 'Keep setup, explanation, and payoff inside one semantic unit.',
+    reviewContract: 'Rank candidate ids by clarity, continuity, and publishability.',
+    publishableClipContract: 'Single teacher-style talking-head clip, <=90s, stable upper-body focus.',
+    qaSplitContract: 'Not Q/A-first; split by one complete idea, example, or answerable topic.',
+    coverContract: 'Auto cover must show the question and core takeaway with a clean professional frame.',
+    outputPackage: ['Short video clip', 'Transcript evidence', 'Subtitle sidecar', 'Audit manifest'],
+  },
+  {
+    id: 'dialogue',
+    match: /interview|dialogue|qa|q&a|\u8fde\u7ebf|\u53cc\u4eba|\u591a\u4eba|\u8bbf\u8c08|\u5bf9\u8bdd|\u95ee\u7b54/iu,
+    title: 'Speaker-aware dialogue',
+    strategy: 'Question, answer, and speaker roles are kept together as complete Q/A units.',
+    primarySlicer: 'dialogue-qa + speech-semantic',
+    executionSupport: {
+      ready: true,
+      status: 'speech-first-ready',
+      label: 'Diarization gate',
+      detail: 'Runs only when transcript evidence carries real multi-speaker labels for interviewer, guest, moderator, or speaker roles.',
+    },
+    speakerGate: 'required-diarization',
+    boundaryContract: 'Never output answer-only or question-only dialogue fragments.',
+    reviewContract: 'Rank stable Q/A candidate ids; preserve interviewer and guest roles.',
+    publishableClipContract: 'Batch publishable interview clips where every segment is a complete 1Q1A unit.',
+    qaSplitContract: '1Q1A required: question, answer, and role evidence must stay inside the same clip.',
+    coverContract: 'Auto cover should use the question plus guest answer hook, with speaker roles retained.',
+    outputPackage: ['Dialogue clip', 'Speaker-role evidence', 'Transcript evidence', 'Audit manifest'],
+  },
+  {
+    id: 'meeting',
+    match: /meeting|conference|agenda|minutes|\u4f1a\u8bae|\u5728\u7ebf\u4f1a\u8bae/iu,
+    title: 'Meeting decision highlight',
+    strategy: 'Agenda items, owners, decisions, and follow-ups stay traceable.',
+    primarySlicer: 'meeting-agenda + speech-semantic',
+    executionSupport: {
+      ready: true,
+      status: 'speech-first-ready',
+      label: 'Diarization gate',
+      detail: 'Runs only when meeting transcript evidence preserves speaker ownership for agenda, decision, and follow-up units.',
+    },
+    speakerGate: 'required-diarization',
+    boundaryContract: 'Keep decision context with the speaker turn that owns it.',
+    reviewContract: 'Rank candidate ids by decision value and role completeness.',
+    publishableClipContract: 'Decision or agenda clips must retain owner, context, decision, and follow-up.',
+    qaSplitContract: 'Meeting turns are split by agenda decision, not by isolated speaker turns.',
+    coverContract: 'Auto cover should show the decision topic and owner without exposing weak context.',
+    outputPackage: ['Decision clip', 'Speaker-role evidence', 'Transcript evidence', 'Audit manifest'],
+  },
+  {
+    id: 'performance',
+    match: /\u624d\u827a|\u8868\u6f14|performance|show/iu,
+    title: 'Performance moment',
+    strategy: 'Speech evidence leads now; visual and audio-event slicers can extend this profile later.',
+    primarySlicer: 'speech-semantic',
+    executionSupport: {
+      ready: true,
+      status: 'speech-first-ready',
+      label: 'Speech-first ready',
+      detail: 'Runs speech-semantic moment slicing now; future visual and audio-event evidence can enrich the same strategy profile.',
+    },
+    speakerGate: 'adaptive-single-speaker',
+    boundaryContract: 'Keep setup and performance payoff together.',
+    reviewContract: 'Rank candidate ids by complete moment value.',
+    publishableClipContract: 'Publish only complete moments with setup, performance beat, and payoff.',
+    qaSplitContract: 'Not Q/A-first; preserve complete setup and performance payoff.',
+    coverContract: 'Auto cover should use the best performance frame and concise moment title.',
+    outputPackage: ['Moment clip', 'Transcript evidence', 'Filter report', 'Audit manifest'],
+  },
+  {
+    id: 'film',
+    match: /\u7535\u5f71|film|movie|documentary/iu,
+    title: 'Narrative scene preview',
+    strategy: 'Registered for future multimodal scene slicing; blocked until native visual/audio evidence adapters are available.',
+    primarySlicer: 'film-scene + visual-scene',
+    executionSupport: {
+      ready: false,
+      status: 'native-evidence-adapter-required',
+      blockerCode: 'UNSUPPORTED_VISUAL_PRESET_EVIDENCE',
+      label: 'Native evidence adapter required',
+      detail: 'Film, documentary, music, sports, gaming, and screen-recording strategies require shot, OCR, waveform, beat, motion, or event evidence before commercial execution.',
+    },
+    speakerGate: 'adaptive-single-speaker',
+    boundaryContract: 'Preserve narrative setup and payoff in one approved candidate.',
+    reviewContract: 'Rank candidate ids by narrative completeness.',
+    publishableClipContract: 'Scene preview clips preserve setup, conflict, and payoff without spoiler fragments.',
+    qaSplitContract: 'Not Q/A-first; preserve narrative scene continuity.',
+    coverContract: 'Auto cover should use a representative scene frame and narrative hook.',
+    outputPackage: ['Scene clip', 'Transcript evidence', 'Render manifest', 'Audit manifest'],
+  },
+  {
+    id: 'general',
+    match: /.*/u,
+    title: 'General semantic short',
+    strategy: 'Build complete speech content units, then rank publishable short clips.',
+    primarySlicer: 'speech-semantic',
+    executionSupport: {
+      ready: true,
+      status: 'speech-first-ready',
+      label: 'Speech-first ready',
+      detail: 'Runs the default semantic short-video slicer using timestamped transcript and speaker-aware evidence.',
+    },
+    speakerGate: 'adaptive-single-speaker',
+    boundaryContract: 'Complete semantic units must be accepted before filters run.',
+    reviewContract: 'LLM can rank candidate ids and referenced unit ids only.',
+    publishableClipContract: 'Publish only complete semantic clips that can stand alone.',
+    qaSplitContract: 'Use Q/A splitting only when transcript evidence contains a complete question and answer.',
+    coverContract: 'Auto cover should summarize the strongest complete idea.',
+    outputPackage: ['Short video clip', 'Transcript evidence', 'Filter report', 'Audit manifest'],
+  },
+] as const;
+
+function resolveSmartCutEngineProductProfile(mode: SliceMode | string) {
+  const modeText = String(mode);
+  const fallbackProfile = SMART_CUT_ENGINE_PRODUCT_PROFILES[SMART_CUT_ENGINE_PRODUCT_PROFILES.length - 1];
+  if (!fallbackProfile) {
+    throw new Error('Smart Cut Engine product profiles must not be empty.');
+  }
+  return SMART_CUT_ENGINE_PRODUCT_PROFILES.find((profile) => profile.match.test(modeText)) ?? fallbackProfile;
+}
+
+function formatSmartCutEngineModeLabel(mode: SliceMode | string) {
+  return resolveSmartCutEngineProductProfile(mode).title;
+}
+
+function createSmartCutEngineProductExperience({
+  mode,
+  targetPlatform,
+  aspectRatio,
+  idealDuration,
+  enableSubtitles,
+  subtitleMode,
+  minDuration,
+  maxDuration,
+  noiseReduction,
+  coughFilter,
+  repeatFilter,
+}: {
+  mode: SliceMode | string;
+  targetPlatform: SliceTargetPlatform;
+  aspectRatio: SliceTargetAspectRatio;
+  idealDuration: number;
+  enableSubtitles: boolean;
+  subtitleMode: SliceSubtitleMode;
+  minDuration: number;
+  maxDuration: number;
+  noiseReduction: boolean;
+  coughFilter: boolean;
+  repeatFilter: boolean;
+}) {
+  const profile = resolveSmartCutEngineProductProfile(mode);
+  const formatContract = `${aspectRatio === 'auto' ? '9:16 adaptive default' : aspectRatio} / 1080x1920 / 30fps MP4`;
+  const subtitleContract = enableSubtitles
+    ? `${subtitleMode} subtitles with sentence-level speech sync and highlight-ready captions`
+    : 'Subtitle package disabled; transcript evidence is still retained for audit';
+  const cleanupContract = [
+    noiseReduction ? 'voice enhancement' : 'raw audio preserved',
+    coughFilter ? 'pause/cough/silence cleanup' : 'no silence cleanup',
+    repeatFilter ? 'repeat dedupe' : 'repeat evidence retained',
+  ].join(' + ');
+  const durationContract = profile.id === 'dialogue'
+    ? '1Q1A clips inside selected bounds'
+    : profile.id === 'meeting'
+      ? 'agenda/decision clips inside selected bounds'
+      : maxDuration >= 180
+        ? '60-180s matrix-ready long-interview clips'
+        : `${minDuration}-${maxDuration}s clips; ideal ${idealDuration}s`;
+  const reviewCheckpoint = 'Human Review: inspect transcript evidence, speaker roles, cover frame, subtitles, and filter decisions before export.';
+  const failClosedPolicy = profile.speakerGate === 'required-diarization'
+    ? 'Fail Closed: weak transcript or missing speaker diarization blocks commercial slicing.'
+    : 'Fail Closed: weak transcript timing, empty speech evidence, or invalid boundaries block commercial slicing.';
+  return {
+    profile,
+    requiresSpeakerDiarization: profile.speakerGate === 'required-diarization',
+    publishProfile: `${targetPlatform} / ${aspectRatio}`,
+    durationTarget: `${idealDuration}s target`,
+    subtitleOutput: enableSubtitles ? subtitleMode : 'none',
+    publishableClipContract: profile.publishableClipContract,
+    qaSplitContract: profile.qaSplitContract,
+    formatContract,
+    durationContract,
+    subtitleContract,
+    cleanupContract,
+    coverContract: `${profile.coverContract} Prompt sound and light music can be packaged after boundary approval.`,
+    reviewCheckpoint,
+    failClosedPolicy,
+    outputPackage: profile.outputPackage,
+  };
+}
+
+function smartCutRequiresSpeakerDiarization(mode: SliceMode | string) {
+  return /interview|dialogue|meeting|conference|qa|q&a|\u8fde\u7ebf|\u53cc\u4eba|\u591a\u4eba|\u4f1a\u8bae|\u8bbf\u8c08|\u5bf9\u8bdd|\u95ee\u7b54/iu.test(String(mode));
+}
 
 function normalizeSlicerNumberInput(
   rawValue: string,
@@ -168,9 +560,11 @@ function getSmartSliceErrorMessage(error: unknown) {
   return '';
 }
 
-function createSmartSliceFailureToastMessage(error: unknown) {
+function createSmartSliceFailureToastMessage(error: unknown, t: AutoCutTranslate) {
   const errorMessage = getSmartSliceErrorMessage(error).trim();
-  return errorMessage ? `智能切片失败：${errorMessage}` : '智能切片失败：请打开控制台查看 AutoCut 诊断日志。';
+  return errorMessage
+    ? `${t('slicer.speechSetup.smartSliceFailedPrefix')}${errorMessage}`
+    : t('slicer.speechSetup.smartSliceFailedFallback');
 }
 
 function createSmartSliceSubmissionDiagnostics(params: VideoSliceParams) {
@@ -188,21 +582,23 @@ function createSmartSliceSubmissionDiagnostics(params: VideoSliceParams) {
     hasUrl: Boolean(params.url?.trim()),
     mode: params.mode,
     llmModel: params.llmModel,
+    segmentationAgentId: params.segmentationAgentId,
     targetPlatform: params.targetPlatform,
     targetAspectRatio: params.targetAspectRatio,
     videoObjectFit: params.videoObjectFit,
-    sliceCountMode: params.sliceCountMode,
-    targetSliceCount: params.targetSliceCount,
     idealDuration: params.idealDuration,
     minDuration: params.minDuration,
     maxDuration: params.maxDuration,
     continuityLevel: params.continuityLevel,
+    segmentationDensity: params.segmentationDensity,
     customKeywordCount: params.customKeywords?.length ?? 0,
     baseAlgorithm: params.baseAlgorithm,
     highlightEngine: params.highlightEngine,
     enableSubtitles: params.enableSubtitles,
     subtitleMode: params.subtitleMode,
     subtitleStyleId: params.subtitleStyleId,
+    enableSmartDedup: params.enableSmartDedup,
+    videoDedupStrategyCount: params.videoDedupParams?.strategies.length ?? 0,
   };
 }
 
@@ -232,7 +628,7 @@ function formatSmartSliceSpeechSetupPath(path: string | undefined) {
   return fileName || value;
 }
 
-function createSmartSliceSpeechSetupFriendlyError(errorMessage: string) {
+function createSmartSliceSpeechSetupFriendlyError(errorMessage: string, t: AutoCutTranslate) {
   const rawMessage = errorMessage.trim();
   if (!rawMessage) {
     return '';
@@ -244,14 +640,14 @@ function createSmartSliceSpeechSetupFriendlyError(errorMessage: string) {
     message.includes('sha-256') ||
     message.includes('did not pass integrity')
   ) {
-    return '下载的语音识别模型没有通过完整性校验。请重新准备，应用会替换无效文件。';
+    return t('slicer.speechSetup.error.integrity');
   }
   if (
     message.includes('incomplete') ||
     message.includes('did not finish') ||
     message.includes('empty file')
   ) {
-    return '语音识别模型还没有完整下载。请重试准备；如果网络受限，可以在设置中复制下载链接并手动选择完整模型文件。';
+    return t('slicer.speechSetup.error.incomplete');
   }
   if (
     message.includes('download') ||
@@ -262,39 +658,39 @@ function createSmartSliceSpeechSetupFriendlyError(errorMessage: string) {
     message.includes('http status') ||
     message.includes('trusted source')
   ) {
-    return '语音识别模型暂时无法下载。请检查网络后重试，或在语音识别设置中复制下载链接后手动导入。';
+    return t('slicer.speechSetup.error.download');
   }
   if (
     message.includes('executable') ||
     message.includes('whisper-cli') ||
     message.includes('sidecar')
   ) {
-    return '本机语音识别程序还没有准备好。请打开语音识别设置，完成自动准备或选择本机 whisper-cli。';
+    return t('slicer.speechSetup.error.executable');
   }
   if (
     message.includes('model') ||
     message.includes('modelpath')
   ) {
-    return '离线语音识别模型还没有准备好。请重试准备，或在设置中选择已下载完成的模型文件。';
+    return t('slicer.speechSetup.error.model');
   }
 
   return rawMessage.length > 180
-    ? '语音识别准备失败。请重试，或打开语音识别设置查看详细信息。'
+    ? t('slicer.speechSetup.error.generic')
     : rawMessage;
 }
 
-function getSmartSliceSpeechSetupProgressLabel(progress: AutoCutSpeechTranscriptionModelDownloadProgressEvent | null) {
+function getSmartSliceSpeechSetupProgressLabel(progress: AutoCutSpeechTranscriptionModelDownloadProgressEvent | null, t: AutoCutTranslate) {
   if (!progress) {
-    return '等待离线模型准备';
+    return t('slicer.speechSetup.progress.waiting');
   }
   if (progress.phase === AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE.completed) {
-    return '模型已下载、校验并保存';
+    return t('slicer.speechSetup.progress.completed');
   }
   if (progress.phase === AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE.skipped) {
-    return '请手动下载后在设置中选择模型文件';
+    return t('slicer.speechSetup.progress.skipped');
   }
   if (progress.errorMessage) {
-    return createSmartSliceSpeechSetupFriendlyError(progress.errorMessage);
+    return createSmartSliceSpeechSetupFriendlyError(progress.errorMessage, t);
   }
 
   const downloaded = formatSmartSliceSpeechSetupBytes(progress.downloadedBytes);
@@ -305,40 +701,45 @@ function getSmartSliceSpeechSetupProgressLabel(progress: AutoCutSpeechTranscript
 function createSmartSliceSpeechSetupStatusText(
   status: AutoCutLocalSpeechTranscriptionSetupStatus | null,
   errorMessage: string,
+  t: AutoCutTranslate,
   modelDownloadCompleted = false,
 ) {
   if (errorMessage) {
     if (modelDownloadCompleted) {
-      return '离线模型已完成下载和校验。还需要完成最后一次可用性检测，智能切片才能继续。';
+      return t('slicer.speechSetup.status.modelSavedNeedsCheck');
     }
-    return createSmartSliceSpeechSetupFriendlyError(errorMessage);
+    return createSmartSliceSpeechSetupFriendlyError(errorMessage, t);
   }
   if (!status) {
-    return '正在检查智能切片需要的语音识别能力。';
+    return t('slicer.speechSetup.status.checking');
   }
   if (status.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready) {
-    return '语音识别已准备好，智能切片可以继续分析语音内容。';
+    return t('slicer.speechSetup.status.ready');
   }
   if (status.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.needsExecutable) {
     return status.capabilities.toolchainReady
-      ? '已找到本机语音识别程序，应用会在开始切片前保存检测结果。'
-      : '还没有找到可用的本机语音识别程序。请打开语音识别设置，完成自动准备或选择已安装的 whisper-cli。';
+      ? t('slicer.speechSetup.status.executableReady')
+      : t('slicer.speechSetup.status.executableMissing');
   }
   if (status.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.needsModel) {
-    return `需要离线识别模型。应用将下载并校验 ${status.model.preset.label}，完成后继续智能切片。`;
+    return t('slicer.speechSetup.status.needsModel', { model: status.model.preset.label });
   }
   if (status.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.needsTest) {
-    return '语音识别程序和模型已选择，还需要通过一次可用性检测。';
+    return t('slicer.speechSetup.status.needsTest');
   }
 
-  return createSmartSliceSpeechSetupFriendlyError(status.diagnostics[0] ?? '') ||
-    '需要先准备好语音识别能力，智能切片才能分析视频中的语音内容。';
+  return createSmartSliceSpeechSetupFriendlyError(status.diagnostics[0] ?? '', t) ||
+    t('slicer.speechSetup.status.fallback');
 }
 
 function waitForSmartSliceUiYield() {
   return new Promise<void>((resolve) => {
     if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
-      window.requestAnimationFrame(() => resolve());
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          setTimeout(() => resolve(), 0);
+        });
+      });
       return;
     }
 
@@ -347,6 +748,8 @@ function waitForSmartSliceUiYield() {
 }
 
 export function SlicerPage() {
+  const commonLabels = useAutoCutCommonLabels();
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
@@ -354,6 +757,7 @@ export function SlicerPage() {
   const playerRef = useRef<SmartSlicePlayerRef>(null);
   const replaceVideoInputRef = useRef<HTMLInputElement>(null);
   const initialSourceUrl = searchParams.get('url')?.trim() ?? '';
+  const initialReviewTaskId = searchParams.get('reviewTaskId')?.trim() ?? '';
   const routeState = location.state as {
     initialFile?: File;
     initialFileId?: string;
@@ -365,7 +769,7 @@ export function SlicerPage() {
     : routeState?.initialFile ?? null;
   const initialFileId = routeState?.initialFileId?.trim() ?? '';
 
-  const [selectedMode, setSelectedMode] = useState<SliceMode>("通用");
+  const [selectedMode, setSelectedMode] = useState<SliceMode>('general');
   const [isProcessing, setIsProcessing] = useState(false);
   const [file, setFile] = useState<File | null>(initialFile);
   const [fileId, setFileId] = useState<string>(initialFileId);
@@ -380,11 +784,31 @@ export function SlicerPage() {
   const [selectedSubtitleStyle, setSelectedSubtitleStyle] = useState('tiktok');
 
   const [slicerTasks, setSlicerTasks] = useState<AppTask[]>([]);
-  const [activeLeftTab, setActiveLeftTab] = useState<'text' | 'tasks'>('text');
+  const [activeLeftTab, setActiveLeftTab] = useState<'text' | 'tasks'>('tasks');
+  const [runMode, setRunMode] = useState<SmartSliceRunMode>('review-before-render');
+  const [activeReviewTaskId, setActiveReviewTaskId] = useState<string>(initialReviewTaskId);
+  const [reviewSessionDraft, setReviewSessionDraft] = useState<AutoCutSliceReviewSession | null>(null);
+  const [selectedReviewSegmentIds, setSelectedReviewSegmentIds] = useState<string[]>([]);
+  const [reviewVisibilityFilter, setReviewVisibilityFilter] = useState<SliceReviewVisibilityFilter>('all');
+  const [activeReviewSegmentId, setActiveReviewSegmentId] = useState<string>('');
+  const [reviewManualEdits, setReviewManualEdits] = useState<AutoCutSliceManualEdit[]>([]);
+  const [isRenderingReviewSelection, setIsRenderingReviewSelection] = useState(false);
+  const [isSavingReviewDraft, setIsSavingReviewDraft] = useState(false);
+  const [reviewDraftSavedAt, setReviewDraftSavedAt] = useState<string>('');
+  const [reviewDraftSaveError, setReviewDraftSaveError] = useState<string>('');
+  const [reviewCorrectionDraft, setReviewCorrectionDraft] = useState({
+    title: '',
+    startMs: '',
+    endMs: '',
+    transcriptText: '',
+    speakerRoles: '',
+    manualNotes: '',
+  });
   const [selectedTextInfo, setSelectedTextInfo] = useState<{ id: string; text: string; fontSize: number; fill: string; x?: number; y?: number; rotation?: number; scale?: number; } | null>(null);
   const [speechSetupDialogOpen, setSpeechSetupDialogOpen] = useState(false);
   const [speechSetupStatus, setSpeechSetupStatus] = useState<AutoCutLocalSpeechTranscriptionSetupStatus | null>(null);
   const [speechSetupErrorMessage, setSpeechSetupErrorMessage] = useState('');
+  const [isInspectingSpeechSetup, setIsInspectingSpeechSetup] = useState(false);
   const [isInitializingSpeechSetup, setIsInitializingSpeechSetup] = useState(false);
   const [speechModelDownloadProgress, setSpeechModelDownloadProgress] = useState<AutoCutSpeechTranscriptionModelDownloadProgressEvent | null>(null);
   const [enableOverlayEditor, setEnableOverlayEditor] = useState(false);
@@ -406,15 +830,210 @@ export function SlicerPage() {
     speechModelDownloadProgress?.modelPath ||
       speechSetupStatus?.model.path ||
       speechSetupStatus?.defaults.modelPath,
-  ) || speechSetupStatus?.model.preset.label || '推荐模型';
+  ) || speechSetupStatus?.model.preset.label || t('slicer.speechSetup.model.recommended');
   const speechFinalCheckNeedsAttention =
     Boolean(speechSetupErrorMessage) && speechModelDownloadCompleted;
+  const speechSetupBusy = isInspectingSpeechSetup || isInitializingSpeechSetup;
+
+  // Slicing advanced parameters
+  const [targetPlatform, setTargetPlatform] = useState<SliceTargetPlatform>('douyin');
+  const [idealDuration, setIdealDuration] = useState<number>(45);
+  const [continuityLevel, setContinuityLevel] = useState<SliceContinuityLevel>('standard');
+  const [segmentationDensity, setSegmentationDensity] = useState<SliceSegmentationDensity>('default');
+  const [sttPresetId, setSttPresetId] = useState<string>(AUTOCUT_DEFAULT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESET_ID);
+  const [customKeywordsInput, setCustomKeywordsInput] = useState<string>('');
+  const [minDuration, setMinDuration] = useState<number>(15);
+  const [maxDuration, setMaxDuration] = useState<number>(90);
+  const [activeLlmRuntimeModelVendor, setActiveLlmRuntimeModelVendor] = useState<ModelVendor>('deepseek');
+  const [activeLlmRuntimeConfig, setActiveLlmRuntimeConfig] = useState<AutoCutLlmRuntimeConfig | null>(null);
+  const [llmModel, setLlmModel] = useState<SliceLLM>('deepseek-v4-flash');
+  const [segmentationAgentId, setSegmentationAgentId] = useState<AutoCutSmartSliceSegmentationAgentId>(
+    AUTOCUT_DEFAULT_SMART_SLICE_SEGMENTATION_AGENT_ID,
+  );
+  const [noiseReduction, setNoiseReduction] = useState<boolean>(true);
+  const [coughFilter, setCoughFilter] = useState<boolean>(true);
+  const [repeatFilter, setRepeatFilter] = useState<boolean>(false);
+  const [enableSmartDedup, setEnableSmartDedup] = useState<boolean>(false);
+  const [videoDedupParams, setVideoDedupParams] = useState<VideoDedupParams>(() =>
+    createDefaultAutoCutVideoDedupParams({ mode: 'slice-result-dedup' }),
+  );
+  const [latestVideoDedupReport, setLatestVideoDedupReport] = useState<VideoDedupReport | null>(null);
+  const selectedSegmentationAgent = useMemo(
+    () => getAutoCutSmartSliceSegmentationAgentDefinition(segmentationAgentId),
+    [segmentationAgentId],
+  );
+  const speechGpuDiagnosticsText = speechSetupStatus?.gpu.diagnostics.join('\n') ?? '';
+  const availableSttWorkflowPresets = useMemo<SmartSliceVisibleSttWorkflowPreset[]>(
+    () => AUTOCUT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESETS.filter((preset) => preset.available).map((preset) => {
+      const gpuPresetWithoutRuntime =
+        preset.executionProfile === 'gpu' && speechSetupStatus?.gpu.ready !== true;
+      const apiPresetWithoutCredentials =
+        preset.executionProfile === 'cloud' &&
+        (!activeLlmRuntimeConfig?.apiKeyConfigured ||
+          (preset.modelVendor !== undefined && activeLlmRuntimeConfig.modelVendor !== preset.modelVendor));
+      const uiDisabledReason = gpuPresetWithoutRuntime
+        ? speechSetupStatus?.gpu.diagnostics[0] ?? SMART_SLICE_GPU_STT_RUNTIME_REQUIRED_REASON
+        : apiPresetWithoutCredentials
+          ? `Configure the ${preset.modelVendor ?? 'matching'} ModelVendor API key in Settings before using Smart cloud STT.`
+          : undefined;
+      return {
+        ...preset,
+        selectable: !gpuPresetWithoutRuntime && !apiPresetWithoutCredentials,
+        ...(uiDisabledReason ? { uiDisabledReason } : {}),
+        uiLabel: gpuPresetWithoutRuntime
+          ? `${preset.label} (requires GPU runtime)`
+          : apiPresetWithoutCredentials
+            ? `${preset.label} (configure API key)`
+            : 'recommended' in preset && preset.recommended === true
+              ? `${preset.label} (recommended)`
+              : preset.label,
+      };
+    }),
+    [activeLlmRuntimeConfig?.apiKeyConfigured, activeLlmRuntimeConfig?.modelVendor, speechGpuDiagnosticsText, speechSetupStatus?.gpu.ready],
+  );
+  const selectedSttWorkflowPreset = useMemo(
+    () =>
+      availableSttWorkflowPresets.find((preset) => preset.id === sttPresetId && preset.selectable) ??
+      availableSttWorkflowPresets.find((preset) => preset.id === AUTOCUT_DEFAULT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESET_ID) ??
+      availableSttWorkflowPresets[0],
+    [availableSttWorkflowPresets, sttPresetId],
+  );
+  const selectedSttWorkflowPresetDisabledReason =
+    availableSttWorkflowPresets.find((preset) => preset.id === sttPresetId && !preset.selectable)?.uiDisabledReason;
+  const effectiveSttPresetId =
+    selectedSttWorkflowPreset?.id ?? AUTOCUT_DEFAULT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESET_ID;
+  useEffect(() => {
+    if (speechSetupStatus && selectedSttWorkflowPresetDisabledReason && sttPresetId !== effectiveSttPresetId) {
+      setSttPresetId(effectiveSttPresetId);
+    }
+  }, [effectiveSttPresetId, selectedSttWorkflowPresetDisabledReason, speechSetupStatus, sttPresetId]);
+  const smartCutExperience = createSmartCutEngineProductExperience({
+    mode: selectedMode,
+    targetPlatform,
+    aspectRatio,
+    idealDuration,
+    enableSubtitles,
+    subtitleMode,
+    minDuration,
+    maxDuration,
+    noiseReduction,
+    coughFilter,
+    repeatFilter,
+  });
+  const requiresSpeakerDiarization =
+    smartCutExperience.requiresSpeakerDiarization || smartCutRequiresSpeakerDiarization(selectedMode);
+  const hasVideoSource = Boolean(file || fileId || sourceUrl || videoSrc);
+  const strategyExecutionSupport = smartCutExperience.profile.executionSupport;
+  const activeReviewTask = useMemo(
+    () => slicerTasks.find((task) => task.id === activeReviewTaskId && task.sliceReviewSession) ??
+      (!hasVideoSource && !activeReviewTaskId
+        ? slicerTasks.find((task) => task.status === AUTOCUT_TASK_STATUS.reviewing && task.sliceReviewSession)
+        : undefined),
+    [activeReviewTaskId, hasVideoSource, slicerTasks],
+  );
+  const effectiveReviewSession = reviewSessionDraft ?? activeReviewTask?.sliceReviewSession ?? null;
+  const reviewSegments = effectiveReviewSession?.segments ?? [];
+  const selectedReviewSegmentCount = selectedReviewSegmentIds.length;
+  const duplicateReviewSegmentCount = reviewSegments.filter((segment) => segment.status === 'duplicate').length;
+  const duplicateReviewGroupCount = effectiveReviewSession?.duplicateGroups.length ?? 0;
+  const smartDedupRiskSegmentCount = reviewSegments.filter((segment) =>
+    segment.risks.includes(SMART_SLICE_DEDUP_REVIEW_RISK_CODE),
+  ).length;
+  const excludedReviewSegmentCount = reviewSegments.filter((segment) => segment.status === 'excluded').length;
+  const visibleReviewSegments = useMemo(() => {
+    if (reviewVisibilityFilter === 'selected') {
+      return reviewSegments.filter((segment) =>
+        selectedReviewSegmentIds.includes(segment.id) && segment.status === 'selected',
+      );
+    }
+    if (reviewVisibilityFilter === 'duplicates') {
+      return reviewSegments.filter(isSliceReviewDuplicateRiskSegment);
+    }
+    if (reviewVisibilityFilter === 'excluded') {
+      return reviewSegments.filter((segment) => segment.status === 'excluded');
+    }
+    return reviewSegments;
+  }, [reviewSegments, reviewVisibilityFilter, selectedReviewSegmentIds]);
+  const activeReviewSegment = useMemo(
+    () => reviewSegments.find((segment) => segment.id === activeReviewSegmentId) ?? visibleReviewSegments[0] ?? reviewSegments[0],
+    [activeReviewSegmentId, reviewSegments, visibleReviewSegments],
+  );
+  useEffect(() => {
+    if (!activeReviewSegment) {
+      setReviewCorrectionDraft({
+        title: '',
+        startMs: '',
+        endMs: '',
+        transcriptText: '',
+        speakerRoles: '',
+        manualNotes: '',
+      });
+      return;
+    }
+    setReviewCorrectionDraft({
+      title: activeReviewSegment.title,
+      startMs: String(activeReviewSegment.startMs),
+      endMs: String(activeReviewSegment.endMs),
+      transcriptText: activeReviewSegment.transcriptText ?? '',
+      speakerRoles: (activeReviewSegment.speakerRoles.length
+        ? activeReviewSegment.speakerRoles
+        : activeReviewSegment.speakerIds
+      ).join(', '),
+      manualNotes: activeReviewSegment.manualNotes ?? '',
+    });
+  }, [activeReviewSegment?.id]);
+  const engineReadinessItems = [
+    {
+      label: 'STT',
+      value: speechModelReadyForDisplay || speechSetupStatus?.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready ? 'Ready' : 'Check',
+    },
+    {
+      label: 'Speaker',
+      value: requiresSpeakerDiarization ? 'Required' : 'Adaptive',
+    },
+    {
+      label: 'Strategy',
+      value: strategyExecutionSupport.label,
+    },
+    {
+      label: 'Audit',
+      value: 'contentUnitIds + speakerRoles',
+    },
+  ];
+  const commercialReadinessItems = [
+    {
+      label: 'Source Evidence',
+      value: hasVideoSource ? 'Ready' : 'Missing source video',
+      blocked: !hasVideoSource,
+    },
+    {
+      label: 'Speech Evidence',
+      value: speechModelReadyForDisplay || speechSetupStatus?.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready ? 'STT ready' : 'STT preflight required',
+      blocked: false,
+    },
+    {
+      label: 'Speaker Evidence',
+      value: requiresSpeakerDiarization ? 'Diarization required' : 'Single speaker adapter allowed',
+      blocked: false,
+    },
+    {
+      label: 'Strategy Capability',
+      value: strategyExecutionSupport.ready ? strategyExecutionSupport.label : 'Native evidence adapter required',
+      blocked: !strategyExecutionSupport.ready,
+    },
+    {
+      label: 'Export Contract',
+      value: smartCutExperience.formatContract,
+      blocked: false,
+    },
+  ];
+  const hasCommercialReadinessBlocker = commercialReadinessItems.some((item) => item.blocked);
 
   const TEXT_EFFECTS: TextEffectPreset[] = [
     {
       id: 'tiktok',
-      name: '爆款红蓝字',
-      text: '所有女生，准备好了吗！',
+      name: 'Viral red-blue',
+      text: 'Ready for the big reveal?',
       styleConfig: {
         fill: '#00ebff',
         stroke: { color: '#ff0050', width: 4 },
@@ -424,8 +1043,8 @@ export function SlicerPage() {
     },
     {
       id: 'variety',
-      name: '综艺大字',
-      text: '这也太好吃了吧！',
+      name: 'Variety bold',
+      text: 'This is the key moment!',
       styleConfig: {
         fill: '#fffc00',
         stroke: { color: '#ffffff', width: 4 },
@@ -435,8 +1054,8 @@ export function SlicerPage() {
     },
     {
       id: 'gradient-cyan',
-      name: '青蓝渐变',
-      text: '家人们冲啊！',
+      name: 'Cyan gradient',
+      text: 'Watch this result',
       styleConfig: {
         fill: ['#00FF87', '#60EFFF'],
         fillGradientType: 1,
@@ -447,8 +1066,8 @@ export function SlicerPage() {
     },
     {
       id: 'fire',
-      name: '燃爆火焰',
-      text: '直接骨折价！',
+      name: 'Fire impact',
+      text: 'Limited-time offer',
       styleConfig: {
         fill: ['#FFD100', '#FF7A00', '#FF0000'],
         fillGradientType: 0,
@@ -459,8 +1078,8 @@ export function SlicerPage() {
     },
     {
       id: 'neon',
-      name: '赛博霓虹',
-      text: '三、二、一，上链接！',
+      name: 'Neon glow',
+      text: 'Link opens now',
       styleConfig: {
         fill: '#ffffff',
         stroke: { color: '#d926ff', width: 2 },
@@ -469,20 +1088,20 @@ export function SlicerPage() {
       }
     },
     {
-        id: 'gold',
-        name: '黑金炫酷',
-        text: '主播亲测，绝对良心',
-        styleConfig: {
-            fill: ['#FFE066', '#D4AF37'],
-            fillGradientType: 0,
-            stroke: { color: '#000000', width: 6 },
-            dropShadow: { color: '#000000', blur: 8, angle: Math.PI/4, distance: 6, alpha: 1 },
-            fontFamily: 'system-ui', fontWeight: '900', fontStyle: 'italic', fontSize: 48
-        }
+      id: 'gold',
+      name: 'Gold premium',
+      text: 'Creator verified',
+      styleConfig: {
+        fill: ['#FFE066', '#D4AF37'],
+        fillGradientType: 0,
+        stroke: { color: '#000000', width: 6 },
+        dropShadow: { color: '#000000', blur: 8, angle: Math.PI/4, distance: 6, alpha: 1 },
+        fontFamily: 'system-ui', fontWeight: '900', fontStyle: 'italic', fontSize: 48
+      }
     },
     {
       id: 'retro-pop',
-      name: '波普复古',
+      name: 'Retro pop',
       text: 'Oh My God!',
       styleConfig: {
         fill: '#FF00B2',
@@ -493,8 +1112,8 @@ export function SlicerPage() {
     },
     {
       id: 'thick-border',
-      name: '粗黑描边',
-      text: '最后五十单！',
+      name: 'Thick outline',
+      text: 'Final 50 spots',
       styleConfig: {
         fill: '#FFF500',
         stroke: { color: '#000000', width: 10 },
@@ -502,20 +1121,20 @@ export function SlicerPage() {
       }
     },
     {
-        id: 'minimal',
-        name: '极简白',
-        text: '数量有限，先到先得',
-        styleConfig: {
-            fill: '#ffffff',
-            stroke: { color: '#000000', width: 3 },
-            dropShadow: { color: '#000000', blur: 8, angle: Math.PI/4, distance: 4, alpha: 0.8 },
-            fontFamily: 'system-ui', fontWeight: '600', fontSize: 44
-        }
+      id: 'minimal',
+      name: 'Minimal white',
+      text: 'Clean key point',
+      styleConfig: {
+        fill: '#ffffff',
+        stroke: { color: '#000000', width: 3 },
+        dropShadow: { color: '#000000', blur: 8, angle: Math.PI/4, distance: 4, alpha: 0.8 },
+        fontFamily: 'system-ui', fontWeight: '600', fontSize: 44
+      }
     },
     {
       id: 'title-retro',
-      name: '复古标题',
-      text: '八十年代回忆',
+      name: 'Retro title',
+      text: 'Chapter highlight',
       styleConfig: {
         fill: ['#FF7E00', '#FFCD00'],
         fillGradientType: 0,
@@ -526,8 +1145,8 @@ export function SlicerPage() {
     },
     {
       id: '3d-block',
-      name: '立体积木',
-      text: '新品首发！',
+      name: '3D block',
+      text: 'New launch',
       styleConfig: {
         fill: '#FFFFFF',
         stroke: { color: '#0055FF', width: 4 },
@@ -537,8 +1156,8 @@ export function SlicerPage() {
     },
     {
       id: 'bubble-gum',
-      name: '泡泡糖',
-      text: '甜蜜来袭~',
+      name: 'Bubble gum',
+      text: 'Sweet hook',
       styleConfig: {
         fill: '#FFB6C1',
         stroke: { color: '#FF1493', width: 6 },
@@ -573,38 +1192,50 @@ export function SlicerPage() {
         setSlicerTasks(tasks.filter(t => t.type === AUTOCUT_TASK_TYPE.videoSlice));
       });
     };
+    const handleSlicerTaskUpdated = (updatedTask: AppTask) => {
+      setSlicerTasks((currentTasks) => mergeSlicerTaskUpdate(currentTasks, updatedTask));
+    };
+    const handleSlicerTaskAdded = (addedTask: AppTask) => {
+      setSlicerTasks((currentTasks) => mergeSlicerTaskUpdate(currentTasks, addedTask));
+    };
     fetchTasks();
-    const handleUpdate = () => fetchTasks();
-    const stopTaskUpdated = listenAutoCutEvent('taskUpdated', handleUpdate);
-    const stopTaskAdded = listenAutoCutEvent('taskAdded', handleUpdate);
+    const stopTaskUpdated = listenAutoCutEvent('taskUpdated', handleSlicerTaskUpdated);
+    const stopTaskAdded = listenAutoCutEvent('taskAdded', handleSlicerTaskAdded);
     return () => {
       stopTaskUpdated();
       stopTaskAdded();
     };
   }, []);
 
-  // Slicing Advanced Parameters
-  const [targetPlatform, setTargetPlatform] = useState<SliceTargetPlatform>('douyin');
-  const [sliceCountMode, setSliceCountMode] = useState<SliceCountMode>('qualityFirst');
-  const [targetSliceCount, setTargetSliceCount] = useState<number>(5);
-  const [idealDuration, setIdealDuration] = useState<number>(45);
-  const [continuityLevel, setContinuityLevel] = useState<SliceContinuityLevel>('standard');
-  const [customKeywordsInput, setCustomKeywordsInput] = useState<string>('');
-  const [minDuration, setMinDuration] = useState<number>(15);
-  const [maxDuration, setMaxDuration] = useState<number>(90);
-  const [activeLlmRuntimeModelVendor, setActiveLlmRuntimeModelVendor] = useState<ModelVendor>('deepseek');
-  const [llmModel, setLlmModel] = useState<SliceLLM>('deepseek-v4-flash');
-  const [baseAlgorithm, setBaseAlgorithm] = useState<SliceAlgorithm>('nlp');
-  const [highlightEngine, setHighlightEngine] = useState<SliceHighlightEngine>('emotion');
-  const [noiseReduction, setNoiseReduction] = useState<boolean>(true);
-  const [coughFilter, setCoughFilter] = useState<boolean>(true);
-  const [repeatFilter, setRepeatFilter] = useState<boolean>(false);
+  useEffect(() => {
+    const nextReviewSession = activeReviewTask?.sliceReviewSession;
+    if (!activeReviewTask || !nextReviewSession) {
+      return;
+    }
+    if (!shouldHydrateSmartSliceReviewSessionFromTask({
+      currentTaskId: activeReviewTaskId,
+      nextTaskId: activeReviewTask.id,
+      currentDraft: reviewSessionDraft,
+      nextSession: nextReviewSession,
+      currentManualEditCount: reviewManualEdits.length,
+    })) {
+      return;
+    }
+    setActiveReviewTaskId(activeReviewTask.id);
+    setReviewSessionDraft(nextReviewSession);
+    setSelectedReviewSegmentIds(nextReviewSession.selectedSegmentIds);
+    setActiveReviewSegmentId(
+      nextReviewSession.selectedSegmentIds[0] ??
+        nextReviewSession.segments[0]?.id ??
+        '',
+    );
+    setReviewManualEdits([]);
+  }, [activeReviewTask?.id, activeReviewTask?.sliceReviewSession, activeReviewTaskId, reviewManualEdits.length, reviewSessionDraft?.id]);
 
   useEffect(() => {
     if (targetPlatform === 'bilibili') {
       setAspectRatio('16:9');
       setVideoObjectFit('contain');
-      setTargetSliceCount(3);
       setIdealDuration(90);
       return;
     }
@@ -612,7 +1243,6 @@ export function SlicerPage() {
     if (targetPlatform === 'xiaohongshu') {
       setAspectRatio('9:16');
       setVideoObjectFit('cover');
-      setTargetSliceCount(5);
       setIdealDuration(35);
       return;
     }
@@ -620,7 +1250,6 @@ export function SlicerPage() {
     if (targetPlatform !== 'generic') {
       setAspectRatio('9:16');
       setVideoObjectFit('cover');
-      setTargetSliceCount(5);
       setIdealDuration(45);
     }
   }, [targetPlatform]);
@@ -628,8 +1257,10 @@ export function SlicerPage() {
   useEffect(() => {
     resolveAutoCutLlmRuntimeConfig()
       .then((config) => {
+        setActiveLlmRuntimeConfig(config);
         setActiveLlmRuntimeModelVendor(config.modelVendor);
         setLlmModel(config.model as SliceLLM);
+        setSegmentationAgentId(config.defaultSegmentationAgentId);
       })
       .catch((error) => reportAutoCutDiagnostic('warning', 'slicer', 'Load default LLM model failed', error));
   }, []);
@@ -674,18 +1305,19 @@ export function SlicerPage() {
         setSubtitleMode(videoSlice.subtitleMode);
         setSelectedSubtitleStyle(videoSlice.subtitleStyleId);
         setTargetPlatform(videoSlice.targetPlatform);
-        setSliceCountMode(videoSlice.sliceCountMode);
-        setTargetSliceCount(videoSlice.targetSliceCount);
         setIdealDuration(videoSlice.idealDuration);
         setContinuityLevel(videoSlice.continuityLevel);
+        setSegmentationDensity(videoSlice.segmentationDensity);
+        setSttPresetId(videoSlice.sttPresetId);
         setCustomKeywordsInput(videoSlice.customKeywordsInput);
         setMinDuration(videoSlice.minDuration);
         setMaxDuration(videoSlice.maxDuration);
-        setBaseAlgorithm(videoSlice.baseAlgorithm);
-        setHighlightEngine(videoSlice.highlightEngine);
+        setSegmentationAgentId(videoSlice.segmentationAgentId);
         setNoiseReduction(videoSlice.enableNoiseReduction);
         setCoughFilter(videoSlice.enableCoughFilter);
         setRepeatFilter(videoSlice.enableRepeatFilter);
+        setEnableSmartDedup(videoSlice.enableSmartDedup);
+        setVideoDedupParams(videoSlice.videoDedupParams);
       })
       .catch((error) => reportAutoCutDiagnostic('warning', 'slicer', 'Load video slice parameter preferences failed', error));
   }, []);
@@ -693,6 +1325,25 @@ export function SlicerPage() {
   useEffect(() => listenAutoCutEvent('speechTranscriptionModelDownloadProgress', (progress) => {
     setSpeechModelDownloadProgress(progress);
   }), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    inspectAutoCutLocalSpeechTranscriptionSetup()
+      .then((status) => {
+        if (!cancelled) {
+          setSpeechSetupStatus(status);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          reportAutoCutDiagnostic('warning', 'slicer.speech-setup', 'Initial Smart Slice STT readiness inspection failed', error);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const formatTime = (timeInSecs: number) => {
     if (!timeInSecs || isNaN(timeInSecs)) return "00:00";
@@ -750,9 +1401,18 @@ export function SlicerPage() {
   }, [currentTime, duration]);
 
   const refreshSmartSliceLocalSpeechTranscriptionSetup = async () => {
-    const status = await inspectAutoCutLocalSpeechTranscriptionSetup();
-    setSpeechSetupStatus(status);
-    return status;
+    setIsInspectingSpeechSetup(true);
+    try {
+      const status = await inspectAutoCutLocalSpeechTranscriptionSetup();
+      setSpeechSetupStatus(status);
+      return status;
+    } catch (error) {
+      setSpeechSetupErrorMessage(error instanceof Error ? error.message : t('slicer.speechSetup.error.inspectFailed'));
+      reportAutoCutDiagnostic('error', 'slicer.speech-setup', 'Smart Slice local STT readiness inspection failed', error);
+      throw error;
+    } finally {
+      setIsInspectingSpeechSetup(false);
+    }
   };
 
   const runSmartSliceLocalSpeechTranscriptionInitialization = async () => {
@@ -786,10 +1446,10 @@ export function SlicerPage() {
       await waitForSmartSliceUiYield();
       const result = await initializeAutoCutLocalSpeechTranscriptionSetup();
       setSpeechSetupStatus(result.status);
-      toast('语音识别已准备好，智能切片将继续处理。', 'success');
+      toast(t('slicer.speechSetup.toast.ready'), 'success');
       return result.status.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready;
     } catch (error) {
-      const message = error instanceof Error ? error.message : '语音识别还没有准备好。';
+      const message = error instanceof Error ? error.message : t('slicer.speechSetup.toast.notReady');
       setSpeechSetupErrorMessage(message);
       reportAutoCutDiagnostic('error', 'slicer.speech-setup', 'Smart Slice local STT initialization failed', error);
       await refreshSmartSliceLocalSpeechTranscriptionSetup().catch(() => null);
@@ -801,13 +1461,14 @@ export function SlicerPage() {
 
   const ensureSmartSliceLocalSpeechTranscriptionReady = async () => {
     setSpeechSetupErrorMessage('');
+    setSpeechSetupDialogOpen(true);
+    await waitForSmartSliceUiYield();
     const status = await refreshSmartSliceLocalSpeechTranscriptionSetup();
     if (status.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready) {
       setSpeechSetupDialogOpen(false);
       return true;
     }
 
-    setSpeechSetupDialogOpen(true);
     const initialized = await runSmartSliceLocalSpeechTranscriptionInitialization();
     if (initialized) {
       setSpeechSetupDialogOpen(false);
@@ -815,77 +1476,484 @@ export function SlicerPage() {
     return initialized;
   };
 
+  const createCurrentVideoSliceParams = (): VideoSliceParams => {
+    const effectiveSubtitleMode = enableSubtitles && subtitleMode === 'none' ? 'both' : subtitleMode;
+    const sliceParams: VideoSliceParams = {
+      mode: selectedMode,
+      file,
+      ...(fileId && !file ? { fileId } : {}),
+      llmModel,
+      targetPlatform,
+      targetAspectRatio: aspectRatio,
+      videoObjectFit,
+      idealDuration,
+      continuityLevel,
+      segmentationDensity,
+      sttPresetId: effectiveSttPresetId,
+      customKeywords: customKeywordsInput
+        .split(/[,\n;\uFF0C\u3001]+/u)
+        .map((keyword) => keyword.trim())
+        .filter(Boolean),
+      minDuration,
+      maxDuration,
+      segmentationAgentId,
+      baseAlgorithm: 'nlp',
+      highlightEngine: 'emotion',
+      enableNoiseReduction: noiseReduction,
+      enableCoughFilter: coughFilter,
+      enableRepeatFilter: repeatFilter,
+      enableSmartDedup,
+      videoDedupParams: createDefaultAutoCutVideoDedupParams({
+        ...videoDedupParams,
+        sourceAssetIds: fileId ? [fileId] : videoDedupParams.sourceAssetIds,
+      }),
+      enableSubtitles,
+      ...(enableSubtitles
+        ? {
+            subtitleMode: effectiveSubtitleMode,
+            subtitleStyleId: selectedSubtitleStyle,
+          }
+        : {}),
+    };
+    if (sourceUrl) {
+      sliceParams.url = sourceUrl;
+    }
+    return sliceParams;
+  };
+
+  const saveCurrentVideoSlicePreferences = async () => {
+    const effectiveSubtitleMode = enableSubtitles && subtitleMode === 'none' ? 'both' : subtitleMode;
+    await saveAutoCutVideoSlicePreferences({
+      mode: selectedMode,
+      targetPlatform,
+      targetAspectRatio: aspectRatio,
+      videoObjectFit,
+      idealDuration,
+      continuityLevel,
+      segmentationDensity,
+      sttPresetId: effectiveSttPresetId,
+      customKeywordsInput,
+      minDuration,
+      maxDuration,
+      llmModel,
+      segmentationAgentId,
+      baseAlgorithm: 'nlp',
+      highlightEngine: 'emotion',
+      enableNoiseReduction: noiseReduction,
+      enableCoughFilter: coughFilter,
+      enableRepeatFilter: repeatFilter,
+      enableSmartDedup,
+      videoDedupParams,
+      enableSubtitles,
+      subtitleMode: enableSubtitles ? effectiveSubtitleMode : 'none',
+      subtitleStyleId: selectedSubtitleStyle,
+    });
+  };
+
+  const commitReviewSessionDraft = (
+    baseSession: AutoCutSliceReviewSession,
+    segments: readonly AutoCutSliceReviewSegment[],
+    manualEdit?: AutoCutSliceManualEdit,
+  ) => {
+    const nextSession = createSliceReviewSessionFromSegments(
+      baseSession,
+      segments,
+      manualEdit ? [manualEdit] : [],
+    );
+    setReviewSessionDraft(nextSession);
+    setSelectedReviewSegmentIds(nextSession.selectedSegmentIds);
+    const nextManualEdits = manualEdit ? [...reviewManualEdits, manualEdit] : reviewManualEdits;
+    if (manualEdit) {
+      setReviewManualEdits(nextManualEdits);
+    }
+    const taskId = activeReviewTask?.id ?? activeReviewTaskId;
+    if (!taskId) {
+      return;
+    }
+    setReviewDraftSaveError('');
+    setIsSavingReviewDraft(true);
+    void saveVideoSliceReviewDraft(taskId, {
+      reviewSessionId: nextSession.id,
+      selectedSegmentIds: nextSession.selectedSegmentIds,
+      manualEdits: nextManualEdits,
+    })
+      .then(() => {
+        setReviewDraftSavedAt(formatAutoCutTimeOfDay(createAutoCutTimestamp()));
+      })
+      .catch((error) => {
+        reportAutoCutDiagnostic('error', 'slicer.review-draft', 'Save Smart Slice review draft failed', error);
+        setReviewDraftSaveError(createSmartSliceFailureToastMessage(error, t));
+      })
+      .finally(() => {
+        setIsSavingReviewDraft(false);
+      });
+  };
+
+  const handlePreviewReviewSegment = (segment: AutoCutSliceReviewSegment) => {
+    setActiveReviewSegmentId(segment.id);
+    if (duration > 0) {
+      playerRef.current?.seek(Math.max(0, segment.startMs / 1_000) / duration);
+    }
+  };
+
+  const handleSelectAllReviewSegments = () => {
+    const baseSession = effectiveReviewSession;
+    if (!baseSession) {
+      return;
+    }
+    const publishableSegments = baseSession.segments.filter((segment) => segment.status !== 'duplicate');
+    const edit = createSliceReviewManualEdit('select', publishableSegments.map((segment) => segment.id), {
+      reason: 'manual bulk select all publishable review segments',
+    });
+    commitReviewSessionDraft(
+      baseSession,
+      baseSession.segments.map((segment) =>
+        segment.status === 'duplicate'
+          ? segment
+          : {
+              ...segment,
+              selected: true,
+              status: 'selected',
+            },
+      ),
+      edit,
+    );
+  };
+
+  const handleClearReviewSegmentSelection = () => {
+    const baseSession = effectiveReviewSession;
+    if (!baseSession) {
+      return;
+    }
+    const selectedIds = baseSession.segments
+      .filter((segment) => segment.selected && segment.status === 'selected')
+      .map((segment) => segment.id);
+    const edit = createSliceReviewManualEdit('exclude', selectedIds, {
+      reason: 'manual clear selected review segments',
+    });
+    commitReviewSessionDraft(
+      baseSession,
+      baseSession.segments.map((segment) =>
+        segment.status === 'selected'
+          ? {
+              ...segment,
+              selected: false,
+              status: 'excluded',
+            }
+          : segment,
+      ),
+      edit,
+    );
+  };
+
+  const handleToggleReviewSegment = (segmentId: string) => {
+    const baseSession = effectiveReviewSession;
+    if (!baseSession) {
+      return;
+    }
+    const targetSegment = baseSession.segments.find((segment) => segment.id === segmentId);
+    if (!targetSegment) {
+      return;
+    }
+    const shouldSelect = !(targetSegment.selected && targetSegment.status === 'selected');
+    const edit = createSliceReviewManualEdit(shouldSelect ? 'select' : 'exclude', [segmentId], {
+      reason: shouldSelect ? 'manual segment selected for render' : 'manual segment excluded from render',
+    });
+    commitReviewSessionDraft(
+      baseSession,
+      baseSession.segments.map((segment) =>
+        segment.id === segmentId
+          ? {
+              ...segment,
+              selected: shouldSelect,
+              status: shouldSelect ? 'selected' : 'excluded',
+            }
+          : segment,
+      ),
+      edit,
+    );
+  };
+
+  const handleSplitReviewSegment = (segmentId: string) => {
+    const baseSession = effectiveReviewSession;
+    const segment = baseSession?.segments.find((candidate) => candidate.id === segmentId);
+    if (!baseSession || !segment || segment.endMs <= segment.startMs + 1_000) {
+      return;
+    }
+    const transcriptBoundaryMs = segment.transcriptSegments?.find((transcriptSegment) =>
+      transcriptSegment.endMs > segment.startMs + 500 &&
+      transcriptSegment.endMs < segment.endMs - 500
+    )?.endMs;
+    const splitAtMs = Math.round(transcriptBoundaryMs ?? (segment.startMs + segment.endMs) / 2);
+    const firstSegment: AutoCutSliceReviewSegment = {
+      ...segment,
+      id: `${segment.id}-a`,
+      title: `${segment.title} A`,
+      endMs: splitAtMs,
+      durationMs: Math.max(1, splitAtMs - segment.startMs),
+      ...createSliceReviewSpeechRangeForPreview(segment, segment.startMs, splitAtMs),
+      transcriptSegments: filterSliceReviewTranscriptSegmentsForPreview(segment, segment.startMs, splitAtMs),
+    };
+    const firstTranscriptText = createSliceReviewTranscriptTextForPreview(firstSegment);
+    if (firstTranscriptText !== undefined) {
+      firstSegment.transcriptText = firstTranscriptText;
+    }
+    const secondSegment: AutoCutSliceReviewSegment = {
+      ...segment,
+      id: `${segment.id}-b`,
+      title: `${segment.title} B`,
+      startMs: splitAtMs,
+      durationMs: Math.max(1, segment.endMs - splitAtMs),
+      ...createSliceReviewSpeechRangeForPreview(segment, splitAtMs, segment.endMs),
+      transcriptSegments: filterSliceReviewTranscriptSegmentsForPreview(segment, splitAtMs, segment.endMs),
+    };
+    const secondTranscriptText = createSliceReviewTranscriptTextForPreview(secondSegment);
+    if (secondTranscriptText !== undefined) {
+      secondSegment.transcriptText = secondTranscriptText;
+    }
+    const edit = createSliceReviewManualEdit('split', [segmentId], {
+      splitAtMs,
+      createdSegmentIds: [firstSegment.id, secondSegment.id],
+      reason: 'manual split at reviewed transcript boundary',
+    });
+    commitReviewSessionDraft(
+      baseSession,
+      baseSession.segments.flatMap((candidate) =>
+        candidate.id === segmentId ? [firstSegment, secondSegment] : [candidate],
+      ),
+      edit,
+    );
+  };
+
+  const handleMergeReviewSegment = (segmentId: string, direction: 'previous' | 'next') => {
+    const baseSession = effectiveReviewSession;
+    if (!baseSession) {
+      return;
+    }
+    const segmentIndex = baseSession.segments.findIndex((segment) => segment.id === segmentId);
+    const neighborIndex = direction === 'previous' ? segmentIndex - 1 : segmentIndex + 1;
+    const currentSegment = baseSession.segments[segmentIndex];
+    const neighborSegment = baseSession.segments[neighborIndex];
+    if (!currentSegment || !neighborSegment) {
+      return;
+    }
+    const mergeSegments = [currentSegment, neighborSegment].sort((a, b) => a.startMs - b.startMs);
+    const baseMergeSegment = mergeSegments[0];
+    if (!baseMergeSegment) {
+      return;
+    }
+    const mergedSegment: AutoCutSliceReviewSegment = {
+      ...baseMergeSegment,
+      id: mergeSegments.map((segment) => segment.id).join('-'),
+      title: mergeSegments.map((segment) => segment.title).join(' + '),
+      startMs: Math.min(...mergeSegments.map((segment) => segment.startMs)),
+      endMs: Math.max(...mergeSegments.map((segment) => segment.endMs)),
+      durationMs: Math.max(...mergeSegments.map((segment) => segment.endMs)) - Math.min(...mergeSegments.map((segment) => segment.startMs)),
+      contentUnitIds: [...new Set(mergeSegments.flatMap((segment) => segment.contentUnitIds))],
+      speakerIds: [...new Set(mergeSegments.flatMap((segment) => segment.speakerIds))],
+      speakerRoles: [...new Set(mergeSegments.flatMap((segment) => segment.speakerRoles))],
+      transcriptSegments: mergeSegments.flatMap((segment) => segment.transcriptSegments ?? []),
+      transcriptText: mergeSegments.map((segment) => segment.transcriptText).filter(Boolean).join(' '),
+      risks: [...new Set(mergeSegments.flatMap((segment) => segment.risks))],
+      selected: mergeSegments.some((segment) => segment.selected),
+      status: mergeSegments.some((segment) => segment.selected) ? 'selected' : 'excluded',
+    };
+    const mergeIds = new Set(mergeSegments.map((segment) => segment.id));
+    const firstIndex = Math.min(segmentIndex, neighborIndex);
+    const retainedSegments = baseSession.segments.filter((segment) => !mergeIds.has(segment.id));
+    const nextSegments = [
+      ...retainedSegments.slice(0, firstIndex),
+      mergedSegment,
+      ...retainedSegments.slice(firstIndex),
+    ];
+    const edit = createSliceReviewManualEdit('merge', [...mergeIds], {
+      createdSegmentIds: [mergedSegment.id],
+      reason: 'manual merge to preserve continuous context',
+    });
+    commitReviewSessionDraft(baseSession, nextSegments, edit);
+  };
+
+  const handleDeleteDuplicateReviewSegment = (segmentId: string) => {
+    const baseSession = effectiveReviewSession;
+    if (!baseSession) {
+      return;
+    }
+    const keepSegmentId = baseSession.selectedSegmentIds.find((id) => id !== segmentId) ??
+      baseSession.segments.find((segment) => segment.id !== segmentId)?.id;
+    const duplicateEditSegmentIds = keepSegmentId ? [keepSegmentId, segmentId] : [segmentId];
+    const edit = createSliceReviewManualEdit('deleteDuplicate', duplicateEditSegmentIds, {
+      ...(keepSegmentId ? { keepSegmentId } : {}),
+      reason: 'manual duplicate content deletion',
+    });
+    commitReviewSessionDraft(
+      baseSession,
+      baseSession.segments.map((segment) =>
+        segment.id === segmentId
+          ? {
+              ...segment,
+              selected: false,
+              status: 'duplicate',
+              duplicateOfSegmentId: keepSegmentId,
+            }
+          : segment,
+      ),
+      edit,
+    );
+  };
+
+  const handleRestoreReviewSegment = (segmentId: string) => {
+    const baseSession = effectiveReviewSession;
+    if (!baseSession) {
+      return;
+    }
+    const edit = createSliceReviewManualEdit('restore', [segmentId], {
+      reason: 'manual restore before render',
+    });
+    commitReviewSessionDraft(
+      baseSession,
+      baseSession.segments.map((segment) =>
+        segment.id === segmentId
+          ? {
+              ...segment,
+              selected: true,
+              status: 'selected',
+              duplicateGroupId: undefined,
+              duplicateOfSegmentId: undefined,
+            }
+          : segment,
+      ),
+      edit,
+    );
+  };
+
+  const handleApplyReviewSegmentCorrection = () => {
+    const baseSession = effectiveReviewSession;
+    const segment = activeReviewSegment;
+    if (!baseSession || !segment) {
+      return;
+    }
+    const correctedStartMs = normalizeSlicerNumberInput(
+      reviewCorrectionDraft.startMs,
+      segment.startMs,
+      0,
+      Math.max(0, segment.endMs - 1),
+    );
+    const correctedEndMs = normalizeSlicerNumberInput(
+      reviewCorrectionDraft.endMs,
+      segment.endMs,
+      correctedStartMs + 1,
+      effectiveReviewSession?.sourceDurationMs ?? Number.MAX_SAFE_INTEGER,
+    );
+    const speakerRoles = reviewCorrectionDraft.speakerRoles
+      .split(/[,\n;\uFF0C\u3001]+/u)
+      .map((speakerRole) => speakerRole.trim())
+      .filter(Boolean);
+    const correctedTranscriptText = reviewCorrectionDraft.transcriptText.trim();
+    const correctedManualNotes = reviewCorrectionDraft.manualNotes.trim();
+    const correctedSpeechRange = createSliceReviewSpeechRangeForPreview(segment, correctedStartMs, correctedEndMs);
+    const correctedTranscriptSegments = filterSliceReviewTranscriptSegmentsForPreview(segment, correctedStartMs, correctedEndMs);
+    const correctedSegment: AutoCutSliceReviewSegment = {
+      ...segment,
+      title: reviewCorrectionDraft.title.trim() || segment.title,
+      startMs: correctedStartMs,
+      endMs: Math.max(correctedStartMs + 1, correctedEndMs),
+      durationMs: Math.max(1, correctedEndMs - correctedStartMs),
+      speakerRoles,
+      speakerIds: speakerRoles.length ? speakerRoles : segment.speakerIds,
+      ...correctedSpeechRange,
+      transcriptSegments: correctedTranscriptSegments,
+      ...(correctedTranscriptText ? { transcriptText: correctedTranscriptText } : {}),
+      ...(correctedManualNotes ? { manualNotes: correctedManualNotes } : {}),
+    };
+    const correctionPatch: NonNullable<AutoCutSliceManualEdit['patch']> = {
+      title: correctedSegment.title,
+      startMs: correctedSegment.startMs,
+      endMs: correctedSegment.endMs,
+      ...(correctedSegment.speechStartMs !== undefined ? { speechStartMs: correctedSegment.speechStartMs } : {}),
+      ...(correctedSegment.speechEndMs !== undefined ? { speechEndMs: correctedSegment.speechEndMs } : {}),
+      ...(correctedTranscriptText ? { transcriptText: correctedTranscriptText } : {}),
+      speakerIds: correctedSegment.speakerIds,
+      speakerRoles: correctedSegment.speakerRoles,
+      ...(correctedManualNotes ? { manualNotes: correctedManualNotes } : {}),
+    };
+    const edit = createSliceReviewManualEdit('correctSegment', [segment.id], {
+      reason: 'manual real-time segment correction',
+      patch: correctionPatch,
+    });
+    commitReviewSessionDraft(
+      baseSession,
+      baseSession.segments.map((candidate) => candidate.id === segment.id ? correctedSegment : candidate),
+      edit,
+    );
+  };
+
+  const handleRenderSelectedReviewSegments = async () => {
+    const baseSession = effectiveReviewSession;
+    const taskId = activeReviewTask?.id ?? activeReviewTaskId;
+    if (!baseSession || !taskId) {
+      toast('No reviewed segment plan is ready for rendering.', 'error');
+      return;
+    }
+    if (selectedReviewSegmentIds.length === 0) {
+      toast('Select at least one review segment before rendering.', 'error');
+      return;
+    }
+    setIsRenderingReviewSelection(true);
+    try {
+      await renderVideoSlicePlan(taskId, {
+        reviewSessionId: baseSession.id,
+        selectedSegmentIds: selectedReviewSegmentIds,
+        manualEdits: reviewManualEdits,
+      });
+      setActiveLeftTab('tasks');
+      toast('Render selected Smart Slice segments submitted.', 'success');
+    } catch (error) {
+      reportAutoCutDiagnostic('error', 'slicer.review-render', 'Render selected Smart Slice segments failed', error);
+      toast(createSmartSliceFailureToastMessage(error, t), 'error');
+    } finally {
+      setIsRenderingReviewSelection(false);
+    }
+  };
+
   const handleStart = async () => {
+    if (!hasVideoSource) {
+      toast('Select a source video before running Smart Cut Engine.', 'error');
+      return;
+    }
+    if (!strategyExecutionSupport.ready) {
+      const blockerCode = strategyExecutionSupport.blockerCode ?? 'UNSUPPORTED_VISUAL_PRESET_EVIDENCE';
+      reportAutoCutDiagnostic('warning', 'slicer.submit', 'Smart Cut Engine strategy blocked before submission', {
+        mode: selectedMode,
+        blockerCode,
+        status: strategyExecutionSupport.status,
+        detail: strategyExecutionSupport.detail,
+      });
+      toast(`${blockerCode}: ${strategyExecutionSupport.detail}`, 'error');
+      return;
+    }
     setIsProcessing(true);
-    toast('视频智能切片任务已创建并提交', 'info');
     try {
       const speechReady = await ensureSmartSliceLocalSpeechTranscriptionReady();
       if (!speechReady) {
         return;
       }
       await waitForSmartSliceUiYield();
-      const effectiveSubtitleMode = enableSubtitles && subtitleMode === 'none' ? 'both' : subtitleMode;
-      const sliceParams: VideoSliceParams = {
-        mode: selectedMode,
-        file,
-        ...(fileId && !file ? { fileId } : {}),
-        llmModel,
-        targetPlatform,
-        targetAspectRatio: aspectRatio,
-        videoObjectFit,
-        sliceCountMode,
-        targetSliceCount,
-        idealDuration,
-        continuityLevel,
-        customKeywords: customKeywordsInput
-          .split(/[,，\n]/u)
-          .map((keyword) => keyword.trim())
-          .filter(Boolean),
-        minDuration,
-        maxDuration,
-        baseAlgorithm,
-        highlightEngine,
-        enableNoiseReduction: noiseReduction,
-        enableCoughFilter: coughFilter,
-        enableRepeatFilter: repeatFilter,
-        enableSubtitles,
-        ...(enableSubtitles
-          ? {
-              subtitleMode: effectiveSubtitleMode,
-              subtitleStyleId: selectedSubtitleStyle,
-            }
-          : {}),
-      };
-      if (sourceUrl) {
-        sliceParams.url = sourceUrl;
-      }
+      toast(t('slicer.speechSetup.toast.submitCreated'), 'info');
+      const sliceParams = createCurrentVideoSliceParams();
       reportAutoCutDiagnostic('warning', 'slicer.submit', 'Smart Slice submit params', createSmartSliceSubmissionDiagnostics(sliceParams));
-      await saveAutoCutVideoSlicePreferences({
-        mode: selectedMode,
-        targetPlatform,
-        targetAspectRatio: aspectRatio,
-        videoObjectFit,
-        sliceCountMode,
-        targetSliceCount,
-        idealDuration,
-        continuityLevel,
-        customKeywordsInput,
-        minDuration,
-        maxDuration,
-        llmModel,
-        baseAlgorithm,
-        highlightEngine,
-        enableNoiseReduction: noiseReduction,
-        enableCoughFilter: coughFilter,
-        enableRepeatFilter: repeatFilter,
-        enableSubtitles,
-        subtitleMode: enableSubtitles ? effectiveSubtitleMode : 'none',
-        subtitleStyleId: selectedSubtitleStyle,
-      });
-      await processVideoSlice(sliceParams);
+      await saveCurrentVideoSlicePreferences();
+      if (runMode === 'review-before-render') {
+        resetSmartSliceReviewWorkbenchForNewPlan();
+        const result = await analyzeVideoSlicePlan(sliceParams);
+        setActiveReviewTaskId(result.taskId);
+        toast('Analyze complete. Segment Review Workbench will open when the plan is ready.', 'success');
+      } else {
+        resetSmartSliceReviewWorkbenchForNewPlan();
+        await processVideoSlice(sliceParams);
+        toast(t('slicer.speechSetup.toast.submitted'), 'success');
+      }
       setIsProcessing(false);
       setActiveLeftTab("tasks");
-      toast('切片任务分发成功，正在云端解析中', 'success');
     } catch (e) {
       const failedTaskId = getAutoCutProcessingTaskErrorTaskId(e);
       if (failedTaskId) {
@@ -893,7 +1961,7 @@ export function SlicerPage() {
       }
       reportAutoCutDiagnostic('error', 'slicer', 'Video slicing failed', e);
       setIsProcessing(false);
-      toast(createSmartSliceFailureToastMessage(e), 'error');
+      toast(createSmartSliceFailureToastMessage(e, t), 'error');
     } finally {
       setIsProcessing(false);
     }
@@ -909,9 +1977,31 @@ export function SlicerPage() {
     });
   };
 
+  const resetSmartSliceReviewWorkbenchForNewPlan = () => {
+    setActiveReviewTaskId('');
+    setReviewSessionDraft(null);
+    setSelectedReviewSegmentIds([]);
+    setReviewVisibilityFilter('all');
+    setActiveReviewSegmentId('');
+    setReviewManualEdits([]);
+    setIsRenderingReviewSelection(false);
+    setLatestVideoDedupReport(null);
+  };
+
+  const resetSmartSliceReviewWorkbenchForSourceChange = () => {
+    resetSmartSliceReviewWorkbenchForNewPlan();
+    setVideoDedupParams((currentParams) =>
+      createDefaultAutoCutVideoDedupParams({
+        ...currentParams,
+        sourceAssetIds: [],
+      }),
+    );
+  };
+
   const handleReplaceVideoFallbackSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = event.target.files?.[0] ?? null;
     if (selectedFile) {
+      resetSmartSliceReviewWorkbenchForSourceChange();
       setFile(selectedFile);
       setFileId('');
     }
@@ -930,6 +2020,7 @@ export function SlicerPage() {
       }
 
       const trustedFile = createAutoCutTrustedLocalFile(selectedVideo);
+      resetSmartSliceReviewWorkbenchForSourceChange();
       setFile(trustedFile);
       setFileId('');
       return;
@@ -954,7 +2045,7 @@ export function SlicerPage() {
               <ArrowLeft size={16} />
             </button>
             <h1 className="text-[13px] font-bold text-gray-200 flex items-center gap-2">
-              视频切片工作台
+              Smart Cut Engine
             </h1>
           </div>
 
@@ -966,13 +2057,13 @@ export function SlicerPage() {
               }}
               className={`flex-1 py-3 text-xs font-bold uppercase tracking-wider transition-colors flex justify-center items-center gap-2 ${activeLeftTab === 'text' ? 'text-blue-400 border-b-2 border-blue-500 bg-[#111]' : 'text-gray-500 hover:text-gray-300 hover:bg-[#111]'}`}
             >
-              <Type size={14} /> 花字特效
+              <Type size={14} /> Overlay
             </button>
             <button
               onClick={() => setActiveLeftTab('tasks')}
               className={`flex-1 py-3 text-xs font-bold uppercase tracking-wider transition-colors flex justify-center items-center gap-2 ${activeLeftTab === 'tasks' ? 'text-blue-400 border-b-2 border-blue-500 bg-[#111]' : 'text-gray-500 hover:text-gray-300 hover:bg-[#111]'}`}
             >
-              <CheckCircle2 size={14} /> 任务列表
+              <CheckCircle2 size={14} /> Jobs
             </button>
           </div>
 
@@ -1020,6 +2111,20 @@ export function SlicerPage() {
                   </div>
                 ))}
               </div>
+            ) : slicerTasks.length === 0 ? (
+              <div className="rounded-lg border border-[#222] bg-[#111] p-4">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded border border-[#333] bg-[#181818] text-blue-300">
+                    <Scissors size={15} />
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-gray-200">No Smart Cut jobs yet</div>
+                    <div className="mt-1 text-[11px] leading-5 text-gray-500">
+                      Select a source video, confirm the scene strategy, then run Smart Cut Engine to create audit-ready clips.
+                    </div>
+                  </div>
+                </div>
+              </div>
             ) : (
               slicerTasks.map(task => (
                 <div key={task.id} className="p-3 bg-[#111] rounded-lg border border-[#222] hover:border-[#333] hover:bg-[#1A1A1A] transition-all cursor-pointer group" onClick={() => navigate(`/tasks/${task.id}`)}>
@@ -1048,19 +2153,40 @@ export function SlicerPage() {
                     )}
                     {task.status === AUTOCUT_TASK_STATUS.completed && (
                       <div className="flex items-center gap-1.5 text-[10px] text-green-500">
-                        <CheckCircle2 size={12} /> <span className="font-semibold">切片已完成</span>
+                        <CheckCircle2 size={12} /> <span className="font-semibold">Completed</span>
+                      </div>
+                    )}
+                    {task.status === AUTOCUT_TASK_STATUS.reviewing && (
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (task.sliceReviewSession) {
+                              setActiveReviewTaskId(task.id);
+                              setReviewSessionDraft(task.sliceReviewSession);
+                              setSelectedReviewSegmentIds(task.sliceReviewSession.selectedSegmentIds);
+                              setReviewManualEdits([]);
+                            }
+                          }}
+                          className="flex items-center gap-1.5 text-[10px] font-semibold text-blue-300 hover:text-blue-200"
+                        >
+                          <Scissors size={12} /> Review ready
+                        </button>
+                        <span className="text-[10px] text-gray-500">{task.sliceReviewSession?.selectedSegmentIds.length ?? 0} selected</span>
                       </div>
                     )}
                     {task.status === AUTOCUT_TASK_STATUS.failed && (
                       <div className="space-y-1">
                         <div className="flex items-center gap-1.5 text-[10px] text-red-500">
-                        <XCircle size={12} /> <span className="font-semibold">切片失败</span>
+                        <XCircle size={12} /> <span className="font-semibold">Failed</span>
                         </div>
                         <TaskFailureState
                           variant="compact"
                           errorMessage={task.errorMessage}
                           failureDiagnostics={task.failureDiagnostics}
                           onCopyErrorMessage={writeAutoCutClipboardText}
+                          labels={commonLabels.taskFailure}
                         />
                       </div>
                     )}
@@ -1073,7 +2199,7 @@ export function SlicerPage() {
           {activeLeftTab === 'tasks' && (
             <div className="p-3 border-t border-[#222] bg-[#050505] shrink-0">
               <button onClick={() => navigate('/tasks')} className="w-full py-2 text-[11px] text-gray-400 flex items-center justify-center gap-1 hover:text-white transition-colors">
-                查看所有任务 <ChevronRight size={14} />
+                View all tasks <ChevronRight size={14} />
               </button>
             </div>
           )}
@@ -1203,34 +2329,34 @@ export function SlicerPage() {
                         {formatTime(currentTime)} <span className="text-gray-600 mx-1">/</span> {formatTime(duration)}
                     </span>
                     <div className="flex items-center gap-2 ml-4 text-[10px] text-gray-600 font-medium">
-                      <span className="px-1.5 py-0.5 bg-[#222] rounded border border-[#333]">J</span> 倒退
+                      <span className="px-1.5 py-0.5 bg-[#222] rounded border border-[#333]">J</span> Back
                       <span className="px-1.5 py-0.5 bg-[#222] rounded border border-[#333]">K</span>/
-                      <span className="px-1.5 py-0.5 bg-[#222] rounded border border-[#333]">Space</span> 播放
-                      <span className="px-1.5 py-0.5 bg-[#222] rounded border border-[#333]">L</span> 前进
-                      <span className="ml-2 px-1.5 py-0.5 bg-[#222] rounded border border-[#333]">←</span>
-                      <span className="px-1.5 py-0.5 bg-[#222] rounded border border-[#333]">→</span> 逐帧
+                      <span className="px-1.5 py-0.5 bg-[#222] rounded border border-[#333]">Space</span> Play
+                      <span className="px-1.5 py-0.5 bg-[#222] rounded border border-[#333]">L</span> Forward
+                      <span className="ml-2 px-1.5 py-0.5 bg-[#222] rounded border border-[#333]">Left</span>
+                      <span className="px-1.5 py-0.5 bg-[#222] rounded border border-[#333]">Right</span> Frame
                     </div>
                   </div>
                 <div className="flex items-center gap-2 text-gray-400">
                      <select
-                        value={aspectRatio}
-                         onChange={e => setAspectRatio(e.target.value as SliceTargetAspectRatio)}
-                        className="bg-[#222] border border-[#333] text-gray-300 text-[11px] rounded px-2 py-1 outline-none focus:border-blue-500 transition-colors"
-                     >
-                       <option value="auto">自动比例 ({detectedRatio})</option>
-                       <option value="16:9">16:9 (横屏)</option>
-                       <option value="9:16">9:16 (竖屏)</option>
-                       <option value="1:1">1:1 (正方形)</option>
-                       <option value="4:3">4:3 (标准)</option>
+                         value={aspectRatio}
+                          onChange={e => setAspectRatio(e.target.value as SliceTargetAspectRatio)}
+                         className="bg-[#222] border border-[#333] text-gray-300 text-[11px] rounded px-2 py-1 outline-none focus:border-blue-500 transition-colors"
+                      >
+                       <option value="auto">Auto ({detectedRatio})</option>
+                       <option value="16:9">16:9 Landscape</option>
+                       <option value="9:16">9:16 Vertical</option>
+                       <option value="1:1">1:1 Square</option>
+                       <option value="4:3">4:3 Standard</option>
                      </select>
 
                      <select
-                        value={videoObjectFit}
-                         onChange={e => setVideoObjectFit(e.target.value as SliceVideoObjectFit)}
-                        className="bg-[#222] border border-[#333] text-gray-300 text-[11px] rounded px-2 py-1 outline-none focus:border-blue-500 transition-colors"
-                     >
-                       <option value="contain">适应 (留黑边)</option>
-                       <option value="cover">填充 (裁剪)</option>
+                         value={videoObjectFit}
+                          onChange={e => setVideoObjectFit(e.target.value as SliceVideoObjectFit)}
+                         className="bg-[#222] border border-[#333] text-gray-300 text-[11px] rounded px-2 py-1 outline-none focus:border-blue-500 transition-colors"
+                      >
+                       <option value="contain">Contain</option>
+                       <option value="cover">Cover</option>
                      </select>
 
                      <Settings2 size={16} className="cursor-pointer hover:text-white transition-colors ml-2" />
@@ -1261,7 +2387,7 @@ export function SlicerPage() {
                   className="px-3 py-2 text-[11px] font-medium bg-[#222] hover:bg-[#333] border border-[#333] hover:border-[#444] rounded-lg transition-colors text-gray-300 flex items-center gap-2 cursor-pointer"
                   onClick={handleReplaceVideo}
                 >
-                  <RefreshCcw size={14} /> 更换视频文件
+                  <RefreshCcw size={14} /> Replace video
                 </button>
                 <input
                   ref={replaceVideoInputRef}
@@ -1285,19 +2411,19 @@ export function SlicerPage() {
               <div className="h-14 border-b border-[#222] flex items-center px-5 shrink-0 justify-between">
                 <h2 className="text-[13px] font-bold text-gray-200 flex items-center gap-2 tracking-wide">
                   <Settings2 size={16} className="text-blue-500" />
-                  文字属性
+                  Text overlay
                 </h2>
                 <span
                   className="text-[11px] text-gray-500 cursor-pointer hover:text-white transition-colors"
                   onClick={() => setSelectedTextInfo(null)}
                 >
-                  关闭
+                  Close
                 </span>
               </div>
               <div className="p-5 flex-1 overflow-y-auto space-y-6">
                  <div>
-                   <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-wider">文本内容</label>
-                   <textarea
+                   <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-wider">Text content</label>
+                    <textarea
                      className="w-full bg-[#141414] border border-[#222] hover:border-[#333] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-blue-500 resize-none h-24"
                      value={selectedTextInfo.text}
                      onChange={(e) => {
@@ -1310,9 +2436,9 @@ export function SlicerPage() {
 
                  <div>
                    <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-wider flex justify-between">
-                      <span>字号 (大小)</span>
-                      <span className="text-blue-400">{selectedTextInfo.fontSize}px</span>
-                   </label>
+                       <span>Font size</span>
+                       <span className="text-blue-400">{selectedTextInfo.fontSize}px</span>
+                    </label>
                    <input
                      type="range"
                      className="w-full accent-blue-500"
@@ -1327,8 +2453,8 @@ export function SlicerPage() {
                  </div>
 
                  <div>
-                   <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-wider">文字颜色</label>
-                   <div className="flex items-center gap-3">
+                   <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-wider">Text color</label>
+                    <div className="flex items-center gap-3">
                      <input
                        type="color"
                        className="w-8 h-8 rounded shrink-0 cursor-pointer border-none p-0 bg-transparent"
@@ -1347,13 +2473,13 @@ export function SlicerPage() {
 
                  <div className="grid grid-cols-2 gap-4">
                    <div>
-                     <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-wider">X 坐标</label>
+                     <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-wider">X position</label>
                      <div className="bg-[#141414] border border-[#222] rounded-lg px-3 py-2 text-xs text-white text-center font-mono">
                         {selectedTextInfo.x !== undefined && !Number.isNaN(selectedTextInfo.x) ? selectedTextInfo.x : '-'}
                      </div>
                    </div>
                    <div>
-                     <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-wider">Y 坐标</label>
+                     <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-wider">Y position</label>
                      <div className="bg-[#141414] border border-[#222] rounded-lg px-3 py-2 text-xs text-white text-center font-mono">
                         {selectedTextInfo.y !== undefined && !Number.isNaN(selectedTextInfo.y) ? selectedTextInfo.y : '-'}
                      </div>
@@ -1362,15 +2488,15 @@ export function SlicerPage() {
 
                  <div className="grid grid-cols-2 gap-4">
                    <div>
-                     <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-wider">缩放比例</label>
-                     <div className="bg-[#141414] border border-[#222] rounded-lg px-3 py-2 text-xs text-white text-center font-mono">
-                        {selectedTextInfo.scale !== undefined && !Number.isNaN(selectedTextInfo.scale) ? selectedTextInfo.scale.toFixed(2) : '-'}
+                     <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-wider">Scale</label>
+                      <div className="bg-[#141414] border border-[#222] rounded-lg px-3 py-2 text-xs text-white text-center font-mono">
+                         {selectedTextInfo.scale !== undefined && !Number.isNaN(selectedTextInfo.scale) ? selectedTextInfo.scale.toFixed(2) : '-'}
                      </div>
                    </div>
                    <div>
-                     <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-wider">旋转角度</label>
-                     <div className="bg-[#141414] border border-[#222] rounded-lg px-3 py-2 text-xs text-white text-center font-mono">
-                        {selectedTextInfo.rotation !== undefined && !Number.isNaN(selectedTextInfo.rotation) ? (selectedTextInfo.rotation * (180/Math.PI)).toFixed(1) + '°' : '-'}
+                     <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-wider">Rotation</label>
+                      <div className="bg-[#141414] border border-[#222] rounded-lg px-3 py-2 text-xs text-white text-center font-mono">
+                         {selectedTextInfo.rotation !== undefined && !Number.isNaN(selectedTextInfo.rotation) ? (selectedTextInfo.rotation * (180/Math.PI)).toFixed(1) + 'deg' : '-'}
                      </div>
                    </div>
                  </div>
@@ -1381,32 +2507,538 @@ export function SlicerPage() {
               <div className="h-14 border-b border-[#222] flex items-center px-5 shrink-0 justify-between">
                 <h2 className="text-[13px] font-bold text-gray-200 flex items-center gap-2 tracking-wide">
                   <Settings2 size={16} className="text-blue-500" />
-                  智能切片配置
+                  Smart Cut Engine Workbench
                 </h2>
-                <span className="text-[11px] text-blue-500 cursor-pointer hover:text-blue-400 transition-colors">自定义 &rsaquo;</span>
+                <span className="text-[11px] text-blue-400">commercial brief</span>
               </div>
 
               <div className="p-5 flex-1 overflow-y-auto w-full custom-scrollbar styled-scrollbar">
                 <div className="space-y-6">
+              <section className="rounded-lg border border-[#262626] bg-[#101010] p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-blue-300">Workflow Mode</div>
+                    <div className="mt-1 text-xs leading-5 text-gray-300">Auto render or review before render</div>
+                  </div>
+                  <span className="rounded border border-[#333] bg-[#141414] px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-300">
+                    {runMode === 'review-before-render' ? 'Human-in-loop' : 'One-click'}
+                  </span>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  {[
+                    { id: 'review-before-render' as const, label: 'Review before render', detail: 'Analyze first, edit segments, then render selected.' },
+                    { id: 'auto-render' as const, label: 'Auto render', detail: 'Plan, filter, and render in one automated run.' },
+                  ].map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => setRunMode(option.id)}
+                      className={`rounded-lg border p-3 text-left transition-colors ${
+                        runMode === option.id
+                          ? 'border-blue-500/60 bg-blue-500/15 text-blue-100'
+                          : 'border-[#252525] bg-[#141414] text-gray-400 hover:border-[#3a3a3a] hover:text-gray-200'
+                      }`}
+                    >
+                      <div className="text-[11px] font-bold">{option.label}</div>
+                      <div className="mt-1 text-[10px] leading-4 text-gray-500">{option.detail}</div>
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <section className="rounded-lg border border-[#262626] bg-[#101010] p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-blue-300">Segment Review Workbench</div>
+                    <div className="mt-1 text-xs leading-5 text-gray-300">Preview planned segments, select exports, and remove duplicate content</div>
+                  </div>
+                  <span className={`rounded border px-2 py-1 text-[10px] font-bold uppercase tracking-wider ${
+                    effectiveReviewSession
+                      ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                      : 'border-[#333] bg-[#141414] text-gray-500'
+                  }`}>
+                    {isSavingReviewDraft
+                      ? 'Saving'
+                      : reviewDraftSaveError
+                        ? 'Save failed'
+                        : reviewDraftSavedAt
+                          ? `Saved ${reviewDraftSavedAt}`
+                          : effectiveReviewSession
+                            ? 'Ready'
+                            : 'No plan'}
+                  </span>
+                </div>
+                {reviewDraftSaveError ? (
+                  <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[10px] leading-4 text-amber-100">
+                    {reviewDraftSaveError}
+                  </div>
+                ) : null}
+
+                {effectiveReviewSession ? (
+                  <div className="mt-3 space-y-3">
+                    <div className="grid grid-cols-4 gap-2">
+                      <div className="rounded border border-[#252525] bg-[#141414] px-2 py-2">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Segments</div>
+                        <div className="mt-1 text-[12px] font-semibold text-gray-100">{reviewSegments.length}</div>
+                      </div>
+                      <div className="rounded border border-[#252525] bg-[#141414] px-2 py-2">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Selected</div>
+                        <div className="mt-1 text-[12px] font-semibold text-emerald-200">{selectedReviewSegmentCount}</div>
+                      </div>
+                      <div className="rounded border border-[#252525] bg-[#141414] px-2 py-2">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Duplicates</div>
+                        <div className="mt-1 text-[12px] font-semibold text-amber-200">{duplicateReviewSegmentCount}</div>
+                        {duplicateReviewGroupCount || smartDedupRiskSegmentCount ? (
+                          <div className="mt-0.5 text-[9px] text-gray-500">
+                            {duplicateReviewGroupCount} groups / {smartDedupRiskSegmentCount} AI risk
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="rounded border border-[#252525] bg-[#141414] px-2 py-2">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Excluded</div>
+                        <div className="mt-1 text-[12px] font-semibold text-gray-300">{excludedReviewSegmentCount}</div>
+                      </div>
+                    </div>
+
+                    {effectiveReviewSession.smartDedupReport ? (
+                      <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-[10px] font-bold uppercase tracking-wider text-amber-200">Smart dedup review</div>
+                            <div className="mt-1 truncate text-[10px] text-amber-100/80">
+                              {effectiveReviewSession.smartDedupReport.matchCount} matches / {smartDedupRiskSegmentCount} risk segments / {effectiveReviewSession.smartDedupReport.strategies.join(', ')}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setReviewVisibilityFilter('duplicates')}
+                            className="shrink-0 rounded border border-amber-400/40 bg-[#101010] px-2 py-1 text-[10px] font-semibold text-amber-100 hover:border-amber-300"
+                          >
+                            Review
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Previewing Segment</div>
+                          <div className="mt-1 truncate text-[12px] font-semibold text-gray-100">
+                            {activeReviewSegment ? activeReviewSegment.title : 'No segment selected'}
+                          </div>
+                        </div>
+                        {activeReviewSegment ? (
+                          <button
+                            type="button"
+                            onClick={() => handlePreviewReviewSegment(activeReviewSegment)}
+                            className="shrink-0 rounded border border-blue-500/40 bg-blue-500/10 px-2 py-1 text-[10px] font-semibold text-blue-200 hover:border-blue-400"
+                          >
+                            Preview
+                          </button>
+                        ) : null}
+                      </div>
+                      <div className="mt-2 text-[10px] leading-4 text-gray-500">
+                        {activeReviewSegment
+                          ? `${formatTime(activeReviewSegment.startMs / 1_000)} - ${formatTime(activeReviewSegment.endMs / 1_000)} | ${activeReviewSegment.speakerRoles.join(', ') || activeReviewSegment.speakerIds.join(', ') || 'speaker evidence pending'}`
+                          : 'Run analysis to generate a reviewable semantic segment plan.'}
+                      </div>
+                      <div className="mt-2 line-clamp-3 text-[10px] leading-4 text-gray-400">
+                        {activeReviewSegment?.transcriptText || activeReviewSegment?.summary || 'Transcript and speaker evidence will appear here for manual boundary review.'}
+                      </div>
+                    </div>
+
+                    {activeReviewSegment ? (
+                      <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Real-time Correction</div>
+                            <div className="mt-1 text-[10px] leading-4 text-gray-500">
+                              Edit boundaries, transcript, speaker labels, and review notes before rendering.
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={handleApplyReviewSegmentCorrection}
+                            className="shrink-0 rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-semibold text-cyan-200 hover:border-cyan-400"
+                          >
+                            Save correction
+                          </button>
+                        </div>
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <input
+                            type="text"
+                            value={reviewCorrectionDraft.title}
+                            onChange={(event) => setReviewCorrectionDraft((draft) => ({ ...draft, title: event.target.value }))}
+                            className="col-span-2 rounded border border-[#303030] bg-[#101010] px-2 py-1.5 text-[10px] text-gray-200 outline-none focus:border-cyan-500"
+                            placeholder="Segment title"
+                          />
+                          <input
+                            type="number"
+                            value={reviewCorrectionDraft.startMs}
+                            onChange={(event) => setReviewCorrectionDraft((draft) => ({ ...draft, startMs: event.target.value }))}
+                            className="rounded border border-[#303030] bg-[#101010] px-2 py-1.5 text-[10px] text-gray-200 outline-none focus:border-cyan-500"
+                            placeholder="Start ms"
+                          />
+                          <input
+                            type="number"
+                            value={reviewCorrectionDraft.endMs}
+                            onChange={(event) => setReviewCorrectionDraft((draft) => ({ ...draft, endMs: event.target.value }))}
+                            className="rounded border border-[#303030] bg-[#101010] px-2 py-1.5 text-[10px] text-gray-200 outline-none focus:border-cyan-500"
+                            placeholder="End ms"
+                          />
+                          <input
+                            type="text"
+                            value={reviewCorrectionDraft.speakerRoles}
+                            onChange={(event) => setReviewCorrectionDraft((draft) => ({ ...draft, speakerRoles: event.target.value }))}
+                            className="col-span-2 rounded border border-[#303030] bg-[#101010] px-2 py-1.5 text-[10px] text-gray-200 outline-none focus:border-cyan-500"
+                            placeholder="Speaker labels, comma separated"
+                          />
+                          <textarea
+                            value={reviewCorrectionDraft.transcriptText}
+                            onChange={(event) => setReviewCorrectionDraft((draft) => ({ ...draft, transcriptText: event.target.value }))}
+                            className="col-span-2 min-h-16 rounded border border-[#303030] bg-[#101010] px-2 py-1.5 text-[10px] leading-4 text-gray-200 outline-none focus:border-cyan-500"
+                            placeholder="Transcript correction"
+                          />
+                          <textarea
+                            value={reviewCorrectionDraft.manualNotes}
+                            onChange={(event) => setReviewCorrectionDraft((draft) => ({ ...draft, manualNotes: event.target.value }))}
+                            className="col-span-2 min-h-12 rounded border border-[#303030] bg-[#101010] px-2 py-1.5 text-[10px] leading-4 text-gray-200 outline-none focus:border-cyan-500"
+                            placeholder="Review notes"
+                          />
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Review Queue</div>
+                          <div className="mt-1 text-[10px] leading-4 text-gray-500">
+                            Filter segments, resolve duplicates, then render only confirmed selections.
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 gap-1">
+                          <button
+                            type="button"
+                            onClick={handleSelectAllReviewSegments}
+                            className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-200 hover:border-emerald-400"
+                          >
+                            Select all publishable
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleClearReviewSegmentSelection}
+                            className="rounded border border-[#333] bg-[#101010] px-2 py-1 text-[10px] font-semibold text-gray-300 hover:border-[#444]"
+                          >
+                            Clear selection
+                          </button>
+                        </div>
+                      </div>
+                      <div className="mt-3 grid grid-cols-4 gap-1">
+                        {[
+                          { id: 'all' as const, label: 'All segments' },
+                          { id: 'selected' as const, label: 'Selected only' },
+                          { id: 'duplicates' as const, label: 'Duplicates only' },
+                          { id: 'excluded' as const, label: 'Excluded only' },
+                        ].map((filter) => (
+                          <button
+                            key={filter.id}
+                            type="button"
+                            onClick={() => setReviewVisibilityFilter(filter.id)}
+                            className={`rounded border px-1.5 py-1 text-[9px] font-semibold transition-colors ${
+                              reviewVisibilityFilter === filter.id
+                                ? 'border-blue-500/50 bg-blue-500/10 text-blue-200'
+                                : 'border-[#303030] bg-[#101010] text-gray-400 hover:border-[#444] hover:text-gray-200'
+                            }`}
+                          >
+                            {filter.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
+                      {visibleReviewSegments.length === 0 ? (
+                        <div className="rounded-lg border border-dashed border-[#303030] bg-[#141414] p-4 text-[11px] leading-5 text-gray-500">
+                          No segments match the current review filter.
+                        </div>
+                      ) : visibleReviewSegments.map((segment) => {
+                        const index = Math.max(0, reviewSegments.findIndex((candidate) => candidate.id === segment.id));
+                        const selected = selectedReviewSegmentIds.includes(segment.id) && segment.status === 'selected';
+                        const previewing = activeReviewSegment?.id === segment.id;
+                        return (
+                          <div
+                            key={segment.id}
+                            className={`rounded-lg border p-3 ${
+                              previewing
+                                ? 'border-cyan-500/50 bg-cyan-500/10'
+                                : selected
+                                ? 'border-blue-500/50 bg-blue-500/10'
+                                : segment.status === 'duplicate'
+                                  ? 'border-amber-500/30 bg-amber-500/10'
+                                  : 'border-[#252525] bg-[#141414]'
+                            }`}
+                          >
+                            <div className="flex items-start gap-2">
+                              <input
+                                type="checkbox"
+                                checked={selected}
+                                onChange={() => handleToggleReviewSegment(segment.id)}
+                                className="mt-1 h-4 w-4 accent-blue-500"
+                                aria-label={`Select review segment ${index + 1}`}
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePreviewReviewSegment(segment)}
+                                    className="truncate text-left text-[11px] font-bold text-gray-100 hover:text-blue-300"
+                                  >
+                                    {String(index + 1).padStart(2, '0')}. {segment.title}
+                                  </button>
+                                  <span className="shrink-0 rounded border border-[#333] bg-[#101010] px-1.5 py-0.5 text-[9px] font-semibold text-gray-400">
+                                    {formatTime(segment.startMs / 1_000)} - {formatTime(segment.endMs / 1_000)}
+                                  </span>
+                                </div>
+                                <div className="mt-1 line-clamp-2 text-[10px] leading-4 text-gray-500">
+                                  {segment.transcriptText || segment.summary || 'Transcript evidence retained for this segment.'}
+                                </div>
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                  {segment.speakerRoles.slice(0, 3).map((speakerRole) => (
+                                    <span key={speakerRole} className="rounded border border-[#333] bg-[#101010] px-1.5 py-0.5 text-[9px] font-semibold text-gray-400">
+                                      {speakerRole}
+                                    </span>
+                                  ))}
+                                  {segment.risks.slice(0, 3).map((risk) => (
+                                    <span key={risk} className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-amber-200">
+                                      {risk}
+                                    </span>
+                                  ))}
+                                  {segment.status === 'duplicate' ? (
+                                    <span className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-amber-200">
+                                      duplicate excluded
+                                    </span>
+                                  ) : null}
+                                  {previewing ? (
+                                    <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-cyan-200">
+                                      previewing
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <div className="mt-2 grid grid-cols-4 gap-1">
+                                  <button type="button" onClick={() => handleSplitReviewSegment(segment.id)} className="rounded border border-[#333] bg-[#101010] px-1.5 py-1 text-[9px] font-semibold text-gray-300 hover:border-blue-500/50 hover:text-blue-200">
+                                    Split
+                                  </button>
+                                  <button type="button" onClick={() => handleMergeReviewSegment(segment.id, 'previous')} className="rounded border border-[#333] bg-[#101010] px-1.5 py-1 text-[9px] font-semibold text-gray-300 hover:border-blue-500/50 hover:text-blue-200">
+                                    Merge prev
+                                  </button>
+                                  <button type="button" onClick={() => handleMergeReviewSegment(segment.id, 'next')} className="rounded border border-[#333] bg-[#101010] px-1.5 py-1 text-[9px] font-semibold text-gray-300 hover:border-blue-500/50 hover:text-blue-200">
+                                    Merge next
+                                  </button>
+                                  {segment.status === 'duplicate' || !segment.selected ? (
+                                    <button type="button" onClick={() => handleRestoreReviewSegment(segment.id)} className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-1 text-[9px] font-semibold text-emerald-200 hover:border-emerald-400">
+                                      Restore
+                                    </button>
+                                  ) : (
+                                    <button type="button" onClick={() => handleDeleteDuplicateReviewSegment(segment.id)} className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-1 text-[9px] font-semibold text-amber-200 hover:border-amber-400">
+                                      Delete dup
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <Button
+                      type="button"
+                      size="lg"
+                      className="w-full justify-center gap-2 rounded-lg bg-emerald-600 py-3 text-xs font-bold text-white hover:bg-emerald-500 disabled:bg-[#252525] disabled:text-gray-500"
+                      onClick={handleRenderSelectedReviewSegments}
+                      disabled={isRenderingReviewSelection || selectedReviewSegmentIds.length === 0}
+                    >
+                      <Scissors size={16} />
+                      {isRenderingReviewSelection ? 'Rendering selected...' : `Render selected (${selectedReviewSegmentIds.length})`}
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="mt-3 rounded-lg border border-dashed border-[#303030] bg-[#141414] p-4 text-[11px] leading-5 text-gray-500">
+                    Run Review before render to create an editable segment plan. Automatic slicing remains available through Auto render.
+                  </div>
+                )}
+              </section>
+
+              <section className="rounded-lg border border-[#262626] bg-[#101010] p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-blue-300">Smart Cut Engine</div>
+                    <div className="mt-1 text-xs leading-5 text-gray-300">Semantic boundaries first, filters second</div>
+                  </div>
+                  <span className={`rounded border px-2 py-1 text-[10px] font-bold uppercase tracking-wider ${
+                    requiresSpeakerDiarization
+                      ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+                      : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                  }`}>
+                    {requiresSpeakerDiarization ? 'Multi-speaker gate' : 'Single-speaker ready'}
+                  </span>
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {SMART_CUT_ENGINE_BADGES.map((badge) => (
+                    <span key={badge} className="rounded border border-[#303030] bg-[#151515] px-2 py-1 text-[10px] font-semibold text-gray-300">
+                      {badge}
+                    </span>
+                  ))}
+                </div>
+
+                <div className="mt-4 rounded-lg border border-[#252525] bg-[#141414] p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Scene Strategy</div>
+                      <div className="mt-1 text-[12px] font-semibold text-gray-100">{smartCutExperience.profile.title}</div>
+                    </div>
+                    <span className="rounded border border-[#333] bg-[#101010] px-2 py-1 text-[10px] font-semibold text-gray-300">
+                      {smartCutExperience.profile.primarySlicer}
+                    </span>
+                  </div>
+                  <div className="mt-2 text-[10px] leading-4 text-gray-500">{smartCutExperience.profile.strategy}</div>
+                </div>
+
+                <div className="mt-3 rounded-lg border border-[#252525] bg-[#141414] p-3">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Operator Brief</div>
+                  <div className="mt-2 space-y-1.5 text-[10px] leading-4 text-gray-400">
+                    <div><span className="font-semibold text-gray-200">Clip:</span> {smartCutExperience.publishableClipContract}</div>
+                    <div><span className="font-semibold text-gray-200">Split:</span> {smartCutExperience.qaSplitContract}</div>
+                    <div><span className="font-semibold text-gray-200">Format:</span> {smartCutExperience.formatContract}</div>
+                    <div><span className="font-semibold text-gray-200">Duration:</span> {smartCutExperience.durationContract}</div>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Evidence Gate</div>
+                    <div className="mt-1 text-[11px] font-semibold text-gray-200">
+                      {requiresSpeakerDiarization ? 'STT + speaker diarization' : 'STT + adaptive speaker evidence'}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Boundary Contract</div>
+                    <div className="mt-1 text-[11px] leading-4 text-gray-200">{smartCutExperience.profile.boundaryContract}</div>
+                  </div>
+                  <div className="rounded-lg border border-[#252525] bg-[#141414] p-3 col-span-2">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Review Contract</div>
+                    <div className="mt-1 text-[11px] leading-4 text-gray-200">{smartCutExperience.profile.reviewContract}</div>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Quality Gate</div>
+                    <div className="mt-1 text-[11px] leading-4 text-gray-200">9:16 / 1080x1920 / 30fps MP4</div>
+                    <div className="mt-1 text-[10px] leading-4 text-gray-500">{smartCutExperience.subtitleContract}</div>
+                  </div>
+                  <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Fail Closed</div>
+                    <div className="mt-1 text-[11px] leading-4 text-gray-200">{smartCutExperience.failClosedPolicy}</div>
+                  </div>
+                  <div className="rounded-lg border border-[#252525] bg-[#141414] p-3 col-span-2">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Human Review</div>
+                    <div className="mt-1 text-[11px] leading-4 text-gray-200">{smartCutExperience.reviewCheckpoint}</div>
+                    <div className="mt-1 text-[10px] leading-4 text-gray-500">{smartCutExperience.coverContract}</div>
+                  </div>
+                </div>
+
+                <div className="mt-4 space-y-2">
+                  {SMART_CUT_ENGINE_PIPELINE_STEPS.map((step, index) => (
+                    <div key={step} className="grid grid-cols-[22px_1fr] items-start gap-2">
+                      <div className="flex h-5 w-5 items-center justify-center rounded border border-[#303030] bg-[#181818] text-[10px] font-bold text-gray-400">
+                        {index + 1}
+                      </div>
+                      <div>
+                        <div className="text-[11px] font-semibold text-gray-200">{step}</div>
+                        <div className="text-[10px] leading-4 text-gray-500">
+                          {step === 'Speech-to-text evidence' ? 'Timestamped transcript is the source of truth.' : null}
+                          {step === 'Speaker diarization' ? (requiresSpeakerDiarization ? 'Interview, dialogue, and meeting modes require real speaker labels.' : 'Talking-head mode can use a rule-based single-speaker adapter.') : null}
+                          {step === 'Semantic content units' ? 'Complete logical units are built before destructive media filters.' : null}
+                          {step === 'Candidate ID review' ? 'LLM ranks stable candidate ids and content unit ids only.' : null}
+                          {step === 'Post-filter render' ? 'Denoise, silence trim, abnormal fragment removal, and repeat dedupe run after accepted boundaries.' : null}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  {engineReadinessItems.map((item) => (
+                    <div key={item.label} className="rounded border border-[#252525] bg-[#141414] px-2 py-2">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{item.label}</div>
+                      <div className="mt-1 truncate text-[11px] font-semibold text-gray-200" title={item.value}>{item.value}</div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="rounded-lg border border-[#262626] bg-[#101010] p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-blue-300">Commercial Readiness</div>
+                    <div className="mt-1 text-xs leading-5 text-gray-300">Launch gates before Smart Cut Engine execution</div>
+                  </div>
+                  <span className={`rounded border px-2 py-1 text-[10px] font-bold uppercase tracking-wider ${
+                    hasCommercialReadinessBlocker
+                      ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+                      : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                  }`}>
+                    {hasCommercialReadinessBlocker ? 'Blocked' : 'Ready'}
+                  </span>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  {commercialReadinessItems.map((item) => (
+                    <div key={item.label} className="rounded border border-[#252525] bg-[#141414] px-2 py-2">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{item.label}</div>
+                      <div className={`mt-1 text-[11px] font-semibold ${item.blocked ? 'text-amber-200' : 'text-gray-200'}`} title={item.value}>{item.value}</div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
               {/* Mode Selection */}
               <div>
                 <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-wider">
-                  切片内容场景
+                  Smart-edit scene
                 </label>
                 <div className="grid grid-cols-2 gap-2">
-                  {MODES.map((mode) => (
-                    <button
-                      key={mode}
-                      onClick={() => setSelectedMode(mode)}
-                      className={`px-2 py-2 text-[11px] font-bold rounded-lg transition-all border ${
-                        selectedMode === mode
-                          ? "bg-blue-600/20 border-blue-500 text-blue-400 shadow-[0_0_10px_rgba(59,130,246,0.15)]"
-                          : "bg-[#141414] border-[#222] text-gray-400 hover:bg-[#1A1A1A] hover:border-[#333] hover:text-gray-200"
-                      }`}
-                    >
-                      {mode}
-                    </button>
-                  ))}
+                  {MODES.map((mode) => {
+                    const modeProfile = resolveSmartCutEngineProductProfile(mode);
+                    return (
+                      <button
+                        key={mode}
+                        data-smart-cut-strategy-status={modeProfile.executionSupport.status}
+                        onClick={() => setSelectedMode(mode)}
+                        className={`px-2 py-2 text-left rounded-lg transition-all border ${
+                          selectedMode === mode
+                            ? "bg-blue-600/20 border-blue-500 text-blue-300 shadow-[0_0_10px_rgba(59,130,246,0.15)]"
+                            : "bg-[#141414] border-[#222] text-gray-400 hover:bg-[#1A1A1A] hover:border-[#333] hover:text-gray-200"
+                        }`}
+                      >
+                        <span className="block truncate text-[11px] font-bold">{formatSmartCutEngineModeLabel(mode)}</span>
+                        <span className="mt-0.5 block truncate text-[9px] font-semibold uppercase tracking-wider text-gray-500">{modeProfile.primarySlicer}</span>
+                        <span
+                          className={`mt-1 inline-flex max-w-full rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${
+                            modeProfile.executionSupport.ready
+                              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+                              : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+                          }`}
+                          title={modeProfile.executionSupport.detail}
+                        >
+                          {modeProfile.executionSupport.ready ? 'Ready' : 'Blocked'}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -1440,21 +3072,7 @@ export function SlicerPage() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <div className="flex justify-between items-end mb-1.5">
-                         <span className="text-[11px] font-medium text-gray-300">Count Mode</span>
-                      </div>
-                      <select
-                         value={sliceCountMode}
-                         onChange={e => setSliceCountMode(e.target.value as SliceCountMode)}
-                         className="w-full bg-[#141414] border border-[#222] hover:border-[#333] rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500 appearance-none transition-all cursor-pointer shadow-sm">
-                        <option value="qualityFirst">Quality First</option>
-                        <option value="coverageFirst">Coverage First</option>
-                        <option value="fixed">Fixed Count</option>
-                        <option value="auto">Auto</option>
-                      </select>
-                    </div>
+                  <div>
                     <div>
                       <div className="flex justify-between items-end mb-1.5">
                          <span className="text-[11px] font-medium text-gray-300">Continuity</span>
@@ -1469,22 +3087,65 @@ export function SlicerPage() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="relative">
-                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-500 font-medium">Clips</span>
-                      <input
-                        type="number"
-                        value={targetSliceCount}
-                        onChange={(event) =>
-                          setTargetSliceCount((currentValue) =>
-                            normalizeSlicerNumberInput(event.target.value, currentValue, 1, 20),
-                          )
-                        }
-                        className="w-full bg-[#141414] border border-[#222] rounded-lg pl-11 pr-2 py-1.5 text-xs text-white focus:border-blue-500 focus:bg-[#1A1A1A] outline-none transition-all"
-                        min={1}
-                        max={20}
-                      />
+                  <div>
+                    <div>
+                      <div className="flex justify-between items-end mb-1.5">
+                         <span className="text-[11px] font-medium text-gray-300">Segmentation mode</span>
+                      </div>
+                      <select
+                         value={segmentationDensity}
+                         onChange={e => setSegmentationDensity(e.target.value as SliceSegmentationDensity)}
+                         className="w-full bg-[#141414] border border-[#222] hover:border-[#333] rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500 appearance-none transition-all cursor-pointer shadow-sm">
+                        <option value="default">Default segmentation</option>
+                        <option value="maximize-continuity">Maximize continuous content</option>
+                      </select>
+                      <div className="mt-1 text-[10px] leading-4 text-gray-500">
+                        Merge continuous semantic units up to max duration.
+                      </div>
                     </div>
+                  </div>
+
+                  <div>
+                    <div>
+                      <div className="flex justify-between items-end mb-1.5">
+                         <span className="text-[11px] font-medium text-gray-300">Speech-to-text mode</span>
+                      </div>
+                      <select
+                         value={selectedSttWorkflowPreset?.id ?? sttPresetId}
+                         onChange={e => {
+                           const nextPreset = availableSttWorkflowPresets.find((preset) => preset.id === e.target.value);
+                           if (nextPreset && !nextPreset.selectable) {
+                             toast(nextPreset.uiDisabledReason ?? SMART_SLICE_GPU_STT_RUNTIME_REQUIRED_REASON, 'error');
+                             return;
+                           }
+                           setSttPresetId(e.target.value);
+                         }}
+                         className="w-full bg-[#141414] border border-[#222] hover:border-[#333] rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500 appearance-none transition-all cursor-pointer shadow-sm">
+                        {availableSttWorkflowPresets.map((preset) => (
+                          <option key={preset.id} value={preset.id} disabled={!preset.selectable}>{preset.uiLabel}</option>
+                        ))}
+                      </select>
+                      {selectedSttWorkflowPreset ? (
+                        <div className="mt-1 text-[10px] leading-4 text-gray-500">
+                          {selectedSttWorkflowPreset.executionProfile}
+                          {selectedSttWorkflowPreset.localWhisper
+                            ? ` / ${selectedSttWorkflowPreset.localWhisper.chunkSourceStrategy} / chunks ${selectedSttWorkflowPreset.localWhisper.chunkParallelism}x${selectedSttWorkflowPreset.localWhisper.chunkThreadCount}t`
+                            : ` / ${selectedSttWorkflowPreset.modelVendor ?? 'api'} / speaker diarization`}
+                        </div>
+                      ) : null}
+                      {selectedSttWorkflowPresetDisabledReason ? (
+                        <div className="mt-1 text-[10px] leading-4 text-amber-300">
+                          {selectedSttWorkflowPresetDisabledReason}
+                        </div>
+                      ) : selectedSttWorkflowPreset?.executionProfile === 'gpu' && speechSetupStatus?.gpu.ready ? (
+                        <div className="mt-1 text-[10px] leading-4 text-emerald-300">
+                          GPU runtime ready: {speechSetupStatus.gpu.backend ?? 'detected'}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div>
                     <div className="relative">
                       <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-500 font-medium">Ideal</span>
                       <input
@@ -1517,7 +3178,7 @@ export function SlicerPage() {
               {/* Duration Config */}
               <div>
                 <label className="block text-[11px] font-bold text-gray-500 mb-2.5 uppercase tracking-wider flex justify-between items-center">
-                  <span>片段时长控制 (秒)</span>
+                  <span>Clip duration (seconds)</span>
                   <span className="text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded text-[10px]">{minDuration}s - {maxDuration}s</span>
                 </label>
                 <div className="flex items-center gap-2">
@@ -1559,8 +3220,8 @@ export function SlicerPage() {
               <div>
                 <div className="flex items-center justify-between group">
                   <div>
-                    <div className="text-[11px] font-bold text-gray-400 group-hover:text-gray-200 transition-colors uppercase tracking-wider">自动生成中英文字幕</div>
-                    <div className="text-[10px] text-gray-600 mt-1">使用 Whisper 大模型生成高潮解说字幕</div>
+                    <div className="text-[11px] font-bold text-gray-400 group-hover:text-gray-200 transition-colors uppercase tracking-wider">Subtitles</div>
+                      <div className="text-[10px] text-gray-600 mt-1">Generate sentence-level captions from speech evidence.</div>
                   </div>
                   <button
                     type="button"
@@ -1599,8 +3260,8 @@ export function SlicerPage() {
                          </button>
                        ))}
                      </div>
-                     <span className="text-[10px] font-bold text-gray-500 mb-2 block uppercase tracking-wider">选择自动字幕样式</span>
-                     <div className="relative">
+                     <span className="text-[10px] font-bold text-gray-500 mb-2 block uppercase tracking-wider">Caption style</span>
+                      <div className="relative">
                        <select
                           value={selectedSubtitleStyle}
                           onChange={(e) => setSelectedSubtitleStyle(e.target.value)}
@@ -1623,11 +3284,11 @@ export function SlicerPage() {
 
               {/* Algorithm Selection */}
               <div>
-                <label className="block text-[11px] font-bold text-gray-500 mb-3 uppercase tracking-wider">核心切分算法</label>
+                <label className="block text-[11px] font-bold text-gray-500 mb-3 uppercase tracking-wider">Engine Review & Signals</label>
                 <div className="space-y-3">
                   <div>
                     <div className="flex justify-between items-end mb-1.5">
-                       <span className="text-[11px] font-medium text-gray-300">推理大模型 (LLM)</span>
+                       <span className="text-[11px] font-medium text-gray-300">ID-only review model</span>
                     </div>
                     <div className="relative">
                       <select
@@ -1645,38 +3306,27 @@ export function SlicerPage() {
                       </div>
                     </div>
                   </div>
-                  <div>
-                    <div className="flex justify-between items-end mb-1.5">
-                       <span className="text-[11px] font-medium text-gray-300">基础分段策略</span>
+                  <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[11px] font-semibold text-gray-300">Primary slicer</span>
+                      <span className="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-[10px] font-bold text-blue-200">{smartCutExperience.profile.primarySlicer}</span>
                     </div>
-                    <div className="relative">
-                      <select
-                         value={baseAlgorithm}
-                         onChange={e => setBaseAlgorithm(e.target.value as SliceAlgorithm)}
-                         className="w-full bg-[#141414] border border-[#222] hover:border-[#333] rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500 appearance-none transition-all cursor-pointer shadow-sm">
-                        <option value="nlp">NLP 语义智能断句</option>
-                        <option value="pause">声音停顿识别算法</option>
-                        <option value="scene">画面分镜切换识别</option>
-                      </select>
-                      <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500">
-                        <svg width="8" height="5" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
-                          <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      </div>
+                    <div className="mt-2 text-[10px] leading-4 text-gray-500">
+                      Speech-to-text creates semantic content units; the model can only rank candidate ids and referenced unit ids.
                     </div>
                   </div>
                   <div>
                     <div className="flex justify-between items-end mb-1.5">
-                       <span className="text-[11px] font-medium text-gray-300">高光提取引擎</span>
+                      <span className="text-[11px] font-medium text-gray-300">Segmentation agent</span>
                     </div>
                     <div className="relative">
                       <select
-                         value={highlightEngine}
-                         onChange={e => setHighlightEngine(e.target.value as SliceHighlightEngine)}
-                         className="w-full bg-[#141414] border border-[#222] hover:border-[#333] rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500 appearance-none transition-all cursor-pointer shadow-sm">
-                        <option value="emotion">情绪波动识别网络</option>
-                        <option value="keyword">关键词唤醒提取</option>
-                        <option value="motion">动作幅度变化提取</option>
+                        value={segmentationAgentId}
+                        onChange={(event) => setSegmentationAgentId(event.target.value as AutoCutSmartSliceSegmentationAgentId)}
+                        className="w-full bg-[#141414] border border-[#222] hover:border-[#333] rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500 appearance-none transition-all cursor-pointer shadow-sm">
+                        {AUTOCUT_SMART_SLICE_SEGMENTATION_AGENTS.map((agent) => (
+                          <option key={agent.id} value={agent.id}>{agent.label}</option>
+                        ))}
                       </select>
                       <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500">
                         <svg width="8" height="5" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1684,6 +3334,25 @@ export function SlicerPage() {
                         </svg>
                       </div>
                     </div>
+                    <div className="mt-2 rounded-lg border border-[#252525] bg-[#101010] p-3">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{selectedSegmentationAgent.id}</div>
+                      <div className="mt-1 text-[11px] leading-4 text-gray-300">{selectedSegmentationAgent.description}</div>
+                      <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap rounded border border-[#222] bg-[#080808] p-2 font-mono text-[10px] leading-4 text-gray-500">{selectedSegmentationAgent.systemPrompt}</pre>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Boundary rule</div>
+                      <div className="mt-1 text-[11px] font-semibold text-gray-200">complete semantic unit</div>
+                    </div>
+                    <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Audit trail</div>
+                      <div className="mt-1 text-[11px] font-semibold text-gray-200">contentUnitIds + speakerRoles</div>
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Cleanup policy</div>
+                    <div className="mt-1 text-[11px] leading-4 text-gray-200">{smartCutExperience.cleanupContract}</div>
                   </div>
                 </div>
               </div>
@@ -1692,7 +3361,10 @@ export function SlicerPage() {
 
               {/* AI Filters */}
               <div>
-                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-wider">AI 智能过滤</label>
+                <label className="block text-[11px] font-bold text-gray-500 mb-1 uppercase tracking-wider">Post-boundary Filter Chain</label>
+                <div className="mb-2 text-[10px] leading-4 text-gray-500">
+                  Post-filter render keeps approved semantic content units intact.
+                </div>
                 <div className="space-y-0.5">
 
                   <div className="flex items-center justify-between group p-1.5 -mx-1.5 hover:bg-[#111] rounded-lg transition-colors cursor-pointer" onClick={() => setNoiseReduction(!noiseReduction)}>
@@ -1700,9 +3372,9 @@ export function SlicerPage() {
                         <div className="w-6 h-6 rounded bg-[#1A1A1A] border border-[#222] flex items-center justify-center group-hover:border-[#333] transition-colors">
                           <Waves size={12} className="text-gray-400 group-hover:text-blue-400 transition-colors" />
                         </div>
-                        <span className="text-xs text-gray-300 font-medium">环境降噪增强</span>
+                        <span className="text-xs text-gray-300 font-medium">Denoise after cut approval</span>
                      </div>
-                     <button className={`w-7 h-4 rounded-full p-0.5 transition-colors relative focus:outline-none ${noiseReduction ? 'bg-blue-600' : 'bg-[#333]'}`}>
+                     <button className={`w-7 h-4 rounded-full p-0.5 transition-colors relative focus:outline-none ${noiseReduction ? 'bg-blue-600' : 'bg-[#333]'}`} type="button" aria-pressed={noiseReduction}>
                        <div className={`w-3 h-3 bg-white rounded-full transition-transform absolute top-0.5 shadow-sm ${noiseReduction ? 'translate-x-3' : 'translate-x-0'}`} />
                      </button>
                   </div>
@@ -1712,7 +3384,7 @@ export function SlicerPage() {
                         <div className="w-6 h-6 rounded bg-[#1A1A1A] border border-[#222] flex items-center justify-center group-hover:border-[#333] transition-colors">
                           <MicOff size={12} className="text-gray-400 group-hover:text-orange-400 transition-colors" />
                         </div>
-                        <span className="text-xs text-gray-300 font-medium">咳嗽与杂音剔除</span>
+                        <span className="text-xs text-gray-300 font-medium">Silence and abnormal fragment removal</span>
                      </div>
                      <button className={`w-7 h-4 rounded-full p-0.5 transition-colors relative focus:outline-none ${coughFilter ? 'bg-blue-600' : 'bg-[#333]'}`}>
                        <div className={`w-3 h-3 bg-white rounded-full transition-transform absolute top-0.5 shadow-sm ${coughFilter ? 'translate-x-3' : 'translate-x-0'}`} />
@@ -1724,7 +3396,7 @@ export function SlicerPage() {
                         <div className="w-6 h-6 rounded bg-[#1A1A1A] border border-[#222] flex items-center justify-center group-hover:border-[#333] transition-colors">
                           <CheckCircle2 size={12} className="text-gray-400 group-hover:text-green-400 transition-colors" />
                         </div>
-                        <span className="text-xs text-gray-300 font-medium">重复内容去重</span>
+                        <span className="text-xs text-gray-300 font-medium">Repeat dedupe inside approved units</span>
                      </div>
                      <button className={`w-7 h-4 rounded-full p-0.5 transition-colors relative focus:outline-none ${repeatFilter ? 'bg-blue-600' : 'bg-[#333]'}`}>
                        <div className={`w-3 h-3 bg-white rounded-full transition-transform absolute top-0.5 shadow-sm ${repeatFilter ? 'translate-x-3' : 'translate-x-0'}`} />
@@ -1734,21 +3406,105 @@ export function SlicerPage() {
                 </div>
               </div>
 
+              <section className="rounded-lg border border-[#252525] bg-[#101010] p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Intelligent dedup</div>
+                    <div className="mt-1 text-[10px] leading-4 text-gray-500">
+                      Call the shared video dedup component before final slice review.
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setEnableSmartDedup(!enableSmartDedup)}
+                    className={`inline-flex min-w-[58px] items-center justify-center rounded border px-2 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                      enableSmartDedup
+                        ? 'border-amber-500/40 bg-amber-500/15 text-amber-200'
+                        : 'border-[#333] bg-[#141414] text-gray-400 hover:border-[#444] hover:text-gray-200'
+                    }`}
+                    aria-pressed={enableSmartDedup}
+                  >
+                    {enableSmartDedup ? 'On' : 'Off'}
+                  </button>
+                </div>
+                {enableSmartDedup ? (
+                  <div className="mt-3">
+                    <VideoDedupWorkbench
+                      compact
+                      title="Smart Slice dedup"
+                      sourceAssetIds={fileId ? [fileId] : []}
+                      analysisDisabledReason={fileId ? undefined : 'Smart Slice will analyze the current imported source after native preparation creates runtime source evidence. Configure methods here; duplicate matches appear in the review workbench.'}
+                      initialParams={videoDedupParams}
+                      onParamsChange={setVideoDedupParams}
+                      onReportReady={setLatestVideoDedupReport}
+                    />
+                    {latestVideoDedupReport ? (
+                      <div className="mt-2 rounded border border-[#303030] bg-[#141414] px-3 py-2 text-[10px] leading-4 text-gray-400">
+                        Latest dedup report: {latestVideoDedupReport.duplicateGroupCount} groups,
+                        {' '}{latestVideoDedupReport.matchCount} matches.
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </section>
+
+              <div className="w-full h-px bg-[#222]"></div>
+
+              <section className="rounded-lg border border-[#252525] bg-[#101010] p-4">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-gray-500">Output Package</div>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <div className="rounded border border-[#252525] bg-[#151515] px-2 py-2">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Profile</div>
+                    <div className="mt-1 text-[11px] font-semibold text-gray-200">{smartCutExperience.publishProfile}</div>
+                  </div>
+                  <div className="rounded border border-[#252525] bg-[#151515] px-2 py-2">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Duration</div>
+                    <div className="mt-1 text-[11px] font-semibold text-gray-200">{smartCutExperience.durationTarget}</div>
+                  </div>
+                  <div className="rounded border border-[#252525] bg-[#151515] px-2 py-2">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Subtitle</div>
+                    <div className="mt-1 text-[11px] font-semibold text-gray-200">{smartCutExperience.subtitleOutput}</div>
+                  </div>
+                  <div className="rounded border border-[#252525] bg-[#151515] px-2 py-2">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Evidence</div>
+                    <div className="mt-1 text-[11px] font-semibold text-gray-200">audit-ready</div>
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {smartCutExperience.outputPackage.map((item) => (
+                    <span key={item} className="rounded border border-[#303030] bg-[#151515] px-2 py-1 text-[10px] font-semibold text-gray-300">
+                      {item}
+                    </span>
+                  ))}
+                </div>
+                <div className="mt-3 text-[10px] leading-4 text-gray-500">
+                  Output packages retain transcript text, contentUnitIds, speakerRoles, filter decisions, and render artifacts for review.
+                </div>
+              </section>
+
             </div>
           </div>
 
           <div className="p-5 border-t border-[#222] bg-[#0A0A0A]">
             <Button
               size="lg"
-              className="w-full flex items-center justify-center gap-2 font-bold tracking-wide bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/20 transition-all rounded-xl py-4 h-auto"
+              className="w-full flex items-center justify-center gap-2 font-bold tracking-wide bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/20 transition-all rounded-xl py-4 h-auto disabled:cursor-not-allowed disabled:bg-[#252525] disabled:text-gray-500 disabled:shadow-none"
               onClick={handleStart}
-              disabled={isProcessing}
+              disabled={isProcessing || hasCommercialReadinessBlocker}
             >
               <Scissors size={20} />
-              <span className="text-sm">{isProcessing ? "切片请求处理中..." : "开始一键智能切片"}</span>
+              <span className="text-sm">
+                {isProcessing
+                  ? "Smart Cut Engine running..."
+                  : hasVideoSource
+                    ? runMode === 'review-before-render'
+                      ? "Analyze for review"
+                      : "Run Smart Cut Engine"
+                    : "Select source video first"}
+              </span>
             </Button>
             <p className="text-center text-[10px] text-gray-600 mt-3 leading-relaxed">
-              基于 AI 行为识别引擎，自动识别精彩片段并输出
+              {hasVideoSource ? smartCutExperience.profile.title : 'Smart Cut requires a local or trusted source video before speech evidence analysis.'}
             </p>
           </div>
           </>
@@ -1764,23 +3520,23 @@ export function SlicerPage() {
                 <div className={`mt-0.5 flex h-9 w-9 items-center justify-center rounded-md border ${
                   speechSetupErrorMessage
                     ? 'border-red-500/30 bg-red-500/10 text-red-300'
-                    : isInitializingSpeechSetup
+                    : speechSetupBusy
                       ? 'border-blue-500/30 bg-blue-500/10 text-blue-300'
                       : 'border-amber-500/30 bg-amber-500/10 text-amber-300'
                 }`}>
-                  {speechSetupErrorMessage ? <AlertTriangle size={18} /> : isInitializingSpeechSetup ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
+                  {speechSetupErrorMessage ? <AlertTriangle size={18} /> : speechSetupBusy ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
                 </div>
                 <div>
-                  <h2 id="smart-slice-speech-setup-title" className="text-sm font-semibold text-gray-100">准备语音识别能力</h2>
-                  <p className="mt-1 text-xs leading-5 text-gray-400">{createSmartSliceSpeechSetupStatusText(speechSetupStatus, speechSetupErrorMessage, speechModelDownloadCompleted)}</p>
+                  <h2 id="smart-slice-speech-setup-title" className="text-sm font-semibold text-gray-100">{t('slicer.speechSetup.title')}</h2>
+                  <p className="mt-1 text-xs leading-5 text-gray-400">{createSmartSliceSpeechSetupStatusText(speechSetupStatus, speechSetupErrorMessage, t, speechModelDownloadCompleted)}</p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setSpeechSetupDialogOpen(false)}
                 className="rounded-md p-1.5 text-gray-500 transition-colors hover:bg-[#202020] hover:text-gray-200"
-                disabled={isInitializingSpeechSetup}
-                aria-label="Close speech recognition setup"
+                disabled={speechSetupBusy}
+                aria-label={t('slicer.speechSetup.action.close')}
               >
                 <XCircle size={18} />
               </button>
@@ -1789,14 +3545,14 @@ export function SlicerPage() {
             <div className="space-y-4 px-5 py-4">
               <div className="grid grid-cols-3 gap-2">
                 {[
-                  { label: '识别程序', ready: speechSetupStatus?.executable.ready, detail: formatSmartSliceSpeechSetupPath(speechSetupStatus?.executable.path || speechSetupStatus?.defaults.executablePath) || (speechSetupStatus?.executable.ready ? '已检测' : '待准备') },
-                  { label: '离线模型', ready: speechModelReadyForDisplay, detail: speechModelDownloadCompleted ? '已校验并保存' : speechModelDetailForDisplay },
-                  { label: '可用性检测', ready: speechSetupStatus?.test.ready, detail: speechSetupStatus?.test.ready ? '已通过' : speechFinalCheckNeedsAttention ? '需要处理' : '待检测' },
+                  { id: 'executable', label: t('slicer.speechSetup.checklist.executable'), ready: speechSetupStatus?.executable.ready, detail: formatSmartSliceSpeechSetupPath(speechSetupStatus?.executable.path || speechSetupStatus?.defaults.executablePath) || (speechSetupStatus?.executable.ready ? t('slicer.speechSetup.checklist.detected') : t('slicer.speechSetup.checklist.pending')) },
+                  { id: 'model', label: t('slicer.speechSetup.checklist.model'), ready: speechModelReadyForDisplay, detail: speechModelDownloadCompleted ? t('slicer.speechSetup.checklist.completed') : speechModelDetailForDisplay },
+                  { id: 'finalCheck', label: t('slicer.speechSetup.checklist.finalCheck'), ready: speechSetupStatus?.test.ready, detail: speechSetupStatus?.test.ready ? t('slicer.speechSetup.checklist.passed') : speechFinalCheckNeedsAttention ? t('slicer.speechSetup.checklist.needsAttention') : t('slicer.speechSetup.checklist.pendingCheck') },
                 ].map((item) => (
                   <div key={item.label} className="rounded-md border border-[#252525] bg-[#151515] p-3">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{item.label}</span>
-                      {item.ready ? <CheckCircle2 size={14} className="text-green-400" /> : <AlertTriangle size={14} className={speechFinalCheckNeedsAttention && item.label === '可用性检测' ? 'text-red-400' : 'text-amber-400'} />}
+                      {item.ready ? <CheckCircle2 size={14} className="text-green-400" /> : <AlertTriangle size={14} className={speechFinalCheckNeedsAttention && item.id === 'finalCheck' ? 'text-red-400' : 'text-amber-400'} />}
                     </div>
                     <div className="mt-2 truncate text-xs leading-4 text-gray-300" title={item.detail}>{item.detail}</div>
                   </div>
@@ -1806,13 +3562,13 @@ export function SlicerPage() {
               <div className="rounded-md border border-[#252525] bg-[#151515] p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-xs font-semibold text-gray-200">本机识别程序</div>
+                    <div className="text-xs font-semibold text-gray-200">{t('slicer.speechSetup.executable.title')}</div>
                     <div className="mt-1 text-[11px] text-gray-500">
-                      {speechSetupStatus?.executable.ready ? '已找到可用程序' : '正在检查程序'}
+                      {speechSetupStatus?.executable.ready ? t('slicer.speechSetup.executable.detected') : t('slicer.speechSetup.executable.checking')}
                     </div>
                   </div>
                   <div className={`text-xs font-bold ${speechSetupStatus?.executable.ready ? 'text-emerald-300' : 'text-amber-300'}`}>
-                    {speechSetupStatus?.executable.ready ? '已就绪' : '待准备'}
+                    {speechSetupStatus?.executable.ready ? t('slicer.speechSetup.executable.ready') : t('slicer.speechSetup.executable.pending')}
                   </div>
                 </div>
                 <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#252525]">
@@ -1822,15 +3578,15 @@ export function SlicerPage() {
                   />
                 </div>
                 <div className="mt-2 truncate text-[10px] text-gray-500" title={speechSetupStatus?.executable.path || speechSetupStatus?.defaults.executablePath || ''}>
-                  {formatSmartSliceSpeechSetupPath(speechSetupStatus?.executable.path || speechSetupStatus?.defaults.executablePath) || '应用会自动检测本机识别程序'}
+                  {formatSmartSliceSpeechSetupPath(speechSetupStatus?.executable.path || speechSetupStatus?.defaults.executablePath) || t('slicer.speechSetup.executable.defaultPath')}
                 </div>
               </div>
 
               <div className="rounded-md border border-[#252525] bg-[#151515] p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-xs font-semibold text-gray-200">离线识别模型</div>
-                    <div className="mt-1 text-[11px] text-gray-500">{getSmartSliceSpeechSetupProgressLabel(speechModelDownloadProgress)}</div>
+                    <div className="text-xs font-semibold text-gray-200">{t('slicer.speechSetup.model.title')}</div>
+                    <div className="mt-1 text-[11px] text-gray-500">{getSmartSliceSpeechSetupProgressLabel(speechModelDownloadProgress, t)}</div>
                   </div>
                   <div className={`text-xs font-bold ${speechModelDownloadFailed ? 'text-red-300' : speechModelDownloadCompleted ? 'text-emerald-300' : 'text-blue-300'}`}>
                     {speechModelProgressPercent}%
@@ -1843,20 +3599,20 @@ export function SlicerPage() {
                   />
                 </div>
                 <div className="mt-2 flex justify-between text-[10px] text-gray-600">
-                  <span>{speechModelDownloadCompleted ? '已完成' : speechModelDownloadFailed ? '需要重试' : speechModelDownloadActive ? '正在下载' : '等待准备'}</span>
+                  <span>{speechModelDownloadCompleted ? t('slicer.speechSetup.model.completed') : speechModelDownloadFailed ? t('slicer.speechSetup.model.retry') : speechModelDownloadActive ? t('slicer.speechSetup.model.downloading') : t('slicer.speechSetup.model.waiting')}</span>
                   <span>
                     {formatSmartSliceSpeechSetupBytes(speechModelDownloadProgress?.downloadedBytes)}
                     {speechModelDownloadProgress?.totalBytes ? ` / ${formatSmartSliceSpeechSetupBytes(speechModelDownloadProgress.totalBytes)}` : ''}
                   </span>
                 </div>
                 <div className="mt-2 truncate text-[10px] text-gray-500" title={speechModelDownloadProgress?.modelPath || speechSetupStatus?.model.path || speechSetupStatus?.defaults.modelPath || ''}>
-                  {formatSmartSliceSpeechSetupPath(speechModelDownloadProgress?.modelPath || speechSetupStatus?.model.path || speechSetupStatus?.defaults.modelPath) || '应用会自动保存离线模型'}
+                  {formatSmartSliceSpeechSetupPath(speechModelDownloadProgress?.modelPath || speechSetupStatus?.model.path || speechSetupStatus?.defaults.modelPath) || t('slicer.speechSetup.model.defaultPath')}
                 </div>
               </div>
 
               {speechSetupStatus?.diagnostics?.length ? (
                 <div className="max-h-24 overflow-y-auto rounded-md border border-[#252525] bg-[#0b0b0b] p-3 text-[11px] leading-5 text-gray-400">
-                  <div className="mb-1 font-semibold text-gray-500">详细信息</div>
+                  <div className="mb-1 font-semibold text-gray-500">{t('slicer.speechSetup.diagnostics')}</div>
                   {speechSetupStatus.diagnostics.map((diagnostic, index) => (
                     <div key={`${diagnostic}:${index}`}>{diagnostic}</div>
                   ))}
@@ -1872,16 +3628,16 @@ export function SlicerPage() {
                 onClick={() => navigate('/settings?tab=speech')}
               >
                 <ExternalLink size={14} />
-                打开语音识别设置
+                {t('slicer.speechSetup.action.openSettings')}
               </Button>
               <Button
                 type="button"
                 className="h-9 gap-2 bg-blue-600 px-3 text-xs text-white hover:bg-blue-500"
                 onClick={runSmartSliceLocalSpeechTranscriptionInitialization}
-                disabled={isInitializingSpeechSetup}
+                disabled={speechSetupBusy}
               >
-                {isInitializingSpeechSetup ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-                {isInitializingSpeechSetup ? '准备中' : '重新准备'}
+                {speechSetupBusy ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                {speechSetupBusy ? t('slicer.speechSetup.action.preparing') : t('slicer.speechSetup.action.retry')}
               </Button>
             </div>
           </div>

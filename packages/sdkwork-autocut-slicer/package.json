@@ -1,6 +1,6 @@
 {
   "name": "@sdkwork/autocut-slicer",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "type": "module",
@@ -21,6 +21,7 @@
   "dependencies": {
     "@sdkwork/autocut-commons": "workspace:*",
     "@sdkwork/autocut-services": "workspace:*",
+    "@sdkwork/autocut-smart-cut-engine": "workspace:*",
     "@sdkwork/autocut-types": "workspace:*",
     "lucide-react": "catalog:",
     "pixi.js": "catalog:",

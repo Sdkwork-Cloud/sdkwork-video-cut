@@ -7,6 +7,8 @@ import {
   Check,
   CheckCircle2,
   Clock,
+  Copy,
+  Download,
   FileText,
   Filter,
   Image,
@@ -18,23 +20,40 @@ import {
   PlayCircle,
   RefreshCcw,
   RotateCcw,
+  Scissors,
   Trash2,
   Video,
   XCircle,
 } from 'lucide-react';
-import { AUTOCUT_TASK_STATUS, AUTOCUT_TASK_TYPE, type AppTask, type TaskStatus, type TaskType } from '@sdkwork/autocut-types';
+import { AUTOCUT_TASK_STATUS, AUTOCUT_TASK_TYPE, isAutoCutTaskActiveStatus, type AppTask, type TaskStatus, type TaskType } from '@sdkwork/autocut-types';
 import {
   cancelTasks,
   confirmAutoCutAction,
   createAutoCutTaskTypeI18nKey,
   deleteTask,
   deleteTasks,
+  downloadAutoCutTaskPackage,
   formatAutoCutDateTime,
   getTasks,
+  hasAutoCutTaskPackageDownloadables,
   listenAutoCutEvent,
   retryTasks,
+  sortAutoCutRecordsByCreatedAtDesc,
 } from '@sdkwork/autocut-services';
 import { Card, useToast } from '@sdkwork/autocut-commons';
+
+function sortTaskQueueByCreatedAtDesc(tasks: readonly AppTask[]) {
+  return sortAutoCutRecordsByCreatedAtDesc([...tasks]);
+}
+
+function mergeTaskQueueUpdate(tasks: readonly AppTask[], updatedTask: AppTask) {
+  const taskIndex = tasks.findIndex((task) => task.id === updatedTask.id);
+  if (taskIndex < 0) {
+    return sortTaskQueueByCreatedAtDesc([updatedTask, ...tasks]);
+  }
+
+  return tasks.map((task, index) => (index === taskIndex ? updatedTask : task));
+}
 
 const TYPE_ICONS: Record<TaskType, React.ReactNode> = {
   [AUTOCUT_TASK_TYPE.videoSlice]: <Video size={18} className="text-blue-500" />,
@@ -44,11 +63,95 @@ const TYPE_ICONS: Record<TaskType, React.ReactNode> = {
   [AUTOCUT_TASK_TYPE.videoCompress]: <Minimize size={18} className="text-pink-500" />,
   [AUTOCUT_TASK_TYPE.videoConvert]: <RefreshCcw size={18} className="text-yellow-500" />,
   [AUTOCUT_TASK_TYPE.videoEnhance]: <Monitor size={18} className="text-cyan-500" />,
+  [AUTOCUT_TASK_TYPE.videoDedup]: <Copy size={18} className="text-amber-500" />,
   [AUTOCUT_TASK_TYPE.subtitleTranslate]: <Languages size={18} className="text-indigo-500" />,
   [AUTOCUT_TASK_TYPE.voiceTranslate]: <Mic size={18} className="text-rose-500" />,
 };
 
 type TaskTypeFilter = TaskType | 'all';
+const TASK_STATUS_FILTERS = [
+  'all',
+  AUTOCUT_TASK_STATUS.pending,
+  AUTOCUT_TASK_STATUS.processing,
+  AUTOCUT_TASK_STATUS.reviewing,
+  AUTOCUT_TASK_STATUS.completed,
+  AUTOCUT_TASK_STATUS.failed,
+  AUTOCUT_TASK_STATUS.canceled,
+  AUTOCUT_TASK_STATUS.interrupted,
+] as const;
+
+function getTaskStatusLabel(status: AppTask['status'] | 'all') {
+  switch (status) {
+    case 'all':
+      return 'All';
+    case AUTOCUT_TASK_STATUS.pending:
+      return 'Pending';
+    case AUTOCUT_TASK_STATUS.processing:
+      return 'Processing';
+    case AUTOCUT_TASK_STATUS.reviewing:
+      return 'Review Ready';
+    case AUTOCUT_TASK_STATUS.completed:
+      return 'Completed';
+    case AUTOCUT_TASK_STATUS.failed:
+      return 'Failed';
+    case AUTOCUT_TASK_STATUS.canceled:
+      return 'Canceled';
+    case AUTOCUT_TASK_STATUS.interrupted:
+      return 'Interrupted';
+    default:
+      return String(status);
+  }
+}
+
+function getTaskStatusIndicator(task: AppTask) {
+  if (task.status === AUTOCUT_TASK_STATUS.completed) {
+    return (
+      <span className="flex items-center gap-1.5 text-xs text-green-500">
+        <CheckCircle2 size={14} /> Completed
+      </span>
+    );
+  }
+  if (task.status === AUTOCUT_TASK_STATUS.processing) {
+    return (
+      <span className="flex items-center gap-1.5 text-xs text-blue-400">
+        <RefreshCcw size={14} className="animate-spin" /> Processing
+      </span>
+    );
+  }
+  if (task.status === AUTOCUT_TASK_STATUS.reviewing) {
+    return (
+      <span className="flex items-center gap-1.5 text-xs text-cyan-300">
+        <Scissors size={14} /> Review Ready
+      </span>
+    );
+  }
+  if (task.status === AUTOCUT_TASK_STATUS.pending) {
+    return (
+      <span className="flex items-center gap-1.5 text-xs text-blue-300">
+        <Clock size={14} /> Pending
+      </span>
+    );
+  }
+  if (task.status === AUTOCUT_TASK_STATUS.canceled) {
+    return (
+      <span className="flex items-center gap-1.5 text-xs text-amber-400">
+        <XCircle size={14} /> Canceled
+      </span>
+    );
+  }
+  if (task.status === AUTOCUT_TASK_STATUS.interrupted) {
+    return (
+      <span className="flex items-center gap-1.5 text-xs text-purple-400">
+        <AlertCircle size={14} /> Interrupted
+      </span>
+    );
+  }
+  return (
+    <span className="flex items-center gap-1.5 text-xs text-red-500">
+      <XCircle size={14} /> Failed
+    </span>
+  );
+}
 
 export function TasksPage() {
   const navigate = useNavigate();
@@ -58,15 +161,25 @@ export function TasksPage() {
   const [statusFilter, setStatusFilter] = useState<'all' | TaskStatus>('all');
   const [typeFilter, setTypeFilter] = useState<TaskTypeFilter>('all');
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
+  const [packagingTaskIds, setPackagingTaskIds] = useState<string[]>([]);
   const getTaskTypeLabel = (taskType: TaskType) =>
     t(createAutoCutTaskTypeI18nKey(taskType), { defaultValue: taskType });
 
   useEffect(() => {
     const fetchTasks = () => getTasks().then(setTasks);
+    const handleTaskUpdated = (updatedTask: AppTask) => {
+      setTasks((currentTasks) => mergeTaskQueueUpdate(currentTasks, updatedTask));
+    };
+    const handleTaskAdded = (addedTask: AppTask) => {
+      setTasks((currentTasks) => mergeTaskQueueUpdate(currentTasks, addedTask));
+    };
+    const handleTaskDeleted = (deletedTask: { id: string }) => {
+      setTasks((currentTasks) => currentTasks.filter((task) => task.id !== deletedTask.id));
+    };
     fetchTasks();
-    const stopTaskUpdated = listenAutoCutEvent('taskUpdated', fetchTasks);
-    const stopTaskAdded = listenAutoCutEvent('taskAdded', fetchTasks);
-    const stopTaskDeleted = listenAutoCutEvent('taskDeleted', fetchTasks);
+    const stopTaskUpdated = listenAutoCutEvent('taskUpdated', handleTaskUpdated);
+    const stopTaskAdded = listenAutoCutEvent('taskAdded', handleTaskAdded);
+    const stopTaskDeleted = listenAutoCutEvent('taskDeleted', handleTaskDeleted);
     return () => {
       stopTaskUpdated();
       stopTaskAdded();
@@ -101,6 +214,11 @@ export function TasksPage() {
     navigate(`/tasks/${taskId}`);
   };
 
+  const handleOpenReviewWorkbench = (taskId: string, event: React.MouseEvent) => {
+    event.stopPropagation();
+    navigate(`/slicer?reviewTaskId=${encodeURIComponent(taskId)}`);
+  };
+
   const availableTypes = useMemo<TaskTypeFilter[]>(() => {
     const types = new Set<TaskType>();
     tasks.forEach((task) => types.add(task.type));
@@ -117,13 +235,16 @@ export function TasksPage() {
   const selectedTasks = tasks.filter((task) => selectedTaskIds.includes(task.id));
   const allVisibleTasksSelected = visibleTaskIds.length > 0 && selectedTaskIds.filter((taskId) => visibleTaskIdSet.has(taskId)).length === visibleTaskIds.length;
   const activeSelectedTaskIds = selectedTasks
-    .filter((task) => task.status === AUTOCUT_TASK_STATUS.processing)
+    .filter((task) => isAutoCutTaskActiveStatus(task.status))
     .map((task) => task.id);
   const failedSelectedTaskIds = selectedTasks
     .filter((task) => task.status === AUTOCUT_TASK_STATUS.failed)
     .map((task) => task.id);
+  const packageableSelectedTasks = selectedTasks.filter(hasAutoCutTaskPackageDownloadables);
   const activeSelectedTaskCount = activeSelectedTaskIds.length;
   const failedSelectedTaskCount = failedSelectedTaskIds.length;
+  const packageableSelectedTaskCount = packageableSelectedTasks.length;
+  const isPackagingSelectedTasks = packageableSelectedTasks.some((task) => packagingTaskIds.includes(task.id));
 
   const handleToggleVisibleTaskSelection = (event: React.MouseEvent | React.ChangeEvent<HTMLInputElement>) => {
     event.stopPropagation();
@@ -186,6 +307,77 @@ export function TasksPage() {
     );
   };
 
+  const handleDownloadTaskPackage = async (task: AppTask, event: React.MouseEvent) => {
+    event.stopPropagation();
+    if (!hasAutoCutTaskPackageDownloadables(task) || packagingTaskIds.includes(task.id)) {
+      return;
+    }
+
+    try {
+      setPackagingTaskIds((currentIds) => [...new Set([...currentIds, task.id])]);
+      const result = await downloadAutoCutTaskPackage([task]);
+      toast(
+        result.skippedFileCount > 0
+          ? t('tasks.packageDownload.singlePartial', {
+              defaultValue: `Packaged ${result.includedFileCount} files, skipped ${result.skippedFileCount}`,
+              count: result.includedFileCount,
+              skipped: result.skippedFileCount,
+            })
+          : t('tasks.packageDownload.singleSuccess', {
+              defaultValue: `Package download started: ${result.includedFileCount} files`,
+              count: result.includedFileCount,
+            }),
+        result.includedFileCount > 0 ? 'success' : 'info',
+      );
+    } catch (error) {
+      toast(
+        error instanceof Error
+          ? error.message
+          : t('tasks.packageDownload.failed', { defaultValue: 'Package download failed' }),
+        'error',
+      );
+    } finally {
+      setPackagingTaskIds((currentIds) => currentIds.filter((taskId) => taskId !== task.id));
+    }
+  };
+
+  const handleBulkDownloadTaskPackage = async () => {
+    if (packageableSelectedTaskCount === 0) {
+      toast(t('tasks.packageDownload.noneSelected', { defaultValue: 'No completed selected tasks can be packaged' }), 'info');
+      return;
+    }
+
+    const taskIds = packageableSelectedTasks.map((task) => task.id);
+    try {
+      setPackagingTaskIds((currentIds) => [...new Set([...currentIds, ...taskIds])]);
+      const result = await downloadAutoCutTaskPackage(packageableSelectedTasks);
+      toast(
+        result.skippedFileCount > 0
+          ? t('tasks.packageDownload.bulkPartial', {
+              defaultValue: `Packaged ${result.taskCount} tasks with ${result.includedFileCount} files, skipped ${result.skippedFileCount}`,
+              count: result.taskCount,
+              files: result.includedFileCount,
+              skipped: result.skippedFileCount,
+            })
+          : t('tasks.packageDownload.bulkSuccess', {
+              defaultValue: `Package download started: ${result.taskCount} tasks, ${result.includedFileCount} files`,
+              count: result.taskCount,
+              files: result.includedFileCount,
+            }),
+        result.includedFileCount > 0 ? 'success' : 'info',
+      );
+    } catch (error) {
+      toast(
+        error instanceof Error
+          ? error.message
+          : t('tasks.packageDownload.failed', { defaultValue: 'Package download failed' }),
+        'error',
+      );
+    } finally {
+      setPackagingTaskIds((currentIds) => currentIds.filter((taskId) => !taskIds.includes(taskId)));
+    }
+  };
+
   return (
     <div className="w-full h-full min-h-0 p-4 md:p-5 flex flex-col overflow-hidden">
       <div className="w-full flex min-h-0 flex-1 flex-col gap-3">
@@ -194,7 +386,7 @@ export function TasksPage() {
             aria-label="Task status filter"
             className="flex rounded-md border border-[#333] bg-[#111] p-0.5"
           >
-            {(['all', AUTOCUT_TASK_STATUS.processing, AUTOCUT_TASK_STATUS.completed, AUTOCUT_TASK_STATUS.failed] as const).map((filter) => (
+            {TASK_STATUS_FILTERS.map((filter) => (
               <button
                 key={filter}
                 onClick={() => setStatusFilter(filter)}
@@ -204,10 +396,7 @@ export function TasksPage() {
                     : 'text-gray-500 hover:text-gray-300 transparent border border-transparent'
                 }`}
               >
-                {filter === 'all' && 'All'}
-                {filter === AUTOCUT_TASK_STATUS.processing && 'Processing'}
-                {filter === AUTOCUT_TASK_STATUS.completed && 'Completed'}
-                {filter === AUTOCUT_TASK_STATUS.failed && 'Failed'}
+                {getTaskStatusLabel(filter)}
               </button>
             ))}
           </div>
@@ -237,6 +426,7 @@ export function TasksPage() {
                 <span className="shrink-0 px-1 text-xs font-semibold text-blue-300">{selectedTaskIds.length} selected</span>
                 <span className="hidden shrink-0 text-[11px] text-gray-500 md:inline">A {activeSelectedTaskCount}</span>
                 <span className="hidden shrink-0 text-[11px] text-gray-500 md:inline">F {failedSelectedTaskCount}</span>
+                <span className="hidden shrink-0 text-[11px] text-gray-500 md:inline">D {packageableSelectedTaskCount}</span>
                 <button
                   type="button"
                   aria-label="Cancel active selected tasks"
@@ -254,6 +444,18 @@ export function TasksPage() {
                   className="inline-flex h-6 items-center gap-1 rounded border border-emerald-500/25 bg-emerald-500/10 px-2 text-[11px] font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:border-[#333] disabled:bg-[#111] disabled:text-gray-600"
                 >
                   <RotateCcw size={12} /> Retry
+                </button>
+                <button
+                  type="button"
+                  aria-label={t('tasks.packageDownload.bulkAria', { defaultValue: 'Download selected completed tasks as a ZIP package' })}
+                  onClick={handleBulkDownloadTaskPackage}
+                  disabled={packageableSelectedTaskCount === 0 || isPackagingSelectedTasks}
+                  className="inline-flex h-6 items-center gap-1 rounded border border-cyan-500/25 bg-cyan-500/10 px-2 text-[11px] font-semibold text-cyan-300 transition-colors hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:border-[#333] disabled:bg-[#111] disabled:text-gray-600"
+                >
+                  <Download size={12} />
+                  {isPackagingSelectedTasks
+                    ? t('tasks.packageDownload.packaging', { defaultValue: 'Packaging' })
+                    : t('tasks.packageDownload.download', { defaultValue: 'Download' })}
                 </button>
                 <button
                   type="button"
@@ -332,9 +534,12 @@ export function TasksPage() {
                       </label>
                       <div className="w-12 h-12 bg-[#151515] border border-[#333] rounded-xl flex items-center justify-center shadow-inner relative overflow-hidden">
                         {TYPE_ICONS[task.type] || <PlayCircle size={20} className="text-gray-500" />}
-                        {task.status === AUTOCUT_TASK_STATUS.processing && (
-                          <div className="absolute bottom-0 left-0 h-0.5 bg-blue-500" style={{ width: `${task.progress}%` }} />
-                        )}
+                      {isAutoCutTaskActiveStatus(task.status) && (
+                        <div className="absolute bottom-0 left-0 h-0.5 bg-blue-500" style={{ width: `${task.progress}%` }} />
+                      )}
+                      {task.status === AUTOCUT_TASK_STATUS.reviewing && (
+                        <div className="absolute bottom-0 left-0 h-0.5 bg-cyan-400" style={{ width: '100%' }} />
+                      )}
                       </div>
 
                       <div className="flex flex-col gap-1.5 min-w-0">
@@ -358,9 +563,11 @@ export function TasksPage() {
                     </div>
 
                     <div className="flex items-center gap-8 w-1/3 justify-end">
-                      {task.status === AUTOCUT_TASK_STATUS.processing && (
+                      {isAutoCutTaskActiveStatus(task.status) && (
                         <div className="flex flex-col gap-1.5 w-full max-w-[160px] mr-2">
-                          <span className="text-[11px] text-blue-400 truncate text-right font-medium">{task.progressMessage || 'Processing...'}</span>
+                          <span className="text-[11px] text-blue-400 truncate text-right font-medium">
+                            {task.progressMessage || (task.status === AUTOCUT_TASK_STATUS.pending ? 'Pending...' : 'Processing...')}
+                          </span>
                           <div className="flex items-center gap-2">
                             <div className="flex-1 h-1.5 bg-[#222] rounded-full overflow-hidden">
                               <div className="h-full bg-blue-500 rounded-full transition-all duration-500" style={{ width: `${task.progress}%` }} />
@@ -369,26 +576,37 @@ export function TasksPage() {
                           </div>
                         </div>
                       )}
+                      {task.status === AUTOCUT_TASK_STATUS.reviewing && (
+                        <div className="flex flex-col gap-1.5 w-full max-w-[180px] mr-2">
+                          <span className="text-[11px] text-cyan-300 truncate text-right font-medium">
+                            Segment Review Workbench is ready
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(event) => handleOpenReviewWorkbench(task.id, event)}
+                            className="ml-auto inline-flex h-7 items-center gap-1 rounded border border-cyan-500/25 bg-cyan-500/10 px-2 text-[11px] font-semibold text-cyan-200 transition-colors hover:border-cyan-400 hover:bg-cyan-500/20"
+                          >
+                            <Scissors size={12} /> Review segments
+                          </button>
+                        </div>
+                      )}
 
                       <div className="w-24 flex justify-end">
-                        {task.status === AUTOCUT_TASK_STATUS.completed && (
-                          <span className="flex items-center gap-1.5 text-xs text-green-500">
-                            <CheckCircle2 size={14} /> Completed
-                          </span>
-                        )}
-                        {task.status === AUTOCUT_TASK_STATUS.processing && (
-                          <span className="flex items-center gap-1.5 text-xs text-blue-400">
-                            <RefreshCcw size={14} className="animate-spin" /> Processing
-                          </span>
-                        )}
-                        {task.status === AUTOCUT_TASK_STATUS.failed && (
-                          <span className="flex items-center gap-1.5 text-xs text-red-500">
-                            <XCircle size={14} /> Failed
-                          </span>
-                        )}
+                        {getTaskStatusIndicator(task)}
                       </div>
 
                       <div className="flex items-center gap-1">
+                        {hasAutoCutTaskPackageDownloadables(task) && (
+                          <button
+                            className="w-8 h-8 rounded-full flex items-center justify-center text-cyan-400 hover:bg-cyan-500/10 transition-colors disabled:cursor-not-allowed disabled:text-gray-600 disabled:hover:bg-transparent"
+                            onClick={(event) => void handleDownloadTaskPackage(task, event)}
+                            disabled={packagingTaskIds.includes(task.id)}
+                            title={t('tasks.packageDownload.rowTitle', { defaultValue: 'Download package' })}
+                            aria-label={t('tasks.packageDownload.rowAria', { taskName: task.name, defaultValue: `Download ${task.name} as a ZIP package` })}
+                          >
+                            <Download size={16} />
+                          </button>
+                        )}
                         <button
                           className="w-8 h-8 rounded-full flex items-center justify-center text-red-500 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 transition-all"
                           onClick={(event) => handleDelete(task.id, event)}

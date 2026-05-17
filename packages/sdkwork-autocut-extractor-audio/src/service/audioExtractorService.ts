@@ -3,8 +3,10 @@ import {
   addAsset,
   addMessage,
   addTask,
+  assertAutoCutMediaHasAudioStream,
   assertAutoCutNativeArtifactInsideTaskOutputDir,
   createAutoCutId,
+  createAutoCutTaskId,
   createAutoCutTaskName,
   createAutoCutTimestamp,
   failAutoCutProcessingTask,
@@ -23,7 +25,7 @@ function resolveDesktopSourcePath(file: File | null | undefined) {
 function createAudioExtractionTask(params: AudioExtractionParams): AppTask {
   const createdAt = createAutoCutTimestamp();
   return {
-    id: createAutoCutId('newTask'),
+    id: createAutoCutTaskId('audio'),
     name: createAutoCutTaskName({ file: params.file, fallbackSourceName: `source-audio.${params.format}`, createdAt }),
     type: AUTOCUT_TASK_TYPE.audioExtraction,
     status: AUTOCUT_TASK_STATUS.pending,
@@ -94,6 +96,7 @@ export async function processAudioExtraction(params: AudioExtractionParams) {
         sourcePath: desktopSourcePath,
         ...(outputRootDir ? { outputRootDir } : {}),
       });
+      assertAutoCutMediaHasAudioStream(importedMedia, 'audio extraction');
       await updateTask(newTask.id, {
         status: AUTOCUT_TASK_STATUS.processing,
         progress: 60,
@@ -102,6 +105,8 @@ export async function processAudioExtraction(params: AudioExtractionParams) {
       const extractedAudio = await nativeHostClient.extractAudio({
         assetUuid: importedMedia.assetUuid,
         outputFormat: params.format,
+        outputQuality: params.quality,
+        outputChannel: params.channel,
         ...(outputRootDir ? { outputRootDir } : {}),
       });
       assertAutoCutNativeArtifactInsideTaskOutputDir(extractedAudio, 'audio extraction output');

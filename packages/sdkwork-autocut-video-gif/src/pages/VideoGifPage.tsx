@@ -1,13 +1,13 @@
 import { processVideoGif } from '../service/videoGifService';
 import { useState, useEffect } from 'react';
-import { Card, Button, FileUpload, TaskFailureState } from '@sdkwork/autocut-commons';
+import { Card, Button, FileUpload, TaskFailureState, useAutoCutCommonLabels, useToast } from '@sdkwork/autocut-commons';
 
 import { Upload, Settings, Play, Image as ImageIcon, Activity, Download } from 'lucide-react';
-import { useToast } from '@sdkwork/autocut-commons';
 import { downloadAutoCutUrl, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic, selectAutoCutTrustedLocalMediaFile, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
 import { AUTOCUT_TASK_STATUS, isAutoCutTaskActiveStatus, type AppTask } from '@sdkwork/autocut-types';
 
 export function VideoGifPage() {
+  const commonLabels = useAutoCutCommonLabels();
   const [file, setFile] = useState<File | null>(null);
   const [fps, setFps] = useState('15');
   const [resolution, setResolution] = useState('480p');
@@ -85,6 +85,8 @@ export function VideoGifPage() {
                 file={file}
                 onChange={setFile}
                 accept="video/*"
+                labels={commonLabels.fileUpload}
+                requiredStreams={{ video: true }}
                 trustedFileSourceSelector={() => selectAutoCutTrustedLocalMediaFile(['video'])}
               />
             </Card>
@@ -185,6 +187,7 @@ export function VideoGifPage() {
                     errorMessage={activeTask.errorMessage}
                     onCopyErrorMessage={writeAutoCutClipboardText}
                     onRetry={handleProcess}
+                    labels={commonLabels.taskFailure}
                   />
                ) : activeTask?.status === AUTOCUT_TASK_STATUS.completed && activeTask.gifUrl ? (
                   <Card className="p-10 flex flex-col items-center justify-center border-[#222] bg-[#111]">

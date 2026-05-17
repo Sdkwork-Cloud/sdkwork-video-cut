@@ -1,13 +1,13 @@
 import { processAudioExtraction } from '../service/audioExtractorService';
 import { useState, useEffect } from 'react';
 import { Music, Download, PlayCircle, Waves, Activity } from 'lucide-react';
-import { FileUpload, Button, TaskFailureState } from '@sdkwork/autocut-commons';
-import { useToast } from '@sdkwork/autocut-commons';
+import { FileUpload, Button, TaskFailureState, useAutoCutCommonLabels, useToast } from '@sdkwork/autocut-commons';
 import { downloadAutoCutUrl, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent, selectAutoCutTrustedLocalMediaFile, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
 import { AUTOCUT_TASK_STATUS, isAutoCutTaskActiveStatus, type AppTask } from '@sdkwork/autocut-types';
 
 export function AudioExtractorPage() {
   const { toast } = useToast();
+  const commonLabels = useAutoCutCommonLabels();
   const [file, setFile] = useState<File | null>(null);
   const [format, setFormat] = useState('mp3');
   const [quality, setQuality] = useState('320');
@@ -80,9 +80,11 @@ export function AudioExtractorPage() {
             <FileUpload
               file={file}
               onChange={setFile}
-              accept="video/*"
+              accept="audio/*,video/*"
               maxSizeMB={500}
-              trustedFileSourceSelector={() => selectAutoCutTrustedLocalMediaFile(['video'])}
+              labels={commonLabels.fileUpload}
+              requiredStreams={{ audio: true }}
+              trustedFileSourceSelector={() => selectAutoCutTrustedLocalMediaFile(['audio', 'video'])}
             />
           </div>
 
@@ -217,6 +219,7 @@ export function AudioExtractorPage() {
               errorMessage={activeTask.errorMessage}
               onCopyErrorMessage={writeAutoCutClipboardText}
               onRetry={handleStartProcess}
+              labels={commonLabels.taskFailure}
             />
           )}
         </div>

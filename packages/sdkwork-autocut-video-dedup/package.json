@@ -1,0 +1,27 @@
+{
+  "name": "@sdkwork/autocut-video-dedup",
+  "version": "0.1.6",
+  "license": "SEE LICENSE IN LICENSE",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "module": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@sdkwork/autocut-commons": "workspace:*",
+    "@sdkwork/autocut-services": "workspace:*",
+    "@sdkwork/autocut-types": "workspace:*",
+    "react": "catalog:"
+  }
+}

@@ -1,13 +1,13 @@
 import { processVideoEnhance } from '../service/videoEnhanceService';
 import { useState, useEffect } from 'react';
-import { Card, Button, FileUpload, TaskFailureState } from '@sdkwork/autocut-commons';
+import { Card, Button, FileUpload, TaskFailureState, useAutoCutCommonLabels, useToast } from '@sdkwork/autocut-commons';
 
 import { Upload, Settings, Play, Monitor, Activity, Download, CheckCircle2 } from 'lucide-react';
-import { useToast } from '@sdkwork/autocut-commons';
 import { downloadAutoCutUrl, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic, selectAutoCutTrustedLocalMediaFile, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
 import { AUTOCUT_TASK_STATUS, isAutoCutTaskActiveStatus, type AppTask } from '@sdkwork/autocut-types';
 
 export function VideoEnhancePage() {
+  const commonLabels = useAutoCutCommonLabels();
   const [file, setFile] = useState<File | null>(null);
   const [targetResolution, setTargetResolution] = useState('1080p');
   const [enhanceModel, setEnhanceModel] = useState('anime');
@@ -85,6 +85,8 @@ export function VideoEnhancePage() {
                 file={file}
                 onChange={setFile}
                 accept="video/*"
+                labels={commonLabels.fileUpload}
+                requiredStreams={{ video: true }}
                 trustedFileSourceSelector={() => selectAutoCutTrustedLocalMediaFile(['video'])}
               />
             </Card>
@@ -178,6 +180,7 @@ export function VideoEnhancePage() {
                     errorMessage={activeTask.errorMessage}
                     onCopyErrorMessage={writeAutoCutClipboardText}
                     onRetry={handleProcess}
+                    labels={commonLabels.taskFailure}
                   />
                ) : activeTask?.status === AUTOCUT_TASK_STATUS.completed && activeTask.videoUrl ? (
                   <Card className="flex flex-col items-center justify-center border-[#222] bg-[#111] overflow-hidden">

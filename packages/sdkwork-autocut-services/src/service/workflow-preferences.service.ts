@@ -4,16 +4,24 @@ import type {
   AutoCutWorkflowPreferences,
   SliceAlgorithm,
   SliceContinuityLevel,
-  SliceCountMode,
   SliceHighlightEngine,
+  SliceSegmentationDensity,
   SliceSubtitleMode,
   SliceTargetAspectRatio,
   SliceTargetPlatform,
   SliceVideoObjectFit,
+  VideoDedupActionMode,
+  VideoDedupMode,
+  VideoDedupSensitivity,
+  VideoDedupStrategyId,
 } from '@sdkwork/autocut-types';
 import {
+  AUTOCUT_DEFAULT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESET_ID,
+  AUTOCUT_DEFAULT_SMART_SLICE_SEGMENTATION_AGENT_ID,
   AUTOCUT_MODEL_VENDOR_PRESETS,
+  AUTOCUT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESETS,
   AUTOCUT_SPEECH_TRANSCRIPTION_LANGUAGE_OPTIONS,
+  AUTOCUT_SMART_SLICE_SEGMENTATION_AGENT_IDS,
 } from '@sdkwork/autocut-types';
 import { dispatchAutoCutEvent } from './events.service';
 import { createAutoCutTimestamp } from './identity.service';
@@ -30,11 +38,40 @@ const VIDEO_SLICE_TARGET_PLATFORMS = new Set<SliceTargetPlatform>([
 ]);
 const VIDEO_SLICE_TARGET_ASPECT_RATIOS = new Set<SliceTargetAspectRatio>(['auto', '16:9', '9:16', '1:1', '4:3']);
 const VIDEO_SLICE_OBJECT_FITS = new Set<SliceVideoObjectFit>(['contain', 'cover']);
-const VIDEO_SLICE_COUNT_MODES = new Set<SliceCountMode>(['auto', 'fixed', 'qualityFirst', 'coverageFirst']);
 const VIDEO_SLICE_CONTINUITY_LEVELS = new Set<SliceContinuityLevel>(['standard', 'strict']);
+const VIDEO_SLICE_SEGMENTATION_DENSITIES = new Set<SliceSegmentationDensity>(['default', 'maximize-continuity']);
 const VIDEO_SLICE_ALGORITHMS = new Set<SliceAlgorithm>(['nlp', 'pause', 'scene']);
 const VIDEO_SLICE_HIGHLIGHT_ENGINES = new Set<SliceHighlightEngine>(['emotion', 'keyword', 'motion']);
 const VIDEO_SLICE_SUBTITLE_MODES = new Set<SliceSubtitleMode>(['none', 'srt', 'burned', 'both']);
+const VIDEO_SLICE_SEGMENTATION_AGENTS = new Set(AUTOCUT_SMART_SLICE_SEGMENTATION_AGENT_IDS);
+const VIDEO_SLICE_STT_PRESETS = new Set(
+  AUTOCUT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESETS
+    .filter((preset) => preset.available)
+    .map((preset) => preset.id),
+);
+const VIDEO_DEDUP_MODES = new Set<VideoDedupMode>([
+  'quick-scan',
+  'standard',
+  'deep-audit',
+  'publish-risk',
+  'slice-result-dedup',
+  'library-monitor',
+]);
+const VIDEO_DEDUP_SENSITIVITIES = new Set<VideoDedupSensitivity>(['low', 'balanced', 'high', 'forensic']);
+const VIDEO_DEDUP_ACTION_MODES = new Set<VideoDedupActionMode>([
+  'report-only',
+  'review-before-action',
+  'archive-duplicates',
+]);
+const VIDEO_DEDUP_STRATEGIES = new Set<VideoDedupStrategyId>([
+  'exact-file-hash',
+  'container-normalized',
+  'visual-fingerprint',
+  'temporal-video-copy',
+  'audio-fingerprint',
+  'transcript-semantic',
+  'template-reuse',
+]);
 
 const INITIAL_WORKFLOW_PREFERENCES: AutoCutWorkflowPreferences = {
   videoSlice: {
@@ -42,19 +79,31 @@ const INITIAL_WORKFLOW_PREFERENCES: AutoCutWorkflowPreferences = {
     targetPlatform: 'douyin',
     targetAspectRatio: 'auto',
     videoObjectFit: 'contain',
-    sliceCountMode: 'qualityFirst',
-    targetSliceCount: 5,
     idealDuration: 45,
     continuityLevel: 'standard',
+    segmentationDensity: 'default',
+    sttPresetId: AUTOCUT_DEFAULT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESET_ID,
     customKeywordsInput: '',
     minDuration: 15,
     maxDuration: 90,
     llmModel: AUTOCUT_MODEL_VENDOR_PRESETS.deepseek.defaultModel,
+    segmentationAgentId: AUTOCUT_DEFAULT_SMART_SLICE_SEGMENTATION_AGENT_ID,
     baseAlgorithm: 'nlp',
     highlightEngine: 'emotion',
     enableNoiseReduction: true,
     enableCoughFilter: true,
     enableRepeatFilter: false,
+    enableSmartDedup: false,
+    videoDedupParams: {
+      mode: 'slice-result-dedup',
+      sourceAssetIds: [],
+      strategies: ['exact-file-hash', 'visual-fingerprint', 'audio-fingerprint', 'transcript-semantic', 'template-reuse'],
+      sensitivity: 'balanced',
+      minMatchDurationMs: 8_000,
+      ignoreIntroOutro: true,
+      introOutroMaxDurationMs: 12_000,
+      actionMode: 'review-before-action',
+    },
     enableSubtitles: false,
     subtitleMode: 'both',
     subtitleStyleId: 'tiktok',
@@ -135,17 +184,6 @@ function normalizeAutoCutVideoSlicePreferences(
       VIDEO_SLICE_OBJECT_FITS,
       INITIAL_WORKFLOW_PREFERENCES.videoSlice.videoObjectFit,
     ),
-    sliceCountMode: normalizeEnum(
-      preferences?.sliceCountMode,
-      VIDEO_SLICE_COUNT_MODES,
-      INITIAL_WORKFLOW_PREFERENCES.videoSlice.sliceCountMode,
-    ),
-    targetSliceCount: clampInteger(
-      preferences?.targetSliceCount,
-      1,
-      20,
-      INITIAL_WORKFLOW_PREFERENCES.videoSlice.targetSliceCount,
-    ),
     idealDuration: clampInteger(
       preferences?.idealDuration,
       minDuration,
@@ -157,10 +195,25 @@ function normalizeAutoCutVideoSlicePreferences(
       VIDEO_SLICE_CONTINUITY_LEVELS,
       INITIAL_WORKFLOW_PREFERENCES.videoSlice.continuityLevel,
     ),
+    segmentationDensity: normalizeEnum(
+      preferences?.segmentationDensity,
+      VIDEO_SLICE_SEGMENTATION_DENSITIES,
+      INITIAL_WORKFLOW_PREFERENCES.videoSlice.segmentationDensity,
+    ),
+    sttPresetId: normalizeEnum(
+      preferences?.sttPresetId,
+      VIDEO_SLICE_STT_PRESETS,
+      INITIAL_WORKFLOW_PREFERENCES.videoSlice.sttPresetId,
+    ),
     customKeywordsInput: normalizeOptionalText(preferences?.customKeywordsInput) ?? '',
     minDuration,
     maxDuration,
     llmModel: normalizeOptionalText(preferences?.llmModel) ?? INITIAL_WORKFLOW_PREFERENCES.videoSlice.llmModel,
+    segmentationAgentId: normalizeEnum(
+      preferences?.segmentationAgentId,
+      VIDEO_SLICE_SEGMENTATION_AGENTS,
+      INITIAL_WORKFLOW_PREFERENCES.videoSlice.segmentationAgentId,
+    ),
     baseAlgorithm: normalizeEnum(
       preferences?.baseAlgorithm,
       VIDEO_SLICE_ALGORITHMS,
@@ -183,6 +236,11 @@ function normalizeAutoCutVideoSlicePreferences(
       preferences?.enableRepeatFilter,
       INITIAL_WORKFLOW_PREFERENCES.videoSlice.enableRepeatFilter,
     ),
+    enableSmartDedup: normalizeBoolean(
+      preferences?.enableSmartDedup,
+      INITIAL_WORKFLOW_PREFERENCES.videoSlice.enableSmartDedup,
+    ),
+    videoDedupParams: normalizeAutoCutVideoDedupParams(preferences?.videoDedupParams),
     enableSubtitles: normalizeBoolean(
       preferences?.enableSubtitles,
       INITIAL_WORKFLOW_PREFERENCES.videoSlice.enableSubtitles,
@@ -204,6 +262,39 @@ function normalizeAutoCutTextExtractionPreferences(
     ),
     filterWords: normalizeBoolean(preferences?.filterWords, INITIAL_WORKFLOW_PREFERENCES.textExtraction.filterWords),
   };
+}
+
+function normalizeAutoCutVideoDedupParams(
+  params: Partial<AutoCutVideoSlicePreferences['videoDedupParams']> | undefined,
+): AutoCutVideoSlicePreferences['videoDedupParams'] {
+  const defaults = INITIAL_WORKFLOW_PREFERENCES.videoSlice.videoDedupParams;
+  const strategies = Array.isArray(params?.strategies)
+    ? params.strategies.filter((strategy): strategy is VideoDedupStrategyId =>
+      VIDEO_DEDUP_STRATEGIES.has(strategy as VideoDedupStrategyId))
+    : defaults.strategies;
+  const normalized = {
+    mode: normalizeEnum(params?.mode, VIDEO_DEDUP_MODES, defaults.mode),
+    sourceAssetIds: Array.isArray(params?.sourceAssetIds)
+      ? params.sourceAssetIds.map((assetId) => normalizeOptionalText(assetId)).filter((assetId): assetId is string => Boolean(assetId))
+      : [...defaults.sourceAssetIds],
+    strategies: strategies.length ? strategies : [...defaults.strategies],
+    sensitivity: normalizeEnum(params?.sensitivity, VIDEO_DEDUP_SENSITIVITIES, defaults.sensitivity),
+    minMatchDurationMs: clampInteger(params?.minMatchDurationMs, 1_000, 600_000, defaults.minMatchDurationMs),
+    ignoreIntroOutro: normalizeBoolean(params?.ignoreIntroOutro, defaults.ignoreIntroOutro),
+    introOutroMaxDurationMs: clampInteger(params?.introOutroMaxDurationMs, 0, 120_000, defaults.introOutroMaxDurationMs),
+    actionMode: normalizeEnum(params?.actionMode, VIDEO_DEDUP_ACTION_MODES, defaults.actionMode),
+  };
+
+  if (Array.isArray(params?.referenceAssetIds)) {
+    return {
+      ...normalized,
+      referenceAssetIds: params.referenceAssetIds
+        .map((assetId) => normalizeOptionalText(assetId))
+        .filter((assetId): assetId is string => Boolean(assetId)),
+    };
+  }
+
+  return normalized;
 }
 
 function normalizeVideoSliceSubtitleMode(value: unknown): SliceSubtitleMode {

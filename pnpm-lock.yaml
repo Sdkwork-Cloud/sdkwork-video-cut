@@ -123,12 +123,21 @@ importers:
 
   packages/sdkwork-autocut-commons:
     dependencies:
+      '@sdkwork/autocut-services':
+        specifier: workspace:*
+        version: link:../sdkwork-autocut-services
+      '@sdkwork/autocut-types':
+        specifier: workspace:*
+        version: link:../sdkwork-autocut-types
       lucide-react:
         specifier: 'catalog:'
         version: 0.546.0(react@19.2.5)
       react:
         specifier: 'catalog:'
         version: 19.2.5
+      react-i18next:
+        specifier: 'catalog:'
+        version: 17.0.6(i18next@26.0.9(typescript@5.8.3))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@5.8.3)
 
   packages/sdkwork-autocut-core:
     dependencies:
@@ -195,6 +204,9 @@ importers:
       '@sdkwork/autocut-video-convert':
         specifier: workspace:*
         version: link:../sdkwork-autocut-video-convert
+      '@sdkwork/autocut-video-dedup':
+        specifier: workspace:*
+        version: link:../sdkwork-autocut-video-dedup
       '@sdkwork/autocut-video-enhance':
         specifier: workspace:*
         version: link:../sdkwork-autocut-video-enhance
@@ -385,6 +397,9 @@ importers:
       '@sdkwork/autocut-services':
         specifier: workspace:*
         version: link:../sdkwork-autocut-services
+      '@sdkwork/autocut-smart-cut-engine':
+        specifier: workspace:*
+        version: link:../sdkwork-autocut-smart-cut-engine
       '@sdkwork/autocut-types':
         specifier: workspace:*
         version: link:../sdkwork-autocut-types
@@ -534,6 +549,21 @@ importers:
       react-router-dom:
         specifier: 'catalog:'
         version: 7.14.2(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+
+  packages/sdkwork-autocut-video-dedup:
+    dependencies:
+      '@sdkwork/autocut-commons':
+        specifier: workspace:*
+        version: link:../sdkwork-autocut-commons
+      '@sdkwork/autocut-services':
+        specifier: workspace:*
+        version: link:../sdkwork-autocut-services
+      '@sdkwork/autocut-types':
+        specifier: workspace:*
+        version: link:../sdkwork-autocut-types
+      react:
+        specifier: 'catalog:'
+        version: 19.2.5
 
   packages/sdkwork-autocut-video-gif:
     dependencies:

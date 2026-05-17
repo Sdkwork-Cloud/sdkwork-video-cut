@@ -1,9 +1,8 @@
 import { processVideoCompress } from '../service/videoCompressService';
 import { useState, useEffect } from 'react';
-import { Card, Button, FileUpload, TaskFailureState } from '@sdkwork/autocut-commons';
+import { Card, Button, FileUpload, TaskFailureState, useAutoCutCommonLabels, useToast } from '@sdkwork/autocut-commons';
 
 import { Upload, Settings, Play, Minimize2, Activity, ArrowRight, Download, Zap } from 'lucide-react';
-import { useToast } from '@sdkwork/autocut-commons';
 import { downloadAutoCutUrl, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent, openAutoCutPreviewUrl, reportAutoCutDiagnostic, selectAutoCutTrustedLocalMediaFile, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
 import { AUTOCUT_TASK_STATUS, isAutoCutTaskActiveStatus, type AppTask } from '@sdkwork/autocut-types';
 
@@ -17,6 +16,7 @@ function formatBytes(bytes: number, decimals = 2) {
 }
 
 export function VideoCompressPage() {
+  const commonLabels = useAutoCutCommonLabels();
   const [file, setFile] = useState<File | null>(null);
   const [compressionMode, setCompressionMode] = useState('balanced');
   const { toast } = useToast();
@@ -94,6 +94,8 @@ export function VideoCompressPage() {
                 onChange={setFile}
                 accept="video/*"
                 maxSizeMB={5000}
+                labels={commonLabels.fileUpload}
+                requiredStreams={{ video: true }}
                 trustedFileSourceSelector={() => selectAutoCutTrustedLocalMediaFile(['video'])}
               />
             </Card>
@@ -182,6 +184,7 @@ export function VideoCompressPage() {
                    errorMessage={activeTask.errorMessage}
                    onCopyErrorMessage={writeAutoCutClipboardText}
                    onRetry={handleProcess}
+                   labels={commonLabels.taskFailure}
                  />
                ) : activeTask?.status === AUTOCUT_TASK_STATUS.completed && activeTask.fileSizeStats && activeTask.videoUrl ? (
                  <Card className="p-10 flex flex-col items-center justify-center border-[#222] bg-[#111]">

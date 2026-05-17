@@ -1,13 +1,13 @@
 import { processVideoConvert } from '../service/videoConvertService';
 import { useState, useEffect } from 'react';
-import { Card, Button, FileUpload, TaskFailureState } from '@sdkwork/autocut-commons';
+import { Card, Button, FileUpload, TaskFailureState, useAutoCutCommonLabels, useToast } from '@sdkwork/autocut-commons';
 
 import { Upload, Settings, Play, RefreshCcw, Activity, Download, CheckCircle2 } from 'lucide-react';
-import { useToast } from '@sdkwork/autocut-commons';
 import { downloadAutoCutUrl, getAutoCutProcessingTaskErrorTaskId, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic, selectAutoCutTrustedLocalMediaFile, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
 import { AUTOCUT_TASK_STATUS, isAutoCutTaskActiveStatus, type AppTask } from '@sdkwork/autocut-types';
 
 export function VideoConvertPage() {
+  const commonLabels = useAutoCutCommonLabels();
   const [file, setFile] = useState<File | null>(null);
   const [targetFormat, setTargetFormat] = useState('MP4');
   const { toast } = useToast();
@@ -85,6 +85,8 @@ export function VideoConvertPage() {
                 onChange={setFile}
                 accept="video/*"
                 maxSizeMB={5000}
+                labels={commonLabels.fileUpload}
+                requiredStreams={{ video: true }}
                 trustedFileSourceSelector={() => selectAutoCutTrustedLocalMediaFile(['video'])}
               />
             </Card>
@@ -161,6 +163,7 @@ export function VideoConvertPage() {
                     errorMessage={activeTask.errorMessage}
                     onCopyErrorMessage={writeAutoCutClipboardText}
                     onRetry={handleProcess}
+                    labels={commonLabels.taskFailure}
                   />
                ) : activeTask?.status === AUTOCUT_TASK_STATUS.completed && activeTask.videoUrl ? (
                   <Card className="flex flex-col items-center justify-center border-[#222] bg-[#111] overflow-hidden">

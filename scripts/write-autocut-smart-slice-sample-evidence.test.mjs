@@ -93,11 +93,46 @@ assert.equal(result.report.readiness.smartSliceTaskReady, true);
 assert.equal(result.report.readiness.smartSliceQualityReady, true);
 assert.equal(result.report.readiness.smartSliceMediaArtifactsReady, true);
 assert.equal(result.report.task.resultCount, 2);
+assert.equal(result.report.task.reviewWarnings.length, 1);
+assert.equal(result.report.task.reviewWarnings[0].code, 'connector-repaired');
+assert.deepEqual(result.report.task.reviewWarnings[0].sliceIndexes, [1]);
+assert.equal(result.report.quality.reviewWarnings.length, 1);
+assert.equal(result.report.quality.reviewWarnings[0].code, 'connector-repaired');
+assert.equal(result.report.quality.summary.reviewWarningSlices, 1);
+assert.equal(result.report.quality.summary.reviewWarningCount, 1);
 assert.equal(result.report.ffmpeg.commands.length, 5);
 assert.equal(fs.existsSync(result.plan.taskPath), true);
 assert.equal(fs.existsSync(result.plan.qualityEvidencePath), true);
 assert.equal(fs.existsSync(result.plan.mediaArtifactsEvidencePath), true);
 assert.equal(fs.existsSync(result.outputPath), true);
+const generatedTask = JSON.parse(fs.readFileSync(result.plan.taskPath, 'utf8'));
+assert.equal(generatedTask.sliceResults[0].audioCleanupProfile, 'smart-slice-speech-denoise-v1');
+assert.equal(generatedTask.sliceResults[0].noiseReductionApplied, true);
+assert.equal(generatedTask.sliceResults[0].boundaryDecisionSource, 'combined');
+assert.equal(generatedTask.sliceResults[0].audioActivityStartMs, 200);
+assert.equal(generatedTask.sliceResults[0].audioActivityEndMs, 41700);
+assert.equal(generatedTask.sliceResults[0].audioActivityConfidence, 0.92);
+assert.equal(
+  generatedTask.sliceResults[0].audioActivityAnalysisFilter,
+  'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+);
+assert.equal(generatedTask.sliceResults[0].leadingSilenceMs, 200);
+assert.equal(generatedTask.sliceResults[0].trailingSilenceMs, 250);
+assert.equal(generatedTask.sliceResults[0].tailTreatment, 'none');
+assert.equal(generatedTask.sliceResults[1].audioCleanupProfile, 'smart-slice-speech-denoise-v1');
+assert.equal(generatedTask.sliceResults[1].noiseReductionApplied, true);
+assert.equal(generatedTask.sliceResults[1].boundaryDecisionSource, 'combined');
+assert.equal(generatedTask.sliceResults[1].audioActivityStartMs, 44200);
+assert.equal(generatedTask.sliceResults[1].audioActivityEndMs, 79750);
+assert.equal(generatedTask.sliceResults[1].audioActivityConfidence, 0.91);
+assert.equal(
+  generatedTask.sliceResults[1].audioActivityAnalysisFilter,
+  'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+);
+assert.equal(generatedTask.sliceResults[1].leadingSilenceMs, 200);
+assert.equal(generatedTask.sliceResults[1].trailingSilenceMs, 250);
+assert.equal(generatedTask.sliceResults[1].tailTreatment, 'none');
+assert.deepEqual(generatedTask.sliceResults[1].risks, ['connector-repaired']);
 assert.equal(
   formatAutoCutSmartSliceSampleEvidenceMessage(result),
   `ok - autocut smart slice sample evidence ${result.outputPath} slices=2 ready=true`,

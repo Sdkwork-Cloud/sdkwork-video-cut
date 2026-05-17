@@ -73,6 +73,18 @@ function createReadyTaskEvidence() {
         sourceEndMs: 41850,
         speechStartMs: 320,
         speechEndMs: 41600,
+        audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+        noiseReductionApplied: true,
+        boundaryDecisionSource: 'combined',
+        audioActivityStartMs: 320,
+        audioActivityEndMs: 41600,
+        audioActivityConfidence: 0.94,
+        audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+        leadingSilenceMs: 200,
+        trailingSilenceMs: 250,
+        leadingSilenceTrimMs: 0,
+        trailingSilenceTrimMs: 0,
+        tailTreatment: 'none',
         transcriptText: createTranscriptSegments().map((segment) => segment.text).join(' '),
         transcriptSegments: createTranscriptSegments(),
         transcriptSegmentCount: 4,
@@ -102,13 +114,136 @@ assert.equal(readyReport.ready, true);
 assert.equal(readyReport.blockers.length, 0);
 assert.equal(readyReport.summary.totalSlices, 1);
 assert.equal(readyReport.summary.transcriptReadySlices, 1);
+assert.equal(readyReport.summary.audioCleanupReadySlices, 1);
 assert.equal(readyReport.summary.continuityReadySlices, 1);
+assert.equal(readyReport.summary.reviewWarningSlices, 0);
+assert.equal(readyReport.summary.reviewWarningCount, 0);
+assert.deepEqual(readyReport.reviewWarnings, []);
 assert.equal(readyReport.slices[0].transcriptSegmentCount, 4);
 assert.equal(readyReport.slices[0].transcriptStructuredSegmentCount, 4);
+assert.equal(readyReport.slices[0].audioCleanup.audioCleanupProfile, 'smart-slice-speech-denoise-v1');
+assert.equal(readyReport.slices[0].gates.audioCleanupReady, true);
 assert.equal(
   formatAutoCutSmartSliceTaskEvidenceValidationMessage(readyReport),
   `ok - autocut smart slice task evidence ${readyTaskPath} slices=1 blockers=0`,
 );
+
+const correctedTranscriptRoot = tempRoot('autocut-smart-slice-task-evidence-corrected-transcript');
+const correctedTranscriptTask = createReadyTaskEvidence();
+correctedTranscriptTask.sliceResults[0] = {
+  ...correctedTranscriptTask.sliceResults[0],
+  transcriptCorrection: {
+    source: 'task-detail',
+    correctedAt: '2026-05-06T00:02:30.000Z',
+    originalTranscriptText: 'Start with the result. Then explain why the audience should care.',
+    correctionCount: 2,
+  },
+};
+const correctedTranscriptTaskPath = writeTaskEvidence(correctedTranscriptRoot, correctedTranscriptTask);
+const correctedTranscriptReport = createAutoCutSmartSliceTaskEvidenceValidationReport({
+  rootDir: correctedTranscriptRoot,
+  taskPath: correctedTranscriptTaskPath,
+});
+
+assert.equal(correctedTranscriptReport.ready, true);
+assert.equal(correctedTranscriptReport.blockers.length, 0);
+assert.equal(correctedTranscriptReport.slices[0].transcriptCorrection.source, 'task-detail');
+assert.equal(correctedTranscriptReport.slices[0].gates.transcriptCorrectionAuditReady, true);
+
+const reviewRiskRoot = tempRoot('autocut-smart-slice-task-evidence-review-risks');
+const reviewRiskTask = createReadyTaskEvidence();
+reviewRiskTask.sliceResults[0] = {
+  ...reviewRiskTask.sliceResults[0],
+  risks: [
+    'audio-boundary-refined',
+    'excess-leading-silence-trimmed',
+    'llm-timing-without-transcript',
+    'timing-metadata-repaired',
+    'transcript-overlap-repaired',
+    'audio-transcript-boundary-conflict',
+    'trailing-connector-extended',
+  ],
+  publishabilityIssues: ['low-transcript-coverage'],
+  platformReadinessIssues: ['platform-hook-not-strong'],
+  sentenceBoundaryIssues: ['sentence-leading-connector-unrepaired', 'sentence-clean-ending'],
+};
+const reviewRiskTaskPath = writeTaskEvidence(reviewRiskRoot, reviewRiskTask);
+const reviewRiskReport = createAutoCutSmartSliceTaskEvidenceValidationReport({
+  rootDir: reviewRiskRoot,
+  taskPath: reviewRiskTaskPath,
+});
+
+assert.equal(reviewRiskReport.ready, true);
+assert.equal(reviewRiskReport.blockers.length, 0);
+assert.equal(reviewRiskReport.summary.reviewWarningSlices, 1);
+assert.equal(reviewRiskReport.summary.reviewWarningCount, 10);
+assert.deepEqual(
+  reviewRiskReport.reviewWarnings.map((warning) => warning.code),
+  [
+    'audio-boundary-refined',
+    'excess-leading-silence-trimmed',
+    'llm-timing-without-transcript',
+    'timing-metadata-repaired',
+    'transcript-overlap-repaired',
+    'audio-transcript-boundary-conflict',
+    'trailing-connector-extended',
+    'low-transcript-coverage',
+    'platform-hook-not-strong',
+    'sentence-leading-connector-unrepaired',
+  ],
+);
+assert.equal(reviewRiskReport.reviewWarnings[0].severity, 'review');
+assert.deepEqual(reviewRiskReport.reviewWarnings[0].sliceIndexes, [0]);
+assert.equal(reviewRiskReport.reviewWarnings[0].title, 'Audio boundary refined');
+assert.match(reviewRiskReport.reviewWarnings[0].message, /Denoised audio/i);
+assert.match(reviewRiskReport.reviewWarnings[0].remediation, /Review/i);
+
+const invalidTranscriptCorrectionRoot = tempRoot('autocut-smart-slice-task-evidence-invalid-transcript-correction');
+const invalidTranscriptCorrectionTask = createReadyTaskEvidence();
+invalidTranscriptCorrectionTask.sliceResults[0] = {
+  ...invalidTranscriptCorrectionTask.sliceResults[0],
+  transcriptCorrection: {
+    source: 'unknown-ui',
+    correctedAt: 'not-a-date',
+    originalTranscriptText: '',
+    correctionCount: 0,
+  },
+};
+const invalidTranscriptCorrectionTaskPath = writeTaskEvidence(
+  invalidTranscriptCorrectionRoot,
+  invalidTranscriptCorrectionTask,
+);
+const invalidTranscriptCorrectionReport = createAutoCutSmartSliceTaskEvidenceValidationReport({
+  rootDir: invalidTranscriptCorrectionRoot,
+  taskPath: invalidTranscriptCorrectionTaskPath,
+});
+
+assert.equal(invalidTranscriptCorrectionReport.ready, false);
+assert.equal(invalidTranscriptCorrectionReport.slices[0].gates.transcriptCorrectionAuditReady, false);
+assert.deepEqual(
+  invalidTranscriptCorrectionReport.blockers.map((blocker) => blocker.code),
+  ['SMART_SLICE_TASK_TRANSCRIPT_CORRECTION_AUDIT_INVALID'],
+);
+
+const audioRefinedRoot = tempRoot('autocut-smart-slice-task-evidence-audio-refined-covered');
+const audioRefinedTask = createReadyTaskEvidence();
+audioRefinedTask.sliceResults[0] = {
+  ...audioRefinedTask.sliceResults[0],
+  sourceStartMs: 230,
+  sourceEndMs: 41750,
+  speechStartMs: 430,
+  speechEndMs: 41500,
+};
+const audioRefinedTaskPath = writeTaskEvidence(audioRefinedRoot, audioRefinedTask);
+const audioRefinedReport = createAutoCutSmartSliceTaskEvidenceValidationReport({
+  rootDir: audioRefinedRoot,
+  taskPath: audioRefinedTaskPath,
+});
+
+assert.equal(audioRefinedReport.ready, true);
+assert.equal(audioRefinedReport.blockers.length, 0);
+assert.equal(audioRefinedReport.slices[0].gates.transcriptReady, true);
+assert.equal(audioRefinedReport.slices[0].gates.transcriptSpeechBoundaryMatches, true);
 
 const pendingRoot = tempRoot('autocut-smart-slice-task-evidence-pending');
 const pendingTask = createReadyTaskEvidence();
@@ -149,6 +284,7 @@ assert.deepEqual(
     'SMART_SLICE_TASK_TRANSCRIPT_MISSING',
     'SMART_SLICE_TASK_CONTINUITY_INCOMPLETE',
     'SMART_SLICE_TASK_SOURCE_RANGE_INVALID',
+    'SMART_SLICE_TASK_AUDIO_CLEANUP_INCOMPLETE',
   ],
 );
 
@@ -223,7 +359,7 @@ const speechBoundaryMismatchRoot = tempRoot('autocut-smart-slice-task-evidence-s
 const speechBoundaryMismatchTask = createReadyTaskEvidence();
 speechBoundaryMismatchTask.sliceResults[0] = {
   ...speechBoundaryMismatchTask.sliceResults[0],
-  speechStartMs: 520,
+  speechStartMs: 150,
 };
 const speechBoundaryMismatchTaskPath = writeTaskEvidence(speechBoundaryMismatchRoot, speechBoundaryMismatchTask);
 const speechBoundaryMismatchReport = createAutoCutSmartSliceTaskEvidenceValidationReport({
@@ -235,10 +371,7 @@ assert.equal(speechBoundaryMismatchReport.ready, false);
 assert.equal(speechBoundaryMismatchReport.slices[0].gates.transcriptSpeechBoundaryMatches, false);
 assert.deepEqual(
   speechBoundaryMismatchReport.blockers.map((blocker) => blocker.code),
-  [
-    'SMART_SLICE_TASK_TRANSCRIPT_MISSING',
-    'SMART_SLICE_TASK_EXCESSIVE_SILENCE_BOUNDARY',
-  ],
+  ['SMART_SLICE_TASK_TRANSCRIPT_MISSING'],
 );
 
 const missingArtifactRoot = tempRoot('autocut-smart-slice-task-evidence-missing-artifact');
@@ -280,6 +413,94 @@ assert.deepEqual(
   ['SMART_SLICE_TASK_RENDER_DURATION_MISMATCH'],
 );
 
+const missingAudioCleanupRoot = tempRoot('autocut-smart-slice-task-evidence-missing-audio-cleanup');
+const missingAudioCleanupTask = createReadyTaskEvidence();
+missingAudioCleanupTask.sliceResults[0] = {
+  ...missingAudioCleanupTask.sliceResults[0],
+  audioCleanupProfile: undefined,
+  noiseReductionApplied: false,
+  boundaryDecisionSource: undefined,
+  audioActivityStartMs: undefined,
+  audioActivityEndMs: undefined,
+  audioActivityConfidence: 0.2,
+  audioActivityAnalysisFilter: undefined,
+  leadingSilenceTrimMs: undefined,
+  trailingSilenceTrimMs: undefined,
+  tailTreatment: undefined,
+};
+const missingAudioCleanupTaskPath = writeTaskEvidence(missingAudioCleanupRoot, missingAudioCleanupTask);
+const missingAudioCleanupReport = createAutoCutSmartSliceTaskEvidenceValidationReport({
+  rootDir: missingAudioCleanupRoot,
+  taskPath: missingAudioCleanupTaskPath,
+});
+
+assert.equal(missingAudioCleanupReport.ready, false);
+assert.equal(missingAudioCleanupReport.slices[0].gates.audioCleanupReady, false);
+assert.deepEqual(
+  missingAudioCleanupReport.blockers.map((blocker) => blocker.code),
+  ['SMART_SLICE_TASK_AUDIO_CLEANUP_INCOMPLETE'],
+);
+
+const weakAudioActivityRoot = tempRoot('autocut-smart-slice-task-evidence-weak-audio-activity');
+const weakAudioActivityTask = createReadyTaskEvidence();
+weakAudioActivityTask.sliceResults[0] = {
+  ...weakAudioActivityTask.sliceResults[0],
+  audioActivityConfidence: 0.55,
+  audioActivityAnalysisFilter: 'silencedetect=noise=-35dB:d=0.08',
+};
+const weakAudioActivityTaskPath = writeTaskEvidence(weakAudioActivityRoot, weakAudioActivityTask);
+const weakAudioActivityReport = createAutoCutSmartSliceTaskEvidenceValidationReport({
+  rootDir: weakAudioActivityRoot,
+  taskPath: weakAudioActivityTaskPath,
+});
+
+assert.equal(weakAudioActivityReport.ready, false);
+assert.equal(weakAudioActivityReport.slices[0].gates.audioCleanupReady, false);
+assert.deepEqual(
+  weakAudioActivityReport.blockers.map((blocker) => blocker.code),
+  ['SMART_SLICE_TASK_AUDIO_CLEANUP_INCOMPLETE'],
+);
+
+const missingAudioActivityRangeRoot = tempRoot('autocut-smart-slice-task-evidence-missing-audio-activity-range');
+const missingAudioActivityRangeTask = createReadyTaskEvidence();
+missingAudioActivityRangeTask.sliceResults[0] = {
+  ...missingAudioActivityRangeTask.sliceResults[0],
+  audioActivityStartMs: undefined,
+  audioActivityEndMs: undefined,
+};
+const missingAudioActivityRangeTaskPath = writeTaskEvidence(missingAudioActivityRangeRoot, missingAudioActivityRangeTask);
+const missingAudioActivityRangeReport = createAutoCutSmartSliceTaskEvidenceValidationReport({
+  rootDir: missingAudioActivityRangeRoot,
+  taskPath: missingAudioActivityRangeTaskPath,
+});
+
+assert.equal(missingAudioActivityRangeReport.ready, false);
+assert.equal(missingAudioActivityRangeReport.slices[0].gates.audioActivityRangeReady, false);
+assert.deepEqual(
+  missingAudioActivityRangeReport.blockers.map((blocker) => blocker.code),
+  ['SMART_SLICE_TASK_AUDIO_CLEANUP_INCOMPLETE'],
+);
+
+const missingRawSilenceEvidenceRoot = tempRoot('autocut-smart-slice-task-evidence-missing-raw-silence');
+const missingRawSilenceEvidenceTask = createReadyTaskEvidence();
+missingRawSilenceEvidenceTask.sliceResults[0] = {
+  ...missingRawSilenceEvidenceTask.sliceResults[0],
+  leadingSilenceMs: undefined,
+  trailingSilenceMs: undefined,
+};
+const missingRawSilenceEvidenceTaskPath = writeTaskEvidence(missingRawSilenceEvidenceRoot, missingRawSilenceEvidenceTask);
+const missingRawSilenceEvidenceReport = createAutoCutSmartSliceTaskEvidenceValidationReport({
+  rootDir: missingRawSilenceEvidenceRoot,
+  taskPath: missingRawSilenceEvidenceTaskPath,
+});
+
+assert.equal(missingRawSilenceEvidenceReport.ready, false);
+assert.equal(missingRawSilenceEvidenceReport.slices[0].gates.audioCleanupReady, false);
+assert.deepEqual(
+  missingRawSilenceEvidenceReport.blockers.map((blocker) => blocker.code),
+  ['SMART_SLICE_TASK_AUDIO_CLEANUP_INCOMPLETE'],
+);
+
 const excessiveSilenceRoot = tempRoot('autocut-smart-slice-task-evidence-excessive-silence');
 const excessiveSilenceTask = createReadyTaskEvidence();
 excessiveSilenceTask.sliceResults[0] = {
@@ -299,10 +520,7 @@ assert.equal(excessiveSilenceReport.ready, false);
 assert.equal(excessiveSilenceReport.slices[0].gates.silenceBoundaryReady, false);
 assert.deepEqual(
   excessiveSilenceReport.blockers.map((blocker) => blocker.code),
-  [
-    'SMART_SLICE_TASK_TRANSCRIPT_MISSING',
-    'SMART_SLICE_TASK_EXCESSIVE_SILENCE_BOUNDARY',
-  ],
+  ['SMART_SLICE_TASK_EXCESSIVE_SILENCE_BOUNDARY'],
 );
 
 const unsupportedRoot = tempRoot('autocut-smart-slice-task-evidence-unsupported');

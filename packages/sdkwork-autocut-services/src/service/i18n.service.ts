@@ -40,12 +40,16 @@ export function normalizeAutoCutLocale(locale: string | null | undefined): AutoC
 
 export function initializeAutoCutI18n(locale: string | null | undefined = AUTOCUT_I18N_DEFAULT_LOCALE): i18n {
   const language = normalizeAutoCutLocale(locale);
-  activeAutoCutLocale = language;
   if (autocutI18n.isInitialized) {
-    void autocutI18n.changeLanguage(language);
+    const currentLanguage = normalizeAutoCutLocale(autocutI18n.language ?? activeAutoCutLocale);
+    activeAutoCutLocale = language;
+    if (currentLanguage !== language) {
+      void autocutI18n.changeLanguage(language);
+    }
     return autocutI18n;
   }
 
+  activeAutoCutLocale = language;
   void autocutI18n.init({
     resources: AUTOCUT_I18N_RESOURCES,
     lng: language,
@@ -62,6 +66,18 @@ export function initializeAutoCutI18n(locale: string | null | undefined = AUTOCU
 
 export function getAutoCutI18n(): i18n {
   return initializeAutoCutI18n(activeAutoCutLocale);
+}
+
+export function getActiveAutoCutLocale(): AutoCutLocale {
+  return normalizeAutoCutLocale(getAutoCutI18n().language ?? activeAutoCutLocale);
+}
+
+export function listenAutoCutI18nLanguageChanged(listener: () => void) {
+  const i18n = getAutoCutI18n();
+  i18n.on('languageChanged', listener);
+  return () => {
+    i18n.off('languageChanged', listener);
+  };
 }
 
 export function createAutoCutTaskTypeI18nKey(taskType: TaskType) {

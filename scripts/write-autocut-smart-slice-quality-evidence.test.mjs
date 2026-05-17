@@ -62,6 +62,18 @@ function createReadyTask() {
         sourceEndMs: 40250,
         speechStartMs: 200,
         speechEndMs: 40000,
+        audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+        noiseReductionApplied: true,
+        boundaryDecisionSource: 'combined',
+        audioActivityStartMs: 200,
+        audioActivityEndMs: 40000,
+        audioActivityConfidence: 0.94,
+        audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+        leadingSilenceMs: 200,
+        trailingSilenceMs: 250,
+        leadingSilenceTrimMs: 0,
+        trailingSilenceTrimMs: 0,
+        tailTreatment: 'none',
         transcriptText: [
           'Why retention drops.',
           'Because the opening hides the pain.',
@@ -98,6 +110,18 @@ function createReadyTask() {
         sourceEndMs: 74250,
         speechStartMs: 44200,
         speechEndMs: 74000,
+        audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+        noiseReductionApplied: true,
+        boundaryDecisionSource: 'combined',
+        audioActivityStartMs: 44200,
+        audioActivityEndMs: 74000,
+        audioActivityConfidence: 0.93,
+        audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+        leadingSilenceMs: 200,
+        trailingSilenceMs: 250,
+        leadingSilenceTrimMs: 0,
+        trailingSilenceTrimMs: 0,
+        tailTreatment: 'fade-out',
         transcriptText: [
           'The second short keeps the setup.',
           'It protects the transition.',
@@ -135,12 +159,141 @@ assert.equal(readyEvidence.slices[0].qualityGates.publishabilityReady, true);
 assert.equal(readyEvidence.slices[0].qualityGates.speechContinuityReady, true);
 assert.equal(readyEvidence.slices[0].qualityGates.transcriptReady, true);
 assert.equal(readyEvidence.slices[0].qualityGates.platformReady, true);
+assert.equal(readyEvidence.slices[0].qualityGates.audioCleanupReady, true);
+assert.equal(readyEvidence.slices[0].audioCleanup.audioCleanupProfile, 'smart-slice-speech-denoise-v1');
 assert.equal(readyEvidence.slices[0].transcript.transcriptStructuredSegmentCount, 4);
+assert.equal(readyEvidence.summary.correctedTranscriptSlices, 0);
+assert.equal(readyEvidence.summary.reviewWarningSlices, 0);
+assert.equal(readyEvidence.summary.reviewWarningCount, 0);
+assert.deepEqual(readyEvidence.reviewWarnings, []);
 assert.equal(readyEvidence.blockers.length, 0);
 assert.equal(
   formatAutoCutSmartSliceQualityEvidenceMessage({ outputPath: readyTaskPath, evidence: readyEvidence }),
   `ok - autocut smart slice quality evidence ${readyTaskPath} slices=2 ready=true blockers=0`,
 );
+
+const correctedTranscriptRoot = tempRoot('autocut-smart-slice-quality-corrected-transcript');
+const correctedTranscriptTask = createReadyTask();
+correctedTranscriptTask.sliceResults[0] = {
+  ...correctedTranscriptTask.sliceResults[0],
+  transcriptCorrection: {
+    source: 'task-detail',
+    correctedAt: '2026-05-06T00:02:30.000Z',
+    originalTranscriptText: 'Why retention drop. Because opening hides pain.',
+    correctionCount: 2,
+  },
+};
+const correctedTranscriptTaskPath = writeTaskFixture(correctedTranscriptRoot, correctedTranscriptTask);
+const correctedTranscriptEvidence = createAutoCutSmartSliceQualityEvidence({
+  rootDir: correctedTranscriptRoot,
+  taskPath: correctedTranscriptTaskPath,
+  generatedAt: '2026-05-06T00:00:00.000Z',
+});
+
+assert.equal(correctedTranscriptEvidence.readiness.smartSliceQualityReady, true);
+assert.equal(correctedTranscriptEvidence.summary.correctedTranscriptSlices, 1);
+assert.equal(correctedTranscriptEvidence.slices[0].transcriptCorrection.source, 'task-detail');
+assert.equal(correctedTranscriptEvidence.slices[0].qualityGates.transcriptCorrectionAuditReady, true);
+assert.equal(correctedTranscriptEvidence.blockers.length, 0);
+
+const reviewRiskRoot = tempRoot('autocut-smart-slice-quality-review-risks');
+const reviewRiskTask = createReadyTask();
+reviewRiskTask.sliceResults[0] = {
+  ...reviewRiskTask.sliceResults[0],
+  risks: [
+    'short-transcript-window',
+    'missing-content-hook',
+    'missing-content-setup',
+    'missing-content-conflict',
+    'missing-content-payoff',
+    'transcript-internal-repeat',
+    'connector-repaired',
+  ],
+  publishabilityIssues: ['weak-speech-continuity'],
+  platformReadinessIssues: ['platform-duration-too-long'],
+  sentenceBoundaryIssues: ['sentence-open-ending-unrepaired', 'sentence-clean-start'],
+};
+const reviewRiskTaskPath = writeTaskFixture(reviewRiskRoot, reviewRiskTask);
+const reviewRiskEvidence = createAutoCutSmartSliceQualityEvidence({
+  rootDir: reviewRiskRoot,
+  taskPath: reviewRiskTaskPath,
+  generatedAt: '2026-05-06T00:00:00.000Z',
+});
+
+assert.equal(reviewRiskEvidence.readiness.smartSliceQualityReady, true);
+assert.equal(reviewRiskEvidence.blockers.length, 0);
+assert.equal(reviewRiskEvidence.summary.reviewWarningSlices, 1);
+assert.equal(reviewRiskEvidence.summary.reviewWarningCount, 10);
+assert.deepEqual(
+  reviewRiskEvidence.reviewWarnings.map((warning) => warning.code),
+  [
+    'short-transcript-window',
+    'missing-content-hook',
+    'missing-content-setup',
+    'missing-content-conflict',
+    'missing-content-payoff',
+    'transcript-internal-repeat',
+    'connector-repaired',
+    'weak-speech-continuity',
+    'platform-duration-too-long',
+    'sentence-open-ending-unrepaired',
+  ],
+);
+assert.equal(reviewRiskEvidence.reviewWarnings[0].severity, 'review');
+assert.deepEqual(reviewRiskEvidence.reviewWarnings[0].sliceIndexes, [0]);
+assert.equal(reviewRiskEvidence.reviewWarnings[0].title, 'Short transcript window');
+assert.match(reviewRiskEvidence.reviewWarnings[0].message, /transcript-backed speech window/i);
+assert.match(reviewRiskEvidence.reviewWarnings[0].remediation, /Review/i);
+
+const invalidTranscriptCorrectionRoot = tempRoot('autocut-smart-slice-quality-invalid-transcript-correction');
+const invalidTranscriptCorrectionTask = createReadyTask();
+invalidTranscriptCorrectionTask.sliceResults[0] = {
+  ...invalidTranscriptCorrectionTask.sliceResults[0],
+  transcriptCorrection: {
+    source: 'unknown-ui',
+    correctedAt: 'not-a-date',
+    originalTranscriptText: '',
+    correctionCount: 0,
+  },
+};
+const invalidTranscriptCorrectionTaskPath = writeTaskFixture(
+  invalidTranscriptCorrectionRoot,
+  invalidTranscriptCorrectionTask,
+);
+const invalidTranscriptCorrectionEvidence = createAutoCutSmartSliceQualityEvidence({
+  rootDir: invalidTranscriptCorrectionRoot,
+  taskPath: invalidTranscriptCorrectionTaskPath,
+  generatedAt: '2026-05-06T00:00:00.000Z',
+});
+
+assert.equal(invalidTranscriptCorrectionEvidence.readiness.smartSliceQualityReady, false);
+assert.equal(invalidTranscriptCorrectionEvidence.slices[0].qualityGates.transcriptCorrectionAuditReady, false);
+assert.deepEqual(
+  invalidTranscriptCorrectionEvidence.blockers.map((blocker) => blocker.code),
+  ['SMART_SLICE_TRANSCRIPT_CORRECTION_AUDIT_INVALID'],
+);
+
+const audioRefinedRoot = tempRoot('autocut-smart-slice-quality-audio-refined-covered');
+const audioRefinedTask = createReadyTask();
+audioRefinedTask.sliceResults[0] = {
+  ...audioRefinedTask.sliceResults[0],
+  duration: 39.8,
+  sourceStartMs: 200,
+  sourceEndMs: 40000,
+  speechStartMs: 400,
+  speechEndMs: 39750,
+};
+const audioRefinedTaskPath = writeTaskFixture(audioRefinedRoot, audioRefinedTask);
+const audioRefinedEvidence = createAutoCutSmartSliceQualityEvidence({
+  rootDir: audioRefinedRoot,
+  taskPath: audioRefinedTaskPath,
+  generatedAt: '2026-05-06T00:00:00.000Z',
+});
+
+assert.equal(audioRefinedEvidence.readiness.smartSliceQualityReady, true);
+assert.equal(audioRefinedEvidence.blockers.length, 0);
+assert.equal(audioRefinedEvidence.slices[0].qualityGates.transcriptReady, true);
+assert.equal(audioRefinedEvidence.slices[0].transcript.transcriptSpeechBoundaryMatches, true);
 
 const blockedRoot = tempRoot('autocut-smart-slice-quality-blocked');
 const blockedTask = createReadyTask();
@@ -165,6 +318,18 @@ blockedTask.sliceResults = [
     sourceEndMs: 11000,
     speechStartMs: 1000,
     speechEndMs: 11000,
+    audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+    noiseReductionApplied: true,
+    boundaryDecisionSource: 'combined',
+    audioActivityStartMs: 1000,
+    audioActivityEndMs: 11000,
+    audioActivityConfidence: 0.94,
+    audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+    leadingSilenceMs: 0,
+    trailingSilenceMs: 0,
+    leadingSilenceTrimMs: 0,
+    trailingSilenceTrimMs: 0,
+    tailTreatment: 'none',
     transcriptText: '',
     publishabilityIssues: ['weak-speech-continuity'],
     platformReadinessIssues: ['platform-duration-too-short'],
@@ -286,7 +451,7 @@ const speechBoundaryMismatchRoot = tempRoot('autocut-smart-slice-quality-speech-
 const speechBoundaryMismatchTask = createReadyTask();
 speechBoundaryMismatchTask.sliceResults[0] = {
   ...speechBoundaryMismatchTask.sliceResults[0],
-  speechEndMs: 41600,
+  speechStartMs: 100,
 };
 const speechBoundaryMismatchTaskPath = writeTaskFixture(speechBoundaryMismatchRoot, speechBoundaryMismatchTask);
 const speechBoundaryMismatchEvidence = createAutoCutSmartSliceQualityEvidence({
@@ -328,8 +493,87 @@ assert.deepEqual(
   excessiveSilenceEvidence.blockers.map((blocker) => blocker.code),
   [
     'SMART_SLICE_READY_RATIO_TOO_LOW',
-    'SMART_SLICE_TRANSCRIPT_CONTINUITY_TOO_LOW',
     'SMART_SLICE_EXCESSIVE_SILENCE_BOUNDARY',
+  ],
+);
+
+const missingAudioCleanupRoot = tempRoot('autocut-smart-slice-quality-missing-audio-cleanup');
+const missingAudioCleanupTask = createReadyTask();
+missingAudioCleanupTask.sliceResults[0] = {
+  ...missingAudioCleanupTask.sliceResults[0],
+  audioCleanupProfile: undefined,
+  noiseReductionApplied: false,
+  boundaryDecisionSource: undefined,
+  audioActivityStartMs: undefined,
+  audioActivityEndMs: undefined,
+  audioActivityConfidence: 0.55,
+  audioActivityAnalysisFilter: 'silencedetect=noise=-35dB:d=0.08',
+  leadingSilenceTrimMs: undefined,
+  trailingSilenceTrimMs: undefined,
+  tailTreatment: undefined,
+};
+const missingAudioCleanupTaskPath = writeTaskFixture(missingAudioCleanupRoot, missingAudioCleanupTask);
+const missingAudioCleanupEvidence = createAutoCutSmartSliceQualityEvidence({
+  rootDir: missingAudioCleanupRoot,
+  taskPath: missingAudioCleanupTaskPath,
+  generatedAt: '2026-05-06T00:00:00.000Z',
+});
+
+assert.equal(missingAudioCleanupEvidence.readiness.smartSliceQualityReady, false);
+assert.equal(missingAudioCleanupEvidence.slices[0].qualityGates.audioCleanupReady, false);
+assert.deepEqual(
+  missingAudioCleanupEvidence.blockers.map((blocker) => blocker.code),
+  [
+    'SMART_SLICE_READY_RATIO_TOO_LOW',
+    'SMART_SLICE_AUDIO_CLEANUP_INCOMPLETE',
+  ],
+);
+
+const missingAudioActivityRangeRoot = tempRoot('autocut-smart-slice-quality-missing-audio-activity-range');
+const missingAudioActivityRangeTask = createReadyTask();
+missingAudioActivityRangeTask.sliceResults[0] = {
+  ...missingAudioActivityRangeTask.sliceResults[0],
+  audioActivityStartMs: undefined,
+  audioActivityEndMs: undefined,
+};
+const missingAudioActivityRangeTaskPath = writeTaskFixture(missingAudioActivityRangeRoot, missingAudioActivityRangeTask);
+const missingAudioActivityRangeEvidence = createAutoCutSmartSliceQualityEvidence({
+  rootDir: missingAudioActivityRangeRoot,
+  taskPath: missingAudioActivityRangeTaskPath,
+  generatedAt: '2026-05-06T00:00:00.000Z',
+});
+
+assert.equal(missingAudioActivityRangeEvidence.readiness.smartSliceQualityReady, false);
+assert.equal(missingAudioActivityRangeEvidence.slices[0].qualityGates.audioActivityRangeReady, false);
+assert.deepEqual(
+  missingAudioActivityRangeEvidence.blockers.map((blocker) => blocker.code),
+  [
+    'SMART_SLICE_READY_RATIO_TOO_LOW',
+    'SMART_SLICE_AUDIO_CLEANUP_INCOMPLETE',
+  ],
+);
+
+const missingRawSilenceEvidenceRoot = tempRoot('autocut-smart-slice-quality-missing-raw-silence');
+const missingRawSilenceEvidenceTask = createReadyTask();
+missingRawSilenceEvidenceTask.sliceResults[0] = {
+  ...missingRawSilenceEvidenceTask.sliceResults[0],
+  leadingSilenceMs: undefined,
+  trailingSilenceMs: undefined,
+};
+const missingRawSilenceEvidenceTaskPath = writeTaskFixture(missingRawSilenceEvidenceRoot, missingRawSilenceEvidenceTask);
+const missingRawSilenceEvidence = createAutoCutSmartSliceQualityEvidence({
+  rootDir: missingRawSilenceEvidenceRoot,
+  taskPath: missingRawSilenceEvidenceTaskPath,
+  generatedAt: '2026-05-06T00:00:00.000Z',
+});
+
+assert.equal(missingRawSilenceEvidence.readiness.smartSliceQualityReady, false);
+assert.equal(missingRawSilenceEvidence.slices[0].qualityGates.audioCleanupReady, false);
+assert.deepEqual(
+  missingRawSilenceEvidence.blockers.map((blocker) => blocker.code),
+  [
+    'SMART_SLICE_READY_RATIO_TOO_LOW',
+    'SMART_SLICE_AUDIO_CLEANUP_INCOMPLETE',
   ],
 );
 

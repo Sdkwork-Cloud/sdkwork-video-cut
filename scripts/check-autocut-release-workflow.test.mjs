@@ -86,8 +86,8 @@ assert.match(
 );
 assert.match(
   workflow,
-  /SDKWork Video Cut_0\.1\.5_\$\{\{ matrix\.app_arch \}\}\.app\.tar\.gz/u,
-  'workflow archives macOS app bundles with architecture-specific release asset names',
+  /releaseVersion="\$\{\{ inputs\.release_tag \}\}"[\s\S]*releaseVersion="\$\{releaseVersion#v\}"[\s\S]*SDKWork Video Cut_\$\{releaseVersion\}_\$\{\{ matrix\.app_arch \}\}\.app\.tar\.gz/u,
+  'workflow archives macOS app bundles with release-tag-derived architecture-specific asset names',
 );
 assert.match(
   workflow,

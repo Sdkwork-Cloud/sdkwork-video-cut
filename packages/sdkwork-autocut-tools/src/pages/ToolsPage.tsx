@@ -1,20 +1,87 @@
-import { useState, useEffect } from 'react';
-import { Search, LayoutGrid, Sparkles, Video, Music, FileText, Image as ImageIcon, Minimize, RefreshCcw, Monitor, Languages, Mic, ChevronRight, Scissors } from 'lucide-react';
-import { Card } from '@sdkwork/autocut-commons';
-import { getTools } from '@sdkwork/autocut-services';
-import { AppTool } from '@sdkwork/autocut-types';
+import { useEffect, useState, type ComponentType } from 'react';
 import { useNavigate } from 'react-router-dom';
+import {
+  Search,
+  LayoutGrid,
+  Sparkles,
+  Video,
+  Music,
+  FileText,
+  Image as ImageIcon,
+  Minimize,
+  RefreshCcw,
+  Monitor,
+  Languages,
+  Mic,
+  ChevronRight,
+  Scissors,
+  Copy,
+} from 'lucide-react';
+import type { LucideProps } from 'lucide-react';
+import { Card } from '@sdkwork/autocut-commons';
+import {
+  getActiveAutoCutLocale,
+  getAutoCutI18nText,
+  getTools,
+  listenAutoCutI18nLanguageChanged,
+} from '@sdkwork/autocut-services';
+import type { AppTool, ToolCategory } from '@sdkwork/autocut-types';
 
-const CATEGORIES = [
-  { id: 'all', label: '全部工具', icon: LayoutGrid },
-  { id: 'video', label: '视频处理', icon: Video },
-  { id: 'audio', label: '音频工具', icon: Music },
-  { id: 'ai', label: 'AI 能力', icon: Sparkles },
+type ToolsCategoryId = ToolCategory | 'all';
+
+type ToolsCategory = {
+  id: ToolsCategoryId;
+  labelKey: string;
+  icon: ComponentType<LucideProps>;
+};
+
+const CATEGORIES: ToolsCategory[] = [
+  { id: 'all', labelKey: 'tools.category.all', icon: LayoutGrid },
+  { id: 'video', labelKey: 'tools.category.video', icon: Video },
+  { id: 'audio', labelKey: 'tools.category.audio', icon: Music },
+  { id: 'ai', labelKey: 'tools.category.ai', icon: Sparkles },
 ];
+
+const TOOL_COLOR_CLASSES = [
+  'border-blue-500/20 bg-blue-500/10 text-blue-400',
+  'border-purple-500/20 bg-purple-500/10 text-purple-400',
+  'border-green-500/20 bg-green-500/10 text-green-400',
+  'border-orange-500/20 bg-orange-500/10 text-orange-400',
+  'border-pink-500/20 bg-pink-500/10 text-pink-400',
+  'border-cyan-500/20 bg-cyan-500/10 text-cyan-400',
+] as const;
+
+function ToolIcon({ icon }: { icon: string }) {
+  switch (icon) {
+    case 'file-text':
+      return <FileText size={22} />;
+    case 'music':
+      return <Music size={22} />;
+    case 'image':
+      return <ImageIcon size={22} />;
+    case 'minimize':
+      return <Minimize size={22} />;
+    case 'refresh-ccw':
+      return <RefreshCcw size={22} />;
+    case 'monitor':
+      return <Monitor size={22} />;
+    case 'languages':
+      return <Languages size={22} />;
+    case 'mic':
+      return <Mic size={22} />;
+    case 'scissors':
+      return <Scissors size={22} />;
+    case 'copy':
+      return <Copy size={22} />;
+    default:
+      return <Scissors size={22} />;
+  }
+}
 
 export function ToolsPage() {
   const navigate = useNavigate();
-  const [activeCategory, setActiveCategory] = useState('all');
+  const [, setActiveLocale] = useState(getActiveAutoCutLocale());
+  const [activeCategory, setActiveCategory] = useState<ToolsCategoryId>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [toolsList, setToolsList] = useState<AppTool[]>([]);
 
@@ -22,95 +89,94 @@ export function ToolsPage() {
     getTools().then(setToolsList);
   }, []);
 
-  const filteredTools = toolsList.filter(t =>
-    (activeCategory === 'all' || t.category === activeCategory) &&
-    t.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  useEffect(() => listenAutoCutI18nLanguageChanged(() => {
+    setActiveLocale(getActiveAutoCutLocale());
+  }), []);
+
+  const t = getAutoCutI18nText;
+
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const filteredTools = toolsList.filter((tool) => {
+    const translatedToolName = t(tool.nameKey ?? tool.name, undefined, tool.name).toLowerCase();
+    const translatedToolDescription = t(tool.descriptionKey ?? tool.description, undefined, tool.description).toLowerCase();
+    const matchesCategory = activeCategory === 'all' || tool.category === activeCategory;
+    const matchesSearch =
+      !normalizedSearchQuery ||
+      translatedToolName.includes(normalizedSearchQuery) ||
+      translatedToolDescription.includes(normalizedSearchQuery);
+    return matchesCategory && matchesSearch;
+  });
 
   return (
-    <div className="w-full h-full p-6 md:p-10 flex flex-col items-center overflow-y-auto">
-      <div className="w-full flex flex-col h-full space-y-8">
-
-        {/* Header */}
-        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-[#222] pb-6">
+    <div className="flex h-full w-full flex-col items-center overflow-y-auto p-6 md:p-10">
+      <div className="flex h-full w-full flex-col space-y-8">
+        <div className="flex flex-col justify-between gap-4 border-b border-[#222] pb-6 md:flex-row md:items-end">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight text-gray-100 flex items-center gap-3">
-              <span className="w-2 h-6 bg-blue-500 rounded-full"></span>
-              工具百宝箱
+            <h1 className="flex items-center gap-3 text-2xl font-bold tracking-tight text-gray-100">
+              <span className="h-6 w-2 rounded-full bg-blue-500" />
+              {t('tools.page.title')}
             </h1>
-            <p className="text-sm text-gray-500 mt-2 ml-5">发现并使用高效的视频与音频处理工具</p>
+            <p className="ml-5 mt-2 text-sm text-gray-500">{t('tools.page.description')}</p>
           </div>
 
-          <div className="relative w-full md:w-64 shrink-0">
-             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-             <input
-               type="text"
-               placeholder="搜索工具..."
-               value={searchQuery}
-               onChange={e => setSearchQuery(e.target.value)}
-               className="w-full bg-[#111] border border-[#333] focus:border-blue-500 text-sm rounded-xl py-2.5 pl-9 pr-4 outline-none text-white transition-colors"
-             />
+          <div className="relative w-full shrink-0 md:w-64">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+            <input
+              type="text"
+              placeholder={t('tools.search.placeholder')}
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              className="w-full rounded-xl border border-[#333] bg-[#111] py-2.5 pl-9 pr-4 text-sm text-white outline-none transition-colors placeholder:text-gray-600 focus:border-blue-500"
+            />
           </div>
         </div>
 
-        <div className="flex flex-col md:flex-row gap-8 flex-1">
-          {/* Sidebar Categories */}
-          <div className="w-full md:w-56 shrink-0 flex flex-row md:flex-col gap-2 overflow-x-auto no-scrollbar">
-            {CATEGORIES.map(cat => {
+        <div className="flex flex-1 flex-col gap-8 md:flex-row">
+          <div className="no-scrollbar flex w-full shrink-0 flex-row gap-2 overflow-x-auto md:w-56 md:flex-col">
+            {CATEGORIES.map((cat) => {
               const Icon = cat.icon;
               return (
                 <button
                   key={cat.id}
                   onClick={() => setActiveCategory(cat.id)}
-                  className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all whitespace-nowrap md:whitespace-normal ${
+                  className={`flex items-center gap-3 rounded-xl border px-4 py-3 whitespace-nowrap transition-all md:whitespace-normal ${
                     activeCategory === cat.id
-                      ? 'bg-blue-600/10 text-blue-500 border border-blue-500/20 shadow-sm'
-                      : 'text-gray-400 border border-transparent hover:bg-[#111] hover:text-gray-200'
+                      ? 'border-blue-500/20 bg-blue-600/10 text-blue-500 shadow-sm'
+                      : 'border-transparent text-gray-400 hover:bg-[#111] hover:text-gray-200'
                   }`}
                 >
                   <Icon size={18} />
-                  <span className="font-semibold text-sm">{cat.label}</span>
-                  {activeCategory === cat.id && <ChevronRight size={16} className="ml-auto hidden md:block opacity-50" />}
+                  <span className="text-sm font-semibold">{t(cat.labelKey)}</span>
+                  {activeCategory === cat.id && <ChevronRight size={16} className="ml-auto hidden opacity-50 md:block" />}
                 </button>
-              )
+              );
             })}
           </div>
 
-          {/* Tools Grid */}
           <div className="flex-1">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {filteredTools.map((tool, index) => {
-                const colors = [
-                  "bg-blue-500/10 text-blue-400 border-blue-500/20",
-                  "bg-purple-500/10 text-purple-400 border-purple-500/20",
-                  "bg-green-500/10 text-green-400 border-green-500/20",
-                  "bg-orange-500/10 text-orange-400 border-orange-500/20",
-                  "bg-pink-500/10 text-pink-400 border-pink-500/20",
-                  "bg-cyan-500/10 text-cyan-400 border-cyan-500/20",
-                ];
-                const colorClass = colors[index % colors.length];
+                const colorClass = TOOL_COLOR_CLASSES[index % TOOL_COLOR_CLASSES.length];
+                const toolName = t(tool.nameKey ?? tool.name, undefined, tool.name);
+                const toolDescription = t(tool.descriptionKey ?? tool.description, undefined, tool.description);
 
                 return (
-                  <Card key={tool.id} onClick={() => {
+                  <Card
+                    key={tool.id}
+                    onClick={() => {
                       if (tool.route) {
-                           navigate(tool.route);
+                        navigate(tool.route);
                       }
-                  }} className="p-5 flex flex-col items-start gap-4 hover:-translate-y-1 transition-transform cursor-pointer group bg-[#0A0A0A] border-[#222] hover:border-[#444] hover:shadow-lg">
-                    <div className={`w-12 h-12 rounded-xl flex items-center justify-center border transition-all group-hover:scale-110 ${colorClass}`}>
-                      {tool.icon === "file-text" && <FileText size={22} />}
-                      {tool.icon === "music" && <Music size={22} />}
-                      {tool.icon === "image" && <ImageIcon size={22} />}
-                      {tool.icon === "minimize" && <Minimize size={22} />}
-                      {tool.icon === "refresh-ccw" && <RefreshCcw size={22} />}
-                      {tool.icon === "monitor" && <Monitor size={22} />}
-                      {tool.icon === "languages" && <Languages size={22} />}
-                      {tool.icon === "mic" && <Mic size={22} />}
-                      {tool.icon === "scissors" && <Scissors size={22} />}
+                    }}
+                    className="group flex cursor-pointer flex-col items-start gap-4 border-[#222] bg-[#0A0A0A] p-5 transition-transform hover:-translate-y-1 hover:border-[#444] hover:shadow-lg"
+                  >
+                    <div className={`flex h-12 w-12 items-center justify-center rounded-xl border transition-all group-hover:scale-110 ${colorClass}`}>
+                      <ToolIcon icon={tool.icon} />
                     </div>
                     <div>
-                      <h3 className="font-bold text-gray-200 group-hover:text-white transition-colors">{tool.name}</h3>
-                      <p className="text-xs text-gray-500 mt-1.5 leading-relaxed line-clamp-2">
-                        {tool.description}
+                      <h3 className="font-bold text-gray-200 transition-colors group-hover:text-white">{toolName}</h3>
+                      <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-gray-500">
+                        {toolDescription}
                       </p>
                     </div>
                   </Card>
@@ -119,7 +185,6 @@ export function ToolsPage() {
             </div>
           </div>
         </div>
-
       </div>
     </div>
   );

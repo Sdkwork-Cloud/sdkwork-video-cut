@@ -4,8 +4,10 @@ import {
   addAsset,
   addMessage,
   addTask,
+  assertAutoCutMediaHasVideoStream,
   assertAutoCutNativeArtifactInsideTaskOutputDir,
   createAutoCutId,
+  createAutoCutTaskId,
   createAutoCutTaskName,
   createAutoCutTimestamp,
   failAutoCutProcessingTask,
@@ -27,7 +29,7 @@ function resolveDesktopSourcePath(file: File | null | undefined) {
 function createVideoConvertTask(params: VideoConvertParams): AppTask {
   const createdAt = createAutoCutTimestamp();
   return {
-    id: createAutoCutId('newTask'),
+    id: createAutoCutTaskId('convert'),
     name: createAutoCutTaskName({ file: params.file, fallbackSourceName: 'source-video.mp4', createdAt }),
     type: AUTOCUT_TASK_TYPE.videoConvert,
     status: AUTOCUT_TASK_STATUS.pending,
@@ -99,6 +101,7 @@ export async function processVideoConvert(params: VideoConvertParams) {
         sourcePath: desktopSourcePath,
         ...(outputRootDir ? { outputRootDir } : {}),
       });
+      assertAutoCutMediaHasVideoStream(importedMedia, 'video conversion');
       await updateTask(newTask.id, {
         status: AUTOCUT_TASK_STATUS.processing,
         progress: 60,

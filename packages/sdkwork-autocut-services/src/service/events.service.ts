@@ -3,6 +3,7 @@ import type {
   AppMessage,
   AppSettings,
   AppTask,
+  AutoCutNativeTaskProgressEvent,
   AutoCutSpeechTranscriptionModelDownloadProgressEvent,
   AutoCutWorkflowPreferences,
 } from '@sdkwork/autocut-types';
@@ -11,6 +12,7 @@ export const AUTOCUT_EVENTS = {
   taskAdded: 'autocut-task-added',
   taskUpdated: 'autocut-task-updated',
   taskDeleted: 'autocut-task-deleted',
+  nativeTaskProgress: 'autocut-native-task-progress',
   assetAdded: 'autocut-asset-added',
   assetDeleted: 'autocut-asset-deleted',
   messageAdded: 'autocut-message-added',
@@ -26,6 +28,7 @@ export interface AutoCutEventPayloadMap {
   taskAdded: AppTask;
   taskUpdated: AppTask;
   taskDeleted: { id: string };
+  nativeTaskProgress: AutoCutNativeTaskProgressEvent;
   assetAdded: AppAsset;
   assetDeleted: { id: string };
   messageAdded: AppMessage;

@@ -74,6 +74,10 @@ const AUTOCUT_ROUTES: AutoCutRoute[] = [
     Component: lazyPage(() => import('@sdkwork/autocut-video-enhance'), 'VideoEnhancePage'),
   },
   {
+    path: '/video-dedup',
+    Component: lazyPage(() => import('@sdkwork/autocut-video-dedup'), 'VideoDedupPage'),
+  },
+  {
     path: '/subtitle-translate',
     Component: lazyPage(() => import('@sdkwork/autocut-subtitle-translate'), 'SubtitleTranslatePage'),
   },

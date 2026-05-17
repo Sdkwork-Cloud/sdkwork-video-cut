@@ -1,5 +1,529 @@
 import { AUTOCUT_TASK_TYPE } from '@sdkwork/autocut-types';
 
+const AUTOCUT_TASK_DETAIL_REVIEW_RISK_ZH_CN_MESSAGES = {
+  title: '智能切片审阅提示',
+  unknownLabel: '{{risk}}',
+  unknownMessage: '智能切片报告了需要人工审阅的风险：{{risk}}。',
+  unknownRemediation: '发布前请人工检查该切片，必要时重新识别字幕或调整切片边界。',
+  audioTranscriptBoundaryConflict: {
+    label: '音频与字幕边界冲突',
+    message: '降噪后的音频活动与字幕语音时间不一致，系统已保留受字幕保护的边界。',
+    remediation: '发布前检查切片开头、结尾和字幕文本；语音完整时保留当前字幕保护范围。',
+  },
+  audioBoundaryRefined: {
+    label: '音频边界已精修',
+    message: '系统使用降噪后的音频活动收紧了渲染开头或结尾，并保留语音边界保护。',
+    remediation: '检查调整后的边界；当首尾语音仍然完整时保留当前精修结果。',
+  },
+  connectorRepaired: {
+    label: '连接语已修复',
+    message: '系统扩展了开头以包含维持句子连贯性的连接语。',
+    remediation: '检查切片开头几秒；只有在连接语不影响上下文时才继续裁剪。',
+  },
+  trailingConnectorExtended: {
+    label: '尾部连接语已延展',
+    message: '所选语音以连接短语结束，系统已延展结尾。',
+    remediation: '检查结尾并确认延展部分是否完成了表达。',
+  },
+  openSentenceExtended: {
+    label: '未完成句子已延展',
+    message: '系统延展了切片，避免结尾停在未完成的句子上。',
+    remediation: '检查最后一句，确认延展后仍然紧凑并包含有效收尾。',
+  },
+  excessLeadingSilenceTrimmed: {
+    label: '开头多余静音已移除',
+    message: '系统在保留语音边界保护的前提下移除了开头多余静音。',
+    remediation: '预览开头第一秒；只有在开场过于突兀时才恢复更多边界留白。',
+  },
+  excessTrailingSilenceTrimmed: {
+    label: '结尾多余静音已移除',
+    message: '系统移除了已验证语音结尾之后的多余静音。',
+    remediation: '预览结尾；如果收尾结果仍然自然，请保留裁剪后的版本。',
+  },
+  transcriptRepeatFiltered: {
+    label: '重复字幕已过滤',
+    message: '系统检测到相似字幕片段并进行了过滤，避免成片内容重复。',
+    remediation: '检查相邻切片，确认同一个观点没有被重复发布。',
+  },
+  contentTopicSegment: {
+    label: '内容主题片段',
+    message: '规划器已将多个语音识别片段组合为同一个连贯内容主题 clip。',
+    remediation: '检查主题边界；如果这些片段都在解释同一主题，请保留该组合。',
+  },
+  transcriptNoiseBridgeRepaired: {
+    label: '噪声间隙已桥接',
+    message: '系统桥接了字幕片段之间的短噪声间隙，以保持语音连续。',
+    remediation: '检查桥接点，确认降噪后的音频过渡自然。',
+  },
+  transcriptOverlapRepaired: {
+    label: '字幕重叠已修复',
+    message: '系统容忍并修复了 STT 片段中很小的时间重叠。',
+    remediation: '检查连接处字幕；如果仍有重复或漏字，请重新执行 STT。',
+  },
+  transcriptInternalRepeat: {
+    label: '切片内部字幕重复',
+    message: '该候选切片在同一个字幕窗口内包含重复表达。',
+    remediation: '检查重复片段是否应缩短、拆分，或替换为更干净的切片。',
+  },
+  sparseTranscriptSpeech: {
+    label: '字幕语音证据较少',
+    message: '该切片的字幕证据较少，通常来自很短的语音或孤立短句。',
+    remediation: '检查片段是否有足够上下文；如果语音缺失，请重新执行 STT。',
+  },
+  smartCutEngine: {
+    label: 'Smart Cut Engine',
+    message: 'Smart Cut Engine used transcript, speaker, and content-unit evidence to plan this slice.',
+    remediation: 'Review transcript evidence, speaker labels, and semantic scores before publishing.',
+  },
+  smartDedupReview: {
+    label: 'Smart dedup match',
+    message: 'The video dedup component found likely reused source or reference content overlapping this review segment.',
+    remediation: 'Review the matched segment before rendering and use duplicate deletion only when the repeated content should not be exported.',
+  },
+  shortTranscriptWindow: {
+    label: '字幕窗口偏短',
+    message: '该语音窗口短于智能切分的推荐时长。',
+    remediation: '检查短句是否可以独立发布，或是否应与相邻上下文合并。',
+  },
+  llmTimingSnappedToTranscript: {
+    label: 'LLM 时间已吸附到字幕',
+    message: 'LLM 选择的时间已吸附到经过验证的字幕边界。',
+    remediation: '检查调整后的开头和结尾，确认仍然命中目标高光片段。',
+  },
+  llmTimingWithoutTranscript: {
+    label: 'LLM 时间缺少字幕对齐',
+    message: 'LLM 选择的时间无法对齐到经过验证的字幕候选片段。',
+    remediation: '人工检查渲染语音；如果该片段应受字幕保护，请重新执行 STT。',
+  },
+  fallbackPlan: {
+    label: '使用兜底规划',
+    message: '首选规划路径未产出足够的验证切片，系统使用了确定性兜底方案。',
+    remediation: '人工检查切片质量；如果结果过于普通，请增强 STT 或 LLM 设置后重跑。',
+  },
+  noTranscriptBoundary: {
+    label: '缺少完整字幕边界',
+    message: '该切片没有完整的字幕边界证据。',
+    remediation: '发布前重新生成 STT，或人工检查开头和结尾。',
+  },
+  sourceDurationTail: {
+    label: '触达源视频尾部',
+    message: '规划时长触达源视频结尾，系统按可用尾部进行了裁剪。',
+    remediation: '检查结尾，确认没有裁掉关键收尾或结果。',
+  },
+  timingMetadataRepaired: {
+    label: '时间元数据已修复',
+    message: '系统在渲染前规范化了无效或不一致的切片时间元数据。',
+    remediation: '检查源区间、语音区间和渲染区间，确认修复后的时间仍然命中目标片段。',
+  },
+  missingPayoff: {
+    label: '可能缺少收尾结果',
+    message: '内容结构可能缺少明确的结果、答案或结论。',
+    remediation: '检查是否需要延展切片，或替换为包含收尾结果的片段。',
+  },
+  missingHook: {
+    label: '可能缺少开场钩子',
+    message: '切片开头可能没有清晰的注意力钩子。',
+    remediation: '检查开头，并考虑选择更强的起点。',
+  },
+  missingSetup: {
+    label: '可能缺少铺垫',
+    message: '切片可能直接进入结果，缺少观众理解所需的上下文。',
+    remediation: '检查是否需要包含前一句作为铺垫。',
+  },
+  missingContentHook: {
+    label: '缺少内容钩子',
+    message: '内容结构检测未在字幕中找到清晰的开场钩子。',
+    remediation: '检查第一句话，并考虑使用更强的起点、标题或封面文案。',
+  },
+  missingContentSetup: {
+    label: '缺少内容铺垫',
+    message: '内容结构检测未找到足够的铺垫或上下文来支撑结果。',
+    remediation: '检查是否需要包含前一句，让切片更容易被理解。',
+  },
+  missingContentConflict: {
+    label: '缺少内容冲突',
+    message: '内容结构检测未找到清晰的问题、张力或继续观看的理由。',
+    remediation: '检查切片是否需要更明确的痛点，或替换为张力更强的片段。',
+  },
+  missingContentPayoff: {
+    label: '缺少内容结果',
+    message: '内容结构检测未找到清晰的结果、答案或收获。',
+    remediation: '检查是否需要延展到下一个结果，或替换为更完整的切片。',
+  },
+  lowTranscriptCoverage: {
+    label: '字幕覆盖率偏低',
+    message: '已验证字幕覆盖的渲染语音范围过少。',
+    remediation: '检查字幕覆盖；如果语音缺失，请重新执行 STT 或调整边界。',
+  },
+  noTranscriptSegments: {
+    label: '缺少字幕片段',
+    message: '该切片缺少结构化 STT 片段证据。',
+    remediation: '发布前重新生成 STT，确保字幕和语音边界可验证。',
+  },
+  weakSpeechContinuity: {
+    label: '语音连续性偏弱',
+    message: '语音连续性等级偏弱，通常表示字幕覆盖或时间边界不可靠。',
+    remediation: '检查完整片段，并重新执行 STT 或选择更连续的语音窗口。',
+  },
+  topicDrift: {
+    label: '可能存在话题漂移',
+    message: '字幕显示切片内部可能发生了话题切换。',
+    remediation: '检查是否需要围绕单一主题拆分或缩短切片。',
+  },
+  weakHook: {
+    label: '开场钩子偏弱',
+    message: '开头可理解，但对短视频发布可能不够有吸引力。',
+    remediation: '检查第一句话，并考虑使用更紧凑的标题、封面或更早起点。',
+  },
+  openEnding: {
+    label: '结尾偏开放',
+    message: '即使语音边界有效，结尾也可能显得未完成。',
+    remediation: '检查最后一句，必要时延展到下一个有效收尾。',
+  },
+  brokenSentenceBoundary: {
+    label: '句子边界可能断裂',
+    message: '句子边界模型发现开头或结尾可能断句。',
+    remediation: '检查字幕，并重新生成或手动调整切片边界。',
+  },
+  unrepairedSentenceBoundary: {
+    label: '句子边界未修复',
+    message: '句子边界检测发现未修复的开头或结尾问题。',
+    remediation: '发布前检查并手动调整切片边界。',
+  },
+  sentenceBoundaryUnavailable: {
+    label: '句子边界不可验证',
+    message: '由于缺少字幕文本，无法验证句子边界完整性。',
+    remediation: '发布前重新生成 STT 或补充纠正后的字幕文本。',
+  },
+  sentenceLeadingConnectorUnrepaired: {
+    label: '开头连接语未修复',
+    message: '切片可能从连接短语开始，缺少前文上下文。',
+    remediation: '检查开头；如果第一句依赖前文，请向前延展边界。',
+  },
+  sentenceTrailingConnectorUnrepaired: {
+    label: '结尾连接语未修复',
+    message: '切片可能停在连接短语上，缺少后续表达。',
+    remediation: '检查结尾；如果句子仍在继续，请向后延展边界。',
+  },
+  sentenceOpenEndingUnrepaired: {
+    label: '开放结尾未修复',
+    message: '切片看起来在句子或观点完成前就结束了。',
+    remediation: '检查最后一句，必要时延展到下一个完整收尾。',
+  },
+  platformDurationTooShort: {
+    label: '平台时长偏短',
+    message: '切片短于目标平台推荐时长。',
+    remediation: '检查该片段是否能独立发布，或是否需要加入更多上下文。',
+  },
+  platformDurationTooLong: {
+    label: '平台时长偏长',
+    message: '切片长于目标平台推荐时长。',
+    remediation: '检查是否应缩短、拆分，或改投更适合长内容的平台。',
+  },
+  platformDurationReject: {
+    label: '平台时长不通过',
+    message: '切片超过目标平台的最大复核时长。',
+    remediation: '发布到该平台前请缩短或拆分切片。',
+  },
+  platformHookNotStrong: {
+    label: '平台钩子不够强',
+    message: '目标平台要求比当前切片更强的开场钩子。',
+    remediation: '发布前检查第一句话，并优化开场、标题或封面。',
+  },
+  platformWeakHook: {
+    label: '平台钩子偏弱',
+    message: '该开场钩子对目标平台偏弱。',
+    remediation: '选择更强的开头，或补充清晰的封面标题。',
+  },
+  platformOpenEnding: {
+    label: '平台结尾偏开放',
+    message: '该切片结尾对目标平台来说过于开放。',
+    remediation: '延展到清晰结果，或选择结尾更强的片段。',
+  },
+  platformBrokenSentenceBoundary: {
+    label: '平台句子边界断裂',
+    message: '目标平台复核门禁发现句子边界断裂。',
+    remediation: '调整切片边界，让首尾句子保持完整。',
+  },
+  platformIncompleteArc: {
+    label: '平台内容结构不完整',
+    message: '该切片对目标平台来说内容结构不完整。',
+    remediation: '发布前补足缺失的钩子、铺垫、冲突或结果。',
+  },
+  platformTopicDrift: {
+    label: '平台话题漂移',
+    message: '目标平台复核门禁发现切片内部存在话题漂移。',
+    remediation: '缩短或拆分切片，使内容聚焦在单一主题上。',
+  },
+  needsCoverTitle: {
+    label: '需要封面标题',
+    message: '该切片可能需要更清晰的封面标题或字幕说明才能更好发布。',
+    remediation: '发布前添加一句明确表达钩子或结果的封面标题。',
+  },
+} as const;
+
+const AUTOCUT_TASK_DETAIL_REVIEW_RISK_EN_US_MESSAGES = {
+  title: 'Smart slice review warnings',
+  unknownLabel: '{{risk}}',
+  unknownMessage: 'Smart slicing reported a human-review risk: {{risk}}.',
+  unknownRemediation: 'Review this slice before publishing and rerun STT or adjust boundaries when needed.',
+  audioTranscriptBoundaryConflict: {
+    label: 'Audio/STT boundary conflict',
+    message: 'Denoised audio activity disagreed with transcript speech timing, so transcript-protected boundaries were preserved.',
+    remediation: 'Review the slice boundary and transcript text before publishing; keep the transcript-protected range when speech is intact.',
+  },
+  audioBoundaryRefined: {
+    label: 'Audio boundary refined',
+    message: 'Denoised audio activity was used to tighten the rendered start or end around verified speech.',
+    remediation: 'Review the adjusted boundary and keep it when the first and last spoken words remain intact.',
+  },
+  connectorRepaired: {
+    label: 'Connector repaired',
+    message: 'The planner expanded the start to include connector speech that keeps the sentence coherent.',
+    remediation: 'Review the first seconds of the slice and trim only if the repaired connector is not needed for context.',
+  },
+  trailingConnectorExtended: {
+    label: 'Trailing connector extended',
+    message: 'The planner extended the end because the selected speech ended on a connector phrase.',
+    remediation: 'Review the ending and keep the extension when it completes the spoken thought.',
+  },
+  openSentenceExtended: {
+    label: 'Open sentence extended',
+    message: 'The planner extended the slice to avoid ending on an unfinished sentence.',
+    remediation: 'Review the final sentence and confirm the payoff remains concise after the extension.',
+  },
+  excessLeadingSilenceTrimmed: {
+    label: 'Leading silence trimmed',
+    message: 'The planner removed extra leading silence while preserving speech boundary padding.',
+    remediation: 'Preview the first second and restore padding only if the opening sounds too abrupt.',
+  },
+  excessTrailingSilenceTrimmed: {
+    label: 'Trailing silence trimmed',
+    message: 'The planner removed extra trailing silence after the verified speech ending.',
+    remediation: 'Preview the ending and keep the trimmed version when the payoff still has a natural finish.',
+  },
+  transcriptRepeatFiltered: {
+    label: 'Repeated transcript filtered',
+    message: 'Similar transcript windows were detected and filtered so the final slice set stays varied.',
+    remediation: 'Review neighboring slices to confirm the same spoken idea is not published twice.',
+  },
+  contentTopicSegment: {
+    label: 'Content topic segment',
+    message: 'The planner grouped multiple ASR transcript segments into one coherent content-topic clip.',
+    remediation: 'Review the topic boundary and keep the grouped clip when the segments explain the same subject.',
+  },
+  transcriptNoiseBridgeRepaired: {
+    label: 'Noise bridge repaired',
+    message: 'The planner bridged a short noisy gap between transcript segments to preserve speech continuity.',
+    remediation: 'Review the bridged point and confirm the audio transition is natural after denoise.',
+  },
+  transcriptOverlapRepaired: {
+    label: 'Transcript overlap repaired',
+    message: 'Tiny overlapping STT segment timings were tolerated and repaired during slice planning.',
+    remediation: 'Review the transcript around the join and regenerate STT if repeated or missing words remain visible.',
+  },
+  transcriptInternalRepeat: {
+    label: 'Internal transcript repeat',
+    message: 'The candidate slice contains repeated meaning inside the same transcript window.',
+    remediation: 'Review whether the repeated section should be shortened, split, or replaced with a cleaner clip.',
+  },
+  sparseTranscriptSpeech: {
+    label: 'Sparse transcript speech',
+    message: 'The slice has limited transcript evidence, usually from very short speech or isolated phrases.',
+    remediation: 'Review whether the clip has enough context and regenerate STT if speech is missing.',
+  },
+  smartCutEngine: {
+    label: 'Smart Cut Engine',
+    message: 'Smart Cut Engine used transcript, speaker, and content-unit evidence to plan this slice.',
+    remediation: 'Review transcript evidence, speaker labels, and semantic scores before publishing.',
+  },
+  smartDedupReview: {
+    label: 'Smart dedup match',
+    message: 'The video dedup component found likely reused source or reference content overlapping this review segment.',
+    remediation: 'Review the matched segment before rendering and use duplicate deletion only when the repeated content should not be exported.',
+  },
+  shortTranscriptWindow: {
+    label: 'Short transcript window',
+    message: 'The transcript-backed speech window is shorter than the preferred smart-slice duration.',
+    remediation: 'Review whether the short phrase is publishable alone or should be merged with adjacent context.',
+  },
+  llmTimingSnappedToTranscript: {
+    label: 'LLM timing snapped to transcript',
+    message: 'The LLM-selected timing was snapped to verified transcript boundaries.',
+    remediation: 'Review the adjusted start and end to confirm the rendered clip still matches the intended moment.',
+  },
+  llmTimingWithoutTranscript: {
+    label: 'LLM timing without transcript',
+    message: 'The LLM-selected timing could not be aligned to a verified transcript candidate.',
+    remediation: 'Review the rendered speech manually and rerun STT if the clip should be transcript-protected.',
+  },
+  fallbackPlan: {
+    label: 'Fallback plan',
+    message: 'A deterministic fallback plan was used because the preferred planning path could not produce enough verified slices.',
+    remediation: 'Review slice quality manually and rerun with stronger transcript or LLM settings if the result feels generic.',
+  },
+  noTranscriptBoundary: {
+    label: 'No transcript boundary',
+    message: 'The slice was planned without complete transcript boundary evidence.',
+    remediation: 'Regenerate STT or manually review the start and end before publishing.',
+  },
+  sourceDurationTail: {
+    label: 'Source tail clipped',
+    message: 'The planned duration reached the end of the source media and was clipped to the available tail.',
+    remediation: 'Review the ending and confirm no payoff was cut off by the source limit.',
+  },
+  timingMetadataRepaired: {
+    label: 'Timing metadata repaired',
+    message: 'Invalid or inconsistent slice timing metadata was normalized before rendering.',
+    remediation: 'Review the source, speech, and rendered ranges to confirm the repaired timing matches the intended moment.',
+  },
+  missingPayoff: {
+    label: 'Missing payoff',
+    message: 'The content arc may not include a clear result, answer, or takeaway.',
+    remediation: 'Review whether the slice should be extended or replaced with a clip that contains the payoff.',
+  },
+  missingHook: {
+    label: 'Missing hook',
+    message: 'The slice may start without a clear attention hook.',
+    remediation: 'Review the opening and consider choosing a stronger start point.',
+  },
+  missingSetup: {
+    label: 'Missing setup',
+    message: 'The slice may jump to the payoff without enough setup for viewers.',
+    remediation: 'Review whether the previous sentence should be included for context.',
+  },
+  missingContentHook: {
+    label: 'Missing content hook',
+    message: 'The content-arc detector did not find a clear opening hook in the transcript.',
+    remediation: 'Review the first line and consider a stronger start point, title, or cover caption.',
+  },
+  missingContentSetup: {
+    label: 'Missing content setup',
+    message: 'The content-arc detector did not find enough setup or context for the payoff.',
+    remediation: 'Review whether the previous sentence should be included to make the clip understandable.',
+  },
+  missingContentConflict: {
+    label: 'Missing content conflict',
+    message: 'The content-arc detector did not find a clear problem, tension, or reason to keep watching.',
+    remediation: 'Review whether the slice needs a sharper pain point or should be replaced with a higher-tension moment.',
+  },
+  missingContentPayoff: {
+    label: 'Missing content payoff',
+    message: 'The content-arc detector did not find a clear result, answer, or takeaway.',
+    remediation: 'Review whether the slice should extend to the next payoff or be replaced with a more complete clip.',
+  },
+  lowTranscriptCoverage: {
+    label: 'Low transcript coverage',
+    message: 'The verified transcript covers too little of the rendered speech range.',
+    remediation: 'Review the subtitle coverage and rerun STT or adjust boundaries when speech is missing.',
+  },
+  noTranscriptSegments: {
+    label: 'No transcript segments',
+    message: 'The slice has no structured STT segment evidence.',
+    remediation: 'Regenerate STT before publishing so subtitles and speech boundaries can be verified.',
+  },
+  weakSpeechContinuity: {
+    label: 'Weak speech continuity',
+    message: 'The speech continuity grade is weak, usually because transcript coverage or timing is unreliable.',
+    remediation: 'Review the full clip and regenerate STT or choose a more continuous speech window.',
+  },
+  topicDrift: {
+    label: 'Topic drift',
+    message: 'The transcript suggests a topic shift inside the slice.',
+    remediation: 'Review whether the slice should be split or shortened around one coherent topic.',
+  },
+  weakHook: {
+    label: 'Weak hook',
+    message: 'The opening may be understandable but not strong enough for short-form publishing.',
+    remediation: 'Review the first line and consider a tighter title, cover, or earlier start point.',
+  },
+  openEnding: {
+    label: 'Open ending',
+    message: 'The ending may feel unfinished even if the speech boundary is valid.',
+    remediation: 'Review the last sentence and extend to the next payoff when needed.',
+  },
+  brokenSentenceBoundary: {
+    label: 'Broken sentence boundary',
+    message: 'The sentence boundary model found a likely broken start or ending.',
+    remediation: 'Review the transcript and regenerate or manually adjust the slice boundary.',
+  },
+  unrepairedSentenceBoundary: {
+    label: 'Unrepaired sentence boundary',
+    message: 'The sentence boundary detector found an unrepaired start or ending issue.',
+    remediation: 'Review and manually adjust the slice boundary before publishing.',
+  },
+  sentenceBoundaryUnavailable: {
+    label: 'Sentence boundary unavailable',
+    message: 'Sentence boundary integrity could not be verified because transcript text was unavailable or empty.',
+    remediation: 'Regenerate STT or add corrected transcript text before publishing.',
+  },
+  sentenceLeadingConnectorUnrepaired: {
+    label: 'Leading connector unrepaired',
+    message: 'The slice may start on a connector phrase without enough previous context.',
+    remediation: 'Review the opening and extend backward if the first sentence depends on earlier speech.',
+  },
+  sentenceTrailingConnectorUnrepaired: {
+    label: 'Trailing connector unrepaired',
+    message: 'The slice may end on a connector phrase without the following thought.',
+    remediation: 'Review the ending and extend forward if the sentence continues.',
+  },
+  sentenceOpenEndingUnrepaired: {
+    label: 'Open ending unrepaired',
+    message: 'The slice appears to end before the sentence or idea is complete.',
+    remediation: 'Review the last sentence and extend to the next complete ending when needed.',
+  },
+  platformDurationTooShort: {
+    label: 'Platform duration too short',
+    message: 'The slice is shorter than the preferred duration for the target platform.',
+    remediation: 'Review whether the clip works as a short standalone moment or should include more context.',
+  },
+  platformDurationTooLong: {
+    label: 'Platform duration too long',
+    message: 'The slice is longer than the preferred duration for the target platform.',
+    remediation: 'Review whether the clip should be shortened, split, or targeted at a longer-form platform.',
+  },
+  platformDurationReject: {
+    label: 'Platform duration rejected',
+    message: 'The slice exceeds the maximum review duration for the target platform.',
+    remediation: 'Shorten or split the slice before publishing to this platform.',
+  },
+  platformHookNotStrong: {
+    label: 'Platform hook not strong',
+    message: 'The target platform requires a stronger opening hook than this slice currently provides.',
+    remediation: 'Review the first line and improve the opening, title, or cover before publishing.',
+  },
+  platformWeakHook: {
+    label: 'Platform weak hook',
+    message: 'The opening hook is weak for the target platform.',
+    remediation: 'Choose a sharper opening or add a clear cover title before publishing.',
+  },
+  platformOpenEnding: {
+    label: 'Platform open ending',
+    message: 'The slice ending is too open-ended for the target platform.',
+    remediation: 'Extend to a clear payoff or choose a clip with a stronger ending.',
+  },
+  platformBrokenSentenceBoundary: {
+    label: 'Platform broken sentence boundary',
+    message: 'The target platform review gate detected a broken sentence boundary.',
+    remediation: 'Adjust the slice boundary so the first and last sentences are complete.',
+  },
+  platformIncompleteArc: {
+    label: 'Platform incomplete arc',
+    message: 'The content arc is incomplete for the target platform.',
+    remediation: 'Add the missing hook, setup, conflict, or payoff before publishing.',
+  },
+  platformTopicDrift: {
+    label: 'Platform topic drift',
+    message: 'The target platform review gate detected topic drift inside the slice.',
+    remediation: 'Shorten or split the slice so it stays focused on one topic.',
+  },
+  needsCoverTitle: {
+    label: 'Needs cover title',
+    message: 'The slice likely needs a clearer cover title or caption to publish well.',
+    remediation: 'Add a concise cover title that states the hook or payoff before publishing.',
+  },
+} as const;
+
 const AUTOCUT_SETTINGS_ZH_CN_MESSAGES = {
   page: {
     title: '配置中心',
@@ -93,7 +617,7 @@ const AUTOCUT_SETTINGS_ZH_CN_MESSAGES = {
   },
   help: {
     defaultStoragePath: '用于本地素材和中间文件的默认目录。',
-    outputDirectory: '媒体任务会写入该目录下的 tasks/任务 ID/outputs。',
+    outputDirectory: '媒体任务会写入该目录下的 tasks/任务 ID。',
     hardwareAcceleration: '启用本机 GPU 加速素材解码和分析。',
     completionSound: '长任务完成时播放短提示音。',
     language: '切换后立即更新配置中心显示语言。',
@@ -169,6 +693,9 @@ const AUTOCUT_SETTINGS_ZH_CN_MESSAGES = {
     configuring: '准备中...',
   },
   llm: {
+    defaultSegmentationAgent: 'Default Segmentation Agent',
+    segmentationAgentDescription: 'Select the default Smart Slice segmentation agent for STT-backed semantic slicing.',
+    agentSystemPrompt: 'System Prompt',
     region: {
       china: '中国厂商',
       us: '美国厂商',
@@ -259,6 +786,7 @@ const AUTOCUT_SETTINGS_ZH_CN_MESSAGES = {
   },
   status: {
     recommended: '推荐',
+    downloaded: '已下载',
     ready: '已就绪',
     required: '待配置',
     keyReady: 'Key 已就绪',
@@ -409,7 +937,7 @@ const AUTOCUT_SETTINGS_EN_US_MESSAGES = {
   },
   help: {
     defaultStoragePath: 'Default directory for local source media and intermediate files.',
-    outputDirectory: 'Media tasks write to tasks/task ID/outputs under this directory.',
+    outputDirectory: 'Media tasks write to tasks/task ID under this directory.',
     hardwareAcceleration: 'Use local GPU acceleration for media decoding and analysis.',
     completionSound: 'Play a short sound when long-running tasks complete.',
     language: 'The Settings Center display language updates immediately after switching.',
@@ -485,6 +1013,9 @@ const AUTOCUT_SETTINGS_EN_US_MESSAGES = {
     configuring: 'Preparing...',
   },
   llm: {
+    defaultSegmentationAgent: 'Default Segmentation Agent',
+    segmentationAgentDescription: 'Select the default Smart Slice segmentation agent for STT-backed semantic slicing.',
+    agentSystemPrompt: 'System Prompt',
     region: {
       china: 'China vendor',
       us: 'US vendor',
@@ -575,6 +1106,7 @@ const AUTOCUT_SETTINGS_EN_US_MESSAGES = {
   },
   status: {
     recommended: 'Recommended',
+    downloaded: 'Downloaded',
     ready: 'Ready',
     required: 'Required',
     keyReady: 'Key Ready',
@@ -633,6 +1165,200 @@ const AUTOCUT_SETTINGS_EN_US_MESSAGES = {
 } as const;
 
 export const AUTOCUT_ZH_CN_MESSAGES = {
+  common: {
+    fileUpload: {
+      dropReady: '点击或拖拽文件到这里',
+      dropActive: '松开以上传文件',
+      unknownFormat: '未知格式',
+      maxSizePrefix: '最大',
+      sizeTooLarge: '文件大小必须小于 {{maxSizeMB}}MB',
+      typeMismatch: '文件类型必须匹配 {{accept}}',
+    },
+    taskFailure: {
+      fallbackErrorMessage: '任务处理失败，请调整参数后重新提交。',
+      title: '任务处理失败',
+      copyError: '复制失败',
+      copied: '已复制',
+      copyErrorMessage: '复制失败信息',
+      copiedErrorMessage: '已复制失败信息',
+      retry: '重新处理',
+      diagnosticsSummary: '诊断日志',
+    },
+  },
+  assets: {
+    page: {
+      title: '我的资产',
+      remainingSpace: '剩余空间',
+    },
+    search: {
+      placeholder: '搜索资产...',
+    },
+    action: {
+      uploadFile: '上传文件',
+      createFolder: '新建文件夹',
+      delete: '删除',
+      download: '下载',
+    },
+    filter: {
+      all: '全部文件',
+      video: '视频',
+      audio: '音频',
+      doc: '文档',
+      image: '图片/GIF',
+    },
+    table: {
+      fileName: '文件名',
+      size: '大小',
+      updatedAt: '修改日期',
+    },
+    empty: '没有找到相关的文件',
+    confirm: {
+      delete: '确定要删除这个文件吗？',
+    },
+    toast: {
+      deleted: '资源已删除',
+      uploading: '正在上传文件...',
+      uploaded: '文件上传成功',
+      folderCreated: '文件夹已创建',
+    },
+    folderName: '新建文件夹 {{index}}',
+  },
+  messages: {
+    page: {
+      title: '消息通知中心',
+      description: '及时了解任务状态、系统通知与账户情况',
+    },
+    action: {
+      markAllRead: '全部标记为已读',
+      clearRead: '清空已读',
+      enter: '进入',
+      close: '关闭',
+    },
+    tab: {
+      all: '全部消息',
+      unread: '未读消息',
+    },
+    empty: '没有新的消息',
+  },
+  layout: {
+    sidebar: {
+      home: '首页',
+      tools: '工具',
+      assets: '资产',
+      tasks: '任务',
+      messages: '消息',
+      billingPro: '订阅 Pro',
+      settings: '设置',
+      account: '账号',
+    },
+    status: {
+      ready: '系统就绪',
+    },
+  },
+  home: {
+    hero: {
+      title: '开始智能切分视频',
+      description: '选择本地视频或粘贴视频链接，自动识别语音内容、规划高光片段，并生成可直接发布的连续视频切片。',
+      action: '开始智能切分',
+    },
+    url: {
+      title: '粘贴在线视频链接',
+      description: '支持将外部视频链接发送到智能切分流程，由系统下载、识别并生成高光片段。',
+      placeholder: 'https://...',
+      action: '解析链接',
+    },
+    tools: {
+      title: '推荐工具',
+      fallbackDescription: '智能媒体处理工具',
+    },
+  },
+  slicer: {
+    speechSetup: {
+      title: '准备语音识别能力',
+      smartSliceFailedPrefix: '智能切片失败：',
+      smartSliceFailedFallback: '智能切片失败：请打开控制台查看 AutoCut 诊断日志。',
+      toast: {
+        ready: '语音识别已准备好，智能切片将继续处理。',
+        notReady: '语音识别还没有准备好。',
+        submitCreated: '视频智能切片任务已创建并提交',
+        submitted: '切片任务分发成功，正在云端解析中',
+      },
+      error: {
+        integrity: '下载的语音识别模型没有通过完整性校验。请重新准备，应用会替换无效文件。',
+        incomplete: '语音识别模型还没有完整下载。请重试准备；如果网络受限，可以在设置中复制下载链接并手动选择完整模型文件。',
+        download: '语音识别模型暂时无法下载。请检查网络后重试，或在语音识别设置中复制下载链接后手动导入。',
+        executable: '本机语音识别程序还没有准备好。请打开语音识别设置，完成自动准备或选择本机 whisper-cli。',
+        model: '离线语音识别模型还没有准备好。请重试准备，或在设置中选择已下载完成的模型文件。',
+        generic: '语音识别准备失败。请重试，或打开语音识别设置查看详细信息。',
+        inspectFailed: '语音识别可用性检查失败。',
+      },
+      progress: {
+        waiting: '等待离线模型准备',
+        completed: '模型已下载、校验并保存',
+        skipped: '请手动下载后在设置中选择模型文件',
+      },
+      status: {
+        modelSavedNeedsCheck: '离线模型已完成下载和校验。还需要完成最后一次可用性检测，智能切片才能继续。',
+        checking: '正在检查智能切片需要的语音识别能力。',
+        ready: '语音识别已准备好，智能切片可以继续分析语音内容。',
+        executableReady: '已找到本机语音识别程序，应用会在开始切片前保存检测结果。',
+        executableMissing: '还没有找到可用的本机语音识别程序。请打开语音识别设置，完成自动准备或选择已安装的 whisper-cli。',
+        needsModel: '需要离线识别模型。应用将下载并校验 {{model}}，完成后继续智能切片。',
+        needsTest: '语音识别程序和模型已选择，还需要通过一次可用性检测。',
+        fallback: '需要先准备好语音识别能力，智能切片才能分析视频中的语音内容。',
+      },
+      checklist: {
+        executable: '识别程序',
+        model: '离线模型',
+        finalCheck: '可用性检测',
+        detected: '已检测',
+        pending: '待准备',
+        completed: '已校验并保存',
+        passed: '已通过',
+        needsAttention: '需要处理',
+        pendingCheck: '待检测',
+      },
+      executable: {
+        title: '本机识别程序',
+        detected: '已找到可用程序',
+        checking: '正在检查程序',
+        ready: '已就绪',
+        pending: '待准备',
+        defaultPath: '应用会自动检测本机识别程序',
+      },
+      model: {
+        title: '离线识别模型',
+        recommended: '推荐模型',
+        completed: '已完成',
+        retry: '需要重试',
+        downloading: '正在下载',
+        waiting: '等待准备',
+        defaultPath: '应用会自动保存离线模型',
+      },
+      diagnostics: '详细信息',
+      action: {
+        close: '关闭语音识别准备弹窗',
+        openSettings: '打开语音识别设置',
+        retry: '重新准备',
+        preparing: '准备中',
+      },
+    },
+  },
+  tools: {
+    page: {
+      title: '工具中心',
+      description: '选择需要的媒体处理能力，完成视频、音频、字幕和智能分析任务。',
+    },
+    search: {
+      placeholder: '搜索工具...',
+    },
+    category: {
+      all: '全部工具',
+      video: '视频工具',
+      audio: '音频工具',
+      ai: 'AI 能力',
+    },
+  },
   task: {
     type: {
       [AUTOCUT_TASK_TYPE.videoSlice]: '视频切片',
@@ -644,6 +1370,42 @@ export const AUTOCUT_ZH_CN_MESSAGES = {
       [AUTOCUT_TASK_TYPE.videoEnhance]: '画质增强',
       [AUTOCUT_TASK_TYPE.subtitleTranslate]: '字幕翻译',
       [AUTOCUT_TASK_TYPE.voiceTranslate]: '语音翻译',
+    },
+  },
+  taskDetail: {
+    reviewRisk: AUTOCUT_TASK_DETAIL_REVIEW_RISK_ZH_CN_MESSAGES,
+    slicingLogic: {
+      title: '切分逻辑',
+      summary: '智能切分按结构化转写语义窗口、内容弧完整度、主题连贯度、发布标准和音频活动边界生成候选切片。',
+      sliceCount: '切分个数',
+      reasonUnavailable: '该切片没有写入单独的 AI 选择原因，请结合下方语义、边界和风险证据复核。',
+    },
+    transcript: {
+      title: '语音转写',
+      segmentCount: '{{count}} 段转写',
+      exportTxt: '语音转写 TXT',
+      subtitle: '字幕',
+      copyTranscript: '复制转写',
+      copyTranscriptText: '复制转写文本',
+      copyAll: '全部复制',
+      copySegment: '复制片段',
+      copySegmentAria: '复制第 {{index}} 段转写',
+      editSegmentAria: '编辑第 {{index}} 段转写',
+      editTextAria: '编辑转写文本',
+      copied: '已复制',
+      segmentCopied: '片段已复制',
+      copyFailed: '复制失败',
+      save: '保存',
+      saving: '保存中',
+      saved: '已保存',
+      saveFailed: '保存失败',
+      saveEdits: '保存转写修改',
+      cancel: '取消',
+      cancelEdits: '取消转写修改',
+      edit: '编辑',
+      editTranscript: '编辑转写',
+      corrected: '已人工校正',
+      correctionCount: '{{count}} 处修正',
     },
   },
   tool: {
@@ -712,6 +1474,200 @@ export const AUTOCUT_ZH_CN_MESSAGES = {
 } as const;
 
 export const AUTOCUT_EN_US_MESSAGES = {
+  common: {
+    fileUpload: {
+      dropReady: 'Click or drag a file here',
+      dropActive: 'Drop to upload file',
+      unknownFormat: 'unknown format',
+      maxSizePrefix: 'MAX',
+      sizeTooLarge: 'File size must be less than {{maxSizeMB}}MB',
+      typeMismatch: 'File type must match {{accept}}',
+    },
+    taskFailure: {
+      fallbackErrorMessage: 'Task processing failed. Adjust the parameters and submit the task again.',
+      title: 'Task processing failed',
+      copyError: 'Copy failed',
+      copied: 'Copied',
+      copyErrorMessage: 'Copy failure message',
+      copiedErrorMessage: 'Copied failure message',
+      retry: 'Retry',
+      diagnosticsSummary: 'Diagnostic trace',
+    },
+  },
+  assets: {
+    page: {
+      title: 'My Assets',
+      remainingSpace: 'Remaining space',
+    },
+    search: {
+      placeholder: 'Search assets...',
+    },
+    action: {
+      uploadFile: 'Upload file',
+      createFolder: 'New folder',
+      delete: 'Delete',
+      download: 'Download',
+    },
+    filter: {
+      all: 'All files',
+      video: 'Video',
+      audio: 'Audio',
+      doc: 'Documents',
+      image: 'Images/GIF',
+    },
+    table: {
+      fileName: 'File name',
+      size: 'Size',
+      updatedAt: 'Updated',
+    },
+    empty: 'No matching files found',
+    confirm: {
+      delete: 'Delete this file?',
+    },
+    toast: {
+      deleted: 'Asset deleted',
+      uploading: 'Uploading file...',
+      uploaded: 'File uploaded',
+      folderCreated: 'Folder created',
+    },
+    folderName: 'New folder {{index}}',
+  },
+  messages: {
+    page: {
+      title: 'Message Center',
+      description: 'Track task status, system notifications, and account updates.',
+    },
+    action: {
+      markAllRead: 'Mark all as read',
+      clearRead: 'Clear read',
+      enter: 'Open',
+      close: 'Close',
+    },
+    tab: {
+      all: 'All messages',
+      unread: 'Unread',
+    },
+    empty: 'No new messages',
+  },
+  layout: {
+    sidebar: {
+      home: 'Home',
+      tools: 'Tools',
+      assets: 'Assets',
+      tasks: 'Tasks',
+      messages: 'Messages',
+      billingPro: 'Subscribe Pro',
+      settings: 'Settings',
+      account: 'Account',
+    },
+    status: {
+      ready: 'System ready',
+    },
+  },
+  home: {
+    hero: {
+      title: 'Start Smart Slicing',
+      description: 'Select a local video or paste a video link. AutoCut recognizes speech, plans highlight moments, and renders publishable clips.',
+      action: 'Start Smart Slice',
+    },
+    url: {
+      title: 'Paste an online video link',
+      description: 'Send an external video URL into the smart slicing workflow so the app can download, transcribe, and generate highlights.',
+      placeholder: 'https://...',
+      action: 'Analyze Link',
+    },
+    tools: {
+      title: 'Recommended Tools',
+      fallbackDescription: 'Smart media processing tool',
+    },
+  },
+  slicer: {
+    speechSetup: {
+      title: 'Prepare Speech Recognition',
+      smartSliceFailedPrefix: 'Smart Slice failed: ',
+      smartSliceFailedFallback: 'Smart Slice failed. Open the console for AutoCut diagnostic logs.',
+      toast: {
+        ready: 'Speech recognition is ready. Smart Slice will continue.',
+        notReady: 'Speech recognition is not ready yet.',
+        submitCreated: 'Smart video slicing task created and submitted',
+        submitted: 'Slicing task submitted. Cloud analysis is starting.',
+      },
+      error: {
+        integrity: 'The downloaded speech recognition model did not pass integrity verification. Prepare it again so the app can replace the invalid file.',
+        incomplete: 'The speech recognition model has not finished downloading. Retry setup, or copy the model link in Settings and select a complete model file manually if the network is restricted.',
+        download: 'The speech recognition model cannot be downloaded right now. Check the network and retry, or copy the model link in Speech Recognition settings and import it manually.',
+        executable: 'The local speech recognition app is not ready. Open Speech Recognition settings to run automatic setup or select a local whisper-cli.',
+        model: 'The offline speech recognition model is not ready. Retry setup, or select a fully downloaded model file in Settings.',
+        generic: 'Speech recognition setup failed. Retry, or open Speech Recognition settings for details.',
+        inspectFailed: 'Speech recognition readiness inspection failed.',
+      },
+      progress: {
+        waiting: 'Waiting for offline model setup',
+        completed: 'Model downloaded, verified, and saved',
+        skipped: 'Download the model manually, then select it in Settings',
+      },
+      status: {
+        modelSavedNeedsCheck: 'The offline model has been downloaded and verified. One final availability check is still required before Smart Slice can continue.',
+        checking: 'Checking the speech recognition capability required by Smart Slice.',
+        ready: 'Speech recognition is ready. Smart Slice can continue analyzing spoken content.',
+        executableReady: 'The local speech recognition app was found. The app will save the probe result before slicing starts.',
+        executableMissing: 'No usable local speech recognition app was found. Open Speech Recognition settings to run automatic setup or select an installed whisper-cli.',
+        needsModel: 'An offline recognition model is required. The app will download and verify {{model}}, then continue Smart Slice.',
+        needsTest: 'The speech recognition app and model are selected. A final availability check is still required.',
+        fallback: 'Speech recognition must be ready before Smart Slice can analyze spoken content in the video.',
+      },
+      checklist: {
+        executable: 'Recognition app',
+        model: 'Offline model',
+        finalCheck: 'Availability check',
+        detected: 'Detected',
+        pending: 'Pending',
+        completed: 'Verified and saved',
+        passed: 'Passed',
+        needsAttention: 'Needs attention',
+        pendingCheck: 'Waiting for check',
+      },
+      executable: {
+        title: 'Local recognition app',
+        detected: 'Usable app found',
+        checking: 'Checking app',
+        ready: 'Ready',
+        pending: 'Pending',
+        defaultPath: 'The app will detect the local recognition app automatically',
+      },
+      model: {
+        title: 'Offline recognition model',
+        recommended: 'Recommended model',
+        completed: 'Completed',
+        retry: 'Retry required',
+        downloading: 'Downloading',
+        waiting: 'Waiting',
+        defaultPath: 'The app will save the offline model automatically',
+      },
+      diagnostics: 'Details',
+      action: {
+        close: 'Close speech recognition setup',
+        openSettings: 'Open Speech Recognition settings',
+        retry: 'Retry setup',
+        preparing: 'Preparing',
+      },
+    },
+  },
+  tools: {
+    page: {
+      title: 'Tool Center',
+      description: 'Choose media processing capabilities for video, audio, subtitles, and AI analysis workflows.',
+    },
+    search: {
+      placeholder: 'Search tools...',
+    },
+    category: {
+      all: 'All Tools',
+      video: 'Video Tools',
+      audio: 'Audio Tools',
+      ai: 'AI Tools',
+    },
+  },
   task: {
     type: {
       [AUTOCUT_TASK_TYPE.videoSlice]: 'Video slicing',
@@ -723,6 +1679,42 @@ export const AUTOCUT_EN_US_MESSAGES = {
       [AUTOCUT_TASK_TYPE.videoEnhance]: 'Video enhancement',
       [AUTOCUT_TASK_TYPE.subtitleTranslate]: 'Subtitle translation',
       [AUTOCUT_TASK_TYPE.voiceTranslate]: 'Voice translation',
+    },
+  },
+  taskDetail: {
+    reviewRisk: AUTOCUT_TASK_DETAIL_REVIEW_RISK_EN_US_MESSAGES,
+    slicingLogic: {
+      title: 'Slicing logic',
+      summary: 'Smart slicing generates candidate clips from structured transcript semantic windows, content arc completeness, topic coherence, publishability standards, and audio activity boundaries.',
+      sliceCount: 'Slice count',
+      reasonUnavailable: 'This slice has no dedicated AI selection reason. Review the semantic, boundary, and risk evidence below.',
+    },
+    transcript: {
+      title: 'Speech transcript',
+      segmentCount: '{{count}} transcript segments',
+      exportTxt: 'Speech transcript TXT',
+      subtitle: 'Subtitle',
+      copyTranscript: 'Copy transcript',
+      copyTranscriptText: 'Copy transcript text',
+      copyAll: 'Copy all',
+      copySegment: 'Copy segment',
+      copySegmentAria: 'Copy transcript segment {{index}}',
+      editSegmentAria: 'Edit transcript segment {{index}}',
+      editTextAria: 'Edit transcript text',
+      copied: 'Copied',
+      segmentCopied: 'Segment copied',
+      copyFailed: 'Copy failed',
+      save: 'Save',
+      saving: 'Saving',
+      saved: 'Saved',
+      saveFailed: 'Save failed',
+      saveEdits: 'Save transcript edits',
+      cancel: 'Cancel',
+      cancelEdits: 'Cancel transcript edits',
+      edit: 'Edit',
+      editTranscript: 'Edit transcript',
+      corrected: 'Manually corrected',
+      correctionCount: '{{count}} corrections',
     },
   },
   tool: {

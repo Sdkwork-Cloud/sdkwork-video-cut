@@ -24,7 +24,7 @@ Feature services must resolve the configured root through
 commands as `outputRootDir`. `outputRootDir` must be an absolute directory path.
 If it is blank or missing, the native host uses the app data media root.
 Imported source copies are stored under `{outputRootDir}/inputs/`; generated
-task results are stored under `{outputRootDir}/tasks/{task_uuid}/outputs/`.
+task results are stored under `{outputRootDir}/tasks/{task_uuid}/`.
 `ops_task.input_json` must record `outputRootDir` when one was configured so
 `autocut_retry_native_task` can preserve the source task output root.
 
@@ -156,7 +156,7 @@ parameters from UI-only task records.
 `autocut_extract_audio` is an assetUuid based operation. Frontend packages must
 pass `assetUuid`, not a raw path, and the native host resolves
 `media_asset.source_uri`, runs FFmpeg against the sandbox copy, writes the
-artifact under `{outputRootDir}/tasks/{task_uuid}/outputs/`, returns `taskOutputDir`, and
+artifact under `{outputRootDir}/tasks/{task_uuid}/`, returns `taskOutputDir`, and
 registers `media_artifact`, `ops_task`, and `ops_stage_run` for traceability.
 
 `autocut_generate_gif` is an assetUuid based operation. Frontend packages must
@@ -164,7 +164,7 @@ pass `assetUuid`, `fps`, `resolution`, and `dither`, not a raw local path. The
 native host resolves the imported sandbox copy from `media_asset.source_uri`,
 validates the supported GIF encoding options, runs FFmpeg with a deterministic
 palette filter, writes an `image/gif` artifact under
-`{outputRootDir}/tasks/{task_uuid}/outputs/`, returns `taskOutputDir`, and registers
+`{outputRootDir}/tasks/{task_uuid}/`, returns `taskOutputDir`, and registers
 `media_artifact`, `ops_task`, and `ops_stage_run`.
 
 `autocut_slice_video` is an assetUuid based operation for the intelligent
@@ -178,8 +178,8 @@ minimum and maximum, fill deterministic non-overlapping gaps until the standard
 clip count is reached, and only then invoke the native command. The native host
 resolves the imported sandbox copy, validates clip count and duration, runs
 FFmpeg once per clip, writes every
-`video/mp4` slice under the same `{outputRootDir}/tasks/{task_uuid}/outputs/`,
-generates a JPEG thumbnail for each slice under the same `outputs/` directory,
+`video/mp4` slice under the same `{outputRootDir}/tasks/{task_uuid}/`,
+generates a JPEG thumbnail for each slice under the task `cover/` subdirectory,
 returns `taskOutputDir`, and registers one `media_artifact` row per video slice
 plus one thumbnail artifact row per slice. The typed result must include
 `artifactPath` and `thumbnailArtifactPath`; frontend services must convert both
@@ -206,7 +206,7 @@ speechRuntimeConfig.configured)` before calling transcription.
 testing and selecting the local toolchain. The native host must fail closed when
 the toolchain is not configured and must not fabricate transcript text.
 Successful runs write a JSON transcript under
-`{outputRootDir}/tasks/{task_uuid}/outputs/`, register a `media_artifact`
+`{outputRootDir}/tasks/{task_uuid}/`, register a `media_artifact`
 transcript artifact, and return `segments` with `startMs`, `endMs`, `text`, and
 optional `speaker`.
 
@@ -233,7 +233,7 @@ pass `assetUuid` and `compressionMode`, not a raw local path. The native host
 resolves the imported sandbox copy from `media_asset.source_uri`, validates the
 supported compression mode, runs FFmpeg with `libx264`, `-crf`, `-preset`, and
 `-movflags +faststart`, writes a `video/mp4` artifact under
-`{outputRootDir}/tasks/{task_uuid}/outputs/`, returns `taskOutputDir`, and registers
+`{outputRootDir}/tasks/{task_uuid}/`, returns `taskOutputDir`, and registers
 `media_artifact`, `ops_task`, and `ops_stage_run`. The typed result must include
 `originalByteSize` and `byteSize` so the frontend can persist `fileSizeStats`
 without inspecting local files.
@@ -243,7 +243,7 @@ pass `assetUuid`, `targetFormat`, `videoCodec`, `audioCodec`, and `resolution`,
 not a raw local path. The native host resolves the imported sandbox copy from
 `media_asset.source_uri`, validates target container, codec, and resolution
 against a whitelist, runs FFmpeg with command arguments, writes a video artifact
-under `{outputRootDir}/tasks/{task_uuid}/outputs/`, returns `taskOutputDir`, and
+under `{outputRootDir}/tasks/{task_uuid}/`, returns `taskOutputDir`, and
 registers `media_artifact`, `ops_task`, and `ops_stage_run`. `auto` codec
 selections are normalized by the native host to deterministic defaults for the
 target container.
@@ -254,7 +254,7 @@ local path. The native host resolves the imported sandbox copy from
 `media_asset.source_uri`, validates resolution, mode, and frame rate against a
 whitelist, runs FFmpeg with deterministic `scale`, `unsharp`, and color
 adjustment filters, writes a `video/mp4` artifact under
-`{outputRootDir}/tasks/{task_uuid}/outputs/`, returns `taskOutputDir`, and registers
+`{outputRootDir}/tasks/{task_uuid}/`, returns `taskOutputDir`, and registers
 `media_artifact`, `ops_task`, and `ops_stage_run`. This native baseline is
 deterministic FFmpeg enhancement, not a claim that AI super-resolution runtime
 is bundled.
@@ -265,7 +265,7 @@ root. Feature services must resolve it through `resolveAutoCutOutputRootDir`
 and pass it to native import and processing commands as `outputRootDir`.
 `outputRootDir` must be an absolute directory path. Imported source copies are
 stored under `{outputRootDir}/inputs/`; generated task results are stored under
-`{outputRootDir}/tasks/{task_uuid}/outputs/`. `ops_task.input_json` must record
+`{outputRootDir}/tasks/{task_uuid}/`. `ops_task.input_json` must record
 `outputRootDir` when one was configured so `autocut_retry_native_task` can
 preserve the source task's output root.
 

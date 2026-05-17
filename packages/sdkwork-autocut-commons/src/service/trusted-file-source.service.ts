@@ -4,6 +4,8 @@ export interface AutoCutTrustedFileSourceDescriptor {
   byteSize: number;
   mediaType: string;
   mimeType: string;
+  hasAudioStream: boolean;
+  hasVideoStream: boolean;
 }
 
 export interface AutoCutTrustedLocalFile extends File {
@@ -11,6 +13,13 @@ export interface AutoCutTrustedLocalFile extends File {
   readonly path: string;
   readonly byteSize: number;
   readonly mediaType: string;
+  readonly hasAudioStream: boolean;
+  readonly hasVideoStream: boolean;
+}
+
+export interface AutoCutRequiredMediaStreams {
+  audio?: boolean;
+  video?: boolean;
 }
 
 export interface AutoCutTrustedFileSourceDrop {
@@ -35,6 +44,8 @@ export function createAutoCutTrustedLocalFile(
   const byteSize = descriptor.byteSize;
   const mimeType = descriptor.mimeType.trim() || 'application/octet-stream';
   const mediaType = descriptor.mediaType.trim() || 'binary';
+  const hasAudioStream = descriptor.hasAudioStream;
+  const hasVideoStream = descriptor.hasVideoStream;
 
   if (!sourcePath) {
     throw new Error('AutoCut trusted file source requires a sourcePath.');
@@ -44,6 +55,9 @@ export function createAutoCutTrustedLocalFile(
   }
   if (!Number.isSafeInteger(byteSize) || byteSize < 0) {
     throw new Error('AutoCut trusted file source byteSize must be a safe non-negative integer.');
+  }
+  if (typeof hasAudioStream !== 'boolean' || typeof hasVideoStream !== 'boolean') {
+    throw new Error('AutoCut trusted file source requires native audio/video stream evidence.');
   }
 
   const trustedFile = new File([], name, { type: mimeType }) as AutoCutTrustedLocalFile;
@@ -67,6 +81,16 @@ export function createAutoCutTrustedLocalFile(
       configurable: false,
       enumerable: true,
       value: mediaType,
+    },
+    hasAudioStream: {
+      configurable: false,
+      enumerable: true,
+      value: hasAudioStream,
+    },
+    hasVideoStream: {
+      configurable: false,
+      enumerable: true,
+      value: hasVideoStream,
     },
     size: {
       configurable: true,
@@ -103,6 +127,29 @@ export function resolveAutoCutTrustedSourcePath(file: File | null | undefined) {
 
 export function hasAutoCutTrustedSourcePath(file: File | null | undefined): file is AutoCutTrustedLocalFile {
   return Boolean(resolveAutoCutTrustedSourcePath(file));
+}
+
+export function validateAutoCutTrustedFileRequiredStreams(
+  file: File,
+  requiredStreams: AutoCutRequiredMediaStreams | undefined,
+) {
+  if (!requiredStreams || !resolveAutoCutTrustedSourcePath(file)) {
+    return null;
+  }
+
+  const trustedFile = file as File & {
+    hasAudioStream?: unknown;
+    hasVideoStream?: unknown;
+  };
+
+  if (requiredStreams.audio === true && trustedFile.hasAudioStream !== true) {
+    return 'AutoCut selected media requires an audio stream.';
+  }
+  if (requiredStreams.video === true && trustedFile.hasVideoStream !== true) {
+    return 'AutoCut selected media requires a video stream.';
+  }
+
+  return null;
 }
 
 export function dispatchAutoCutTrustedFileSourceDrop(detail: AutoCutTrustedFileSourceDrop) {

@@ -95,7 +95,7 @@ assert.equal(evidence.readiness.nativeReleaseSmokeReady, false);
 assert.equal(evidence.readiness.ffmpegExecutionReady, false);
 assert.equal(evidence.readiness.videoSliceSmokeReady, true);
 assert.equal(evidence.readiness.realLlmSecretStoreSmokeReady, false);
-assert.equal(evidence.commandMatrix.length, 8);
+assert.equal(evidence.commandMatrix.length, 10);
 assert.deepEqual(
   evidence.commandMatrix.map((command) => command.command),
   [
@@ -103,6 +103,8 @@ assert.deepEqual(
     'autocut_ffmpeg_probe',
     'autocut_audio_smoke',
     'autocut_slice_video',
+    'autocut_fingerprint_video_file',
+    'autocut_probe_video_file_identity',
     'autocut_recover_native_tasks',
     'autocut_save_llm_secret',
     'autocut_get_llm_secret',

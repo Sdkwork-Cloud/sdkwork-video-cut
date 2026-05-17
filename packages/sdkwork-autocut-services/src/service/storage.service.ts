@@ -9,6 +9,8 @@ export const AUTO_CUT_STORAGE_KEYS = {
   dismissedNativeTasks: 'dismissed_native_tasks',
   messages: 'messages',
   settings: 'settings',
+  videoDedupFingerprints: 'video_dedup_fingerprints',
+  videoDedupVisualEvidence: 'video_dedup_visual_evidence',
   workflowPreferences: 'workflow_preferences',
 } as const;
 

@@ -3,13 +3,20 @@ import {
   AUTOCUT_TASK_TYPE,
   AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD,
   type AppTask,
+  type AutoCutNativeTaskProgressEvent,
+  type AutoCutTaskExecutionCheckpoint,
+  type AutoCutTaskExecutionLog,
+  type AutoCutTaskExecutionLogSeverity,
+  type AutoCutTaskExecutionStep,
+  type AutoCutTaskExecutionStepStatus,
   type AutoCutTranscriptSegment,
   type TaskSliceResult,
   type TaskStatus,
   type TaskType,
 } from '@sdkwork/autocut-types';
-import { sortAutoCutRecordsByCreatedAtDesc } from './datetime.service';
+import { getAutoCutTimestampMs, sortAutoCutRecordsByCreatedAtDesc } from './datetime.service';
 import { dispatchAutoCutEvent } from './events.service';
+import { createAutoCutId, createAutoCutTimestamp } from './identity.service';
 import {
   assertAutoCutNativeArtifactInsideTaskOutputDir,
   assertAutoCutNativeVideoCoverInsideTaskCoverDir,
@@ -27,6 +34,12 @@ const {
   maxTrailingSilenceMs: MAX_RECOVERED_SMART_SLICE_TRAILING_SILENCE_MS,
   minTranscriptCoverageScore: MIN_RECOVERED_SMART_SLICE_TRANSCRIPT_COVERAGE_SCORE,
   acceptedSpeechContinuityGrades: RECOVERED_SMART_SLICE_ACCEPTED_SPEECH_CONTINUITY_GRADES,
+  audioCleanupProfile: RECOVERED_SMART_SLICE_AUDIO_CLEANUP_PROFILE,
+  minAudioActivityConfidence: MIN_RECOVERED_SMART_SLICE_AUDIO_ACTIVITY_CONFIDENCE,
+  requiredAudioActivityAnalysisFilter: RECOVERED_SMART_SLICE_REQUIRED_AUDIO_ACTIVITY_ANALYSIS_FILTER,
+  rawAudioActivityAnalysisFilter: RECOVERED_SMART_SLICE_RAW_AUDIO_ACTIVITY_ANALYSIS_FILTER,
+  acceptedBoundaryDecisionSources: RECOVERED_SMART_SLICE_ACCEPTED_BOUNDARY_DECISION_SOURCES,
+  acceptedTailTreatments: RECOVERED_SMART_SLICE_ACCEPTED_TAIL_TREATMENTS,
 } = AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD;
 const RECOVERED_SMART_SLICE_TRANSCRIPT_BOUNDARY_TOLERANCE_MS = 80;
 
@@ -44,6 +57,18 @@ const OPS_STATUS_FAILED = 3;
 const OPS_STATUS_CANCEL_REQUESTED = 4;
 const OPS_STATUS_CANCELED = 5;
 const OPS_STATUS_INTERRUPTED = 6;
+
+const NATIVE_TASK_EVENT_TYPE_STARTED = 1;
+const NATIVE_TASK_EVENT_TYPE_COMPLETED = 2;
+const NATIVE_TASK_EVENT_TYPE_FAILED = 3;
+const NATIVE_TASK_EVENT_TYPE_CANCEL_REQUESTED = 4;
+const NATIVE_TASK_EVENT_TYPE_CANCELED = 5;
+const NATIVE_TASK_EVENT_TYPE_INTERRUPTED = 6;
+const NATIVE_TASK_EVENT_TYPE_RETRY_REQUESTED = 7;
+const NATIVE_TASK_EVENT_TYPE_PROGRESS = 8;
+const NATIVE_TASK_PROGRESS_LOG_MILESTONE_PERCENT = 5;
+const NATIVE_TASK_PROGRESS_PROJECTION_STATE_LIMIT = 1_000;
+const NATIVE_TASK_PROGRESS_EVENT_UUID_STATE_LIMIT = 5_000;
 
 const TASK_TYPE_BY_NATIVE_TYPE: Record<number, TaskType> = {
   [OPS_TASK_TYPE_VIDEO_SLICE]: AUTOCUT_TASK_TYPE.videoSlice,
@@ -72,6 +97,9 @@ interface NativeTaskProjection {
   errorMessage?: string;
   failureDiagnostics?: string;
   progressMessage?: string;
+  currentStepId?: string;
+  executionSteps?: AutoCutTaskExecutionStep[];
+  executionLogs?: AutoCutTaskExecutionLog[];
   completedAt?: string;
   resultCount?: number;
   generatedAssetIds?: string[];
@@ -92,18 +120,55 @@ interface NativeTaskProjection {
 interface NativeVideoSliceRecoveryEvidence {
   startMs?: number;
   durationMs?: number;
+  sourceSegments?: TaskSliceResult['sourceSegments'];
+  renderedDurationMs?: number;
+  removedSilenceMs?: number;
+  internalSilenceTrimCount?: number;
   sourceStartMs?: number;
   sourceEndMs?: number;
   speechStartMs?: number;
   speechEndMs?: number;
   boundaryPaddingBeforeMs?: number;
   boundaryPaddingAfterMs?: number;
+  audioCleanupProfile?: string;
+  noiseReductionApplied?: boolean;
+  boundaryDecisionSource?: TaskSliceResult['boundaryDecisionSource'];
+  audioActivityStartMs?: number;
+  audioActivityEndMs?: number;
+  audioActivityConfidence?: number;
+  audioActivityAnalysisFilter?: string;
+  leadingSilenceMs?: number;
+  trailingSilenceMs?: number;
+  leadingSilenceTrimMs?: number;
+  trailingSilenceTrimMs?: number;
+  tailTreatment?: TaskSliceResult['tailTreatment'];
   transcriptText?: string;
   transcriptSegments?: AutoCutTranscriptSegment[];
   transcriptSegmentCount?: number;
   transcriptCoverageScore?: number;
   speechContinuityGrade?: TaskSliceResult['speechContinuityGrade'];
+  risks?: string[];
 }
+
+type AutoCutSliceAudioCleanupEvidence = Pick<
+  TaskSliceResult,
+  | 'audioCleanupProfile'
+  | 'noiseReductionApplied'
+  | 'boundaryDecisionSource'
+  | 'audioActivityStartMs'
+  | 'audioActivityEndMs'
+  | 'audioActivityConfidence'
+  | 'audioActivityAnalysisFilter'
+  | 'leadingSilenceMs'
+  | 'trailingSilenceMs'
+  | 'leadingSilenceTrimMs'
+  | 'trailingSilenceTrimMs'
+  | 'sourceSegments'
+  | 'renderedDurationMs'
+  | 'removedSilenceMs'
+  | 'internalSilenceTrimCount'
+  | 'tailTreatment'
+>;
 
 interface NativeSpeechTranscriptRecoveryEvidence {
   sourceAssetUuid: string;
@@ -134,12 +199,52 @@ export interface AutoCutTaskBulkRetryResult extends AutoCutTaskBulkOperationResu
   retryTaskIds: string[];
 }
 
+export interface AutoCutTaskSliceTranscriptUpdate {
+  transcriptText?: string;
+  transcriptSegments?: readonly AutoCutTranscriptSegment[];
+}
+
+export interface AutoCutTaskResumeResult {
+  success: boolean;
+  taskId: string;
+  stepId: string;
+  nativeTaskId?: string;
+  message?: string;
+}
+
+export type AutoCutTaskResumeHandler = (
+  task: AppTask,
+  stepId: string,
+) => Promise<AutoCutTaskResumeResult>;
+
+export interface AutoCutTaskCancelResult {
+  success: boolean;
+  taskId: string;
+  nativeTaskId?: string;
+  message?: string;
+}
+
+export type AutoCutTaskCancelHandler = (
+  task: AppTask,
+) => Promise<AutoCutTaskCancelResult | void> | AutoCutTaskCancelResult | void;
+
 interface TaskLookupResult {
   localTasks: AppTask[];
   tasksById: Map<string, AppTask>;
   nativeTaskIds: Set<string>;
   skippedTaskIds: string[];
 }
+
+interface NativeTaskProgressProjectionState {
+  progressBucket: number;
+  progress: number;
+}
+
+const taskResumeHandlers = new Map<TaskType, AutoCutTaskResumeHandler>();
+const taskCancelHandlers = new Map<TaskType, AutoCutTaskCancelHandler>();
+const taskCancellationRequests = new Set<string>();
+const nativeTaskProgressProjectionStateByKey = new Map<string, NativeTaskProgressProjectionState>();
+const nativeTaskProgressEventUuidSeenBeforeStorage = new Map<string, true>();
 
 export async function getTasks(): Promise<AppTask[]> {
   await randomDelay(20, 50);
@@ -177,13 +282,232 @@ export async function updateTask(taskId: string, updates: Partial<AppTask>): Pro
   }
 }
 
+export async function projectNativeTaskProgressEventToTask(
+  progress: AutoCutNativeTaskProgressEvent,
+): Promise<AppTask | undefined> {
+  const workflowTaskId = readString(progress.workflowTaskId ?? progress.payload?.workflowTaskId);
+  const nativeTaskId = resolveNativeProgressTaskUuid(progress);
+  const targetTaskId = workflowTaskId ?? nativeTaskId;
+  if (!targetTaskId) {
+    return undefined;
+  }
+  if (hasSeenNativeTaskProgressEventUuidBeforeStorage(progress)) {
+    return undefined;
+  }
+  if (!shouldProjectNativeTaskProgressEventBeforeStorage(progress, targetTaskId, nativeTaskId)) {
+    return undefined;
+  }
+
+  const localTasks = readLocalTasks();
+  const taskIndex = localTasks.findIndex((task) =>
+    task.id === targetTaskId ||
+    (nativeTaskId ? task.nativeTaskId === nativeTaskId : false)
+  );
+  if (taskIndex < 0) {
+    return undefined;
+  }
+
+  const task = localTasks[taskIndex];
+  if (!task) {
+    return undefined;
+  }
+
+  const log = mapNativeTaskProgressEventToExecutionLog(progress, task.id, nativeTaskId);
+  if (isDuplicateNativeTaskProgressEvent(task.executionLogs, log)) {
+    return task;
+  }
+  if (!shouldPersistNativeTaskProgressEvent(task, log)) {
+    return task;
+  }
+
+  const executionLogs = appendNativeTaskExecutionLog(task.executionLogs, log);
+  const executionSteps = updateNativeTaskProgressExecutionSteps(task.executionSteps, log, task.status);
+  const currentStep = [...executionSteps].reverse().find((step) =>
+    step.status === 'running' || step.status === 'cancelRequested'
+  ) ?? [...executionSteps].reverse().find((step) => step.status !== 'completed');
+  const progressValue = typeof progress.progress === 'number' ? clampProgress(progress.progress) : undefined;
+  const nextProgress = progressValue === undefined ? task.progress : Math.max(task.progress, progressValue);
+  const progressMessage = progress.message?.trim()
+    || (progress.operation && progress.phase ? `${progress.operation}: ${progress.phase}` : undefined)
+    || progress.phase
+    || task.progressMessage;
+  const updatedTask: AppTask = {
+    ...task,
+    ...(nativeTaskId ? { nativeTaskId } : {}),
+    ...(currentStep ? { currentStepId: currentStep.id } : task.currentStepId ? { currentStepId: task.currentStepId } : {}),
+    ...(executionSteps.length ? { executionSteps } : {}),
+    ...(executionLogs.length ? { executionLogs } : {}),
+    progress: nextProgress,
+    ...(progressMessage ? { progressMessage } : {}),
+  };
+
+  writeAutoCutStorage(
+    'tasks',
+    localTasks.map((candidate, index) => (index === taskIndex ? updatedTask : candidate)),
+  );
+  dispatchAutoCutEvent('taskUpdated', updatedTask);
+  recordNativeTaskProgressEventUuidBeforeStorage(progress);
+  recordNativeTaskProgressProjectionState(progress, targetTaskId, nativeTaskId);
+  return updatedTask;
+}
+
+export async function updateTaskSliceTranscript(
+  taskId: string,
+  sliceId: string,
+  update: readonly AutoCutTranscriptSegment[] | AutoCutTaskSliceTranscriptUpdate,
+): Promise<AppTask> {
+  const localTasks = readLocalTasks();
+  const visibleTasks = await getTasks();
+  const visibleTask = visibleTasks.find((task) => task.id === taskId);
+  if (!visibleTask) {
+    throw new Error('AutoCut task transcript edit failed because the task was not found.');
+  }
+  if (visibleTask.type !== AUTOCUT_TASK_TYPE.videoSlice || !visibleTask.sliceResults?.length) {
+    throw new Error('AutoCut task transcript edit requires a completed video slice task.');
+  }
+
+  const sliceIndex = visibleTask.sliceResults.findIndex((slice) => slice.id === sliceId);
+  if (sliceIndex < 0) {
+    throw new Error('AutoCut task transcript edit failed because the slice was not found.');
+  }
+
+  const transcriptUpdate = isTaskSliceTranscriptSegmentUpdate(update)
+    ? { transcriptSegments: update }
+    : update;
+  const currentSlice = visibleTask.sliceResults[sliceIndex];
+  if (!currentSlice) {
+    throw new Error('AutoCut task transcript edit failed because the slice was not found.');
+  }
+  const updatedSlice = createUpdatedTaskSliceTranscript(currentSlice, transcriptUpdate);
+  const updatedTask: AppTask = {
+    ...visibleTask,
+    sliceResults: visibleTask.sliceResults.map((slice, index) => (index === sliceIndex ? updatedSlice : slice)),
+  };
+  const replacedLocalTask = localTasks.some((task) => task.id === taskId);
+  const nextLocalTasks = replacedLocalTask
+    ? localTasks.map((task) => (task.id === taskId ? updatedTask : task))
+    : [updatedTask, ...localTasks];
+
+  writeAutoCutStorage('tasks', nextLocalTasks);
+  dispatchAutoCutEvent('taskUpdated', updatedTask);
+  return updatedTask;
+}
+
+export function registerAutoCutTaskResumeHandler(
+  taskType: TaskType,
+  handler: AutoCutTaskResumeHandler,
+) {
+  taskResumeHandlers.set(taskType, handler);
+  return () => {
+    if (taskResumeHandlers.get(taskType) === handler) {
+      taskResumeHandlers.delete(taskType);
+    }
+  };
+}
+
+export function registerAutoCutTaskCancelHandler(
+  taskType: TaskType,
+  handler: AutoCutTaskCancelHandler,
+) {
+  taskCancelHandlers.set(taskType, handler);
+  return () => {
+    if (taskCancelHandlers.get(taskType) === handler) {
+      taskCancelHandlers.delete(taskType);
+    }
+  };
+}
+
+export function isAutoCutTaskCancellationRequested(taskId: string) {
+  return taskCancellationRequests.has(taskId.trim());
+}
+
+export function clearAutoCutTaskCancellationRequest(taskId: string) {
+  taskCancellationRequests.delete(taskId.trim());
+}
+
+export async function resumeTaskFromStep(
+  taskId: string,
+  stepId: string,
+): Promise<AutoCutTaskResumeResult> {
+  const normalizedTaskId = taskId.trim();
+  const normalizedStepId = stepId.trim();
+  if (!normalizedTaskId || !normalizedStepId) {
+    throw new Error('AutoCut task resume requires a task id and step id.');
+  }
+
+  const task = readLocalTasks().find((candidate) => candidate.id === normalizedTaskId);
+  if (!task) {
+    throw new Error('AutoCut task resume failed because the task was not found.');
+  }
+  if (!isAutoCutTaskResumableStatus(task.status)) {
+    throw new Error('AutoCut task resume requires a failed, canceled, or interrupted task.');
+  }
+
+  const step = task.executionSteps?.find((candidate) => candidate.id === normalizedStepId);
+  const checkpoint = task.executionCheckpoint;
+  if (!step?.canResumeFromHere && !checkpoint?.resumeFromStepIds.includes(normalizedStepId)) {
+    throw new Error(`AutoCut task resume failed because step ${normalizedStepId} is not resumable.`);
+  }
+  if (!checkpoint) {
+    throw new Error('AutoCut task resume failed because the task has no execution checkpoint.');
+  }
+
+  const handler = taskResumeHandlers.get(task.type);
+  if (!handler) {
+    throw new Error(`AutoCut task resume failed because no resume handler is registered for task type ${task.type}.`);
+  }
+
+  const timestamp = createAutoCutTimestamp();
+  const resumeLog = createTaskResumeExecutionLog(task, normalizedStepId, 'task-resume-started', 'info', {
+    timestamp,
+    message: createTaskResumeStartedMessage(checkpoint, normalizedStepId),
+    checkpoint,
+  });
+  const preparedTask: AppTask = {
+    ...task,
+    status: AUTOCUT_TASK_STATUS.processing,
+    progressMessage: `Resuming ${checkpoint.workflowId} from ${normalizedStepId}...`,
+    currentStepId: normalizedStepId,
+    executionLogs: [...(task.executionLogs ?? []), resumeLog].slice(-500),
+    ...(task.executionSteps
+      ? { executionSteps: markTaskResumeStepRunning(task.executionSteps, normalizedStepId, timestamp) }
+      : {}),
+  };
+  clearAutoCutTaskCancellationRequest(normalizedTaskId);
+  replaceLocalTask(normalizedTaskId, preparedTask);
+
+  try {
+    return await handler(preparedTask, normalizedStepId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const failedTask = readLocalTasks().find((candidate) => candidate.id === normalizedTaskId) ?? preparedTask;
+    const failedLog = createTaskResumeExecutionLog(failedTask, normalizedStepId, 'task-resume-failed', 'error', {
+      timestamp: createAutoCutTimestamp(),
+      message,
+      ...(failedTask.executionCheckpoint ? { checkpoint: failedTask.executionCheckpoint } : {}),
+    });
+    replaceLocalTask(normalizedTaskId, {
+      ...failedTask,
+      status: AUTOCUT_TASK_STATUS.failed,
+      progressMessage: 'Task resume failed.',
+      errorMessage: message,
+      executionLogs: [...(failedTask.executionLogs ?? []), failedLog].slice(-500),
+    });
+    throw error;
+  }
+}
+
 export async function deleteTask(taskId: string): Promise<void> {
   const tasks = readLocalTasks();
+  const deletedTask = tasks.find((task) => task.id === taskId);
   writeAutoCutStorage(
     'tasks',
     tasks.filter((task) => task.id !== taskId),
   );
-  writeAutoCutStorage('dismissedNativeTasks', addDismissedNativeTaskId(taskId));
+  writeAutoCutStorage(
+    'dismissedNativeTasks',
+    addDismissedNativeTaskIds([taskId, ...(deletedTask?.nativeTaskId ? [deletedTask.nativeTaskId] : [])]),
+  );
   dispatchAutoCutEvent('taskDeleted', { id: taskId });
 }
 
@@ -195,11 +519,15 @@ export async function deleteTasks(taskIds: string[]): Promise<AutoCutTaskBulkDel
 
   if (deletedTaskIds.length > 0) {
     const deletedTaskIdSet = new Set(deletedTaskIds);
+    const dismissedTaskIds = deletedTaskIds.flatMap((taskId) => {
+      const task = tasksById.get(taskId);
+      return [taskId, ...(task?.nativeTaskId ? [task.nativeTaskId] : [])];
+    });
     writeAutoCutStorage(
       'tasks',
       localTasks.filter((task) => !deletedTaskIdSet.has(task.id)),
     );
-    writeAutoCutStorage('dismissedNativeTasks', addDismissedNativeTaskIds(deletedTaskIds));
+    writeAutoCutStorage('dismissedNativeTasks', addDismissedNativeTaskIds(dismissedTaskIds));
     deletedTaskIds.forEach((taskId) => dispatchAutoCutEvent('taskDeleted', { id: taskId }));
   }
 
@@ -217,40 +545,65 @@ export async function deleteTasks(taskIds: string[]): Promise<AutoCutTaskBulkDel
 export async function cancelTasks(taskIds: string[]): Promise<AutoCutTaskBulkCancelResult> {
   const requestedTaskIds = taskIds.filter((taskId) => typeof taskId === 'string' && taskId.trim());
   const uniqueTaskIds = [...new Set(requestedTaskIds)];
-  const { tasksById, nativeTaskIds, skippedTaskIds: missingTaskIds } = await findTasksByIds(uniqueTaskIds);
+  const { localTasks, tasksById, nativeTaskIds, skippedTaskIds: missingTaskIds } = await findTasksByIds(uniqueTaskIds);
   const nativeHostClient = getAutoCutNativeHostClient();
   const capabilities = await nativeHostClient.getCapabilities();
   const canceledTaskIds: string[] = [];
   const skippedTaskIds = [...missingTaskIds];
+  const localTaskIdSet = new Set(localTasks.map((task) => task.id));
 
-  if (!capabilities.nativeTaskCancelCommandReady) {
-    skippedTaskIds.push(...uniqueTaskIds.filter((taskId) => tasksById.has(taskId)));
-  } else {
-    for (const taskId of uniqueTaskIds) {
-      const task = tasksById.get(taskId);
-      if (!task) {
-        continue;
-      }
-      if (!nativeTaskIds.has(taskId) || task.status !== AUTOCUT_TASK_STATUS.processing) {
-        skippedTaskIds.push(taskId);
-        continue;
-      }
+  for (const taskId of uniqueTaskIds) {
+    const task = tasksById.get(taskId);
+    if (!task) {
+      continue;
+    }
+    if (!isAutoCutTaskCancelableStatus(task.status)) {
+      skippedTaskIds.push(taskId);
+      continue;
+    }
 
-      try {
-        const result = await nativeHostClient.cancelNativeTask({ taskUuid: taskId });
-        if (!result.canceled) {
+    const workflowCancelResult = localTaskIdSet.has(taskId)
+      ? await requestAutoCutWorkflowTaskCancellation(task)
+      : { accepted: false, message: 'No local workflow task is registered for cancellation.' };
+    const nativeTaskId = nativeTaskIds.has(taskId) ? resolveNativeTaskOperationId(task) : undefined;
+    let nativeCancelResult: Awaited<ReturnType<typeof nativeHostClient.cancelNativeTask>> | undefined;
+    if (nativeTaskId) {
+      if (!capabilities.nativeTaskCancelCommandReady) {
+        if (!workflowCancelResult.accepted) {
           skippedTaskIds.push(taskId);
           continue;
         }
-        canceledTaskIds.push(taskId);
-        dispatchAutoCutEvent('taskUpdated', {
-          ...task,
-          status: AUTOCUT_TASK_STATUS.processing,
-          progressMessage: result.message || 'Cancel requested',
-        });
-      } catch {
-        skippedTaskIds.push(taskId);
+      } else {
+        try {
+          nativeCancelResult = await nativeHostClient.cancelNativeTask({ taskUuid: nativeTaskId });
+          if (!nativeCancelResult.canceled && !workflowCancelResult.accepted) {
+            skippedTaskIds.push(taskId);
+            continue;
+          }
+        } catch {
+          if (!workflowCancelResult.accepted) {
+            skippedTaskIds.push(taskId);
+            continue;
+          }
+        }
       }
+    }
+
+    if (!workflowCancelResult.accepted && !nativeCancelResult?.canceled) {
+      skippedTaskIds.push(taskId);
+      continue;
+    }
+
+    canceledTaskIds.push(taskId);
+    const baseTask = readLocalTasks().find((candidate) => candidate.id === task.id) ?? task;
+    const resolvedCancelNativeTaskId = nativeCancelResult?.taskUuid || workflowCancelResult.nativeTaskId || nativeTaskId;
+    const updatedTask = markAutoCutTaskCancelRequested(baseTask, {
+      timestamp: createAutoCutTimestamp(),
+      message: nativeCancelResult?.message || workflowCancelResult.message || 'Cancel requested',
+      ...(resolvedCancelNativeTaskId ? { nativeTaskId: resolvedCancelNativeTaskId } : {}),
+    });
+    if (!localTaskIdSet.has(taskId) || !replaceLocalTask(taskId, updatedTask)) {
+      dispatchAutoCutEvent('taskUpdated', updatedTask);
     }
   }
 
@@ -268,12 +621,13 @@ export async function cancelTasks(taskIds: string[]): Promise<AutoCutTaskBulkCan
 export async function retryTasks(taskIds: string[]): Promise<AutoCutTaskBulkRetryResult> {
   const requestedTaskIds = taskIds.filter((taskId) => typeof taskId === 'string' && taskId.trim());
   const uniqueTaskIds = [...new Set(requestedTaskIds)];
-  const { tasksById, nativeTaskIds, skippedTaskIds: missingTaskIds } = await findTasksByIds(uniqueTaskIds);
+  const { localTasks, tasksById, nativeTaskIds, skippedTaskIds: missingTaskIds } = await findTasksByIds(uniqueTaskIds);
   const nativeHostClient = getAutoCutNativeHostClient();
   const capabilities = await nativeHostClient.getCapabilities();
   const retriedTaskIds: string[] = [];
   const retryTaskIds: string[] = [];
   const skippedTaskIds = [...missingTaskIds];
+  const localTaskIdSet = new Set(localTasks.map((task) => task.id));
 
   if (!capabilities.nativeTaskRetryCommandReady) {
     skippedTaskIds.push(...uniqueTaskIds.filter((taskId) => tasksById.has(taskId)));
@@ -287,9 +641,14 @@ export async function retryTasks(taskIds: string[]): Promise<AutoCutTaskBulkRetr
         skippedTaskIds.push(taskId);
         continue;
       }
+      const nativeTaskId = resolveNativeTaskOperationId(task);
+      if (!nativeTaskId) {
+        skippedTaskIds.push(taskId);
+        continue;
+      }
 
       try {
-        const result = await nativeHostClient.retryNativeTask({ taskUuid: taskId });
+        const result = await nativeHostClient.retryNativeTask({ taskUuid: nativeTaskId });
         if (!result.retried || !result.retryTaskUuid) {
           skippedTaskIds.push(taskId);
           continue;
@@ -300,13 +659,17 @@ export async function retryTasks(taskIds: string[]): Promise<AutoCutTaskBulkRetr
         void errorMessage;
         void failureDiagnostics;
         void completedAt;
-        dispatchAutoCutEvent('taskUpdated', {
+        const updatedTask: AppTask = {
           ...retryTask,
-          id: result.retryTaskUuid,
+          id: localTaskIdSet.has(taskId) ? task.id : result.retryTaskUuid,
+          nativeTaskId: result.retryTaskUuid,
           status: AUTOCUT_TASK_STATUS.processing,
           progress: 0,
           progressMessage: result.message || 'Retry queued',
-        });
+        };
+        if (!localTaskIdSet.has(taskId) || !replaceLocalTask(taskId, updatedTask)) {
+          dispatchAutoCutEvent('taskUpdated', updatedTask);
+        }
       } catch {
         skippedTaskIds.push(taskId);
       }
@@ -329,10 +692,231 @@ function readLocalTasks() {
   return readAutoCutStorage<AppTask[]>('tasks', EMPTY_TASKS);
 }
 
+function isAutoCutTaskCancelableStatus(status: TaskStatus) {
+  return status === AUTOCUT_TASK_STATUS.pending || status === AUTOCUT_TASK_STATUS.processing;
+}
+
+function isAutoCutTaskResumableStatus(status: TaskStatus) {
+  return status === AUTOCUT_TASK_STATUS.failed ||
+    status === AUTOCUT_TASK_STATUS.canceled ||
+    status === AUTOCUT_TASK_STATUS.interrupted;
+}
+
+async function requestAutoCutWorkflowTaskCancellation(task: AppTask) {
+  const handler = taskCancelHandlers.get(task.type);
+  if (!handler) {
+    return { accepted: false, message: 'No workflow cancel handler is registered.' };
+  }
+
+  taskCancellationRequests.add(task.id);
+  try {
+    const result = await handler(task);
+    return {
+      accepted: result?.success !== false,
+      message: result?.message ?? 'Cancel requested',
+      nativeTaskId: result?.nativeTaskId,
+    };
+  } catch (error) {
+    taskCancellationRequests.delete(task.id);
+    return {
+      accepted: false,
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function markAutoCutTaskCancelRequested(
+  task: AppTask,
+  params: {
+    timestamp: string;
+    message: string;
+    nativeTaskId?: string;
+  },
+): AppTask {
+  return {
+    ...task,
+    ...(params.nativeTaskId ? { nativeTaskId: params.nativeTaskId } : {}),
+    status: AUTOCUT_TASK_STATUS.processing,
+    progressMessage: params.message,
+    executionLogs: [
+      ...(task.executionLogs ?? []),
+      createTaskCancelExecutionLog(task, params.timestamp, params.message),
+    ].slice(-500),
+    ...(task.executionSteps
+      ? { executionSteps: markTaskCancelRequestedStep(task.executionSteps, params.timestamp, params.message) }
+      : {}),
+  };
+}
+
+function createTaskCancelExecutionLog(
+  task: AppTask,
+  timestamp: string,
+  message: string,
+): AutoCutTaskExecutionLog {
+  return {
+    id: createAutoCutId('task-log'),
+    taskId: task.id,
+    ...(task.currentStepId ? { stepId: task.currentStepId } : {}),
+    eventType: 'task-cancel-requested',
+    severity: 'warning',
+    message,
+    progress: task.progress,
+    ...(task.currentStepId ? { phase: task.currentStepId } : {}),
+    source: 'task-cancel-service',
+    timestamp,
+    details: {
+      taskType: task.type,
+      nativeTaskId: task.nativeTaskId,
+      currentStepId: task.currentStepId,
+      workflowId: task.executionCheckpoint?.workflowId,
+      checkpointVersion: task.executionCheckpoint?.version,
+      completedStepIds: task.executionCheckpoint?.completedStepIds ?? [],
+      resumeFromStepIds: task.executionCheckpoint?.resumeFromStepIds ?? [],
+    },
+  };
+}
+
+function markTaskCancelRequestedStep(
+  steps: readonly AutoCutTaskExecutionStep[],
+  timestamp: string,
+  message: string,
+) {
+  const runningStep = [...steps].reverse().find((step) =>
+    step.status === 'running' || step.status === 'cancelRequested'
+  );
+  if (!runningStep) {
+    return [...steps];
+  }
+
+  return steps.map((step): AutoCutTaskExecutionStep => {
+    if (step.id !== runningStep.id) {
+      return step;
+    }
+
+    const {
+      completedAt,
+      durationMs,
+      ...stepWithoutCompletion
+    } = step;
+    void completedAt;
+    void durationMs;
+
+    return {
+      ...stepWithoutCompletion,
+      status: 'cancelRequested',
+      canResumeFromHere: false,
+      message,
+      startedAt: step.startedAt ?? timestamp,
+    };
+  });
+}
+
+function createTaskResumeExecutionLog(
+  task: AppTask,
+  stepId: string,
+  eventType: string,
+  severity: AutoCutTaskExecutionLogSeverity,
+  params: {
+    timestamp: string;
+    message: string;
+    checkpoint?: AutoCutTaskExecutionCheckpoint;
+  },
+): AutoCutTaskExecutionLog {
+  return {
+    id: createAutoCutId('task-log'),
+    taskId: task.id,
+    stepId,
+    eventType,
+    severity,
+    message: params.message,
+    progress: task.progress,
+    phase: stepId,
+    source: 'task-resume-service',
+    timestamp: params.timestamp,
+    details: {
+      stepId,
+      taskType: task.type,
+      workflowId: params.checkpoint?.workflowId,
+      checkpointVersion: params.checkpoint?.version,
+      completedStepIds: params.checkpoint?.completedStepIds ?? [],
+      resumeFromStepIds: params.checkpoint?.resumeFromStepIds ?? [],
+    },
+  };
+}
+
+function createTaskResumeStartedMessage(
+  checkpoint: AutoCutTaskExecutionCheckpoint,
+  stepId: string,
+) {
+  const workflowLabel = checkpoint.workflowId === 'smart-slice' ? 'Smart Slice' : checkpoint.workflowId;
+  return `Resuming ${workflowLabel} from step ${stepId}.`;
+}
+
+function markTaskResumeStepRunning(
+  steps: readonly AutoCutTaskExecutionStep[],
+  stepId: string,
+  timestamp: string,
+) {
+  return steps.map((step): AutoCutTaskExecutionStep => {
+    if (step.id !== stepId) {
+      return step;
+    }
+
+    const {
+      completedAt,
+      durationMs,
+      errorMessage,
+      ...rest
+    } = step;
+    void completedAt;
+    void durationMs;
+    void errorMessage;
+
+    return {
+      ...rest,
+      status: 'running',
+      startedAt: timestamp,
+      attempts: step.attempts + 1,
+      canResumeFromHere: false,
+      message: `Resuming from checkpoint ${step.checkpointKey ?? step.id}.`,
+    };
+  });
+}
+
+function replaceLocalTask(taskId: string, updatedTask: AppTask) {
+  const localTasks = readLocalTasks();
+  let replaced = false;
+  writeAutoCutStorage(
+    'tasks',
+    localTasks.map((task) => {
+      if (task.id === taskId) {
+        replaced = true;
+        return updatedTask;
+      }
+      return task;
+    }),
+  );
+
+  if (replaced) {
+    dispatchAutoCutEvent('taskUpdated', updatedTask);
+  }
+  return replaced;
+}
+
+function resolveNativeTaskOperationId(task: AppTask) {
+  return task.nativeTaskId?.trim() || task.id;
+}
+
 async function findTasksByIds(taskIds: readonly string[]): Promise<TaskLookupResult> {
   const localTasks = readLocalTasks();
   const tasksById = new Map(localTasks.map((task) => [task.id, task]));
   const nativeTaskIds = new Set<string>();
+  const requestedTaskIdSet = new Set(taskIds);
+  localTasks.forEach((task) => {
+    if (requestedTaskIdSet.has(task.id) && task.nativeTaskId) {
+      nativeTaskIds.add(task.id);
+    }
+  });
   const missingLocalTaskIds = taskIds.filter((taskId) => !tasksById.has(taskId));
 
   if (missingLocalTaskIds.length > 0) {
@@ -376,8 +960,10 @@ async function readNativeTaskSnapshotsByIds(taskIds: readonly string[]) {
 
 function mapNativeTaskSnapshotToBulkOperationTask(snapshot: AutoCutNativeTaskSnapshot): AppTask {
   const progressMessage = resolveNativeTaskProgressMessage(snapshot);
+  const execution = createNativeTaskExecutionProjection(snapshot);
   return {
     id: snapshot.uuid,
+    nativeTaskId: snapshot.uuid,
     type: TASK_TYPE_BY_NATIVE_TYPE[snapshot.taskType] ?? AUTOCUT_TASK_TYPE.videoSlice,
     name: resolveNativeTaskName(snapshot, parseJsonRecord(snapshot.inputJson), parseJsonRecord(snapshot.outputJson)),
     status: mapNativeStatus(snapshot.status),
@@ -386,6 +972,9 @@ function mapNativeTaskSnapshotToBulkOperationTask(snapshot: AutoCutNativeTaskSna
     ...(snapshot.errorMessage ? { errorMessage: snapshot.errorMessage } : {}),
     ...(snapshot.sourceAssetUuid ? { sourceFileId: snapshot.sourceAssetUuid } : {}),
     ...(progressMessage ? { progressMessage } : {}),
+    ...(execution.currentStepId ? { currentStepId: execution.currentStepId } : {}),
+    ...(execution.executionSteps.length ? { executionSteps: execution.executionSteps } : {}),
+    ...(execution.executionLogs.length ? { executionLogs: execution.executionLogs } : {}),
   };
 }
 
@@ -429,9 +1018,52 @@ function mergeLocalAndNativeTasks(
   nativeTasks: readonly AppTask[],
 ) {
   const tasksById = new Map<string, AppTask>();
-  localTasks.forEach((task) => tasksById.set(task.id, task));
-  nativeTasks.forEach((task) => tasksById.set(task.id, task));
+  const localTaskByNativeTaskId = new Map<string, AppTask>();
+
+  localTasks.forEach((task) => {
+    tasksById.set(task.id, task);
+    if (task.nativeTaskId) {
+      localTaskByNativeTaskId.set(task.nativeTaskId, task);
+    }
+  });
+
+  nativeTasks.forEach((nativeTask) => {
+    const localTask = localTaskByNativeTaskId.get(nativeTask.id);
+    if (localTask) {
+      tasksById.set(localTask.id, mergeNativeTaskProjectionIntoLocalTask(localTask, nativeTask));
+      return;
+    }
+    tasksById.set(nativeTask.id, nativeTask);
+  });
   return [...tasksById.values()];
+}
+
+function mergeNativeTaskProjectionIntoLocalTask(localTask: AppTask, nativeTask: AppTask): AppTask {
+  if (isAutoCutTaskResumableStatus(localTask.status)) {
+    return localTask;
+  }
+
+  return {
+    ...nativeTask,
+    ...localTask,
+    id: localTask.id,
+    nativeTaskId: localTask.nativeTaskId ?? nativeTask.id,
+    ...(
+      localTask.sourceFileId ?? nativeTask.sourceFileId
+        ? { sourceFileId: localTask.sourceFileId ?? nativeTask.sourceFileId }
+        : {}
+    ),
+    ...(
+      localTask.generatedAssetIds ?? nativeTask.generatedAssetIds
+        ? { generatedAssetIds: localTask.generatedAssetIds ?? nativeTask.generatedAssetIds }
+        : {}
+    ),
+    ...(
+      localTask.sliceResults ?? nativeTask.sliceResults
+        ? { sliceResults: localTask.sliceResults ?? nativeTask.sliceResults }
+        : {}
+    ),
+  };
 }
 
 function isNativeSpeechTranscriptionImplementationTask(snapshot: AutoCutNativeTaskSnapshot) {
@@ -442,10 +1074,6 @@ function readDismissedNativeTaskIds() {
   return readAutoCutStorage<string[]>('dismissedNativeTasks', EMPTY_DISMISSED_NATIVE_TASK_IDS).filter(
     (taskId) => typeof taskId === 'string' && taskId.trim(),
   );
-}
-
-function addDismissedNativeTaskId(taskId: string) {
-  return [...new Set([taskId, ...readDismissedNativeTaskIds()])].slice(0, 500);
 }
 
 function addDismissedNativeTaskIds(taskIds: string[]) {
@@ -484,10 +1112,14 @@ function mapNativeTaskSnapshotToAppTask(
     ...(projection.completedAt ? { completedAt: projection.completedAt } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(failureDiagnostics ? { failureDiagnostics } : {}),
+    ...(projection.currentStepId ? { currentStepId: projection.currentStepId } : {}),
+    ...(projection.executionSteps?.length ? { executionSteps: projection.executionSteps } : {}),
+    ...(projection.executionLogs?.length ? { executionLogs: projection.executionLogs } : {}),
     ...(projection.resultCount !== undefined ? { resultCount: projection.resultCount } : {}),
     ...(projection.generatedAssetIds ? { generatedAssetIds: projection.generatedAssetIds } : {}),
     ...(projection.sliceResults ? { sliceResults: projection.sliceResults } : {}),
     ...(projection.sourceFileId ? { sourceFileId: projection.sourceFileId } : {}),
+    nativeTaskId: snapshot.uuid,
     ...(projection.extractedText ? { extractedText: projection.extractedText } : {}),
     ...(projection.transcriptText ? { transcriptText: projection.transcriptText } : {}),
     ...(projection.transcriptSegments?.length ? { transcriptSegments: projection.transcriptSegments } : {}),
@@ -508,9 +1140,18 @@ function createNativeTaskProjection(
   createAssetUrl: (artifactPath: string) => string,
   speechTranscriptEvidenceBySourceAsset: ReadonlyMap<string, NativeSpeechTranscriptRecoveryEvidence> = new Map(),
 ): NativeTaskProjection {
+  const execution = createNativeTaskExecutionProjection(snapshot);
   const baseProjection: NativeTaskProjection = {
     ...(snapshot.sourceAssetUuid ? { sourceFileId: snapshot.sourceAssetUuid } : {}),
-    ...(snapshot.status === OPS_STATUS_COMPLETED ? { completedAt: snapshot.updatedAt } : {}),
+    ...(snapshot.status === OPS_STATUS_COMPLETED ||
+      snapshot.status === OPS_STATUS_FAILED ||
+      snapshot.status === OPS_STATUS_CANCELED ||
+      snapshot.status === OPS_STATUS_INTERRUPTED
+      ? { completedAt: snapshot.updatedAt }
+      : {}),
+    ...(execution.currentStepId ? { currentStepId: execution.currentStepId } : {}),
+    ...(execution.executionSteps.length ? { executionSteps: execution.executionSteps } : {}),
+    ...(execution.executionLogs.length ? { executionLogs: execution.executionLogs } : {}),
   };
 
   if (snapshot.taskType === OPS_TASK_TYPE_VIDEO_SLICE) {
@@ -592,6 +1233,492 @@ function createNativeTaskProjection(
   }
 
   return baseProjection;
+}
+
+export function createNativeTaskExecutionProjection(snapshot: AutoCutNativeTaskSnapshot): {
+  currentStepId?: string;
+  executionSteps: AutoCutTaskExecutionStep[];
+  executionLogs: AutoCutTaskExecutionLog[];
+} {
+  const executionLogs = snapshot.events.map((event, index) =>
+    mapNativeTaskEventToExecutionLog(snapshot, event, index)
+  );
+  const stepById = new Map<string, AutoCutTaskExecutionStep>();
+
+  for (const log of executionLogs) {
+    const stepId = log.stepId ?? resolveNativeTaskEventStepId(log.phase, log.eventType);
+    if (!stepId) {
+      continue;
+    }
+    const existingStep = stepById.get(stepId);
+    const nextStatus = resolveExecutionStepStatus(log.eventType, snapshot.status);
+    const nextProgress = typeof log.progress === 'number'
+      ? clampProgress(log.progress)
+      : existingStep?.progress ?? 0;
+    const nextStep: AutoCutTaskExecutionStep = {
+      id: stepId,
+      label: resolveExecutionStepLabel(stepId, log),
+      status: nextStatus ?? existingStep?.status ?? 'running',
+      progress: nextProgress,
+      startedAt: existingStep?.startedAt ?? log.timestamp,
+      ...(existingStep?.completedAt ? { completedAt: existingStep.completedAt } : {}),
+      attempts: existingStep?.attempts ?? 1,
+      canResumeFromHere: canResumeFromExecutionStep(stepId, nextStatus ?? existingStep?.status),
+      ...(log.message ? { message: log.message } : existingStep?.message ? { message: existingStep.message } : {}),
+      ...(log.severity === 'error' ? { errorMessage: log.message } : existingStep?.errorMessage ? { errorMessage: existingStep.errorMessage } : {}),
+    };
+
+    if (nextStep.status === 'completed' || nextStep.status === 'failed' || nextStep.status === 'canceled' || nextStep.status === 'interrupted') {
+      nextStep.completedAt = log.timestamp;
+    }
+    if (nextStep.startedAt && nextStep.completedAt) {
+      const durationMs = createTimestampDurationMs(nextStep.startedAt, nextStep.completedAt);
+      if (durationMs !== undefined) {
+        nextStep.durationMs = durationMs;
+      }
+    }
+    stepById.set(stepId, nextStep);
+  }
+
+  const executionSteps = [...stepById.values()];
+  const currentStep = [...executionSteps].reverse().find((step) =>
+    step.status === 'running' || step.status === 'cancelRequested'
+  ) ?? [...executionSteps].reverse().find((step) => step.status !== 'completed');
+
+  return {
+    ...(currentStep ? { currentStepId: currentStep.id } : {}),
+    executionSteps,
+    executionLogs,
+  };
+}
+
+function resolveNativeProgressTaskUuid(progress: AutoCutNativeTaskProgressEvent) {
+  return readString(progress.nativeTaskId) ??
+    readString(progress.taskUuid) ??
+    readString(progress.payload?.nativeTaskId) ??
+    readString(progress.payload?.taskUuid);
+}
+
+function mapNativeTaskProgressEventToExecutionLog(
+  progress: AutoCutNativeTaskProgressEvent,
+  workflowTaskId: string,
+  nativeTaskId: string | undefined,
+): AutoCutTaskExecutionLog {
+  const payload: JsonRecord = {
+    ...(progress.payload ?? {}),
+    ...(progress.workflowTaskId ? { workflowTaskId: progress.workflowTaskId } : {}),
+    ...(nativeTaskId ? { nativeTaskId } : {}),
+    taskUuid: progress.taskUuid,
+    ...(progress.operation ? { operation: progress.operation } : {}),
+  };
+  const phase = readString(progress.phase ?? payload.phase);
+  const stepId = readString(progress.stepId ?? payload.stepId) ?? resolveNativeTaskEventStepId(phase, progress.eventType);
+  const progressValue = typeof progress.progress === 'number'
+    ? clampProgress(progress.progress)
+    : readNumber(payload.progress);
+  const message = progress.message?.trim() ||
+    readString(payload.message) ||
+    readString(payload.label) ||
+    phase ||
+    nativeTaskEventTypeLabel(progress.eventType);
+  const source = readString(progress.source ?? payload.source);
+
+  return {
+    id: progress.eventUuid?.trim() || createAutoCutId('native-task-log'),
+    taskId: workflowTaskId,
+    ...(stepId ? { stepId } : {}),
+    eventType: String(progress.eventType),
+    severity: normalizeExecutionLogSeverity(progress.severity, Number(progress.eventType)),
+    message,
+    ...(progressValue !== undefined ? { progress: clampProgress(progressValue) } : {}),
+    ...(phase ? { phase } : {}),
+    ...(source ? { source } : {}),
+    timestamp: progress.timestamp?.trim() || createAutoCutTimestamp(),
+    details: payload,
+  };
+}
+
+function appendNativeTaskExecutionLog(
+  existingLogs: readonly AutoCutTaskExecutionLog[] | undefined,
+  log: AutoCutTaskExecutionLog,
+) {
+  const logs = existingLogs ?? [];
+  const existingLogIndex = logs.findIndex((existingLog) => existingLog.id === log.id);
+  if (existingLogIndex >= 0) {
+    return logs.map((existingLog, index) => (index === existingLogIndex ? log : existingLog));
+  }
+
+  return [...logs, log].slice(-500);
+}
+
+function isDuplicateNativeTaskProgressEvent(
+  existingLogs: readonly AutoCutTaskExecutionLog[] | undefined,
+  log: AutoCutTaskExecutionLog,
+) {
+  if (!log.id || !existingLogs?.length) {
+    return false;
+  }
+
+  return existingLogs.some((existingLog) => existingLog.id === log.id);
+}
+
+function shouldPersistNativeTaskProgressEvent(
+  task: AppTask,
+  log: AutoCutTaskExecutionLog,
+) {
+  const eventType = Number(log.eventType);
+  if (eventType !== NATIVE_TASK_EVENT_TYPE_PROGRESS) {
+    return true;
+  }
+  if (log.severity === 'error' || log.severity === 'warning') {
+    return true;
+  }
+  const progress = typeof log.progress === 'number' ? clampProgress(log.progress) : undefined;
+  if (progress === undefined) {
+    return true;
+  }
+  if (progress <= 1 || progress >= 99 || progress % NATIVE_TASK_PROGRESS_LOG_MILESTONE_PERCENT === 0) {
+    return true;
+  }
+
+  const previousSameStepPhaseLog = [...(task.executionLogs ?? [])]
+    .reverse()
+    .find((existingLog) =>
+      (log.stepId ? existingLog.stepId === log.stepId : true) &&
+      (log.phase ? existingLog.phase === log.phase : true) &&
+      existingLog.eventType === log.eventType &&
+      typeof existingLog.progress === 'number'
+    );
+  const previousProgress = previousSameStepPhaseLog?.progress;
+  if (previousProgress === undefined) {
+    return false;
+  }
+
+  return Math.floor(progress / NATIVE_TASK_PROGRESS_LOG_MILESTONE_PERCENT) >
+    Math.floor(clampProgress(previousProgress) / NATIVE_TASK_PROGRESS_LOG_MILESTONE_PERCENT);
+}
+
+function shouldProjectNativeTaskProgressEventBeforeStorage(
+  progress: AutoCutNativeTaskProgressEvent,
+  targetTaskId: string,
+  nativeTaskId: string | undefined,
+) {
+  const eventType = Number(progress.eventType);
+  if (eventType !== NATIVE_TASK_EVENT_TYPE_PROGRESS) {
+    forgetNativeTaskProgressProjectionState(progress, targetTaskId, nativeTaskId);
+    return true;
+  }
+  const severity = normalizeExecutionLogSeverity(readString(progress.severity), eventType);
+  if (severity === 'error' || severity === 'warning') {
+    return true;
+  }
+  const progressValue = readNativeTaskProgressEventProgress(progress);
+  if (progressValue === undefined) {
+    return true;
+  }
+  if (progressValue <= 1 || progressValue >= 99 || progressValue % NATIVE_TASK_PROGRESS_LOG_MILESTONE_PERCENT === 0) {
+    return true;
+  }
+
+  const projectionKey = createNativeTaskProgressProjectionStateKey(progress, targetTaskId, nativeTaskId);
+  const previousState = nativeTaskProgressProjectionStateByKey.get(projectionKey);
+  if (!previousState) {
+    return false;
+  }
+
+  return getNativeTaskProgressMilestoneBucket(progressValue) > previousState.progressBucket;
+}
+
+function hasSeenNativeTaskProgressEventUuidBeforeStorage(progress: AutoCutNativeTaskProgressEvent) {
+  const eventUuid = progress.eventUuid?.trim();
+  return eventUuid ? nativeTaskProgressEventUuidSeenBeforeStorage.has(eventUuid) : false;
+}
+
+function recordNativeTaskProgressEventUuidBeforeStorage(progress: AutoCutNativeTaskProgressEvent) {
+  const eventUuid = progress.eventUuid?.trim();
+  if (!eventUuid) {
+    return;
+  }
+
+  nativeTaskProgressEventUuidSeenBeforeStorage.set(eventUuid, true);
+  trimNativeTaskProgressEventUuidState();
+}
+
+function recordNativeTaskProgressProjectionState(
+  progress: AutoCutNativeTaskProgressEvent,
+  targetTaskId: string,
+  nativeTaskId: string | undefined,
+) {
+  const progressValue = readNativeTaskProgressEventProgress(progress);
+  if (progressValue === undefined) {
+    return;
+  }
+
+  nativeTaskProgressProjectionStateByKey.set(
+    createNativeTaskProgressProjectionStateKey(progress, targetTaskId, nativeTaskId),
+    {
+      progress: progressValue,
+      progressBucket: getNativeTaskProgressMilestoneBucket(progressValue),
+    },
+  );
+  trimNativeTaskProgressProjectionState();
+}
+
+function forgetNativeTaskProgressProjectionState(
+  progress: AutoCutNativeTaskProgressEvent,
+  targetTaskId: string,
+  nativeTaskId: string | undefined,
+) {
+  nativeTaskProgressProjectionStateByKey.delete(
+    createNativeTaskProgressProjectionStateKey(progress, targetTaskId, nativeTaskId),
+  );
+}
+
+function readNativeTaskProgressEventProgress(progress: AutoCutNativeTaskProgressEvent) {
+  const progressValue = typeof progress.progress === 'number'
+    ? progress.progress
+    : readNumber(progress.payload?.progress);
+  return progressValue === undefined ? undefined : clampProgress(progressValue);
+}
+
+function getNativeTaskProgressMilestoneBucket(progress: number) {
+  return Math.floor(clampProgress(progress) / NATIVE_TASK_PROGRESS_LOG_MILESTONE_PERCENT);
+}
+
+function createNativeTaskProgressProjectionStateKey(
+  progress: AutoCutNativeTaskProgressEvent,
+  targetTaskId: string,
+  nativeTaskId: string | undefined,
+) {
+  const phase = readString(progress.phase ?? progress.payload?.phase) ?? 'progress';
+  const stepId = readString(progress.stepId ?? progress.payload?.stepId) ?? resolveNativeTaskEventStepId(phase, progress.eventType) ?? 'unknown-step';
+  return [
+    targetTaskId,
+    nativeTaskId ?? '',
+    String(progress.eventType),
+    stepId,
+    phase,
+  ].join('|');
+}
+
+function trimNativeTaskProgressProjectionState() {
+  while (nativeTaskProgressProjectionStateByKey.size > NATIVE_TASK_PROGRESS_PROJECTION_STATE_LIMIT) {
+    const oldestKey = nativeTaskProgressProjectionStateByKey.keys().next().value;
+    if (!oldestKey) {
+      return;
+    }
+    nativeTaskProgressProjectionStateByKey.delete(oldestKey);
+  }
+}
+
+function trimNativeTaskProgressEventUuidState() {
+  while (nativeTaskProgressEventUuidSeenBeforeStorage.size > NATIVE_TASK_PROGRESS_EVENT_UUID_STATE_LIMIT) {
+    const oldestKey = nativeTaskProgressEventUuidSeenBeforeStorage.keys().next().value;
+    if (!oldestKey) {
+      return;
+    }
+    nativeTaskProgressEventUuidSeenBeforeStorage.delete(oldestKey);
+  }
+}
+
+function updateNativeTaskProgressExecutionSteps(
+  existingSteps: readonly AutoCutTaskExecutionStep[] | undefined,
+  log: AutoCutTaskExecutionLog,
+  taskStatus: TaskStatus,
+) {
+  const stepId = log.stepId ?? resolveNativeTaskEventStepId(log.phase, log.eventType);
+  if (!stepId) {
+    return [...(existingSteps ?? [])];
+  }
+
+  const numericTaskStatus = mapTaskStatusToNativeStatus(taskStatus);
+  const steps = existingSteps ?? [];
+  const stepIndex = steps.findIndex((step) => step.id === stepId);
+  const existingStep = stepIndex >= 0 ? steps[stepIndex] : undefined;
+  const nextStatus = resolveExecutionStepStatus(log.eventType, numericTaskStatus) ?? existingStep?.status ?? 'running';
+  const nextProgress = typeof log.progress === 'number'
+    ? clampProgress(log.progress)
+    : existingStep?.progress ?? 0;
+  const nextStep: AutoCutTaskExecutionStep = {
+    id: stepId,
+    label: existingStep?.label ?? resolveExecutionStepLabel(stepId, log),
+    status: nextStatus,
+    progress: nextProgress,
+    startedAt: existingStep?.startedAt ?? log.timestamp,
+    ...(existingStep?.completedAt ? { completedAt: existingStep.completedAt } : {}),
+    attempts: existingStep?.attempts ?? 1,
+    canResumeFromHere: canResumeFromExecutionStep(stepId, nextStatus),
+    ...(existingStep?.checkpointKey ? { checkpointKey: existingStep.checkpointKey } : {}),
+    ...(existingStep?.inputArtifactRefs ? { inputArtifactRefs: existingStep.inputArtifactRefs } : {}),
+    ...(existingStep?.outputArtifactRefs ? { outputArtifactRefs: existingStep.outputArtifactRefs } : {}),
+    ...(log.message ? { message: log.message } : existingStep?.message ? { message: existingStep.message } : {}),
+    ...(log.severity === 'error' ? { errorMessage: log.message } : existingStep?.errorMessage ? { errorMessage: existingStep.errorMessage } : {}),
+    ...(existingStep?.diagnostics ? { diagnostics: existingStep.diagnostics } : {}),
+  };
+
+  if (nextStep.status === 'completed' || nextStep.status === 'failed' || nextStep.status === 'canceled' || nextStep.status === 'interrupted') {
+    nextStep.completedAt = log.timestamp;
+  }
+  if (nextStep.startedAt && nextStep.completedAt) {
+    const durationMs = createTimestampDurationMs(nextStep.startedAt, nextStep.completedAt);
+    if (durationMs !== undefined) {
+      nextStep.durationMs = durationMs;
+    }
+  }
+
+  if (stepIndex < 0) {
+    return [...steps, nextStep];
+  }
+
+  return steps.map((step, index) => (index === stepIndex ? nextStep : step));
+}
+
+function mapNativeTaskEventToExecutionLog(
+  snapshot: AutoCutNativeTaskSnapshot,
+  event: AutoCutNativeTaskSnapshot['events'][number],
+  index: number,
+): AutoCutTaskExecutionLog {
+  const payload = event.payload ?? {};
+  const phase = readString(payload.phase);
+  const stepId = readString(payload.stepId) ?? resolveNativeTaskEventStepId(phase, String(event.eventType));
+  const progress = readNumber(payload.progress);
+  const severity = normalizeExecutionLogSeverity(readString(payload.severity), event.eventType);
+  const source = readString(payload.source);
+  const message = readString(payload.message) ??
+    readString(payload.label) ??
+    phase ??
+    nativeTaskEventTypeLabel(event.eventType);
+
+  return {
+    id: event.uuid || `${snapshot.uuid}-event-${index + 1}`,
+    taskId: snapshot.uuid,
+    ...(stepId ? { stepId } : {}),
+    eventType: String(event.eventType),
+    severity,
+    message,
+    ...(progress !== undefined ? { progress: clampProgress(progress) } : {}),
+    ...(phase ? { phase } : {}),
+    ...(source ? { source } : {}),
+    timestamp: event.createdAt,
+    details: payload,
+  };
+}
+
+function resolveNativeTaskEventStepId(phase: string | undefined, eventType: string | number) {
+  const normalizedPhase = phase?.trim();
+  if (!normalizedPhase) {
+    return nativeTaskEventTypeLabel(eventType);
+  }
+  if (normalizedPhase.includes('speech-audio')) {
+    return 'extract-audio';
+  }
+  if (normalizedPhase.includes('whisper') || normalizedPhase.includes('transcript') || normalizedPhase.includes('speech-transcription')) {
+    return 'speech-to-text';
+  }
+  if (normalizedPhase.includes('ffmpeg-progress') || normalizedPhase.includes('render') || normalizedPhase.includes('slice')) {
+    return 'native-render';
+  }
+  return normalizedPhase;
+}
+
+function resolveExecutionStepLabel(stepId: string, log: AutoCutTaskExecutionLog) {
+  const knownLabels: Record<string, string> = {
+    'prepare-source': 'Prepare source media',
+    'extract-audio': 'Extract speech audio',
+    'speech-to-text': 'Run speech-to-text',
+    'plan-clips': 'Plan clips',
+    'analyze-audio-boundaries': 'Analyze audio boundaries',
+    'analyze-duplicates': 'Analyze duplicate content',
+    'native-render': 'Render clips',
+    'verify-artifacts': 'Verify artifacts',
+    'persist-results': 'Persist results',
+  };
+  return knownLabels[stepId] ?? log.phase ?? stepId;
+}
+
+function resolveExecutionStepStatus(
+  eventType: string,
+  taskStatus: number,
+): AutoCutTaskExecutionStepStatus | undefined {
+  const numericEventType = Number(eventType);
+  if (numericEventType === NATIVE_TASK_EVENT_TYPE_COMPLETED) {
+    return 'completed';
+  }
+  if (numericEventType === NATIVE_TASK_EVENT_TYPE_FAILED) {
+    return 'failed';
+  }
+  if (numericEventType === NATIVE_TASK_EVENT_TYPE_CANCEL_REQUESTED) {
+    return 'cancelRequested';
+  }
+  if (numericEventType === NATIVE_TASK_EVENT_TYPE_CANCELED) {
+    return 'canceled';
+  }
+  if (numericEventType === NATIVE_TASK_EVENT_TYPE_INTERRUPTED) {
+    return 'interrupted';
+  }
+  if (numericEventType === NATIVE_TASK_EVENT_TYPE_STARTED || numericEventType === NATIVE_TASK_EVENT_TYPE_PROGRESS) {
+    return taskStatus === OPS_STATUS_COMPLETED ? 'completed' : 'running';
+  }
+  return undefined;
+}
+
+function normalizeExecutionLogSeverity(
+  severity: string | undefined,
+  eventType: number,
+): AutoCutTaskExecutionLogSeverity {
+  if (severity === 'debug' || severity === 'info' || severity === 'warning' || severity === 'error') {
+    return severity;
+  }
+  if (eventType === NATIVE_TASK_EVENT_TYPE_FAILED) {
+    return 'error';
+  }
+  if (eventType === NATIVE_TASK_EVENT_TYPE_INTERRUPTED || eventType === NATIVE_TASK_EVENT_TYPE_CANCELED) {
+    return 'warning';
+  }
+  return 'info';
+}
+
+function nativeTaskEventTypeLabel(eventType: string | number) {
+  switch (Number(eventType)) {
+    case NATIVE_TASK_EVENT_TYPE_STARTED:
+      return 'started';
+    case NATIVE_TASK_EVENT_TYPE_COMPLETED:
+      return 'completed';
+    case NATIVE_TASK_EVENT_TYPE_FAILED:
+      return 'failed';
+    case NATIVE_TASK_EVENT_TYPE_CANCEL_REQUESTED:
+      return 'cancel-requested';
+    case NATIVE_TASK_EVENT_TYPE_CANCELED:
+      return 'canceled';
+    case NATIVE_TASK_EVENT_TYPE_INTERRUPTED:
+      return 'interrupted';
+    case NATIVE_TASK_EVENT_TYPE_RETRY_REQUESTED:
+      return 'retry-requested';
+    case NATIVE_TASK_EVENT_TYPE_PROGRESS:
+      return 'progress';
+    default:
+      return 'event';
+  }
+}
+
+function canResumeFromExecutionStep(stepId: string, status: AutoCutTaskExecutionStepStatus | undefined) {
+  if (status !== 'completed' && status !== 'failed' && status !== 'interrupted' && status !== 'canceled') {
+    return false;
+  }
+  return stepId === 'extract-audio' ||
+    stepId === 'speech-to-text' ||
+    stepId === 'plan-clips' ||
+    stepId === 'analyze-audio-boundaries' ||
+    stepId === 'analyze-duplicates' ||
+    stepId === 'native-render';
+}
+
+function createTimestampDurationMs(startedAt: string, completedAt: string) {
+  const started = getAutoCutTimestampMs(startedAt);
+  const completed = getAutoCutTimestampMs(completedAt);
+  return completed >= started
+    ? completed - started
+    : undefined;
 }
 
 function createNativeVideoSliceProjection(
@@ -759,8 +1886,16 @@ function mapNativeStatus(status: number): TaskStatus {
     return AUTOCUT_TASK_STATUS.completed;
   }
 
-  if (status === OPS_STATUS_FAILED || status === OPS_STATUS_CANCELED || status === OPS_STATUS_INTERRUPTED) {
+  if (status === OPS_STATUS_FAILED) {
     return AUTOCUT_TASK_STATUS.failed;
+  }
+
+  if (status === OPS_STATUS_CANCELED) {
+    return AUTOCUT_TASK_STATUS.canceled;
+  }
+
+  if (status === OPS_STATUS_INTERRUPTED) {
+    return AUTOCUT_TASK_STATUS.interrupted;
   }
 
   if (status === OPS_STATUS_PROCESSING || status === OPS_STATUS_CANCEL_REQUESTED) {
@@ -768,6 +1903,25 @@ function mapNativeStatus(status: number): TaskStatus {
   }
 
   return AUTOCUT_TASK_STATUS.pending;
+}
+
+function mapTaskStatusToNativeStatus(status: TaskStatus) {
+  if (status === AUTOCUT_TASK_STATUS.completed) {
+    return OPS_STATUS_COMPLETED;
+  }
+  if (status === AUTOCUT_TASK_STATUS.failed) {
+    return OPS_STATUS_FAILED;
+  }
+  if (status === AUTOCUT_TASK_STATUS.canceled) {
+    return OPS_STATUS_CANCELED;
+  }
+  if (status === AUTOCUT_TASK_STATUS.interrupted) {
+    return OPS_STATUS_INTERRUPTED;
+  }
+  if (status === AUTOCUT_TASK_STATUS.processing) {
+    return OPS_STATUS_PROCESSING;
+  }
+  return 0;
 }
 
 function resolveNativeTaskName(snapshot: AutoCutNativeTaskSnapshot, input: JsonRecord, output: JsonRecord) {
@@ -881,6 +2035,8 @@ function assertAndMapNativeSliceResult(
     (transcriptSegments.length ? transcriptSegments.length : undefined);
   const transcriptCoverageScore = readNumber(slice.transcriptCoverageScore);
   const speechContinuityGrade = readSpeechContinuityGrade(slice.speechContinuityGrade);
+  const audioCleanupEvidence = readAutoCutSliceAudioCleanupEvidence(slice);
+  const renderedDurationMs = readNumber(slice.renderedDurationMs) ?? durationMs;
   const subtitlePath = readString(slice.subtitleArtifactPath);
   if (subtitlePath) {
     assertNativeSlicePathInsideTaskOutputDir(subtitlePath, taskOutputDir, sliceNumber, 'subtitleArtifactPath');
@@ -892,7 +2048,7 @@ function assertAndMapNativeSliceResult(
   return {
     id: artifactUuid,
     name: `${label}.${format}`,
-    duration: Math.max(1, Math.round(durationMs / 1_000)),
+    duration: Math.max(1, Math.round(renderedDurationMs / 1_000)),
     size: byteSize,
     resolution: '1080P',
     thumbnailUrl: assertNativeAssetUrl(thumbnailPath, createAssetUrl, sliceNumber, 'thumbnailArtifactPath'),
@@ -914,6 +2070,8 @@ function assertAndMapNativeSliceResult(
     ...(transcriptSegmentCount !== undefined ? { transcriptSegmentCount } : {}),
     ...(transcriptCoverageScore !== undefined ? { transcriptCoverageScore } : {}),
     ...(speechContinuityGrade ? { speechContinuityGrade } : {}),
+    ...(renderedDurationMs !== undefined ? { renderedDurationMs } : {}),
+    ...audioCleanupEvidence,
   };
 }
 
@@ -947,6 +2105,108 @@ function assertAndMapNativeTranscriptSegment(
   };
 }
 
+function createUpdatedTaskSliceTranscript(
+  slice: TaskSliceResult,
+  update: AutoCutTaskSliceTranscriptUpdate,
+): TaskSliceResult {
+  const transcriptSegments = update.transcriptSegments !== undefined
+    ? update.transcriptSegments.map(normalizeEditableTranscriptSegment)
+    : update.transcriptText !== undefined
+      ? undefined
+      : slice.transcriptSegments?.map(normalizeEditableTranscriptSegment);
+  const transcriptText = transcriptSegments?.length
+    ? createRecoveredNativeVideoSliceTranscriptText(transcriptSegments)
+    : normalizeRecoveredNativeVideoSliceTranscriptText(update.transcriptText ?? slice.transcriptText);
+
+  if (!transcriptText) {
+    throw new Error('AutoCut task transcript edit requires non-empty transcript text.');
+  }
+
+  const {
+    transcriptText: _previousTranscriptText,
+    transcriptSegments: _previousTranscriptSegments,
+    transcriptSegmentCount: _previousTranscriptSegmentCount,
+    transcriptCorrection: _previousTranscriptCorrection,
+    ...sliceWithoutTranscript
+  } = slice;
+  void _previousTranscriptText;
+  void _previousTranscriptSegments;
+  void _previousTranscriptSegmentCount;
+  void _previousTranscriptCorrection;
+  const originalTranscriptText = slice.transcriptCorrection?.originalTranscriptText ||
+    normalizeRecoveredNativeVideoSliceTranscriptText(slice.transcriptText);
+  const correctionCount = transcriptSegments?.length
+    ? countChangedTranscriptSegments(slice.transcriptSegments, transcriptSegments)
+    : normalizeRecoveredNativeVideoSliceTranscriptText(slice.transcriptText) === transcriptText
+      ? 0
+      : 1;
+
+  return {
+    ...sliceWithoutTranscript,
+    transcriptText,
+    ...(transcriptSegments?.length
+      ? {
+          transcriptSegments,
+          transcriptSegmentCount: transcriptSegments.length,
+        }
+      : {}),
+    transcriptCorrection: {
+      source: 'task-detail',
+      correctedAt: createAutoCutTimestamp(),
+      originalTranscriptText,
+      correctionCount: Math.max(1, correctionCount),
+    },
+  };
+}
+
+function countChangedTranscriptSegments(
+  previousSegments: readonly AutoCutTranscriptSegment[] | undefined,
+  nextSegments: readonly AutoCutTranscriptSegment[],
+) {
+  const maxLength = Math.max(previousSegments?.length ?? 0, nextSegments.length);
+  let changedCount = 0;
+  for (let index = 0; index < maxLength; index += 1) {
+    const previousSegment = previousSegments?.[index];
+    const nextSegment = nextSegments[index];
+    if (!previousSegment || !nextSegment) {
+      changedCount += 1;
+      continue;
+    }
+
+    if (
+      normalizeRecoveredNativeVideoSliceTranscriptText(previousSegment.text) !==
+        normalizeRecoveredNativeVideoSliceTranscriptText(nextSegment.text) ||
+      normalizeRecoveredNativeVideoSliceTranscriptText(previousSegment.speaker) !==
+        normalizeRecoveredNativeVideoSliceTranscriptText(nextSegment.speaker)
+    ) {
+      changedCount += 1;
+    }
+  }
+
+  return changedCount;
+}
+
+function isTaskSliceTranscriptSegmentUpdate(
+  update: readonly AutoCutTranscriptSegment[] | AutoCutTaskSliceTranscriptUpdate,
+): update is readonly AutoCutTranscriptSegment[] {
+  return Array.isArray(update);
+}
+
+function normalizeEditableTranscriptSegment(segment: AutoCutTranscriptSegment): AutoCutTranscriptSegment {
+  const text = normalizeRecoveredNativeVideoSliceTranscriptText(segment.text);
+  if (!text) {
+    throw new Error('AutoCut task transcript edit requires every transcript segment to keep non-empty text.');
+  }
+
+  const speaker = normalizeRecoveredNativeVideoSliceTranscriptText(segment.speaker);
+  return {
+    startMs: Math.round(segment.startMs),
+    endMs: Math.round(segment.endMs),
+    text,
+    ...(speaker ? { speaker } : {}),
+  };
+}
+
 function createRecoveredNativeVideoSliceTranscriptText(transcriptSegments: readonly AutoCutTranscriptSegment[]) {
   return transcriptSegments
     .map((segment) => segment.text.trim())
@@ -967,6 +2227,113 @@ function readSpeechContinuityGrade(value: unknown): TaskSliceResult['speechConti
   }
 
   return undefined;
+}
+
+function readAutoCutSliceBoundaryDecisionSource(value: unknown): TaskSliceResult['boundaryDecisionSource'] | undefined {
+  const source = readString(value);
+  if (source === 'transcript' || source === 'audio' || source === 'combined') {
+    return source;
+  }
+
+  return undefined;
+}
+
+function readAutoCutSliceTailTreatment(value: unknown): TaskSliceResult['tailTreatment'] | undefined {
+  const treatment = readString(value);
+  if (treatment === 'none' || treatment === 'semantic-extend' || treatment === 'fade-out') {
+    return treatment;
+  }
+
+  return undefined;
+}
+
+function readAutoCutSliceRisks(value: unknown): string[] | undefined {
+  const seen = new Set<string>();
+  const risks = readArray(value)
+    .map((risk) => readString(risk)?.trim().replace(/\s+/gu, ' ').slice(0, 48))
+    .filter((risk): risk is string => Boolean(risk))
+    .filter((risk) => {
+      if (seen.has(risk)) {
+        return false;
+      }
+      seen.add(risk);
+      return true;
+    })
+    .slice(0, 12);
+
+  return risks.length ? risks : undefined;
+}
+
+function readAutoCutSliceSourceSegments(value: unknown): TaskSliceResult['sourceSegments'] | undefined {
+  const sourceSegments = readArray(value)
+    .map((segment) => {
+      const record = readRecord(segment);
+      if (!record) {
+        return null;
+      }
+
+      const startMs = readNumber(record.startMs);
+      const endMs = readNumber(record.endMs);
+      if (
+        startMs === undefined ||
+        endMs === undefined ||
+        !Number.isFinite(startMs) ||
+        !Number.isFinite(endMs) ||
+        endMs <= startMs
+      ) {
+        return null;
+      }
+
+      return {
+        startMs: Math.round(startMs),
+        endMs: Math.round(endMs),
+      };
+    })
+    .filter((segment): segment is NonNullable<TaskSliceResult['sourceSegments']>[number] => Boolean(segment))
+    .sort((firstSegment, secondSegment) =>
+      firstSegment.startMs - secondSegment.startMs ||
+        firstSegment.endMs - secondSegment.endMs,
+    );
+
+  return sourceSegments.length > 1 ? sourceSegments : undefined;
+}
+
+function readAutoCutSliceAudioCleanupEvidence(value: JsonRecord): Partial<AutoCutSliceAudioCleanupEvidence> {
+  const audioCleanupProfile = readString(value.audioCleanupProfile)?.trim();
+  const noiseReductionApplied = readBoolean(value.noiseReductionApplied);
+  const boundaryDecisionSource = readAutoCutSliceBoundaryDecisionSource(value.boundaryDecisionSource);
+  const audioActivityStartMs = readNumber(value.audioActivityStartMs);
+  const audioActivityEndMs = readNumber(value.audioActivityEndMs);
+  const audioActivityConfidence = readNumber(value.audioActivityConfidence);
+  const audioActivityAnalysisFilter = readString(value.audioActivityAnalysisFilter)?.trim();
+  const leadingSilenceMs = readNumber(value.leadingSilenceMs);
+  const trailingSilenceMs = readNumber(value.trailingSilenceMs);
+  const leadingSilenceTrimMs = readNumber(value.leadingSilenceTrimMs);
+  const trailingSilenceTrimMs = readNumber(value.trailingSilenceTrimMs);
+  const sourceSegments = readAutoCutSliceSourceSegments(value.sourceSegments);
+  const renderedDurationMs = readNumber(value.renderedDurationMs);
+  const removedSilenceMs = readNumber(value.removedSilenceMs);
+  const internalSilenceTrimCount = readNumber(value.internalSilenceTrimCount);
+  const tailTreatment = readAutoCutSliceTailTreatment(value.tailTreatment);
+
+  return {
+    ...(audioCleanupProfile ? { audioCleanupProfile } : {}),
+    ...(noiseReductionApplied !== undefined ? { noiseReductionApplied } : {}),
+    ...(boundaryDecisionSource ? { boundaryDecisionSource } : {}),
+    ...(audioActivityStartMs !== undefined ? { audioActivityStartMs } : {}),
+    ...(audioActivityEndMs !== undefined ? { audioActivityEndMs } : {}),
+    ...(audioActivityConfidence !== undefined ? { audioActivityConfidence } : {}),
+    ...(audioActivityAnalysisFilter ? { audioActivityAnalysisFilter } : {}),
+    ...(leadingSilenceMs !== undefined ? { leadingSilenceMs } : {}),
+    ...(trailingSilenceMs !== undefined ? { trailingSilenceMs } : {}),
+    ...(leadingSilenceTrimMs !== undefined ? { leadingSilenceTrimMs } : {}),
+    ...(trailingSilenceTrimMs !== undefined ? { trailingSilenceTrimMs } : {}),
+    ...(sourceSegments ? { sourceSegments } : {}),
+    ...(renderedDurationMs !== undefined ? { renderedDurationMs } : {}),
+    ...(removedSilenceMs !== undefined ? { removedSilenceMs } : {}),
+    ...(internalSilenceTrimCount !== undefined ? { internalSilenceTrimCount } : {}),
+    ...(tailTreatment ? { tailTreatment } : {}),
+  };
 }
 
 function assertRequiredNativeSliceText(value: unknown, sliceNumber: number, fieldName: string) {
@@ -1179,6 +2546,10 @@ function mapNativeVideoSliceInputClipRecoveryEvidence(value: unknown): NativeVid
 
   const startMs = readNumber(clip.startMs);
   const durationMs = readNumber(clip.durationMs);
+  const sourceSegments = readAutoCutSliceSourceSegments(clip.sourceSegments);
+  const renderedDurationMs = readNumber(clip.renderedDurationMs);
+  const removedSilenceMs = readNumber(clip.removedSilenceMs);
+  const internalSilenceTrimCount = readNumber(clip.internalSilenceTrimCount);
   const sourceStartMs = readNumber(clip.sourceStartMs) ?? startMs;
   const sourceEndMs = readNumber(clip.sourceEndMs) ??
     (startMs !== undefined && durationMs !== undefined ? startMs + durationMs : undefined);
@@ -1193,12 +2564,18 @@ function mapNativeVideoSliceInputClipRecoveryEvidence(value: unknown): NativeVid
     (transcriptSegments.length ? transcriptSegments.length : undefined);
   const transcriptCoverageScore = readNumber(clip.transcriptCoverageScore);
   const speechContinuityGrade = readSpeechContinuityGrade(clip.speechContinuityGrade);
+  const risks = readAutoCutSliceRisks(clip.risks);
   const boundaryPaddingBeforeMs = readNumber(clip.boundaryPaddingBeforeMs);
   const boundaryPaddingAfterMs = readNumber(clip.boundaryPaddingAfterMs);
+  const audioCleanupEvidence = readAutoCutSliceAudioCleanupEvidence(clip);
 
   return {
     ...(startMs !== undefined ? { startMs } : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(sourceSegments ? { sourceSegments } : {}),
+    ...(renderedDurationMs !== undefined ? { renderedDurationMs } : {}),
+    ...(removedSilenceMs !== undefined ? { removedSilenceMs } : {}),
+    ...(internalSilenceTrimCount !== undefined ? { internalSilenceTrimCount } : {}),
     ...(sourceStartMs !== undefined ? { sourceStartMs } : {}),
     ...(sourceEndMs !== undefined ? { sourceEndMs } : {}),
     ...(speechStartMs !== undefined ? { speechStartMs } : {}),
@@ -1210,6 +2587,8 @@ function mapNativeVideoSliceInputClipRecoveryEvidence(value: unknown): NativeVid
     ...(transcriptSegmentCount !== undefined ? { transcriptSegmentCount } : {}),
     ...(transcriptCoverageScore !== undefined ? { transcriptCoverageScore } : {}),
     ...(speechContinuityGrade ? { speechContinuityGrade } : {}),
+    ...(risks ? { risks } : {}),
+    ...audioCleanupEvidence,
   };
 }
 
@@ -1276,6 +2655,10 @@ function mergeNativeSliceWithRecoveryEvidence(
     (sourceEndMs !== undefined && speechEndMs !== undefined ? sourceEndMs - speechEndMs : undefined);
   const transcriptSegmentCount = nativeSlice.transcriptSegmentCount ?? recoveryEvidence.transcriptSegmentCount ??
     (transcriptSegments?.length ? transcriptSegments.length : undefined);
+  const sourceSegments = nativeSlice.sourceSegments?.length ? nativeSlice.sourceSegments : recoveryEvidence.sourceSegments;
+  const renderedDurationMs = nativeSlice.renderedDurationMs ?? recoveryEvidence.renderedDurationMs;
+  const removedSilenceMs = nativeSlice.removedSilenceMs ?? recoveryEvidence.removedSilenceMs;
+  const internalSilenceTrimCount = nativeSlice.internalSilenceTrimCount ?? recoveryEvidence.internalSilenceTrimCount;
 
   return {
     ...nativeSlice,
@@ -1285,6 +2668,11 @@ function mergeNativeSliceWithRecoveryEvidence(
     ...(speechEndMs !== undefined ? { speechEndMs } : {}),
     ...(boundaryPaddingBeforeMs !== undefined ? { boundaryPaddingBeforeMs } : {}),
     ...(boundaryPaddingAfterMs !== undefined ? { boundaryPaddingAfterMs } : {}),
+    ...(sourceSegments?.length ? { sourceSegments } : {}),
+    ...(renderedDurationMs !== undefined ? { renderedDurationMs } : {}),
+    ...(removedSilenceMs !== undefined ? { removedSilenceMs } : {}),
+    ...(internalSilenceTrimCount !== undefined ? { internalSilenceTrimCount } : {}),
+    ...mergeAutoCutSliceAudioCleanupEvidence(nativeSlice, recoveryEvidence),
     ...(transcriptText ? { transcriptText } : {}),
     ...(transcriptSegments?.length ? { transcriptSegments } : {}),
     ...(transcriptSegmentCount !== undefined ? { transcriptSegmentCount } : {}),
@@ -1297,6 +2685,79 @@ function mergeNativeSliceWithRecoveryEvidence(
       ? { speechContinuityGrade: nativeSlice.speechContinuityGrade }
       : recoveryEvidence.speechContinuityGrade
         ? { speechContinuityGrade: recoveryEvidence.speechContinuityGrade }
+        : {}),
+    ...(nativeSlice.risks?.length
+      ? { risks: nativeSlice.risks }
+      : recoveryEvidence.risks?.length
+        ? { risks: recoveryEvidence.risks }
+        : {}),
+  };
+}
+
+function mergeAutoCutSliceAudioCleanupEvidence(
+  nativeSlice: TaskSliceResult,
+  recoveryEvidence: NativeVideoSliceRecoveryEvidence,
+): Partial<AutoCutSliceAudioCleanupEvidence> {
+  return {
+    ...(nativeSlice.audioCleanupProfile
+      ? { audioCleanupProfile: nativeSlice.audioCleanupProfile }
+      : recoveryEvidence.audioCleanupProfile
+        ? { audioCleanupProfile: recoveryEvidence.audioCleanupProfile }
+        : {}),
+    ...(nativeSlice.noiseReductionApplied !== undefined
+      ? { noiseReductionApplied: nativeSlice.noiseReductionApplied }
+      : recoveryEvidence.noiseReductionApplied !== undefined
+        ? { noiseReductionApplied: recoveryEvidence.noiseReductionApplied }
+        : {}),
+    ...(nativeSlice.boundaryDecisionSource
+      ? { boundaryDecisionSource: nativeSlice.boundaryDecisionSource }
+      : recoveryEvidence.boundaryDecisionSource
+        ? { boundaryDecisionSource: recoveryEvidence.boundaryDecisionSource }
+        : {}),
+    ...(nativeSlice.audioActivityStartMs !== undefined
+      ? { audioActivityStartMs: nativeSlice.audioActivityStartMs }
+      : recoveryEvidence.audioActivityStartMs !== undefined
+        ? { audioActivityStartMs: recoveryEvidence.audioActivityStartMs }
+        : {}),
+    ...(nativeSlice.audioActivityEndMs !== undefined
+      ? { audioActivityEndMs: nativeSlice.audioActivityEndMs }
+      : recoveryEvidence.audioActivityEndMs !== undefined
+        ? { audioActivityEndMs: recoveryEvidence.audioActivityEndMs }
+        : {}),
+    ...(nativeSlice.audioActivityConfidence !== undefined
+      ? { audioActivityConfidence: nativeSlice.audioActivityConfidence }
+      : recoveryEvidence.audioActivityConfidence !== undefined
+        ? { audioActivityConfidence: recoveryEvidence.audioActivityConfidence }
+        : {}),
+    ...(nativeSlice.audioActivityAnalysisFilter
+      ? { audioActivityAnalysisFilter: nativeSlice.audioActivityAnalysisFilter }
+      : recoveryEvidence.audioActivityAnalysisFilter
+        ? { audioActivityAnalysisFilter: recoveryEvidence.audioActivityAnalysisFilter }
+        : {}),
+    ...(nativeSlice.leadingSilenceMs !== undefined
+      ? { leadingSilenceMs: nativeSlice.leadingSilenceMs }
+      : recoveryEvidence.leadingSilenceMs !== undefined
+        ? { leadingSilenceMs: recoveryEvidence.leadingSilenceMs }
+        : {}),
+    ...(nativeSlice.trailingSilenceMs !== undefined
+      ? { trailingSilenceMs: nativeSlice.trailingSilenceMs }
+      : recoveryEvidence.trailingSilenceMs !== undefined
+        ? { trailingSilenceMs: recoveryEvidence.trailingSilenceMs }
+        : {}),
+    ...(nativeSlice.leadingSilenceTrimMs !== undefined
+      ? { leadingSilenceTrimMs: nativeSlice.leadingSilenceTrimMs }
+      : recoveryEvidence.leadingSilenceTrimMs !== undefined
+        ? { leadingSilenceTrimMs: recoveryEvidence.leadingSilenceTrimMs }
+        : {}),
+    ...(nativeSlice.trailingSilenceTrimMs !== undefined
+      ? { trailingSilenceTrimMs: nativeSlice.trailingSilenceTrimMs }
+      : recoveryEvidence.trailingSilenceTrimMs !== undefined
+        ? { trailingSilenceTrimMs: recoveryEvidence.trailingSilenceTrimMs }
+        : {}),
+    ...(nativeSlice.tailTreatment
+      ? { tailTreatment: nativeSlice.tailTreatment }
+      : recoveryEvidence.tailTreatment
+        ? { tailTreatment: recoveryEvidence.tailTreatment }
         : {}),
   };
 }
@@ -1380,6 +2841,38 @@ function mergeNativeTaskWithLocalSliceMetadata(nativeTask: AppTask, localTask: A
       ...(localSlice.boundaryPaddingAfterMs !== undefined
         ? { boundaryPaddingAfterMs: localSlice.boundaryPaddingAfterMs }
         : {}),
+      ...(localSlice.audioCleanupProfile ? { audioCleanupProfile: localSlice.audioCleanupProfile } : {}),
+      ...(localSlice.noiseReductionApplied !== undefined
+        ? { noiseReductionApplied: localSlice.noiseReductionApplied }
+        : {}),
+      ...(localSlice.boundaryDecisionSource ? { boundaryDecisionSource: localSlice.boundaryDecisionSource } : {}),
+      ...(localSlice.audioActivityStartMs !== undefined
+        ? { audioActivityStartMs: localSlice.audioActivityStartMs }
+        : {}),
+      ...(localSlice.audioActivityEndMs !== undefined
+        ? { audioActivityEndMs: localSlice.audioActivityEndMs }
+        : {}),
+      ...(localSlice.audioActivityConfidence !== undefined
+        ? { audioActivityConfidence: localSlice.audioActivityConfidence }
+        : {}),
+      ...(localSlice.audioActivityAnalysisFilter
+        ? { audioActivityAnalysisFilter: localSlice.audioActivityAnalysisFilter }
+        : {}),
+      ...(localSlice.leadingSilenceMs !== undefined ? { leadingSilenceMs: localSlice.leadingSilenceMs } : {}),
+      ...(localSlice.trailingSilenceMs !== undefined ? { trailingSilenceMs: localSlice.trailingSilenceMs } : {}),
+      ...(localSlice.leadingSilenceTrimMs !== undefined
+        ? { leadingSilenceTrimMs: localSlice.leadingSilenceTrimMs }
+        : {}),
+      ...(localSlice.trailingSilenceTrimMs !== undefined
+        ? { trailingSilenceTrimMs: localSlice.trailingSilenceTrimMs }
+        : {}),
+      ...(localSlice.sourceSegments?.length ? { sourceSegments: localSlice.sourceSegments } : {}),
+      ...(localSlice.renderedDurationMs !== undefined ? { renderedDurationMs: localSlice.renderedDurationMs } : {}),
+      ...(localSlice.removedSilenceMs !== undefined ? { removedSilenceMs: localSlice.removedSilenceMs } : {}),
+      ...(localSlice.internalSilenceTrimCount !== undefined
+        ? { internalSilenceTrimCount: localSlice.internalSilenceTrimCount }
+        : {}),
+      ...(localSlice.tailTreatment ? { tailTreatment: localSlice.tailTreatment } : {}),
       ...(localSlice.transcriptText ? { transcriptText: localSlice.transcriptText } : {}),
       ...(localSlice.transcriptSegments?.length ? { transcriptSegments: localSlice.transcriptSegments } : {}),
       ...(localSlice.transcriptSegmentCount !== undefined
@@ -1389,6 +2882,7 @@ function mergeNativeTaskWithLocalSliceMetadata(nativeTask: AppTask, localTask: A
         ? { transcriptCoverageScore: localSlice.transcriptCoverageScore }
         : {}),
       ...(localSlice.speechContinuityGrade ? { speechContinuityGrade: localSlice.speechContinuityGrade } : {}),
+      ...(localSlice.transcriptCorrection ? { transcriptCorrection: localSlice.transcriptCorrection } : {}),
       ...(localSlice.artifactPath ? { artifactPath: localSlice.artifactPath } : {}),
       ...(localSlice.taskOutputDir ? { taskOutputDir: localSlice.taskOutputDir } : {}),
     };
@@ -1434,7 +2928,11 @@ function scoreLocalSliceMetadataMatch(
     return 0;
   }
 
-  const sameTaskIdentity = localTask.id === snapshot.uuid || localTask.id === nativeTask.id;
+  const sameTaskIdentity =
+    localTask.id === snapshot.uuid ||
+    localTask.id === nativeTask.id ||
+    localTask.nativeTaskId === snapshot.uuid ||
+    localTask.nativeTaskId === nativeTask.id;
   const sourceAssetId = snapshot.sourceAssetUuid ?? nativeTask.sourceFileId;
   const sameSourceAsset = Boolean(sourceAssetId && localTask.sourceFileId === sourceAssetId);
   const artifactMatchCount = countLocalSliceArtifactMatches(nativeTask, localTask);
@@ -1566,6 +3064,8 @@ function assertRecoveredNativeVideoSliceProfessionalTranscriptEvidence(
       );
     }
 
+    assertRecoveredNativeVideoSliceAudioCleanupEvidence(sliceResult, sliceNumber);
+
     let previousTranscriptSegmentEndMs: number | undefined;
     sliceResult.transcriptSegments.forEach((segment, segmentIndex) => {
       const segmentNumber = segmentIndex + 1;
@@ -1602,13 +3102,11 @@ function assertRecoveredNativeVideoSliceProfessionalTranscriptEvidence(
     if (
       firstTranscriptSegmentStartMs === undefined ||
       lastTranscriptSegmentEndMs === undefined ||
-      Math.abs(firstTranscriptSegmentStartMs - speechStartMs) >
-        RECOVERED_SMART_SLICE_TRANSCRIPT_BOUNDARY_TOLERANCE_MS ||
-      Math.abs(lastTranscriptSegmentEndMs - speechEndMs) >
-        RECOVERED_SMART_SLICE_TRANSCRIPT_BOUNDARY_TOLERANCE_MS
+      firstTranscriptSegmentStartMs > speechStartMs + RECOVERED_SMART_SLICE_TRANSCRIPT_BOUNDARY_TOLERANCE_MS ||
+      lastTranscriptSegmentEndMs < speechEndMs - RECOVERED_SMART_SLICE_TRANSCRIPT_BOUNDARY_TOLERANCE_MS
     ) {
       throw new Error(
-        `AutoCut recovered native video slicing slice artifact ${sliceNumber} speech range does not match transcript segment boundaries.`,
+        `AutoCut recovered native video slicing slice artifact ${sliceNumber} speech range is not covered by transcript segment boundaries.`,
       );
     }
   });
@@ -1622,6 +3120,68 @@ function assertRecoveredNativeVideoSliceMilliseconds(value: unknown, sliceNumber
   }
 
   return Math.round(value);
+}
+
+function assertRecoveredNativeVideoSliceAudioCleanupEvidence(
+  sliceResult: TaskSliceResult,
+  sliceNumber: number,
+) {
+  if (sliceResult.audioCleanupProfile !== RECOVERED_SMART_SLICE_AUDIO_CLEANUP_PROFILE) {
+    throw new Error(
+      `AutoCut recovered native video slicing slice artifact ${sliceNumber} is missing smart-slice audio cleanup evidence.`,
+    );
+  }
+
+  if (typeof sliceResult.noiseReductionApplied !== 'boolean') {
+    throw new Error(
+      `AutoCut recovered native video slicing slice artifact ${sliceNumber} is missing smart-slice noise reduction decision evidence.`,
+    );
+  }
+
+  if (
+    !RECOVERED_SMART_SLICE_ACCEPTED_BOUNDARY_DECISION_SOURCES.includes(
+      sliceResult.boundaryDecisionSource as typeof RECOVERED_SMART_SLICE_ACCEPTED_BOUNDARY_DECISION_SOURCES[number],
+    )
+  ) {
+    throw new Error(
+      `AutoCut recovered native video slicing slice artifact ${sliceNumber} is missing smart-slice boundary decision evidence.`,
+    );
+  }
+
+  if (
+    typeof sliceResult.audioActivityStartMs !== 'number' ||
+    !Number.isFinite(sliceResult.audioActivityStartMs) ||
+    typeof sliceResult.audioActivityEndMs !== 'number' ||
+    !Number.isFinite(sliceResult.audioActivityEndMs) ||
+    sliceResult.audioActivityEndMs <= sliceResult.audioActivityStartMs ||
+    sliceResult.audioActivityStartMs < (sliceResult.sourceStartMs ?? 0) ||
+    sliceResult.audioActivityEndMs > (sliceResult.sourceEndMs ?? Number.MAX_SAFE_INTEGER) ||
+    typeof sliceResult.audioActivityConfidence !== 'number' ||
+    !Number.isFinite(sliceResult.audioActivityConfidence) ||
+    sliceResult.audioActivityConfidence < MIN_RECOVERED_SMART_SLICE_AUDIO_ACTIVITY_CONFIDENCE ||
+    sliceResult.audioActivityAnalysisFilter !== (sliceResult.noiseReductionApplied
+      ? RECOVERED_SMART_SLICE_REQUIRED_AUDIO_ACTIVITY_ANALYSIS_FILTER
+      : RECOVERED_SMART_SLICE_RAW_AUDIO_ACTIVITY_ANALYSIS_FILTER)
+  ) {
+    throw new Error(
+      `AutoCut recovered native video slicing slice artifact ${sliceNumber} requires audioActivityStartMs/audioActivityEndMs inside the source range, audioActivityConfidence to be at least ${MIN_RECOVERED_SMART_SLICE_AUDIO_ACTIVITY_CONFIDENCE}, and audioActivityAnalysisFilter to match the recorded noise reduction decision.`,
+    );
+  }
+
+  assertRecoveredNativeVideoSliceMilliseconds(sliceResult.leadingSilenceMs, sliceNumber, 'leadingSilenceMs');
+  assertRecoveredNativeVideoSliceMilliseconds(sliceResult.trailingSilenceMs, sliceNumber, 'trailingSilenceMs');
+  assertRecoveredNativeVideoSliceMilliseconds(sliceResult.leadingSilenceTrimMs, sliceNumber, 'leadingSilenceTrimMs');
+  assertRecoveredNativeVideoSliceMilliseconds(sliceResult.trailingSilenceTrimMs, sliceNumber, 'trailingSilenceTrimMs');
+
+  if (
+    !RECOVERED_SMART_SLICE_ACCEPTED_TAIL_TREATMENTS.includes(
+      sliceResult.tailTreatment as typeof RECOVERED_SMART_SLICE_ACCEPTED_TAIL_TREATMENTS[number],
+    )
+  ) {
+    throw new Error(
+      `AutoCut recovered native video slicing slice artifact ${sliceNumber} is missing smart-slice tail treatment evidence.`,
+    );
+  }
 }
 
 function createInvalidRecoveredNativeVideoSliceTask(
@@ -1651,6 +3211,20 @@ function createRecoveredNativeVideoSliceUserFacingErrorMessage(error: unknown) {
     return [
       'Recovered smart-slice artifacts are missing speech-to-text transcript evidence.',
       'Re-run Smart Slice after local speech-to-text setup so every generated clip has a verified transcript.',
+    ].join(' ');
+  }
+
+  if (message.includes('smart-slice audio cleanup evidence')) {
+    return [
+      'Recovered smart-slice artifacts are missing smart-slice audio cleanup evidence.',
+      'Re-run Smart Slice so noise-reduction decision, boundary trimming, and tail treatment evidence are regenerated.',
+    ].join(' ');
+  }
+
+  if (message.includes('leadingSilenceMs') || message.includes('trailingSilenceMs')) {
+    return [
+      'Recovered smart-slice artifacts are missing smart-slice audio cleanup evidence.',
+      'Re-run Smart Slice so noise-reduction decision, raw silence detection, boundary trimming, and tail treatment evidence are regenerated.',
     ].join(' ');
   }
 
@@ -1712,6 +3286,7 @@ function createRecoveredNativeOutputSliceEvidenceSummary(output: JsonRecord) {
       `sliceResults=${sliceResults.length}`,
       `slicesWithTranscriptSegments=${countRecordsWithTranscriptSegments(sliceResults)}`,
       `slicesWithTranscriptText=${countRecordsWithTranscriptText(sliceResults)}`,
+      `slicesWithAudioCleanupEvidence=${countRecordsWithAudioCleanupEvidence(sliceResults)}`,
       `declaredSliceCount=${readNumber(output.sliceCount) ?? 'unknown'}`,
     ].join(' '),
     ...sliceSummaries,
@@ -1740,6 +3315,12 @@ function createRecoveredNativeSliceEvidenceSummary(value: unknown, index: number
     `transcriptSegmentCount=${readNumber(slice.transcriptSegmentCount) ?? 'unknown'}`,
     `transcriptCoverageScore=${readNumber(slice.transcriptCoverageScore) ?? 'unknown'}`,
     `speechContinuityGrade=${readString(slice.speechContinuityGrade) ?? 'unknown'}`,
+    `audioCleanupProfile=${readString(slice.audioCleanupProfile) ?? 'unknown'}`,
+    `noiseReductionApplied=${readBoolean(slice.noiseReductionApplied) ?? 'unknown'}`,
+    `boundaryDecisionSource=${readString(slice.boundaryDecisionSource) ?? 'unknown'}`,
+    `leadingSilenceTrimMs=${readNumber(slice.leadingSilenceTrimMs) ?? 'unknown'}`,
+    `trailingSilenceTrimMs=${readNumber(slice.trailingSilenceTrimMs) ?? 'unknown'}`,
+    `tailTreatment=${readString(slice.tailTreatment) ?? 'unknown'}`,
   ].join(' ');
 }
 
@@ -1762,6 +3343,21 @@ function countRecordsWithTranscriptSegments(values: readonly unknown[]) {
 
 function countRecordsWithTranscriptText(values: readonly unknown[]) {
   return values.filter((value) => Boolean(readString(readRecord(value)?.transcriptText))).length;
+}
+
+function countRecordsWithAudioCleanupEvidence(values: readonly unknown[]) {
+  return values.filter((value) => {
+    const record = readRecord(value);
+    return Boolean(
+      record &&
+        readString(record.audioCleanupProfile) &&
+        readBoolean(record.noiseReductionApplied) !== undefined &&
+        readAutoCutSliceBoundaryDecisionSource(record.boundaryDecisionSource) &&
+        readNumber(record.leadingSilenceTrimMs) !== undefined &&
+        readNumber(record.trailingSilenceTrimMs) !== undefined &&
+        readAutoCutSliceTailTreatment(record.tailTreatment),
+    );
+  }).length;
 }
 
 function truncateRecoveredNativeDiagnosticText(value: string, maxLength = 500) {
@@ -1879,6 +3475,10 @@ function readNumber(value: unknown): number | undefined {
     return Number.isFinite(parsed) ? parsed : undefined;
   }
   return undefined;
+}
+
+function readBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined;
 }
 
 function assertNativeAssetUrl(

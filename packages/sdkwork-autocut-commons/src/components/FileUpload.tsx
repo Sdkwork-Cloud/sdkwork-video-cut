@@ -4,16 +4,30 @@ import {
   createAutoCutTrustedLocalFile,
   listenAutoCutTrustedFileSourceDrop,
   resolveAutoCutTrustedSourcePath,
+  validateAutoCutTrustedFileRequiredStreams,
+  type AutoCutRequiredMediaStreams,
   type AutoCutTrustedFileSourceDescriptor,
 } from '../service/trusted-file-source.service';
+
+interface FileUploadLabels {
+  dropReady?: string;
+  dropActive?: string;
+  unknownFormat?: string;
+  trustedSourceRequired?: string;
+  maxSizePrefix?: string;
+  sizeTooLarge?: (maxSizeMB: number) => string;
+  typeMismatch?: (accept: string) => string;
+}
 
 interface FileUploadProps {
   file: File | null;
   onChange: (file: File | null) => void;
   onValidationError?: (message: string) => void;
   trustedFileSourceSelector?: () => Promise<AutoCutTrustedFileSourceDescriptor | null>;
+  requiredStreams?: AutoCutRequiredMediaStreams;
   accept?: string;
   maxSizeMB?: number;
+  labels?: FileUploadLabels;
 }
 
 export function FileUpload({
@@ -21,11 +35,80 @@ export function FileUpload({
   onChange,
   onValidationError,
   trustedFileSourceSelector,
-  accept = "video/*,audio/*",
+  requiredStreams,
+  accept = 'video/*,audio/*',
   maxSizeMB = 2000,
+  labels,
 }: FileUploadProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const requiresTrustedLocalSource = Boolean(trustedFileSourceSelector);
+
+  const isTrustedAutoCutAudioVideoFile = (nextFile: File, acceptFileTypes: string[]) => {
+    if (!resolveAutoCutTrustedSourcePath(nextFile)) {
+      return false;
+    }
+
+    const mediaType = (nextFile as File & { mediaType?: unknown }).mediaType;
+    if (mediaType !== 'audio' && mediaType !== 'video') {
+      return false;
+    }
+
+    if (acceptFileTypes.length === 0) {
+      return true;
+    }
+
+    if (acceptFileTypes.some((acceptedType) => acceptedType === `${mediaType}/*` || acceptedType === nextFile.type)) {
+      return true;
+    }
+
+    return false;
+  };
+
+  const getValidatedFile = (nextFile: File) => {
+    const trustedSourcePath = resolveAutoCutTrustedSourcePath(nextFile);
+
+    if (requiresTrustedLocalSource && !trustedSourcePath) {
+      onValidationError?.(
+        labels?.trustedSourceRequired ??
+          'AutoCut desktop processing requires a trusted local media file selected by the native host.',
+      );
+      return null;
+    }
+
+    if (nextFile.size > maxSizeMB * 1024 * 1024) {
+      onValidationError?.(labels?.sizeTooLarge?.(maxSizeMB) ?? `File size must be less than ${maxSizeMB}MB`);
+      return null;
+    }
+
+    const acceptFileTypes = accept.split(',').map((type) => type.trim()).filter(Boolean);
+    const isAccepted = isTrustedAutoCutAudioVideoFile(nextFile, acceptFileTypes) || acceptFileTypes.length === 0 || acceptFileTypes.some((acceptedType) => {
+      if (acceptedType.endsWith('/*')) {
+        return nextFile.type.startsWith(acceptedType.replace('/*', '/'));
+      }
+      if (acceptedType.startsWith('.')) {
+        return nextFile.name.toLowerCase().endsWith(acceptedType.toLowerCase());
+      }
+      return nextFile.type === acceptedType;
+    });
+
+    if (!isAccepted) {
+      onValidationError?.(labels?.typeMismatch?.(accept) ?? `File type must match ${accept}`);
+      return null;
+    }
+
+    if (trustedSourcePath) {
+      const streamEvidenceError = validateAutoCutTrustedFileRequiredStreams(nextFile, requiredStreams);
+      if (streamEvidenceError) {
+        onValidationError?.(streamEvidenceError);
+        return null;
+      }
+      return nextFile;
+    }
+
+    return nextFile;
+  };
+
   const resolveAcceptedTrustedFile = (descriptors: AutoCutTrustedFileSourceDescriptor[]) => {
     for (const descriptor of descriptors) {
       const trustedFile = createAutoCutTrustedLocalFile(descriptor);
@@ -38,46 +121,16 @@ export function FileUpload({
     return null;
   };
 
-  const getValidatedFile = (nextFile: File) => {
-    if (nextFile.size > maxSizeMB * 1024 * 1024) {
-      onValidationError?.(`File size must be less than ${maxSizeMB}MB`);
-      return null;
-    }
-
-    const acceptFileTypes = accept.split(',').map((type) => type.trim()).filter(Boolean);
-    const isAccepted = acceptFileTypes.length === 0 || acceptFileTypes.some((acceptedType) => {
-      if (acceptedType.endsWith('/*')) {
-        return nextFile.type.startsWith(acceptedType.replace('/*', '/'));
-      }
-      if (acceptedType.startsWith('.')) {
-        return nextFile.name.toLowerCase().endsWith(acceptedType.toLowerCase());
-      }
-      return nextFile.type === acceptedType;
-    });
-
-    if (!isAccepted) {
-      onValidationError?.(`File type must match ${accept}`);
-      return null;
-    }
-
-    const trustedSourcePath = resolveAutoCutTrustedSourcePath(nextFile);
-    if (trustedSourcePath) {
-      return nextFile;
-    }
-
-    return nextFile;
-  };
-
   useEffect(() => listenAutoCutTrustedFileSourceDrop((detail) => {
     const nextFile = resolveAcceptedTrustedFile(detail.files);
     if (nextFile) {
       setIsDragging(false);
       onChange(nextFile);
     }
-  }), [accept, maxSizeMB, onChange, onValidationError]);
+  }), [accept, labels, maxSizeMB, onChange, onValidationError, requiredStreams]);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0];
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = event.target.files?.[0];
     if (selectedFile) {
       const nextFile = getValidatedFile(selectedFile);
       if (nextFile) {
@@ -88,20 +141,20 @@ export function FileUpload({
     }
   };
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
+  const handleDragOver = (event: React.DragEvent) => {
+    event.preventDefault();
     setIsDragging(true);
   };
 
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
+  const handleDragLeave = (event: React.DragEvent) => {
+    event.preventDefault();
     setIsDragging(false);
   };
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
+  const handleDrop = (event: React.DragEvent) => {
+    event.preventDefault();
     setIsDragging(false);
-    const droppedFile = e.dataTransfer.files?.[0];
+    const droppedFile = event.dataTransfer.files?.[0];
     if (droppedFile) {
       const nextFile = getValidatedFile(droppedFile);
       if (nextFile) {
@@ -127,15 +180,22 @@ export function FileUpload({
           onChange(nextFile);
         }
       })
-      .catch(() => {
-        inputRef.current?.click();
+      .catch((error) => {
+        onValidationError?.(
+          error instanceof Error && error.message.trim()
+            ? error.message
+            : labels?.trustedSourceRequired ??
+              'AutoCut desktop processing requires a trusted local media file selected by the native host.',
+        );
       });
   };
 
-  const clearFile = (e: React.MouseEvent) => {
-    e.stopPropagation();
+  const clearFile = (event: React.MouseEvent) => {
+    event.stopPropagation();
     onChange(null);
-    if (inputRef.current) inputRef.current.value = '';
+    if (inputRef.current) {
+      inputRef.current.value = '';
+    }
   };
 
   const getFileIcon = (fileOrAcceptType: string) => {
@@ -155,7 +215,13 @@ export function FileUpload({
           <div className="min-w-0 pr-4">
             <p className="text-sm font-bold text-gray-200 truncate group-hover:text-blue-400 transition-colors">{file.name}</p>
             <div className="flex gap-2 items-center mt-1 text-[11px] text-gray-500 font-mono">
-              <span className="bg-[#222] px-1.5 rounded">{file.type || 'unknown format'}</span>
+              <span className="bg-[#222] px-1.5 rounded">{file.type || labels?.unknownFormat || 'unknown format'}</span>
+              {Boolean((file as File & { hasAudioStream?: boolean }).hasAudioStream) && (
+                <span className="bg-[#222] px-1.5 rounded">audio stream</span>
+              )}
+              {Boolean((file as File & { hasVideoStream?: boolean }).hasVideoStream) && (
+                <span className="bg-[#222] px-1.5 rounded">video stream</span>
+              )}
               <span>{(file.size / 1024 / 1024).toFixed(2)} MB</span>
             </div>
           </div>
@@ -179,7 +245,7 @@ export function FileUpload({
           : 'border-[#333] hover:border-blue-500/50 bg-[#111] hover:bg-[#141414]'
       }`}
     >
-      {isDragging && <div className="absolute inset-0 bg-blue-500/5 blur-3xl rounded-full scale-150 animate-pulse"></div>}
+      {isDragging && <div className="absolute inset-0 bg-blue-500/5 blur-3xl rounded-full scale-150 animate-pulse" />}
 
       <input
         type="file"
@@ -190,16 +256,16 @@ export function FileUpload({
       />
 
       <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-4 transition-all duration-300 ${isDragging ? 'bg-blue-500 text-white scale-110 shadow-lg shadow-blue-500/30' : 'bg-[#222] text-gray-500 group-hover:bg-[#2a2a2a] group-hover:text-blue-400 group-hover:-translate-y-1'}`}>
-         <Upload size={32} />
+        <Upload size={32} />
       </div>
 
       <p className={`text-[15px] font-bold tracking-wide transition-colors ${isDragging ? 'text-blue-400' : 'text-gray-200 group-hover:text-white'}`}>
-        {isDragging ? '松开以上传文件' : '点击或拖拽文件到这里'}
+        {isDragging ? labels?.dropActive ?? 'Drop to upload file' : labels?.dropReady ?? 'Click or drag a file here'}
       </p>
 
       <div className="flex items-center gap-3 mt-3 opacity-60">
-        <span className="text-[11px] font-mono bg-[#222] px-2 py-0.5 rounded text-gray-400">MAX {maxSizeMB}MB</span>
-        <span className="w-1 h-1 rounded-full bg-gray-600"></span>
+        <span className="text-[11px] font-mono bg-[#222] px-2 py-0.5 rounded text-gray-400">{labels?.maxSizePrefix ?? 'MAX'} {maxSizeMB}MB</span>
+        <span className="w-1 h-1 rounded-full bg-gray-600" />
         <span className="text-[11px] text-gray-500 uppercase tracking-widest">{accept.replace(/,?\w+\/\*/g, '').replace(/\./g, '  ')}</span>
       </div>
     </div>

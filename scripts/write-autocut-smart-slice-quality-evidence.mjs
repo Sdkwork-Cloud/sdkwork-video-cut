@@ -10,6 +10,7 @@ import {
   readAutoCutCliOptionValue,
 } from './autocut-cli-args.mjs';
 import {
+  AUTOCUT_SMART_SLICE_REVIEW_RISK_CATALOG,
   AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD,
 } from '../packages/sdkwork-autocut-types/src/index.ts';
 
@@ -25,10 +26,21 @@ const QUALITY_THRESHOLDS = {
   minAveragePublishabilityScore: 0.68,
   minAverageContinuityScore: 0.78,
   minAverageTranscriptCoverageScore: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.minTranscriptCoverageScore,
+  minAudioActivityConfidence: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.minAudioActivityConfidence,
+  requiredAudioActivityAnalysisFilter: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.requiredAudioActivityAnalysisFilter,
+  rawAudioActivityAnalysisFilter: 'silencedetect=noise=-35dB:d=0.08',
   minPlatformReadyOrReviewRatio: 0.8,
+  audioCleanupProfile: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.audioCleanupProfile,
+  noiseReductionDecisionRequired: true,
   maxLeadingSilenceMs: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.maxLeadingSilenceMs,
   maxTrailingSilenceMs: AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.maxTrailingSilenceMs,
 };
+const acceptedBoundaryDecisionSources = new Set(
+  AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.acceptedBoundaryDecisionSources,
+);
+const acceptedTailTreatments = new Set(
+  AUTOCUT_SMART_SLICE_PROFESSIONAL_STANDARD.acceptedTailTreatments,
+);
 
 export function createAutoCutSmartSliceQualityEvidence({
   rootDir = process.cwd(),
@@ -47,6 +59,7 @@ export function createAutoCutSmartSliceQualityEvidence({
   validateSmartSliceTaskEvidence(task);
   const sliceResults = Array.isArray(task.sliceResults) ? task.sliceResults : [];
   const slices = sliceResults.map((slice, index) => createSliceQualityEvidence(slice, index));
+  const reviewWarnings = createSmartSliceReviewWarnings(slices);
   const summary = createSmartSliceQualitySummary(slices);
   const blockers = createSmartSliceQualityBlockers(summary, slices);
 
@@ -64,7 +77,12 @@ export function createAutoCutSmartSliceQualityEvidence({
     readiness: {
       smartSliceQualityReady: blockers.length === 0,
     },
-    summary,
+    summary: {
+      ...summary,
+      reviewWarningSlices: new Set(reviewWarnings.flatMap((warning) => warning.sliceIndexes)).size,
+      reviewWarningCount: reviewWarnings.reduce((count, warning) => count + warning.sliceIndexes.length, 0),
+    },
+    reviewWarnings,
     blockers,
     slices,
   };
@@ -119,11 +137,24 @@ function createSliceQualityEvidence(slice, index) {
   const platformReadinessGrade = normalizeString(slice.platformReadinessGrade);
   const speechContinuityGrade = normalizeString(slice.speechContinuityGrade);
   const sentenceBoundaryIntegrityGrade = normalizeString(slice.sentenceBoundaryIntegrityGrade);
+  const audioCleanupProfile = normalizeString(slice.audioCleanupProfile);
+  const noiseReductionApplied = normalizeBoolean(slice.noiseReductionApplied);
+  const boundaryDecisionSource = normalizeString(slice.boundaryDecisionSource);
+  const audioActivityStartMs = normalizeNonNegativeInteger(slice.audioActivityStartMs);
+  const audioActivityEndMs = normalizeNonNegativeInteger(slice.audioActivityEndMs);
+  const audioActivityConfidence = normalizeScore(slice.audioActivityConfidence);
+  const audioActivityAnalysisFilter = normalizeString(slice.audioActivityAnalysisFilter);
+  const leadingSilenceMs = normalizeNonNegativeInteger(slice.leadingSilenceMs);
+  const trailingSilenceMs = normalizeNonNegativeInteger(slice.trailingSilenceMs);
+  const leadingSilenceTrimMs = normalizeNonNegativeInteger(slice.leadingSilenceTrimMs);
+  const trailingSilenceTrimMs = normalizeNonNegativeInteger(slice.trailingSilenceTrimMs);
+  const tailTreatment = normalizeString(slice.tailTreatment);
   const transcriptText = normalizeString(slice.transcriptText);
   const publishabilityIssues = normalizeStringArray(slice.publishabilityIssues);
   const platformReadinessIssues = normalizeStringArray(slice.platformReadinessIssues);
   const sentenceBoundaryIssues = normalizeStringArray(slice.sentenceBoundaryIssues);
   const risks = normalizeStringArray(slice.risks);
+  const transcriptCorrection = normalizeTranscriptCorrectionAudit(slice.transcriptCorrection);
 
   const publishabilityReady =
     publishabilityScore >= QUALITY_THRESHOLDS.minAveragePublishabilityScore &&
@@ -187,6 +218,35 @@ function createSliceQualityEvidence(slice, index) {
     sourceRangeReady &&
     boundaryPaddingBeforeMs <= QUALITY_THRESHOLDS.maxLeadingSilenceMs &&
     boundaryPaddingAfterMs <= QUALITY_THRESHOLDS.maxTrailingSilenceMs;
+  const audioActivityRangeReady =
+    sourceRangeReady &&
+    audioActivityStartMs !== undefined &&
+    audioActivityEndMs !== undefined &&
+    audioActivityEndMs > audioActivityStartMs &&
+    audioActivityStartMs >= sourceStartMs &&
+    audioActivityEndMs <= sourceEndMs;
+  const audioCleanupReady =
+    audioCleanupProfile === QUALITY_THRESHOLDS.audioCleanupProfile &&
+    noiseReductionApplied !== undefined &&
+    acceptedBoundaryDecisionSources.has(boundaryDecisionSource) &&
+    audioActivityRangeReady &&
+    audioActivityConfidence >= QUALITY_THRESHOLDS.minAudioActivityConfidence &&
+    audioActivityAnalysisFilter === (noiseReductionApplied
+      ? QUALITY_THRESHOLDS.requiredAudioActivityAnalysisFilter
+      : QUALITY_THRESHOLDS.rawAudioActivityAnalysisFilter) &&
+    leadingSilenceMs !== undefined &&
+    trailingSilenceMs !== undefined &&
+    leadingSilenceTrimMs !== undefined &&
+    trailingSilenceTrimMs !== undefined &&
+    acceptedTailTreatments.has(tailTreatment);
+  const transcriptCorrectionAuditReady =
+    transcriptCorrection === undefined ||
+    (
+      transcriptCorrection.source === 'task-detail' &&
+      transcriptCorrection.correctedAt.length > 0 &&
+      transcriptCorrection.originalTranscriptText.length > 0 &&
+      transcriptCorrection.correctionCount > 0
+    );
 
   return {
     index,
@@ -227,12 +287,27 @@ function createSliceQualityEvidence(slice, index) {
       transcriptSegmentsSourceRangeReady,
       transcriptTextLength: transcriptText.length,
     },
+    audioCleanup: {
+      audioCleanupProfile,
+      noiseReductionApplied,
+      boundaryDecisionSource,
+      audioActivityStartMs,
+      audioActivityEndMs,
+      audioActivityConfidence,
+      audioActivityAnalysisFilter,
+      leadingSilenceMs,
+      trailingSilenceMs,
+      leadingSilenceTrimMs,
+      trailingSilenceTrimMs,
+      tailTreatment,
+    },
     issues: {
       publishabilityIssues,
       platformReadinessIssues,
       sentenceBoundaryIssues,
       risks,
     },
+    ...(transcriptCorrection ? { transcriptCorrection } : {}),
     qualityGates: {
       publishabilityReady,
       speechContinuityReady,
@@ -241,6 +316,9 @@ function createSliceQualityEvidence(slice, index) {
       platformReady,
       sourceRangeReady,
       silenceBoundaryReady,
+      audioActivityRangeReady,
+      audioCleanupReady,
+      transcriptCorrectionAuditReady,
     },
   };
 }
@@ -254,8 +332,8 @@ function doTranscriptSegmentsMatchSpeechBoundary(segments, speechStartMs, speech
     return false;
   }
 
-  return Math.abs(segments[0].startMs - speechStartMs) <= 80 &&
-    Math.abs(segments.at(-1).endMs - speechEndMs) <= 80;
+  return segments[0].startMs <= speechStartMs + 80 &&
+    segments.at(-1).endMs >= speechEndMs - 80;
 }
 
 function createTranscriptTextFromSegments(segments) {
@@ -316,9 +394,12 @@ function createSmartSliceQualitySummary(slices) {
     slice.qualityGates.sentenceBoundaryReady &&
     slice.qualityGates.sourceRangeReady &&
     slice.qualityGates.silenceBoundaryReady &&
+    slice.qualityGates.audioCleanupReady &&
     (slice.grades.platformReadinessGrade === 'ready' || slice.grades.platformReadinessGrade === 'review'),
   ).length;
   const platformReadyOrReviewSlices = slices.filter((slice) => slice.qualityGates.platformReady).length;
+  const audioCleanupReadySlices = slices.filter((slice) => slice.qualityGates.audioCleanupReady).length;
+  const correctedTranscriptSlices = slices.filter((slice) => Boolean(slice.transcriptCorrection)).length;
 
   return {
     totalSlices,
@@ -326,12 +407,67 @@ function createSmartSliceQualitySummary(slices) {
     reviewSlices,
     rejectSlices,
     readyOrReviewSlices,
+    audioCleanupReadySlices,
+    correctedTranscriptSlices,
     readyOrReviewRatio: ratio(readyOrReviewSlices, totalSlices),
+    audioCleanupReadyRatio: ratio(audioCleanupReadySlices, totalSlices),
     platformReadyOrReviewRatio: ratio(platformReadyOrReviewSlices, totalSlices),
     averagePublishabilityScore: averageScore(slices.map((slice) => slice.scores.publishabilityScore)),
     averageContinuityScore: averageScore(slices.map((slice) => slice.scores.continuityScore)),
     averageTranscriptCoverageScore: averageScore(slices.map((slice) => slice.scores.transcriptCoverageScore)),
     averagePlatformReadinessScore: averageScore(slices.map((slice) => slice.scores.platformReadinessScore)),
+  };
+}
+
+function createSmartSliceReviewWarnings(slices) {
+  const warningsByCode = new Map();
+  for (const slice of slices) {
+    for (const risk of createSmartSliceReviewIssueCodes(slice.issues)) {
+      const warning = warningsByCode.get(risk) ?? createSmartSliceReviewWarning(risk);
+      warning.sliceIndexes.push(slice.index);
+      warningsByCode.set(risk, warning);
+    }
+  }
+
+  return [...warningsByCode.values()].map((warning) => ({
+    ...warning,
+    sliceIndexes: [...new Set(warning.sliceIndexes)].sort((first, second) => first - second),
+  }));
+}
+
+function createSmartSliceReviewIssueCodes(issues) {
+  const reviewCodes = [
+    ...(issues.risks ?? []),
+    ...(issues.publishabilityIssues ?? []),
+    ...(issues.platformReadinessIssues ?? []),
+    ...(issues.sentenceBoundaryIssues ?? []).filter((issue) =>
+      !issue.startsWith('sentence-clean-') &&
+      !issue.endsWith('-repaired')
+    ),
+  ];
+  return [...new Set(reviewCodes)].filter(Boolean);
+}
+
+function createSmartSliceReviewWarning(risk) {
+  const definition = AUTOCUT_SMART_SLICE_REVIEW_RISK_CATALOG[risk];
+  if (definition) {
+    return {
+      code: definition.code,
+      severity: definition.severity,
+      title: definition.title,
+      message: definition.message,
+      remediation: definition.remediation,
+      sliceIndexes: [],
+    };
+  }
+
+  return {
+    code: risk,
+    severity: 'review',
+    title: createFallbackRiskTitle(risk),
+    message: `Smart slicing reported review risk "${risk}" for this slice.`,
+    remediation: 'Review the slice manually before publishing and re-run smart slicing if the risk indicates a boundary or transcript issue.',
+    sliceIndexes: [],
   };
 }
 
@@ -407,6 +543,48 @@ function createSmartSliceQualityBlockers(summary, slices) {
     });
   }
 
+  const audioCleanupIncompleteSlices = slices
+    .filter((slice) => !slice.qualityGates.audioCleanupReady)
+    .map((slice) => slice.index);
+  if (audioCleanupIncompleteSlices.length > 0) {
+    blockers.push({
+      code: 'SMART_SLICE_AUDIO_CLEANUP_INCOMPLETE',
+      message: 'Smart slice outputs are missing complete denoise, audio boundary, or tail cleanup evidence.',
+      remediation: `Re-run smart slicing with the ${QUALITY_THRESHOLDS.audioCleanupProfile} cleanup profile so every release slice records noise-reduction decision, boundary source, trim, and tail treatment evidence.`,
+      actual: audioCleanupIncompleteSlices,
+      expected: {
+        audioCleanupProfile: QUALITY_THRESHOLDS.audioCleanupProfile,
+        noiseReductionApplied: 'boolean decision evidence required',
+        minAudioActivityConfidence: QUALITY_THRESHOLDS.minAudioActivityConfidence,
+        audioActivityAnalysisFilter: {
+          denoised: QUALITY_THRESHOLDS.requiredAudioActivityAnalysisFilter,
+          raw: QUALITY_THRESHOLDS.rawAudioActivityAnalysisFilter,
+        },
+        audioActivityRange: 'audioActivityStartMs/audioActivityEndMs must be inside sourceStartMs/sourceEndMs',
+        boundaryDecisionSources: [...acceptedBoundaryDecisionSources],
+        tailTreatments: [...acceptedTailTreatments],
+      },
+    });
+  }
+
+  const transcriptCorrectionInvalidSlices = slices
+    .filter((slice) => !slice.qualityGates.transcriptCorrectionAuditReady)
+    .map((slice) => slice.index);
+  if (transcriptCorrectionInvalidSlices.length > 0) {
+    blockers.push({
+      code: 'SMART_SLICE_TRANSCRIPT_CORRECTION_AUDIT_INVALID',
+      message: 'Smart slice outputs contain invalid manual transcript correction audit metadata.',
+      remediation: 'Re-save transcript corrections from the task detail page so source, correctedAt, originalTranscriptText, and correctionCount are recorded.',
+      actual: transcriptCorrectionInvalidSlices,
+      expected: {
+        source: 'task-detail',
+        correctedAt: 'valid ISO timestamp string',
+        originalTranscriptText: 'non-empty string',
+        correctionCount: 'positive integer',
+      },
+    });
+  }
+
   return blockers;
 }
 
@@ -434,6 +612,10 @@ function normalizeNonNegativeInteger(value) {
   return Math.max(0, Math.round(Number(numericValue)));
 }
 
+function normalizeBoolean(value) {
+  return typeof value === 'boolean' ? value : undefined;
+}
+
 function normalizeString(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -446,6 +628,32 @@ function normalizeStringArray(value) {
     .map((item) => normalizeString(item))
     .filter(Boolean)
     .slice(0, 24);
+}
+
+function createFallbackRiskTitle(risk) {
+  return risk
+    .split('-')
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join(' ') || 'Review risk';
+}
+
+function normalizeTranscriptCorrectionAudit(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const source = normalizeString(value.source);
+  const correctedAt = normalizeString(value.correctedAt);
+  const originalTranscriptText = normalizeString(value.originalTranscriptText).replace(/\s+/gu, ' ');
+  const correctionCount = normalizeNonNegativeInteger(value.correctionCount) ?? 0;
+
+  return {
+    source,
+    correctedAt: correctedAt && !Number.isNaN(Date.parse(correctedAt)) ? correctedAt : '',
+    originalTranscriptText,
+    correctionCount,
+  };
 }
 
 function normalizeTranscriptSegments(value) {

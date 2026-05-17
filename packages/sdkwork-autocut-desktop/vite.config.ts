@@ -38,6 +38,14 @@ export default defineConfig(() => {
     resolve: {
       alias: [
         {
+          find: 'react/jsx-runtime',
+          replacement: path.resolve(__dirname, 'node_modules/react/jsx-runtime.js'),
+        },
+        {
+          find: 'react',
+          replacement: path.resolve(__dirname, 'node_modules/react/index.js'),
+        },
+        {
           find: /^@sdkwork\/autocut-([^/]+)$/,
           replacement: path.resolve(__dirname, '../sdkwork-autocut-$1/src/index.ts'),
         },

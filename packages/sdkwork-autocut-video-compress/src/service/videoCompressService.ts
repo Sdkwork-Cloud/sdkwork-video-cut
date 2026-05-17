@@ -4,8 +4,10 @@ import {
   addAsset,
   addMessage,
   addTask,
+  assertAutoCutMediaHasVideoStream,
   assertAutoCutNativeArtifactInsideTaskOutputDir,
   createAutoCutId,
+  createAutoCutTaskId,
   createAutoCutTaskName,
   createAutoCutTimestamp,
   failAutoCutProcessingTask,
@@ -23,7 +25,7 @@ function resolveDesktopSourcePath(file: File | null | undefined) {
 function createVideoCompressTask(params: VideoCompressParams): AppTask {
   const createdAt = createAutoCutTimestamp();
   return {
-    id: createAutoCutId('newTask'),
+    id: createAutoCutTaskId('compress'),
     name: createAutoCutTaskName({ file: params.file, fallbackSourceName: 'source-video.mp4', createdAt }),
     type: AUTOCUT_TASK_TYPE.videoCompress,
     status: AUTOCUT_TASK_STATUS.pending,
@@ -112,6 +114,7 @@ export async function processVideoCompress(params: VideoCompressParams) {
         sourcePath: desktopSourcePath,
         ...(outputRootDir ? { outputRootDir } : {}),
       });
+      assertAutoCutMediaHasVideoStream(importedMedia, 'video compression');
       await updateTask(newTask.id, {
         status: AUTOCUT_TASK_STATUS.processing,
         progress: 60,

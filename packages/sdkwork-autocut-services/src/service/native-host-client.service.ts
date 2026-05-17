@@ -1,3 +1,5 @@
+import type { AutoCutSmartSliceTranscript } from '@sdkwork/autocut-types';
+
 export type { AutoCutSpeechTranscriptionModelDownloadProgressEvent } from '@sdkwork/autocut-types';
 
 export interface AutoCutHostCapabilities {
@@ -18,11 +20,20 @@ export interface AutoCutHostCapabilities {
   audioExtractionFromAssetReady: boolean;
   videoGifCommandReady: boolean;
   videoSliceCommandReady: boolean;
+  videoSliceAudioActivityAnalysisCommandReady: boolean;
   videoCompressCommandReady: boolean;
   videoConvertCommandReady: boolean;
   videoEnhanceCommandReady: boolean;
+  videoDedupFingerprintCommandReady: boolean;
+  videoDedupFileIdentityCommandReady?: boolean;
+  audioFingerprintCommandReady?: boolean;
+  audioFingerprintAdapterReady?: boolean;
   speechTranscriptionCommandReady: boolean;
   speechTranscriptionToolchainReady: boolean;
+  visualEvidenceExtractionContractReady: boolean;
+  visualEvidenceExtractionCommandReady: boolean;
+  visualEvidenceExtractionAdapterReady: boolean;
+  taskEvidenceWriteCommandReady: boolean;
   speechTranscriptionProbeCommandReady: boolean;
   speechTranscriptionFileSelectCommandReady: boolean;
   speechTranscriptionModelDownloadCommandReady: boolean;
@@ -74,6 +85,8 @@ export interface AutoCutMediaImportResult {
   name: string;
   mediaType: string;
   mimeType: string;
+  hasAudioStream: boolean;
+  hasVideoStream: boolean;
   durationMs?: number;
 }
 
@@ -83,6 +96,8 @@ export interface AutoCutLocalMediaFileDescription {
   name: string;
   mediaType: string;
   mimeType: string;
+  hasAudioStream: boolean;
+  hasVideoStream: boolean;
   durationMs?: number;
 }
 
@@ -113,6 +128,8 @@ export interface AutoCutNativeArtifactInFolderResult {
 export interface AutoCutAudioExtractionRequest {
   assetUuid: string;
   outputFormat: string;
+  outputQuality: string;
+  outputChannel: string;
   outputRootDir?: string;
 }
 
@@ -151,18 +168,72 @@ export interface AutoCutVideoSliceClipRequest {
   durationMs: number;
   label: string;
   outputFileName?: string;
+  planningEngine?: 'smart-cut-engine';
+  smartCutPresetId?: string;
+  smartCutPlanId?: string;
+  smartCutRunId?: string;
+  contentUnitIds?: string[];
+  speakerIds?: string[];
+  speakerRoles?: string[];
   audioMuteRanges?: Array<{ startMs: number; endMs: number }>;
+  sourceSegments?: Array<{ startMs: number; endMs: number }>;
+  renderedDurationMs?: number;
+  removedSilenceMs?: number;
+  internalSilenceTrimCount?: number;
   sourceStartMs?: number;
   sourceEndMs?: number;
   speechStartMs?: number;
   speechEndMs?: number;
   boundaryPaddingBeforeMs?: number;
   boundaryPaddingAfterMs?: number;
+  audioCleanupProfile?: string;
+  noiseReductionApplied?: boolean;
+  boundaryDecisionSource?: 'transcript' | 'audio' | 'combined';
+  audioActivityStartMs?: number;
+  audioActivityEndMs?: number;
+  audioActivityConfidence?: number;
+  audioActivityAnalysisFilter?: string;
+  leadingSilenceMs?: number;
+  trailingSilenceMs?: number;
+  leadingSilenceTrimMs?: number;
+  trailingSilenceTrimMs?: number;
+  tailTreatment?: 'none' | 'semantic-extend' | 'fade-out';
   transcriptText?: string;
   transcriptSegments?: AutoCutSpeechTranscriptionSegment[];
   transcriptSegmentCount?: number;
   transcriptCoverageScore?: number;
   speechContinuityGrade?: 'strong' | 'repaired' | 'weak';
+  risks?: string[];
+}
+
+export interface AutoCutVideoSliceAudioActivityAnalysisRequest {
+  assetUuid: string;
+  workflowTaskId?: string;
+  profile: string;
+  applyNoiseReduction: boolean;
+  outputRootDir?: string;
+  clips: AutoCutVideoSliceClipRequest[];
+}
+
+export interface AutoCutVideoSliceAudioActivityAnalysis {
+  index: number;
+  startMs: number;
+  durationMs: number;
+  sourceStartMs: number;
+  sourceEndMs: number;
+  audioActivityStartMs?: number;
+  audioActivityEndMs?: number;
+  leadingSilenceMs?: number;
+  trailingSilenceMs?: number;
+  internalSilenceIntervals?: Array<{ startMs: number; endMs: number }>;
+  confidence: number;
+  analysisFilter: string;
+}
+
+export interface AutoCutVideoSliceAudioActivityAnalysisResult {
+  assetUuid: string;
+  profile: string;
+  analyses: AutoCutVideoSliceAudioActivityAnalysis[];
 }
 
 export interface AutoCutVideoSliceRenderProfile {
@@ -172,6 +243,7 @@ export interface AutoCutVideoSliceRenderProfile {
 
 export interface AutoCutVideoSliceRequest {
   assetUuid: string;
+  workflowTaskId?: string;
   clips: AutoCutVideoSliceClipRequest[];
   outputFormat: 'mp4';
   outputRootDir?: string;
@@ -205,11 +277,28 @@ export interface AutoCutVideoSliceArtifactResult {
   speechEndMs?: number;
   boundaryPaddingBeforeMs?: number;
   boundaryPaddingAfterMs?: number;
+  audioCleanupProfile?: string;
+  noiseReductionApplied?: boolean;
+  boundaryDecisionSource?: 'transcript' | 'audio' | 'combined';
+  audioActivityStartMs?: number;
+  audioActivityEndMs?: number;
+  audioActivityConfidence?: number;
+  audioActivityAnalysisFilter?: string;
+  leadingSilenceMs?: number;
+  trailingSilenceMs?: number;
+  leadingSilenceTrimMs?: number;
+  trailingSilenceTrimMs?: number;
+  sourceSegments?: Array<{ startMs: number; endMs: number }>;
+  renderedDurationMs?: number;
+  removedSilenceMs?: number;
+  internalSilenceTrimCount?: number;
+  tailTreatment?: 'none' | 'semantic-extend' | 'fade-out';
   transcriptText?: string;
   transcriptSegments?: AutoCutSpeechTranscriptionSegment[];
   transcriptSegmentCount?: number;
   transcriptCoverageScore?: number;
   speechContinuityGrade?: 'strong' | 'repaired' | 'weak';
+  risks?: string[];
 }
 
 export interface AutoCutVideoSliceResult {
@@ -225,16 +314,37 @@ export interface AutoCutSpeechTranscriptionSegment {
   endMs: number;
   text: string;
   speaker?: string;
+  words?: AutoCutSpeechTranscriptionWord[];
+}
+
+export interface AutoCutSpeechTranscriptionWord {
+  startMs: number;
+  endMs: number;
+  text: string;
+  probability?: number;
+  prob?: number;
+  p?: number;
 }
 
 export interface AutoCutSpeechTranscriptionRequest {
   assetUuid: string;
+  workflowTaskId?: string;
   providerId?: string;
   language?: string;
   outputRootDir?: string;
   executablePath?: string;
   modelPath?: string;
   workflowPurpose?: string;
+  sttPresetId?: string;
+  sttExecutionProfile?: string;
+  whisperChunkParallelism?: number;
+  whisperChunkThreadCount?: number;
+  whisperChunkSourceStrategy?: 'audio-first' | 'source-direct';
+  whisperAudioContext?: number;
+  whisperBeamSize?: number;
+  whisperBestOf?: number;
+  whisperNoFallback?: boolean;
+  dedupeRepeatedSpeech?: boolean;
 }
 
 export interface AutoCutSpeechTranscriptionResult {
@@ -246,8 +356,150 @@ export interface AutoCutSpeechTranscriptionResult {
   language: string;
   segments: AutoCutSpeechTranscriptionSegment[];
   text: string;
+  standardTranscript?: AutoCutSmartSliceTranscript;
+  qualityGuard?: AutoCutSpeechTranscriptQualityGuard;
   ffmpegExecutable: string;
   speechExecutable: string;
+  sttPresetId?: string;
+  executionProfile?: string;
+}
+
+export interface AutoCutSpeechTranscriptQualityGuard {
+  schema: 'smart-slice.stt-quality-guard.v1' | string;
+  status: 'not-run' | 'passed' | 'passed-empty' | 'passed-after-retry' | 'failed' | string;
+  passed: boolean;
+  scope: string;
+  chunkId: string;
+  retryCount: number;
+  riskCount: number;
+  risks: AutoCutSpeechTranscriptQualityRisk[];
+  metrics: AutoCutSpeechTranscriptQualityMetrics;
+}
+
+export interface AutoCutSpeechTranscriptQualityRisk {
+  code: string;
+  severity: 'info' | 'warning' | 'blocker' | string;
+  message: string;
+  example?: string;
+  count?: number;
+  ratio?: number;
+}
+
+export interface AutoCutSpeechTranscriptQualityMetrics {
+  segmentCount: number;
+  textLength: number;
+  uniqueCharacterRatio: number;
+  replacementCharacterCount: number;
+  repeatedPhraseRunCount: number;
+  duplicateWindowRatio: number;
+  tinySegmentRatio: number;
+}
+
+export interface AutoCutVideoFileFingerprintRequest {
+  sourcePath: string;
+}
+
+export interface AutoCutVideoFileFingerprintResult {
+  sourcePath: string;
+  byteSize: number;
+  modifiedAtMs?: number;
+  sha256: string;
+  algorithm: 'sha256' | string;
+  fingerprintVersion: string;
+  fileIdentityVersion?: string;
+}
+
+export interface AutoCutVideoFileIdentityResult {
+  sourcePath: string;
+  byteSize: number;
+  modifiedAtMs: number;
+  fileIdentityVersion: string;
+}
+
+export interface AutoCutAudioFingerprintRequest {
+  assetUuid: string;
+  sourcePath?: string;
+  workflowTaskId?: string;
+  fingerprintProfile: 'audio-energy-v1';
+  sampleRateHz?: number;
+  windowDurationMs?: number;
+  outputRootDir?: string;
+}
+
+export interface AutoCutAudioFingerprintResult {
+  taskUuid: string;
+  sourceAssetUuid: string;
+  provider: 'ffmpeg-audio' | string;
+  profile: 'audio-energy-v1' | string;
+  ready: boolean;
+  durationMs: number;
+  sampleRateHz: number;
+  windowDurationMs: number;
+  fingerprint: {
+    algorithm: 'audio-energy-v1' | string;
+    hash: string;
+    energyBuckets: number[];
+    silenceRatio: number;
+    spectralCentroidBuckets?: number[];
+  };
+  diagnostics: string[];
+}
+
+export interface AutoCutVisualEvidenceExtractionRequest {
+  assetUuid: string;
+  sourcePath?: string;
+  workflowTaskId?: string;
+  visualEvidenceProfile: 'shot-boundary-v1' | 'scene-index-v1';
+  sceneChangeThreshold?: number;
+  minShotDurationMs?: number;
+  includeFrameQuality?: boolean;
+  includeFrameFingerprint?: boolean;
+  outputRootDir?: string;
+}
+
+export interface AutoCutVisualEvidenceExtractionResult {
+  taskUuid: string;
+  sourceAssetUuid: string;
+  provider: 'ffmpeg-scene' | string;
+  profile: 'shot-boundary-v1' | 'scene-index-v1';
+  ready: boolean;
+  shots: Array<{
+    id: string;
+    startMs: number;
+    endMs: number;
+    confidence: number;
+  }>;
+  sceneBoundaries: Array<{ startMs: number; endMs: number }>;
+  frameQuality?: Array<{
+    atMs: number;
+    blurScore: number;
+    exposureScore: number;
+    stabilityScore: number;
+  }>;
+  frameFingerprints?: Array<{
+    atMs: number;
+    algorithm: 'ahash-8x8-luma-v1' | string;
+    hash: string;
+    meanLuma: number;
+    histogram: number[];
+  }>;
+  diagnostics: string[];
+}
+
+export interface AutoCutTaskEvidenceWriteRequest {
+  workflowTaskId: string;
+  outputRootDir?: string;
+  relativePath: string;
+  contentJson: unknown;
+}
+
+export interface AutoCutTaskEvidenceWriteResult {
+  taskUuid: string;
+  taskOutputDir: string;
+  artifactPath: string;
+  relativePath: string;
+  byteSize: number;
+  contentSha256: string;
 }
 
 export interface AutoCutSpeechTranscriptionProbeRequest {
@@ -262,6 +514,9 @@ export interface AutoCutSpeechTranscriptionProbe {
   ready: boolean;
   executableReady?: boolean;
   modelReady?: boolean;
+  gpuReady?: boolean;
+  gpuBackend?: string;
+  gpuDiagnostics?: string[];
   executablePath: string;
   modelPath: string;
   sourceKind: string;
@@ -512,7 +767,13 @@ export type AutoCutNativeCommand =
   | 'autocut_extract_audio'
   | 'autocut_generate_gif'
   | 'autocut_slice_video'
+  | 'autocut_analyze_video_slice_audio_activity'
   | 'autocut_transcribe_media'
+  | 'autocut_fingerprint_video_file'
+  | 'autocut_probe_video_file_identity'
+  | 'autocut_extract_audio_fingerprint'
+  | 'autocut_extract_visual_evidence'
+  | 'autocut_write_task_evidence_json'
   | 'autocut_probe_speech_transcription'
   | 'autocut_select_speech_transcription_file'
   | 'autocut_download_speech_transcription_model'
@@ -542,8 +803,16 @@ export interface AutoCutNativeHostClient {
   retryNativeTask(request: AutoCutNativeTaskRetryRequest): Promise<AutoCutNativeTaskRetryResult>;
   extractAudio(request: AutoCutAudioExtractionRequest): Promise<AutoCutAudioExtractionResult>;
   generateGif(request: AutoCutVideoGifRequest): Promise<AutoCutVideoGifResult>;
+  analyzeVideoSliceAudioActivity(
+    request: AutoCutVideoSliceAudioActivityAnalysisRequest,
+  ): Promise<AutoCutVideoSliceAudioActivityAnalysisResult>;
   sliceVideo(request: AutoCutVideoSliceRequest): Promise<AutoCutVideoSliceResult>;
   transcribeMedia(request: AutoCutSpeechTranscriptionRequest): Promise<AutoCutSpeechTranscriptionResult>;
+  fingerprintVideoFile(request: AutoCutVideoFileFingerprintRequest): Promise<AutoCutVideoFileFingerprintResult>;
+  probeVideoFileIdentity(request: AutoCutVideoFileFingerprintRequest): Promise<AutoCutVideoFileIdentityResult>;
+  fingerprintAudio(request: AutoCutAudioFingerprintRequest): Promise<AutoCutAudioFingerprintResult>;
+  extractVisualEvidence(request: AutoCutVisualEvidenceExtractionRequest): Promise<AutoCutVisualEvidenceExtractionResult>;
+  writeTaskEvidenceJson(request: AutoCutTaskEvidenceWriteRequest): Promise<AutoCutTaskEvidenceWriteResult>;
   probeSpeechTranscription(request: AutoCutSpeechTranscriptionProbeRequest): Promise<AutoCutSpeechTranscriptionProbe>;
   selectSpeechTranscriptionFile(request: AutoCutSpeechTranscriptionFileSelectRequest): Promise<string | null>;
   downloadSpeechTranscriptionModel(request: AutoCutSpeechTranscriptionModelDownloadRequest): Promise<AutoCutSpeechTranscriptionModelDownloadResult>;
@@ -576,11 +845,20 @@ const unsupportedCapabilities: AutoCutHostCapabilities = {
   audioExtractionFromAssetReady: false,
   videoGifCommandReady: false,
   videoSliceCommandReady: false,
+  videoSliceAudioActivityAnalysisCommandReady: false,
   videoCompressCommandReady: false,
   videoConvertCommandReady: false,
   videoEnhanceCommandReady: false,
+  videoDedupFingerprintCommandReady: false,
+  videoDedupFileIdentityCommandReady: false,
+  audioFingerprintCommandReady: false,
+  audioFingerprintAdapterReady: false,
   speechTranscriptionCommandReady: false,
   speechTranscriptionToolchainReady: false,
+  visualEvidenceExtractionContractReady: false,
+  visualEvidenceExtractionCommandReady: false,
+  visualEvidenceExtractionAdapterReady: false,
+  taskEvidenceWriteCommandReady: false,
   speechTranscriptionProbeCommandReady: false,
   speechTranscriptionFileSelectCommandReady: false,
   speechTranscriptionModelDownloadCommandReady: false,
@@ -603,6 +881,7 @@ const unsupportedCapabilities: AutoCutHostCapabilities = {
 let configuredNativeHostClient: AutoCutNativeHostClient = createUnsupportedNativeHostClient();
 
 const MIN_NATIVE_VIDEO_SLICE_TRANSCRIPT_COVERAGE_SCORE = 0.8;
+const NATIVE_VIDEO_SLICE_TRANSCRIPT_BOUNDARY_TOLERANCE_MS = 80;
 const ACCEPTED_NATIVE_VIDEO_SLICE_SPEECH_CONTINUITY_GRADES = new Set<AutoCutVideoSliceClipRequest['speechContinuityGrade']>([
   'strong',
   'repaired',
@@ -664,6 +943,12 @@ export function createAutoCutNativeHostClient(
       invoke<AutoCutVideoGifResult>('autocut_generate_gif', {
         request,
       }),
+    analyzeVideoSliceAudioActivity: (request) => {
+      assertAutoCutNativeVideoSliceTranscriptEvidence({ assetUuid: request.assetUuid, clips: request.clips, outputFormat: 'mp4' });
+      return invoke<AutoCutVideoSliceAudioActivityAnalysisResult>('autocut_analyze_video_slice_audio_activity', {
+        request,
+      });
+    },
     sliceVideo: (request) => {
       assertAutoCutNativeVideoSliceTranscriptEvidence(request);
       return invoke<AutoCutVideoSliceResult>('autocut_slice_video', {
@@ -672,6 +957,26 @@ export function createAutoCutNativeHostClient(
     },
     transcribeMedia: (request) =>
       invoke<AutoCutSpeechTranscriptionResult>('autocut_transcribe_media', {
+        request,
+      }),
+    fingerprintVideoFile: (request) =>
+      invoke<AutoCutVideoFileFingerprintResult>('autocut_fingerprint_video_file', {
+        request,
+      }),
+    probeVideoFileIdentity: (request) =>
+      invoke<AutoCutVideoFileIdentityResult>('autocut_probe_video_file_identity', {
+        request,
+      }),
+    fingerprintAudio: (request) =>
+      invoke<AutoCutAudioFingerprintResult>('autocut_extract_audio_fingerprint', {
+        request,
+      }),
+    extractVisualEvidence: (request) =>
+      invoke<AutoCutVisualEvidenceExtractionResult>('autocut_extract_visual_evidence', {
+        request,
+      }),
+    writeTaskEvidenceJson: (request) =>
+      invoke<AutoCutTaskEvidenceWriteResult>('autocut_write_task_evidence_json', {
         request,
       }),
     probeSpeechTranscription: (request) =>
@@ -783,6 +1088,39 @@ function assertAutoCutNativeVideoSliceClipTranscriptEvidence(
     );
   }
 
+  const sourceSegments = clip.sourceSegments?.filter((range) =>
+    Number.isFinite(range.startMs) &&
+      Number.isFinite(range.endMs) &&
+      range.endMs > range.startMs
+  ) ?? [];
+  if (sourceSegments.length > 0) {
+    if (sourceSegments.length > 80) {
+      throw new Error(`AutoCut video slice clip ${clipNumber} supports at most 80 retained sourceSegments.`);
+    }
+    let previousSegmentEndMs: number | undefined;
+    let retainedDurationMs = 0;
+    for (const [segmentIndex, segment] of sourceSegments.entries()) {
+      if (
+        segment.startMs < clip.startMs ||
+        segment.endMs > clip.startMs + clip.durationMs ||
+        (previousSegmentEndMs !== undefined && segment.startMs < previousSegmentEndMs)
+      ) {
+        throw new Error(
+          `AutoCut video slice clip ${clipNumber} sourceSegments[${segmentIndex + 1}] must be ordered and stay inside rendered clip timing.`,
+        );
+      }
+      retainedDurationMs += segment.endMs - segment.startMs;
+      previousSegmentEndMs = segment.endMs;
+    }
+    if (
+      typeof clip.renderedDurationMs === 'number' &&
+      Number.isFinite(clip.renderedDurationMs) &&
+      Math.abs(clip.renderedDurationMs - retainedDurationMs) > 1
+    ) {
+      throw new Error(`AutoCut video slice clip ${clipNumber} renderedDurationMs must match retained sourceSegments duration.`);
+    }
+  }
+
   const sourceStartMs = clip.sourceStartMs ?? clip.startMs;
   const sourceEndMs = clip.sourceEndMs ?? clip.startMs + clip.durationMs;
   if (!Number.isFinite(sourceStartMs) || !Number.isFinite(sourceEndMs) || sourceEndMs <= sourceStartMs) {
@@ -790,6 +1128,14 @@ function assertAutoCutNativeVideoSliceClipTranscriptEvidence(
   }
   if (sourceStartMs < clip.startMs || sourceEndMs > clip.startMs + clip.durationMs) {
     throw new Error(`AutoCut video slice clip ${clipNumber} source range must stay inside rendered clip timing.`);
+  }
+  if (
+    sourceSegments.length > 0 &&
+    (sourceSegments[0]?.startMs !== sourceStartMs || sourceSegments.at(-1)?.endMs !== sourceEndMs)
+  ) {
+    throw new Error(
+      `AutoCut video slice clip ${clipNumber} source range must span retained sourceSegments.`,
+    );
   }
 
   const speechStartMs = clip.speechStartMs;
@@ -806,9 +1152,16 @@ function assertAutoCutNativeVideoSliceClipTranscriptEvidence(
     throw new Error(`AutoCut video slice clip ${clipNumber} speech range must stay inside its source range.`);
   }
 
-  if (transcriptSegments[0]?.startMs !== speechStartMs || transcriptSegments.at(-1)?.endMs !== speechEndMs) {
+  const firstTranscriptSegmentStartMs = transcriptSegments[0]?.startMs;
+  const lastTranscriptSegmentEndMs = transcriptSegments.at(-1)?.endMs;
+  if (
+    firstTranscriptSegmentStartMs === undefined ||
+    lastTranscriptSegmentEndMs === undefined ||
+    firstTranscriptSegmentStartMs > speechStartMs + NATIVE_VIDEO_SLICE_TRANSCRIPT_BOUNDARY_TOLERANCE_MS ||
+    lastTranscriptSegmentEndMs < speechEndMs - NATIVE_VIDEO_SLICE_TRANSCRIPT_BOUNDARY_TOLERANCE_MS
+  ) {
     throw new Error(
-      `AutoCut video slice clip ${clipNumber} speech range must match transcript segment boundaries.`,
+      `AutoCut video slice clip ${clipNumber} speech range must stay covered by structured transcript segment boundaries.`,
     );
   }
 
@@ -992,11 +1345,29 @@ function createUnsupportedNativeHostClient(): AutoCutNativeHostClient {
     generateGif: async () => {
       throw new Error('AutoCut native video GIF generation requires assetUuid and the Tauri desktop host.');
     },
+    analyzeVideoSliceAudioActivity: async () => {
+      throw new Error('AutoCut native Smart Slice audio activity analysis requires assetUuid and the Tauri desktop host.');
+    },
     sliceVideo: async () => {
       throw new Error('AutoCut native video slicing requires assetUuid and the Tauri desktop host.');
     },
     transcribeMedia: async () => {
       throw new Error('AutoCut native speech transcription requires assetUuid, a local speech transcription toolchain, and the Tauri desktop host.');
+    },
+    fingerprintVideoFile: async () => {
+      throw new Error('AutoCut native video dedup fingerprinting requires a local artifact path and the Tauri desktop host.');
+    },
+    probeVideoFileIdentity: async () => {
+      throw new Error('AutoCut native video dedup file identity probing requires a local artifact path and the Tauri desktop host.');
+    },
+    fingerprintAudio: async () => {
+      throw new Error('AutoCut native audio fingerprint extraction requires assetUuid, source audio evidence, and the Tauri desktop host.');
+    },
+    extractVisualEvidence: async () => {
+      throw new Error('AutoCut native visual evidence extraction requires assetUuid, a source-backed visual evidence adapter, and the Tauri desktop host.');
+    },
+    writeTaskEvidenceJson: async () => {
+      throw new Error('AutoCut workflow task evidence JSON persistence requires the Tauri desktop host.');
     },
     compressVideo: async () => {
       throw new Error('AutoCut native video compression requires assetUuid and the Tauri desktop host.');

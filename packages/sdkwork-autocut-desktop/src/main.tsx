@@ -9,10 +9,16 @@ import {
   initializeAutoCutDefaultLlmSettingsFromEnvironment,
   initializeAutoCutI18n,
 } from '@sdkwork/autocut-services';
+import {
+  registerSmartSliceTaskCancelHandler,
+  registerSmartSliceTaskResumeHandler,
+} from '@sdkwork/autocut-slicer';
 
 configureAutoCutRuntimeEnvironment(import.meta.env.DEV ? 'dev' : 'release');
 configureDesktopNativeHostClient();
 configureAutoCutVercelAiSdkBridge();
+registerSmartSliceTaskResumeHandler();
+registerSmartSliceTaskCancelHandler();
 initializeAutoCutI18n();
 void initializeAutoCutDefaultLlmSettingsFromEnvironment().catch(() => undefined);
 

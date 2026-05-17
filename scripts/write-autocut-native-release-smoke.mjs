@@ -497,6 +497,18 @@ function createNativeCommandMatrix({ rustSmokeReady, videoSliceSmokeReady, llmSe
       evidenceReady: videoSliceSmokeReady,
     },
     {
+      command: 'autocut_fingerprint_video_file',
+      purpose: 'streaming SHA-256 local video artifact fingerprinting for exact video deduplication',
+      evidenceSource: 'media_runtime::tests::video_file_fingerprint_reports_streamed_sha256_and_canonical_metadata',
+      evidenceReady: rustSmokeReady,
+    },
+    {
+      command: 'autocut_probe_video_file_identity',
+      purpose: 'lightweight local video artifact identity probing for fingerprint-cache validation without rehashing unchanged files',
+      evidenceSource: 'media_runtime::tests::video_file_identity_probe_reports_canonical_metadata_without_hashing',
+      evidenceReady: rustSmokeReady,
+    },
+    {
       command: 'autocut_recover_native_tasks',
       purpose: 'durable task recovery, expired worker lease, and deferred active lease behavior',
       evidenceSource: 'media_runtime::tests::native_task_recovery_*',

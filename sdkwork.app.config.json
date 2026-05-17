@@ -114,7 +114,7 @@
       }
     ],
     "metadata": {
-      "assetVersion": "0.1.5",
+      "assetVersion": "0.1.6",
       "defaultLocale": "en-US"
     }
   },
@@ -173,7 +173,7 @@
           "sourceType": "BINARY_URL",
           "packageFormat": "MSI",
           "platform": "DESKTOP_WINDOWS",
-          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.5/SDKWork%20Video%20Cut_0.1.5_x64_en-US.msi",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.6/SDKWork%20Video%20Cut_0.1.6_x64_en-US.msi",
           "enabled": false,
           "metadata": {
             "releaseAsset": true,
@@ -187,7 +187,7 @@
           "sourceType": "BINARY_URL",
           "packageFormat": "EXE",
           "platform": "DESKTOP_WINDOWS",
-          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.5/SDKWork%20Video%20Cut_0.1.5_x64-setup.exe",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.6/SDKWork%20Video%20Cut_0.1.6_x64-setup.exe",
           "enabled": false,
           "metadata": {
             "releaseAsset": true,
@@ -201,7 +201,7 @@
           "sourceType": "BINARY_URL",
           "packageFormat": "DEB",
           "platform": "DESKTOP_LINUX",
-          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.5/SDKWork%20Video%20Cut_0.1.5_amd64.deb",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.6/SDKWork%20Video%20Cut_0.1.6_amd64.deb",
           "enabled": false,
           "metadata": {
             "releaseAsset": true,
@@ -218,7 +218,7 @@
           "sourceType": "BINARY_URL",
           "packageFormat": "APPIMAGE",
           "platform": "DESKTOP_LINUX",
-          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.5/SDKWork%20Video%20Cut_0.1.5_amd64.AppImage",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.6/SDKWork%20Video%20Cut_0.1.6_amd64.AppImage",
           "enabled": false,
           "metadata": {
             "releaseAsset": true,
@@ -235,7 +235,7 @@
           "sourceType": "BINARY_URL",
           "packageFormat": "DMG",
           "platform": "DESKTOP_MACOS",
-          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.5/SDKWork%20Video%20Cut_0.1.5_x64.dmg",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.6/SDKWork%20Video%20Cut_0.1.6_x64.dmg",
           "enabled": false,
           "metadata": {
             "releaseAsset": true,
@@ -249,7 +249,7 @@
           "sourceType": "BINARY_URL",
           "packageFormat": "DMG",
           "platform": "DESKTOP_MACOS",
-          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.5/SDKWork%20Video%20Cut_0.1.5_aarch64.dmg",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.6/SDKWork%20Video%20Cut_0.1.6_aarch64.dmg",
           "enabled": false,
           "metadata": {
             "releaseAsset": true,
@@ -267,12 +267,50 @@
     }
   },
   "release": {
-    "currentVersion": "0.1.5",
+    "currentVersion": "0.1.6",
     "defaultChannel": "STABLE",
     "latest": {
-      "STABLE": "0.1.5"
+      "STABLE": "0.1.6"
     },
     "notes": [
+      {
+        "version": "0.1.6",
+        "releaseChannel": "STABLE",
+        "title": "SDKWork Video Cut 0.1.6",
+        "summary": "Commercial preview release metadata for the rebuilt intelligent slicing engine and workflow evidence system.",
+        "content": "Version 0.1.6 folds all post-v0.1.5 unreleased work into the next release line: the strategy-based smart slicing engine, speaker-aware structured STT evidence, LLM segmentation agent contracts, task-scoped transcript and plan artifacts, manual review workflow, reusable video deduplication capability, and large-media performance governance. Install package metadata points to the matching GitHub Release assets but remains disabled until real digest, signature, notarization, and SBOM evidence is recorded.",
+        "highlights": [
+          "Smart slicing is centered on transcript-backed semantic segmentation with speaker-aware time ranges",
+          "LLM segmentation uses structured input and output contracts that preserve source timestamps and speaker ids",
+          "Task output directories retain normalized STT artifacts, segmentation artifacts, preview state, subtitles, and execution evidence",
+          "The product flow supports fully automated slicing plus manual preview, correction, deduplication, and selected-slice export",
+          "Large-media and STT performance checks cover audio-first extraction, chunked processing, GPU runtime preparation, and cloud-ready execution policy"
+        ],
+        "packageIds": [
+          "desktop-windows-msi",
+          "desktop-windows-nsis",
+          "desktop-linux-deb",
+          "desktop-linux-appimage",
+          "desktop-macos-x64-dmg",
+          "desktop-macos-aarch64-dmg"
+        ],
+        "publishedAt": "2026-05-17T00:00:00Z",
+        "current": true,
+        "forceUpdate": false,
+        "minSupportedVersion": "0.1.5",
+        "metadata": {
+          "previewRelease": true,
+          "foldsUnreleasedChangesSince": "v0.1.5",
+          "commercialActivationRequired": [
+            "GitHub Release assets uploaded for every package",
+            "SHA-256 checksum recorded for every enabled package",
+            "Windows Authenticode signature evidence recorded",
+            "macOS Developer ID signing and notarization evidence recorded",
+            "Linux package trust evidence recorded",
+            "SBOM evidence recorded"
+          ]
+        }
+      },
       {
         "version": "0.1.5",
         "releaseChannel": "STABLE",
@@ -295,7 +333,7 @@
           "desktop-macos-aarch64-dmg"
         ],
         "publishedAt": "2026-05-09T00:00:00Z",
-        "current": true,
+        "current": false,
         "forceUpdate": false,
         "minSupportedVersion": "0.1.5",
         "metadata": {

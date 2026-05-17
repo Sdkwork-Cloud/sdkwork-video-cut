@@ -3,4 +3,8 @@ export * from "./components/Card";
 export * from "./components/FileUpload";
 export * from "./components/TaskFailureState";
 export * from "./components/Toast";
+export * from "./components/VideoDedupWorkbench";
+export * from "./components/taskDetailText";
+export * from "./components/useAutoCutCommonLabels";
+export * from "./components/useAutoCutTranslation";
 export * from "./service/trusted-file-source.service";

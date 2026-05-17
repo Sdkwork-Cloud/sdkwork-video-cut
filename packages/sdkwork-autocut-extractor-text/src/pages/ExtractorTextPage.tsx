@@ -1,8 +1,7 @@
 import { processExtractorText } from '../service/extractorTextService';
 import { useState, useEffect } from 'react';
 import { FileText, Type, Download, PlayCircle, Activity, Copy, CheckCircle2 } from 'lucide-react';
-import { FileUpload, Button, TaskFailureState } from '@sdkwork/autocut-commons';
-import { useToast } from '@sdkwork/autocut-commons';
+import { FileUpload, Button, TaskFailureState, useAutoCutCommonLabels, useToast } from '@sdkwork/autocut-commons';
 import { downloadExtractedTextFile, formatExtractedText, getAutoCutProcessingTaskErrorTaskId, getAutoCutWorkflowPreferences, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic, saveAutoCutTextExtractionPreferences, selectAutoCutTrustedLocalMediaFile, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
 import {
   AUTOCUT_SPEECH_TRANSCRIPTION_LANGUAGE_OPTIONS,
@@ -13,6 +12,7 @@ import {
 
 export function ExtractorTextPage() {
   const { toast } = useToast();
+  const commonLabels = useAutoCutCommonLabels();
   const [file, setFile] = useState<File | null>(null);
   const [language, setLanguage] = useState('auto');
   const [separateSpeakers, setSeparateSpeakers] = useState(true);
@@ -100,6 +100,8 @@ export function ExtractorTextPage() {
               onChange={setFile}
               accept="audio/*,video/*"
               maxSizeMB={500}
+              labels={commonLabels.fileUpload}
+              requiredStreams={{ audio: true }}
               trustedFileSourceSelector={() => selectAutoCutTrustedLocalMediaFile(['audio', 'video'])}
             />
           </div>
@@ -253,6 +255,7 @@ export function ExtractorTextPage() {
               errorMessage={activeTask.errorMessage}
               onCopyErrorMessage={writeAutoCutClipboardText}
               onRetry={handleStartProcess}
+              labels={commonLabels.taskFailure}
             />
           )}
         </div>

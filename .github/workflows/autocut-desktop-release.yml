@@ -6,7 +6,7 @@ on:
       release_tag:
         description: GitHub Release tag to upload assets to
         required: true
-        default: v0.1.5
+        default: v0.1.6
       upload_assets:
         description: Upload built assets to the GitHub Release
         required: true
@@ -247,7 +247,9 @@ jobs:
         run: |
           pnpm tauri:build --target ${{ matrix.rust_target }}
           appBundle="packages/sdkwork-autocut-desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos/SDKWork Video Cut.app"
-          appArchive="$(dirname "$appBundle")/SDKWork Video Cut_0.1.5_${{ matrix.app_arch }}.app.tar.gz"
+          releaseVersion="${{ inputs.release_tag }}"
+          releaseVersion="${releaseVersion#v}"
+          appArchive="$(dirname "$appBundle")/SDKWork Video Cut_${releaseVersion}_${{ matrix.app_arch }}.app.tar.gz"
           if [ ! -d "$appBundle" ]; then
             echo "missing macOS app bundle: $appBundle" >&2
             exit 1

@@ -12,6 +12,7 @@
     "windows-x86_64": {
       "relativePath": "windows-x86_64/whisper-cli.exe",
       "binaryName": "whisper-cli.exe",
+      "accelerationBackend": "cpu",
       "integrity": {
         "sha256": "d4c598cf97de103f888d1a53b8abddc85bf27ab752f785ca69318cedc8a2cf64",
         "byteSize": 485888
@@ -57,6 +58,7 @@
     "linux-x86_64": {
       "relativePath": "linux-x86_64/whisper-cli",
       "binaryName": "whisper-cli",
+      "accelerationBackend": "cpu",
       "integrity": {
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
         "byteSize": 0
@@ -65,6 +67,7 @@
     "macos-x86_64": {
       "relativePath": "macos-x86_64/whisper-cli",
       "binaryName": "whisper-cli",
+      "accelerationBackend": "cpu",
       "integrity": {
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
         "byteSize": 0
@@ -73,6 +76,7 @@
     "macos-aarch64": {
       "relativePath": "macos-aarch64/whisper-cli",
       "binaryName": "whisper-cli",
+      "accelerationBackend": "cpu",
       "integrity": {
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
         "byteSize": 0

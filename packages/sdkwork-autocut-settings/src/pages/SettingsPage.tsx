@@ -52,12 +52,14 @@ import {
 } from '@sdkwork/autocut-services';
 import {
   AUTOCUT_MODEL_VENDOR_PRESETS,
+  AUTOCUT_SMART_SLICE_SEGMENTATION_AGENTS,
   AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE,
   AUTOCUT_SPEECH_TRANSCRIPTION_LANGUAGE_OPTIONS,
   AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS,
   AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER_DEFINITIONS,
   AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS,
   getAutoCutModelPreset,
+  getAutoCutSmartSliceSegmentationAgentDefinition,
   getAutoCutSpeechTranscriptionProviderDefinition,
   isAutoCutSpeechTranscriptionModelDownloadTerminalPhase,
 } from '@sdkwork/autocut-types';
@@ -67,6 +69,7 @@ import type {
   AutoCutLocalSpeechTranscriptionSetupReadiness,
   AutoCutLocalSpeechTranscriptionSetupStatus,
   AutoCutLlmSettings,
+  AutoCutSmartSliceSegmentationAgentId,
   AutoCutSpeechTranscriptionModelDownloadProgressEvent,
   AutoCutSpeechTranscriptionProviderId,
   ModelVendor,
@@ -140,6 +143,10 @@ function formatAutoCutSpeechSetupPath(path: string | undefined) {
   return fileName || value;
 }
 
+function normalizeSettingsLocalPath(path: string | undefined) {
+  return (path ?? '').trim().replace(/\\/gu, '/').replace(/\/+/gu, '/').replace(/\/$/u, '').toLowerCase();
+}
+
 function createSettingsSpeechSetupFriendlyError(
   error: unknown,
   translate: (key: string) => string,
@@ -186,6 +193,21 @@ function FieldLabel({ children }: { children: ReactNode }) {
       {children}
     </label>
   );
+}
+
+function waitForSettingsUiYield() {
+  return new Promise<void>((resolve) => {
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          setTimeout(() => resolve(), 0);
+        });
+      });
+      return;
+    }
+
+    setTimeout(() => resolve(), 0);
+  });
 }
 
 function FieldHelp({ children }: { children: ReactNode }) {
@@ -493,6 +515,7 @@ export function SettingsPage() {
     if (isConfiguringSpeechModel) return;
     setIsConfiguringSpeechModel(true);
     try {
+      await waitForSettingsUiYield();
       const result = await setupAutoCutLocalSpeechTranscriptionModelPreset(modelPresetId);
       updateSettingsState(result.settings);
       const refreshedStatus = await inspectAutoCutLocalSpeechTranscriptionSetup();
@@ -525,6 +548,7 @@ export function SettingsPage() {
     setIsConfiguringSpeechModel(true);
     try {
       setSpeechModelDownloadProgress(null);
+      await waitForSettingsUiYield();
       const result = await initializeAutoCutLocalSpeechTranscriptionSetup();
       updateSettingsState(result.settings);
       setSpeechSetupStatus(result.status);
@@ -650,6 +674,9 @@ export function SettingsPage() {
 
   const activeLlmVendorPreset = AUTOCUT_MODEL_VENDOR_PRESETS[settings.llm.modelVendor];
   const activeLlmModelPreset = getAutoCutModelPreset(settings.llm.modelVendor, settings.llm.model);
+  const selectedLlmSegmentationAgent = getAutoCutSmartSliceSegmentationAgentDefinition(
+    settings.llm.defaultSegmentationAgentId,
+  );
   const activeSpeechTranscriptionProvider = getAutoCutSpeechTranscriptionProviderDefinition(
     settings.speechTranscription.providerId,
   );
@@ -664,7 +691,8 @@ export function SettingsPage() {
     activeSpeechTranscriptionProvider.kind === 'local' ? testReady : settings.speechTranscription.configured;
   const speechModelDownloadPhase = speechModelDownloadProgress?.phase;
   const speechModelDownloadCompleted =
-    speechModelDownloadPhase === AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE.completed;
+    speechModelDownloadPhase === AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE.completed ||
+    speechModelDownloadPhase === AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE.skipped;
   const speechModelDownloadFailed =
     speechModelDownloadPhase === AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE.failed;
   const speechModelDownloadActive =
@@ -723,6 +751,8 @@ export function SettingsPage() {
     t('settings.speech.setupStatus.executableMissing');
   const speechDisplayModelPath = formatAutoCutSpeechSetupPath(speechModelPath) ||
     t('settings.speech.setupStatus.modelMissing');
+  const normalizedSpeechModelPath = normalizeSettingsLocalPath(settings.speechTranscription.modelPath || speechSetupStatus?.model.path || '');
+  const normalizedDefaultSpeechModelDirectory = normalizeSettingsLocalPath(speechSetupStatus?.defaults.modelDirectory ?? '');
   const speechDownloadProgressLabel = speechModelDownloadCompleted
     ? t('settings.speech.modelDownloadCompleted')
     : speechModelDownloadFailed
@@ -960,6 +990,26 @@ export function SettingsPage() {
                         ))}
                       </select>
                       <FieldHelp>{t(activeSpeechTranscriptionProvider.nameKey)}</FieldHelp>
+                      <div className="grid gap-2 pt-2 text-xs text-gray-500 sm:grid-cols-3">
+                        <div className="rounded-md border border-[#242424] bg-[#0b0b0b] px-3 py-2">
+                          <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-600">Speaker diarization</span>
+                          <span className={activeSpeechTranscriptionProvider.capabilities.supportsSpeakerDiarization ? 'text-emerald-300' : 'text-gray-400'}>
+                            {activeSpeechTranscriptionProvider.capabilities.supportsSpeakerDiarization ? 'Supported' : 'Single-speaker adapter'}
+                          </span>
+                        </div>
+                        <div className="rounded-md border border-[#242424] bg-[#0b0b0b] px-3 py-2">
+                          <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-600">Word timestamps</span>
+                          <span className={activeSpeechTranscriptionProvider.capabilities.supportsWords ? 'text-emerald-300' : 'text-gray-400'}>
+                            {activeSpeechTranscriptionProvider.capabilities.supportsWords ? 'Supported' : 'Segment only'}
+                          </span>
+                        </div>
+                        <div className="rounded-md border border-[#242424] bg-[#0b0b0b] px-3 py-2">
+                          <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-600">Long video</span>
+                          <span className={activeSpeechTranscriptionProvider.capabilities.preferredForLongForm ? 'text-emerald-300' : 'text-gray-400'}>
+                            {activeSpeechTranscriptionProvider.capabilities.preferredForLongForm ? 'Recommended' : 'Privacy fallback'}
+                          </span>
+                        </div>
+                      </div>
                     </div>
 
                     {activeSpeechTranscriptionProvider.kind === 'local' && (
@@ -987,6 +1037,22 @@ export function SettingsPage() {
                                   </span>
                                   <span className="mt-1 block truncate text-gray-300" title={speechModelPath}>
                                     {speechDisplayModelPath}
+                                  </span>
+                                </div>
+                                <div className={`rounded-md border px-3 py-2 ${
+                                  speechSetupStatus?.gpu.ready
+                                    ? 'border-emerald-500/20 bg-emerald-500/10'
+                                    : 'border-[#242424] bg-[#0b0b0b]'
+                                }`}>
+                                  <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-600">
+                                    GPU acceleration
+                                  </span>
+                                  <span className={`mt-1 block truncate text-xs ${
+                                    speechSetupStatus?.gpu.ready ? 'text-emerald-300' : 'text-gray-400'
+                                  }`}>
+                                    {speechSetupStatus?.gpu.ready
+                                      ? `Enabled / ${speechSetupStatus.gpu.backend ?? 'detected'}`
+                                      : 'CPU runtime detected'}
                                   </span>
                                 </div>
                               </div>
@@ -1105,52 +1171,69 @@ export function SettingsPage() {
                           </div>
                           <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
                             {activeSpeechTranscriptionModelPresets
-                              .map((modelPreset) => (
-                                <div key={modelPreset.id} className="rounded-md border border-[#222] bg-[#111] p-3">
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div className="min-w-0">
-                                      <div className="truncate text-sm font-semibold text-gray-100">{modelPreset.label}</div>
-                                      <div className="mt-1 text-[11px] text-gray-500">{modelPreset.sizeLabel} / {modelPreset.languageScope}</div>
+                              .map((modelPreset) => {
+                                const managedPresetPath = normalizedDefaultSpeechModelDirectory
+                                  ? `${normalizedDefaultSpeechModelDirectory}/${modelPreset.fileName.toLowerCase()}`
+                                  : '';
+                                const modelPresetDownloaded = Boolean(
+                                  normalizedSpeechModelPath &&
+                                  (
+                                    normalizedSpeechModelPath === managedPresetPath ||
+                                    normalizedSpeechModelPath.endsWith(`/${modelPreset.fileName.toLowerCase()}`)
+                                  ),
+                                );
+                                return (
+                                  <div key={modelPreset.id} className="rounded-md border border-[#222] bg-[#111] p-3">
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <div className="truncate text-sm font-semibold text-gray-100">{modelPreset.label}</div>
+                                        <div className="mt-1 text-[11px] text-gray-500">{modelPreset.sizeLabel} / {modelPreset.languageScope}</div>
+                                      </div>
+                                      <div className="flex shrink-0 flex-col items-end gap-1">
+                                        {modelPresetDownloaded ? (
+                                          <StatusBadge tone="green">{t('settings.status.downloaded')}</StatusBadge>
+                                        ) : null}
+                                        {modelPreset.recommended ? (
+                                          <StatusBadge tone="green">{t('settings.status.recommended')}</StatusBadge>
+                                        ) : null}
+                                      </div>
                                     </div>
-                                    {modelPreset.recommended ? (
-                                      <StatusBadge tone="green">{t('settings.status.recommended')}</StatusBadge>
-                                    ) : null}
+                                    <div className="mt-3 space-y-1 text-[11px] leading-relaxed text-gray-500">
+                                      <div>{modelPreset.qualityLabel}</div>
+                                      <div>{modelPreset.speedLabel}</div>
+                                    </div>
+                                    <div className="mt-3 flex flex-wrap gap-2">
+                                      <Button
+                                        onClick={() => handleSetupSpeechTranscriptionModelPreset(modelPreset.id)}
+                                        disabled={isConfiguringSpeechModel}
+                                        size="sm"
+                                        className="h-8 bg-blue-600 text-white hover:bg-blue-500"
+                                      >
+                                        <Check size={14} />
+                                        {isConfiguringSpeechModel ? t('settings.speech.configuring') : t('settings.action.useAndDownloadModel')}
+                                      </Button>
+                                      <Button
+                                        onClick={() => handleDownloadSpeechTranscriptionModelPreset(modelPreset.id)}
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-8 border-[#333] text-gray-300"
+                                      >
+                                        <FolderOpen size={14} />
+                                        {t('settings.action.downloadModel')}
+                                      </Button>
+                                      <Button
+                                        onClick={() => handleCopySpeechTranscriptionModelPresetUrl(modelPreset.id)}
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-8 border-[#333] text-gray-400"
+                                      >
+                                        <Copy size={14} />
+                                        {t('settings.action.copyLink')}
+                                      </Button>
+                                    </div>
                                   </div>
-                                  <div className="mt-3 space-y-1 text-[11px] leading-relaxed text-gray-500">
-                                    <div>{modelPreset.qualityLabel}</div>
-                                    <div>{modelPreset.speedLabel}</div>
-                                  </div>
-                                  <div className="mt-3 flex flex-wrap gap-2">
-                                    <Button
-                                      onClick={() => handleSetupSpeechTranscriptionModelPreset(modelPreset.id)}
-                                      disabled={isConfiguringSpeechModel}
-                                      size="sm"
-                                      className="h-8 bg-blue-600 text-white hover:bg-blue-500"
-                                    >
-                                      <Check size={14} />
-                                      {isConfiguringSpeechModel ? t('settings.speech.configuring') : t('settings.action.useAndDownloadModel')}
-                                    </Button>
-                                    <Button
-                                      onClick={() => handleDownloadSpeechTranscriptionModelPreset(modelPreset.id)}
-                                      variant="outline"
-                                      size="sm"
-                                      className="h-8 border-[#333] text-gray-300"
-                                    >
-                                      <FolderOpen size={14} />
-                                      {t('settings.action.downloadModel')}
-                                    </Button>
-                                    <Button
-                                      onClick={() => handleCopySpeechTranscriptionModelPresetUrl(modelPreset.id)}
-                                      variant="outline"
-                                      size="sm"
-                                      className="h-8 border-[#333] text-gray-400"
-                                    >
-                                      <Copy size={14} />
-                                      {t('settings.action.copyLink')}
-                                    </Button>
-                                  </div>
-                                </div>
-                              ))}
+                                );
+                              })}
                           </div>
                         </div>
                       </>
@@ -1356,6 +1439,55 @@ export function SettingsPage() {
                           maxTokens: formatAutoCutTokenCount(activeLlmModelPreset.maxOutputTokens),
                         })}
                       </FieldHelp>
+                    </div>
+                    <div className="space-y-3 md:col-span-2" data-settings-llm-segmentation-agent="settings.llm.segmentationAgent">
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,260px)_1fr]">
+                        <div className="space-y-2">
+                          <FieldLabel>{t('settings.llm.defaultSegmentationAgent')}</FieldLabel>
+                          <select
+                            value={settings.llm.defaultSegmentationAgentId}
+                            onChange={(event) => handleLlmSettingsChange({
+                              ...settings.llm,
+                              defaultSegmentationAgentId: event.target.value as AutoCutSmartSliceSegmentationAgentId,
+                            })}
+                            onBlur={handleSaveLlmSettings}
+                            className="h-10 w-full rounded-md border border-[#333] bg-[#111] px-3 text-sm text-gray-200 outline-none transition-colors focus:border-blue-500"
+                          >
+                            {AUTOCUT_SMART_SLICE_SEGMENTATION_AGENTS.map((agent) => (
+                              <option key={agent.id} value={agent.id}>{agent.label}</option>
+                            ))}
+                          </select>
+                          <FieldHelp>{t('settings.llm.segmentationAgentDescription')}</FieldHelp>
+                        </div>
+                        <div className="rounded-lg border border-[#222] bg-[#111] p-3">
+                          <div className="text-xs font-semibold text-gray-200">{selectedLlmSegmentationAgent.label}</div>
+                          <div className="mt-1 text-xs leading-relaxed text-gray-500">{selectedLlmSegmentationAgent.description}</div>
+                          <pre className="mt-3 max-h-32 overflow-auto whitespace-pre-wrap rounded border border-[#222] bg-[#090909] p-3 font-mono text-[11px] leading-5 text-gray-500">
+                            {selectedLlmSegmentationAgent.systemPrompt}
+                          </pre>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+                        {AUTOCUT_SMART_SLICE_SEGMENTATION_AGENTS.map((agent) => (
+                          <div
+                            key={agent.id}
+                            className={`rounded-lg border p-3 ${
+                              agent.id === settings.llm.defaultSegmentationAgentId
+                                ? 'border-blue-500/40 bg-blue-500/10'
+                                : 'border-[#222] bg-[#0D0D0D]'
+                            }`}
+                          >
+                            <div className="text-xs font-semibold text-gray-200">{agent.label}</div>
+                            <div className="mt-1 text-[11px] leading-4 text-gray-500">{agent.description}</div>
+                            <div className="mt-3 text-[10px] font-bold uppercase tracking-wider text-gray-600">
+                              {t('settings.llm.agentSystemPrompt')}
+                            </div>
+                            <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap rounded border border-[#222] bg-[#090909] p-2 font-mono text-[10px] leading-4 text-gray-500">
+                              {agent.systemPrompt}
+                            </pre>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </div>
                   <div className="flex flex-wrap justify-end gap-3">

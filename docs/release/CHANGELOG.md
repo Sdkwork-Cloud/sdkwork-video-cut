@@ -7,6 +7,88 @@ directory. If a previous version was not successfully released, its change log
 must be folded into the next successful release instead of leaving orphaned
 release notes.
 
+## v0.1.6 - 2026-05-17
+
+Commercial preview release preparation for the rebuilt Smart Slice engine and
+workflow evidence system. This release folds all post-`v0.1.5` unreleased work
+into the next release line. The failed `v0.1.1`, `v0.1.2`, `v0.1.3`, and
+`v0.1.4` release attempts remain folded into `v0.1.5`; `v0.1.6` carries forward
+that release history and adds the current engine, product, performance, and
+release-governance changes completed after the `v0.1.5` tag.
+
+### Release Scope
+
+- Updates the root workspace, every AutoCut package manifest, component specs,
+  Tauri application metadata, Rust desktop crate metadata, release workflow
+  defaults, and `sdkwork.app.config.json` to the `0.1.6` release line.
+- Keeps local development dependencies on workspace-relative `workspace:*`
+  packages and lockfile `link:` entries, with no direct dependency on
+  `sdkwork-core`, `sdkwork-ui`, `sdkwork-appbase`, or `sdkwork-im-sdk`.
+- Keeps install package metadata GitHub Release based and disabled until real
+  asset digests, installer trust evidence, notarization/signature evidence, and
+  SBOM evidence are recorded.
+- Removes the macOS release workflow's hardcoded app archive version by deriving
+  archive names from the workflow `release_tag`, so future patch releases do not
+  require hand-editing the CI archive path.
+
+### Smart Slice Engine
+
+- Introduces the strategy-based Smart Cut engine package and architecture
+  checks for slicer registry, pipeline, interfaces, speech-semantic slicing,
+  LLM review, evidence quality, candidate selection, filter planning, render
+  contracts, native host contracts, speaker alignment, speaker corrections,
+  execution packages, and audit traces.
+- Centers the default slicing strategy on speech-to-text first: extract audio,
+  normalize transcript evidence, preserve speaker-aware time ranges, and let the
+  segmentation layer produce complete semantic clips before media filters run.
+- Adds structured LLM segmentation contracts with canonical input/output data
+  that include segment ids, source time ranges, transcript text, speaker ids,
+  boundary evidence, confidence, and review actions.
+- Supports manual review after automatic planning: users can inspect proposed
+  slices, correct segmentation, select or delete segments, remove duplicate
+  content, and export only approved clips.
+- Persists task-scoped execution artifacts for repeatable diagnosis and human
+  intervention, including normalized transcript JSON, segmentation artifacts,
+  execution evidence, preview state, filter plans, output manifests, and
+  per-slice subtitle files when subtitle generation is enabled.
+
+### Product Experience
+
+- Adds a reusable video deduplication capability and product workbench so Video
+  Dedup can operate as a standalone AI tool and as a configurable Smart Slice
+  post-processing step.
+- Extends the Smart Slice UI around a commercial workflow: source validation,
+  STT readiness, segmentation agent selection, system prompt visibility,
+  deduplication mode selection, automation settings, manual intervention, task
+  evidence, and final export.
+- Improves task detail, task failure, common file upload, tool registry, i18n,
+  and navigation surfaces so Smart Slice execution state is visible and
+  recoverable instead of hidden inside a single long-running step.
+
+### Performance And Large Media
+
+- Adds audio-first large-media processing governance so long videos can extract
+  audio before STT and slicing, reducing unnecessary full-video processing.
+- Adds large-media baseline, generic real-media slicing, Baidu Netdisk media
+  acceptance, Smart Slice performance benchmark, STT baseline, and GPU runtime
+  preparation scripts.
+- Adds cloud-ready STT and provider-readiness handling so the product can prefer
+  faster GPU/cloud execution where configured while retaining local offline
+  Whisper readiness and model integrity checks.
+
+### Release Verification
+
+- Expands `pnpm test` to include the Smart Cut engine contract suite,
+  large-media and STT performance tests, GPU runtime preparation tests, release
+  evidence checks, app manifest readiness checks, and workspace type checking.
+- Keeps generated artifacts and runtime caches outside the release commit path
+  by using the standard `pnpm clean` generated-output cleanup command before
+  release packaging.
+- Release publishing remains gated by a clean worktree, writable Git metadata,
+  GitHub CLI authentication, Git SSH reachability, package evidence, app
+  manifest readiness, multiplatform release evidence, and commercial release
+  readiness.
+
 ## v0.1.5 - 2026-05-09
 
 Multiplatform unsigned preview release hardening for Phase 1, with Phase 2
@@ -388,7 +470,7 @@ AutoCut application.
 - Adds durable native task records, task events, stage runs, media artifacts,
   and worker leases.
 - Adds task-scoped media output directories:
-  `outputRootDir/tasks/{task_uuid}/outputs/`.
+  `outputRootDir/tasks/{task_uuid}/`.
 - Keeps imported source media under the configured workspace input directory.
 - Supports configured default output directory from Settings, with a
   platform-specific app data workspace fallback when no directory is set.
