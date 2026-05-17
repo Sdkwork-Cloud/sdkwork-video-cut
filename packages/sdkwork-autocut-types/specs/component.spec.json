@@ -4,7 +4,7 @@
   "component": {
     "name": "@sdkwork/autocut-types",
     "displayName": "SDKWork Autocut Types",
-    "version": "0.1.6",
+    "version": "0.1.7",
     "type": "node-package",
     "root": "sdkwork-video-cut/packages/sdkwork-autocut-types",
     "domain": "content",

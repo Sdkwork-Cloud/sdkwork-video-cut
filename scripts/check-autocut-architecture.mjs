@@ -1566,7 +1566,7 @@ for (const [relativePath, sourceText] of [
   );
 }
 assertRule(indexHtmlSource.includes('<title>SDKWork Video Cut</title>'), 'desktop index.html title matches the Tauri product name');
-assertRule(rootPackage.version === '0.1.6', 'AutoCut desktop application version matches the v0.1.6 release line');
+assertRule(rootPackage.version === '0.1.7', 'AutoCut desktop application version matches the v0.1.7 release line');
 assertRule(desktopPackage.scripts?.dev?.includes('--host 127.0.0.1'), 'desktop dev binds to loopback for desktop-local development');
 assertRule(desktopPackage.scripts?.dev?.includes('--port 3000'), 'desktop dev uses the standard AutoCut web port 3000');
 assertRule(desktopPackage.scripts?.dev?.includes('--strictPort'), 'desktop dev uses strictPort for deterministic desktop-local startup');
@@ -2176,16 +2176,21 @@ for (const commandName of [
   'autocut_host_capabilities',
   'autocut_ffmpeg_probe',
   'autocut_import_media_file',
+  'autocut_describe_local_media_file',
   'autocut_download_speech_transcription_model',
   'autocut_probe_speech_transcription',
   'autocut_extract_audio',
   'autocut_generate_gif',
   'autocut_slice_video',
+  'autocut_analyze_video_slice_audio_activity',
   'autocut_transcribe_media',
   'autocut_extract_visual_evidence',
+  'autocut_write_task_evidence_json',
   'autocut_compress_video',
   'autocut_convert_video',
   'autocut_enhance_video',
+  'autocut_audio_smoke',
+  'autocut_llm_http_request',
 ]) {
   assertRule(
     nativeHostCommandSource.includes(`pub async fn ${commandName}`) &&
@@ -2645,6 +2650,29 @@ for (const marker of [
 assertRule(!nativeMediaRuntimeSource.includes('cmd /c'), 'media_runtime.rs does not execute through cmd /c');
 assertRule(!nativeMediaRuntimeSource.includes('powershell'), 'media_runtime.rs does not execute through powershell');
 assertRule(!nativeMediaRuntimeSource.includes('/bin/sh'), 'media_runtime.rs does not execute through a shell');
+assertRule(
+  nativeMediaRuntimeSource.includes('std::os::windows::process::CommandExt') &&
+    nativeMediaRuntimeSource.includes('AUTOCUT_WINDOWS_CREATE_NO_WINDOW: u32 = 0x08000000') &&
+    nativeMediaRuntimeSource.includes('fn new_autocut_hidden_child_command') &&
+    nativeMediaRuntimeSource.includes('command.creation_flags(AUTOCUT_WINDOWS_CREATE_NO_WINDOW)'),
+  'media_runtime.rs applies CREATE_NO_WINDOW to AutoCut child processes on Windows',
+);
+const nativeMediaRuntimeDirectCommandNewLines = nativeMediaRuntimeSource
+  .split(/\r?\n/u)
+  .map((line, index) => ({ index: index + 1, line: line.trim() }))
+  .filter(({ line }) => line.includes('Command::new('))
+  .filter(({ line }) => !line.includes('let mut command = Command::new(program);'));
+assertRule(
+  nativeMediaRuntimeDirectCommandNewLines.length === 0,
+  `media_runtime.rs creates child processes only through the AutoCut hidden-window command helper${
+    nativeMediaRuntimeDirectCommandNewLines.length > 0
+      ? ` (${nativeMediaRuntimeDirectCommandNewLines
+          .slice(0, 8)
+          .map(({ index, line }) => `${index}: ${line}`)
+          .join('; ')})`
+      : ''
+  }`,
+);
 for (const tableName of ['media_asset', 'media_artifact', 'ops_task', 'ops_task_event', 'ops_stage_run']) {
   assertRule(
     new RegExp(`CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${tableName}\\b`, 'iu').test(nativeSqliteBaselineSource),
@@ -3183,6 +3211,7 @@ assertRule(
     desktopReleaseWorkflowSource.includes('releaseVersion="${{ inputs.release_tag }}"') &&
     desktopReleaseWorkflowSource.includes('releaseVersion="${releaseVersion#v}"') &&
     desktopReleaseWorkflowSource.includes('SDKWork Video Cut_${releaseVersion}_${{ matrix.app_arch }}.app.tar.gz') &&
+    (desktopReleaseWorkflowSource.match(/ref: \$\{\{ inputs\.release_tag \}\}/gu) ?? []).length === 4 &&
     desktopReleaseWorkflowSource.includes('artifacts/release/autocut-release-evidence-${{ matrix.platform }}.json'),
   'GitHub workflow builds native Windows, Linux, Intel macOS, and Apple Silicon macOS desktop release artifacts with app manifest and aggregate readiness evidence without clobbering macOS app archives',
 );
@@ -4186,8 +4215,22 @@ assertRule(
   nativeHostClientServiceSource.includes('durationMs?: number') &&
     nativeMediaRuntimeSource.includes('pub duration_ms: Option<i64>') &&
     nativeMediaRuntimeSource.includes('"durationMs": duration_ms') &&
-    nativeMediaRuntimeSource.includes('read_ffmpeg_media_duration_millis(toolchain, &sandbox_path).ok()'),
+    nativeMediaRuntimeSource.includes('probe_autocut_media_evidence(Some(toolchain), &sandbox_path)') &&
+    nativeMediaRuntimeSource.includes('media_probe_evidence.duration_ms'),
   'native host media import and describe contracts expose source duration for source-bounded smart slicing',
+);
+assertRule(
+  nativeMediaRuntimeSource.includes('fn parse_ffmpeg_media_probe_evidence') &&
+    nativeMediaRuntimeSource.includes('fn probe_autocut_media_evidence') &&
+    nativeMediaRuntimeSource.includes('duration_ms: parse_ffmpeg_duration_millis(ffmpeg_output)') &&
+    nativeMediaRuntimeSource.includes('probe_autocut_media_evidence(toolchain, &source_path)'),
+  'media_runtime.rs derives stream evidence and duration from one FFmpeg media probe during local selection and import',
+);
+assertRule(
+  !/let\s+source_duration_ms\s*=\s*read_ffmpeg_media_duration_millis\([^;]+;\s*let\s+source_has_audio_stream\s*=\s*ffmpeg_media_has_audio_stream/u.test(
+    nativeMediaRuntimeSource,
+  ),
+  'media_runtime.rs avoids back-to-back FFmpeg duration and audio-stream probes for the same source',
 );
 assertRule(
   nativeMediaRuntimeSource.includes('AutoCutVideoSliceRenderProfile') &&

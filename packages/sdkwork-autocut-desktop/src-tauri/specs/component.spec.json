@@ -4,7 +4,7 @@
   "component": {
     "name": "sdkwork-video-cut-desktop",
     "displayName": "SDKWork Video Cut Desktop",
-    "version": "0.1.6",
+    "version": "0.1.7",
     "type": "tauri-host",
     "root": "sdkwork-video-cut/packages/sdkwork-autocut-desktop/src-tauri",
     "domain": "content",

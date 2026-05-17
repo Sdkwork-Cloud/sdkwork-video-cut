@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,6 +35,8 @@ const AUTOCUT_DEFAULT_SPEECH_TRANSCRIPTION_MODEL_FILE_NAME: &str = "ggml-large-v
 pub(crate) const AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT: &str =
     "autocut-speech-transcription-model-download-progress";
 pub(crate) const AUTOCUT_NATIVE_TASK_PROGRESS_EVENT: &str = "autocut-native-task-progress";
+#[cfg(windows)]
+const AUTOCUT_WINDOWS_CREATE_NO_WINDOW: u32 = 0x08000000;
 const AUTOCUT_FFMPEG_TOOLCHAIN_MANIFEST_JSON: &str =
     include_str!("../binaries/ffmpeg.toolchain.json");
 const AUTOCUT_FFMPEG_TOOLCHAIN_MANIFEST_FILE_NAME: &str = "ffmpeg.toolchain.json";
@@ -39,6 +44,16 @@ const AUTOCUT_SPEECH_TOOLCHAIN_MANIFEST_JSON: &str =
     include_str!("../binaries/speech-transcription.toolchain.json");
 const AUTOCUT_SPEECH_TOOLCHAIN_MANIFEST_FILE_NAME: &str = "speech-transcription.toolchain.json";
 const DEFAULT_FFMPEG_EXECUTABLE: &str = "ffmpeg";
+
+fn new_autocut_hidden_child_command(program: impl AsRef<OsStr>) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        command.creation_flags(AUTOCUT_WINDOWS_CREATE_NO_WINDOW);
+    }
+    command
+}
+
 const SUPPORTED_VIDEO_FILE_DIALOG_EXTENSIONS: &[&str] = &[
     "mp4", "mov", "mkv", "webm", "avi", "flv", "m4v", "mpg", "mpeg", "ts", "mts", "m2ts", "3gp",
     "3g2", "wmv", "asf", "ogv", "vob",
@@ -195,6 +210,13 @@ pub struct AutoCutFfmpegToolchain {
 struct AutoCutMediaStreamEvidence {
     has_audio_stream: bool,
     has_video_stream: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct AutoCutMediaProbeEvidence {
+    has_audio_stream: bool,
+    has_video_stream: bool,
+    duration_ms: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1364,7 +1386,7 @@ struct AutoCutRecoveryLeaseSignal {
 
 pub fn probe_autocut_ffmpeg(app: &AppHandle) -> AutoCutFfmpegProbe {
     let toolchain = resolve_autocut_ffmpeg_toolchain_for_app(app);
-    match Command::new(&toolchain.executable)
+    match new_autocut_hidden_child_command(&toolchain.executable)
         .args(["-version"])
         .output()
     {
@@ -1757,7 +1779,10 @@ fn probe_autocut_speech_transcription_with_toolchain(
         }
     }
     let version_line = if toolchain.ready {
-        match Command::new(&toolchain.executable).arg("--help").output() {
+        match new_autocut_hidden_child_command(&toolchain.executable)
+            .arg("--help")
+            .output()
+        {
             Ok(output) => read_speech_toolchain_version_line(&output),
             Err(error) => {
                 diagnostics.push(format!(
@@ -2136,18 +2161,18 @@ fn build_autocut_artifact_folder_reveal_command(
     containing_directory_path: &Path,
 ) -> Result<Command, String> {
     if cfg!(target_os = "windows") {
-        let mut command = Command::new("explorer");
+        let mut command = new_autocut_hidden_child_command("explorer");
         command.arg(format!("/select,{}", artifact_path.display()));
         return Ok(command);
     }
     if cfg!(target_os = "macos") {
-        let mut command = Command::new("open");
+        let mut command = new_autocut_hidden_child_command("open");
         command.arg("-R");
         command.arg(artifact_path);
         return Ok(command);
     }
     if cfg!(target_os = "linux") {
-        let mut command = Command::new("xdg-open");
+        let mut command = new_autocut_hidden_child_command("xdg-open");
         command.arg(containing_directory_path);
         return Ok(command);
     }
@@ -4824,14 +4849,15 @@ fn import_autocut_media_file_in_root(
         return Err("imported media file is empty".to_string());
     }
 
-    let stream_evidence = probe_autocut_media_stream_evidence(Some(toolchain), &sandbox_path);
+    let media_probe_evidence = probe_autocut_media_evidence(Some(toolchain), &sandbox_path);
+    let stream_evidence = media_probe_evidence.stream_evidence();
     let media_type =
         resolve_media_type_from_stream_evidence(&source_extension, stream_evidence).to_string();
     let has_audio_stream = stream_evidence.has_audio_stream;
     let has_video_stream = stream_evidence.has_video_stream;
     let mime_type = media_mime_type(&source_extension, &media_type).to_string();
     let duration_ms = if media_type == "video" || media_type == "audio" {
-        read_ffmpeg_media_duration_millis(toolchain, &sandbox_path).ok()
+        media_probe_evidence.duration_ms
     } else {
         None
     };
@@ -4962,16 +4988,15 @@ fn describe_autocut_local_media_file_from_path(
         .unwrap_or_default();
     let metadata = fs::metadata(&source_path)
         .map_err(|error| format!("read local media file metadata failed: {error}"))?;
-    let stream_evidence = probe_autocut_media_stream_evidence(toolchain, &source_path);
+    let media_probe_evidence = probe_autocut_media_evidence(toolchain, &source_path);
+    let stream_evidence = media_probe_evidence.stream_evidence();
     let media_type =
         resolve_media_type_from_stream_evidence(&source_extension, stream_evidence).to_string();
     let has_audio_stream = stream_evidence.has_audio_stream;
     let has_video_stream = stream_evidence.has_video_stream;
     let mime_type = media_mime_type(&source_extension, &media_type).to_string();
     let duration_ms = if media_type == "video" || media_type == "audio" {
-        toolchain.and_then(|ffmpeg_toolchain| {
-            read_ffmpeg_media_duration_millis(ffmpeg_toolchain, &source_path).ok()
-        })
+        media_probe_evidence.duration_ms
     } else {
         None
     };
@@ -5378,8 +5403,9 @@ fn slice_autocut_video_from_asset_in_root_with_toolchain(
     )?;
     let subtitle_style_id =
         normalize_video_slice_subtitle_style_id(request.subtitle_style_id.as_deref());
-    let source_duration_ms = read_ffmpeg_media_duration_millis(toolchain, &input_path).ok();
-    let source_has_audio_stream = ffmpeg_media_has_audio_stream(toolchain, &input_path);
+    let source_probe_evidence = probe_autocut_media_evidence(Some(toolchain), &input_path);
+    let source_duration_ms = source_probe_evidence.duration_ms;
+    let source_has_audio_stream = source_probe_evidence.has_audio_stream;
     let task_uuid = autocut_task_uuid("slice")?;
     let task_output_dir = autocut_task_output_dir(&root, &task_uuid)?;
     let output_root_dir =
@@ -5660,9 +5686,10 @@ fn analyze_autocut_video_slice_audio_activity_in_root_with_toolchain(
     }
     let _workflow_task_id = normalize_path_text(request.workflow_task_id.as_deref());
     let clips = normalize_video_slice_clips(&request.clips)?;
-    let source_duration_ms = read_ffmpeg_media_duration_millis(toolchain, &input_path).ok();
+    let source_probe_evidence = probe_autocut_media_evidence(Some(toolchain), &input_path);
+    let source_duration_ms = source_probe_evidence.duration_ms;
     let clips = adjust_video_slice_clips_for_source_duration(&clips, source_duration_ms)?;
-    let source_has_audio_stream = ffmpeg_media_has_audio_stream(toolchain, &input_path);
+    let source_has_audio_stream = source_probe_evidence.has_audio_stream;
     if !source_has_audio_stream {
         return Err(
             "AutoCut Smart Slice audio activity analysis requires a source audio stream."
@@ -6845,7 +6872,7 @@ fn run_ffmpeg_sine_smoke(
     toolchain: &AutoCutFfmpegToolchain,
     output_path: &Path,
 ) -> Result<AutoCutAudioExtractionResult, String> {
-    let output = Command::new(&toolchain.executable)
+    let output = new_autocut_hidden_child_command(&toolchain.executable)
         .args([
             "-hide_banner",
             "-nostdin",
@@ -7340,7 +7367,7 @@ fn run_ffmpeg_audio_extract(
     channel: &str,
     worker_lease: &AutoCutOpsWorkerLease,
 ) -> Result<AutoCutAudioExtractionResult, String> {
-    let mut command = Command::new(&toolchain.executable);
+    let mut command = new_autocut_hidden_child_command(&toolchain.executable);
     command.args(["-hide_banner", "-nostdin", "-y", "-i"]);
     command.arg(input_path);
     command.args(["-vn"]);
@@ -7419,7 +7446,7 @@ fn run_ffmpeg_audio_fingerprint_extraction(
     window_duration_ms: i64,
     worker_lease: &AutoCutOpsWorkerLease,
 ) -> Result<AutoCutAudioFingerprintResult, String> {
-    let mut command = Command::new(&toolchain.executable);
+    let mut command = new_autocut_hidden_child_command(&toolchain.executable);
     command.args(["-hide_banner", "-nostdin", "-y", "-i"]);
     command.arg(input_path);
     command.args([
@@ -7732,7 +7759,7 @@ fn run_ffmpeg_speech_audio_extract(
     output_path: &Path,
     worker_lease: &AutoCutOpsWorkerLease,
 ) -> Result<(), String> {
-    let mut command = Command::new(&toolchain.executable);
+    let mut command = new_autocut_hidden_child_command(&toolchain.executable);
     command.args(["-hide_banner", "-nostdin", "-y", "-i"]);
     command.arg(input_path);
     command.args(["-vn", "-ac", "1", "-ar", "16000", "-acodec", "pcm_s16le"]);
@@ -7839,8 +7866,9 @@ fn run_local_speech_transcription(
     let (transcript_path, transcript_source_path) = if should_use_chunked_local_speech_transcription(
         source_duration_ms,
     ) {
-        let (speech_source_path, speech_source_kind, speech_duration_ms) =
-            match execution_options.chunk_source_strategy {
+        let (speech_source_path, speech_source_kind, speech_duration_ms) = match execution_options
+            .chunk_source_strategy
+        {
             AutoCutSpeechChunkSourceStrategy::AudioFirst => {
                 record_ops_task_progress_for_app(
                     app,
@@ -7869,10 +7897,8 @@ fn run_local_speech_transcription(
                     12,
                     35,
                 )?;
-                let audio_duration_ms = read_ffmpeg_media_duration_millis(
-                    ffmpeg_toolchain,
-                    &audio_path,
-                )?;
+                let audio_duration_ms =
+                    read_ffmpeg_media_duration_millis(ffmpeg_toolchain, &audio_path)?;
                 (
                     audio_path,
                     AutoCutSpeechChunkAudioSourceKind::ExtractedWav,
@@ -7909,20 +7935,20 @@ fn run_local_speech_transcription(
             task_uuid,
             40,
             json!({
-                "operation": "speechTranscription",
-                "stepId": "speech-to-text",
-                "phase": "local-whisper-chunk-plan-ready",
-                "sourceKind": speech_toolchain.source_kind,
-                "speechSourceKind": speech_source_kind.as_manifest_value(),
-                "sourceDurationMs": source_duration_ms,
-            "audioDurationMs": speech_duration_ms,
-            "chunkSourceStrategy": execution_options.chunk_source_strategy.as_manifest_value(),
-            "whisperAudioContext": execution_options.whisper_audio_context,
-            "whisperBeamSize": execution_options.whisper_beam_size,
-            "whisperBestOf": execution_options.whisper_best_of,
-            "whisperNoFallback": execution_options.whisper_no_fallback,
-            "message": "Preparing chunked local transcription."
-        }),
+                    "operation": "speechTranscription",
+                    "stepId": "speech-to-text",
+                    "phase": "local-whisper-chunk-plan-ready",
+                    "sourceKind": speech_toolchain.source_kind,
+                    "speechSourceKind": speech_source_kind.as_manifest_value(),
+                    "sourceDurationMs": source_duration_ms,
+                "audioDurationMs": speech_duration_ms,
+                "chunkSourceStrategy": execution_options.chunk_source_strategy.as_manifest_value(),
+                "whisperAudioContext": execution_options.whisper_audio_context,
+                "whisperBeamSize": execution_options.whisper_beam_size,
+                "whisperBestOf": execution_options.whisper_best_of,
+                "whisperNoFallback": execution_options.whisper_no_fallback,
+                "message": "Preparing chunked local transcription."
+            }),
         )?;
         let transcript_path = run_chunked_local_whisper_transcription(
             app,
@@ -7999,12 +8025,8 @@ fn run_local_speech_transcription(
             format_whisper_transcript_existing_file_diagnostics(&transcript_path)
         )
     })?;
-    let quality_guard = ensure_speech_transcript_quality(
-        &segments,
-        "local-whisper-transcript",
-        None,
-        false,
-    )?;
+    let quality_guard =
+        ensure_speech_transcript_quality(&segments, "local-whisper-transcript", None, false)?;
     let text = segments
         .iter()
         .map(|segment| segment.text.trim())
@@ -8292,7 +8314,8 @@ fn read_guarded_local_whisper_chunk_segments(
     String,
 > {
     let mut chunk_segments = Vec::new();
-    let mut combined_guard = create_combined_speech_transcript_quality_guard("chunked-local-whisper");
+    let mut combined_guard =
+        create_combined_speech_transcript_quality_guard("chunked-local-whisper");
     let mut retry_count = 0_usize;
     for chunk in chunks {
         let transcript_json = read_whisper_transcript_json_file(&chunk.transcript_path).map_err(|error| {
@@ -8553,7 +8576,7 @@ fn build_local_whisper_transcription_command(
     whisper_thread_count: &str,
     execution_options: &AutoCutSpeechTranscriptionExecutionOptions,
 ) -> Command {
-    let mut command = Command::new(&speech_toolchain.executable);
+    let mut command = new_autocut_hidden_child_command(&speech_toolchain.executable);
     command
         .args(["-m", speech_toolchain.model_path.as_str()])
         .args(["-t", whisper_thread_count])
@@ -8585,7 +8608,7 @@ fn build_ffmpeg_speech_audio_chunk_extract_command(
     speech_source_kind: AutoCutSpeechChunkAudioSourceKind,
     chunk: &AutoCutSpeechAudioChunkPlan,
 ) -> Command {
-    let mut command = Command::new(&toolchain.executable);
+    let mut command = new_autocut_hidden_child_command(&toolchain.executable);
     command
         .args(["-hide_banner", "-nostdin", "-y", "-ss"])
         .arg(format_seconds(chunk.start_ms))
@@ -8619,7 +8642,8 @@ fn create_autocut_speech_audio_chunk_plan(
     let mut start_ms = 0_i64;
     let mut index = 1_usize;
     while start_ms < normalized_audio_duration_ms {
-        let mut end_ms = (start_ms + normalized_chunk_duration_ms).min(normalized_audio_duration_ms);
+        let mut end_ms =
+            (start_ms + normalized_chunk_duration_ms).min(normalized_audio_duration_ms);
         let remaining_ms = normalized_audio_duration_ms.saturating_sub(end_ms);
         if remaining_ms > 0 && remaining_ms < AUTOCUT_LONG_SPEECH_TRANSCRIPTION_MIN_TAIL_CHUNK_MS {
             end_ms = normalized_audio_duration_ms;
@@ -9002,7 +9026,7 @@ fn run_ffmpeg_video_gif(
         "fps={fps},scale=-2:{height}:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256[p];[s1][p]paletteuse=dither={}",
         if dither { "sierra2_4a" } else { "none" }
     );
-    let mut command = Command::new(&toolchain.executable);
+    let mut command = new_autocut_hidden_child_command(&toolchain.executable);
     command.args(["-hide_banner", "-nostdin", "-y", "-i"]);
     command.arg(input_path);
     command.args(["-filter_complex", palette_filter.as_str(), "-loop", "0"]);
@@ -10402,7 +10426,7 @@ fn build_ffmpeg_video_slice_audio_activity_analysis_command(
     clip: &AutoCutVideoSliceClipRequest,
     apply_audio_noise_reduction: bool,
 ) -> Command {
-    let mut command = Command::new(&toolchain.executable);
+    let mut command = new_autocut_hidden_child_command(&toolchain.executable);
     command.args(["-hide_banner", "-nostdin", "-y"]);
     command.args(["-ss", seconds_arg_from_millis(clip.start_ms).as_str()]);
     command.args(["-i"]);
@@ -10483,7 +10507,7 @@ fn run_ffmpeg_visual_evidence_extraction(
         }),
     )?;
 
-    let mut scene_command = Command::new(&toolchain.executable);
+    let mut scene_command = new_autocut_hidden_child_command(&toolchain.executable);
     scene_command
         .args(["-hide_banner", "-nostdin", "-y"])
         .arg("-i")
@@ -10783,7 +10807,7 @@ fn extract_visual_evidence_luma_frame_pixels(
     at_ms: i64,
     worker_lease: &AutoCutOpsWorkerLease,
 ) -> Result<Option<Vec<u8>>, String> {
-    let mut command = Command::new(&toolchain.executable);
+    let mut command = new_autocut_hidden_child_command(&toolchain.executable);
     command
         .args(["-hide_banner", "-nostdin", "-v", "error", "-ss"])
         .arg(seconds_arg_from_millis(at_ms).as_str())
@@ -11379,7 +11403,7 @@ fn build_ffmpeg_video_slice_command(
     subtitle_style_id: Option<&str>,
     candidate: &AutoCutVideoSliceEncoderCandidate,
 ) -> Command {
-    let mut command = Command::new(&toolchain.executable);
+    let mut command = new_autocut_hidden_child_command(&toolchain.executable);
     command.args(["-hide_banner", "-nostdin", "-y"]);
     for arg in &candidate.pre_input_args {
         command.arg(arg);
@@ -11529,7 +11553,7 @@ fn build_ffmpeg_video_slice_audio_cleanup_silence_analysis_command(
     duration_ms: i64,
     apply_audio_noise_reduction: bool,
 ) -> Command {
-    let mut command = Command::new(&toolchain.executable);
+    let mut command = new_autocut_hidden_child_command(&toolchain.executable);
     command.args(["-hide_banner", "-nostdin", "-y", "-i"]);
     command.arg(input_path);
     command.args(["-t", seconds_arg_from_millis(duration_ms.max(0)).as_str()]);
@@ -11906,7 +11930,7 @@ fn run_ffmpeg_video_slice_thumbnail(
         clip,
         (video_slice_rendered_duration_ms(clip) / 2).max(1),
     );
-    let mut command = Command::new(&toolchain.executable);
+    let mut command = new_autocut_hidden_child_command(&toolchain.executable);
     command.args(["-hide_banner", "-nostdin", "-y"]);
     command.args(["-ss", seconds_arg_from_millis(thumbnail_at_ms).as_str()]);
     command.args(["-i"]);
@@ -12005,7 +12029,7 @@ fn run_ffmpeg_video_compress(
     preset: &str,
     worker_lease: &AutoCutOpsWorkerLease,
 ) -> Result<AutoCutMediaOperationOutput, String> {
-    let mut command = Command::new(&toolchain.executable);
+    let mut command = new_autocut_hidden_child_command(&toolchain.executable);
     command.args(["-hide_banner", "-nostdin", "-y", "-i"]);
     command.arg(input_path);
     command.args([
@@ -12061,7 +12085,7 @@ fn run_ffmpeg_video_convert(
     target_height: Option<i64>,
     worker_lease: &AutoCutOpsWorkerLease,
 ) -> Result<AutoCutMediaOperationOutput, String> {
-    let mut command = Command::new(&toolchain.executable);
+    let mut command = new_autocut_hidden_child_command(&toolchain.executable);
     command.args(["-hide_banner", "-nostdin", "-y", "-i"]);
     command.arg(input_path);
     command.args(["-map", "0:v:0", "-map", "0:a?"]);
@@ -12170,7 +12194,7 @@ fn run_ffmpeg_video_enhance(
     worker_lease: &AutoCutOpsWorkerLease,
 ) -> Result<AutoCutMediaOperationOutput, String> {
     let filter_chain = video_enhance_filter_chain(target_height, enhance_mode, frame_rate);
-    let mut command = Command::new(&toolchain.executable);
+    let mut command = new_autocut_hidden_child_command(&toolchain.executable);
     command.args(["-hide_banner", "-nostdin", "-y", "-i"]);
     command.arg(input_path);
     command.args([
@@ -12937,11 +12961,50 @@ fn parse_ffmpeg_duration_millis(ffmpeg_output: &str) -> Option<i64> {
     None
 }
 
+impl AutoCutMediaProbeEvidence {
+    fn stream_evidence(self) -> AutoCutMediaStreamEvidence {
+        AutoCutMediaStreamEvidence {
+            has_audio_stream: self.has_audio_stream,
+            has_video_stream: self.has_video_stream,
+        }
+    }
+}
+
+fn parse_ffmpeg_media_probe_evidence(ffmpeg_output: &str) -> AutoCutMediaProbeEvidence {
+    AutoCutMediaProbeEvidence {
+        has_audio_stream: ffmpeg_output
+            .lines()
+            .any(|line| line.contains("Stream #") && line.contains("Audio:")),
+        has_video_stream: ffmpeg_output
+            .lines()
+            .any(|line| line.contains("Stream #") && line.contains("Video:")),
+        duration_ms: parse_ffmpeg_duration_millis(ffmpeg_output),
+    }
+}
+
+fn probe_autocut_media_evidence(
+    toolchain: Option<&AutoCutFfmpegToolchain>,
+    input_path: &Path,
+) -> AutoCutMediaProbeEvidence {
+    let Some(toolchain) = toolchain else {
+        return AutoCutMediaProbeEvidence::default();
+    };
+
+    let Ok(output) = new_autocut_hidden_child_command(&toolchain.executable)
+        .args(["-hide_banner", "-nostdin", "-i"])
+        .arg(input_path)
+        .output()
+    else {
+        return AutoCutMediaProbeEvidence::default();
+    };
+    parse_ffmpeg_media_probe_evidence(String::from_utf8_lossy(&output.stderr).as_ref())
+}
+
 fn read_ffmpeg_media_duration_millis(
     toolchain: &AutoCutFfmpegToolchain,
     input_path: &Path,
 ) -> Result<i64, String> {
-    let output = Command::new(&toolchain.executable)
+    let output = new_autocut_hidden_child_command(&toolchain.executable)
         .args(["-hide_banner", "-nostdin", "-i"])
         .arg(input_path)
         .output()
@@ -12956,7 +13019,7 @@ fn read_ffmpeg_media_duration_millis(
 }
 
 fn ffmpeg_media_has_audio_stream(toolchain: &AutoCutFfmpegToolchain, input_path: &Path) -> bool {
-    let Ok(output) = Command::new(&toolchain.executable)
+    let Ok(output) = new_autocut_hidden_child_command(&toolchain.executable)
         .args(["-hide_banner", "-nostdin", "-i"])
         .arg(input_path)
         .output()
@@ -12969,32 +13032,11 @@ fn ffmpeg_media_has_audio_stream(toolchain: &AutoCutFfmpegToolchain, input_path:
         .any(|line| line.contains("Stream #") && line.contains("Audio:"))
 }
 
-fn ffmpeg_media_has_video_stream(toolchain: &AutoCutFfmpegToolchain, input_path: &Path) -> bool {
-    let Ok(output) = Command::new(&toolchain.executable)
-        .args(["-hide_banner", "-nostdin", "-i"])
-        .arg(input_path)
-        .output()
-    else {
-        return false;
-    };
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    stderr
-        .lines()
-        .any(|line| line.contains("Stream #") && line.contains("Video:"))
-}
-
 fn probe_autocut_media_stream_evidence(
     toolchain: Option<&AutoCutFfmpegToolchain>,
     input_path: &Path,
 ) -> AutoCutMediaStreamEvidence {
-    let Some(toolchain) = toolchain else {
-        return AutoCutMediaStreamEvidence::default();
-    };
-
-    AutoCutMediaStreamEvidence {
-        has_audio_stream: ffmpeg_media_has_audio_stream(toolchain, input_path),
-        has_video_stream: ffmpeg_media_has_video_stream(toolchain, input_path),
-    }
+    probe_autocut_media_evidence(toolchain, input_path).stream_evidence()
 }
 
 pub(crate) fn autocut_speech_transcription_toolchain_ready() -> bool {
@@ -13559,7 +13601,9 @@ fn validate_autocut_speech_toolchain_manifest(
             ));
         }
         normalize_autocut_speech_acceleration_backend(platform.acceleration_backend.as_deref())
-            .map_err(|error| format!("speech toolchain manifest platform {platform_key} {error}"))?;
+            .map_err(|error| {
+                format!("speech toolchain manifest platform {platform_key} {error}")
+            })?;
         if platform.relative_path.contains("..")
             || Path::new(&platform.relative_path).is_absolute()
             || platform
@@ -13612,7 +13656,10 @@ fn normalize_autocut_speech_acceleration_backend(
     let supported = [
         "cpu", "cuda", "vulkan", "metal", "coreml", "openvino", "kompute",
     ];
-    if supported.iter().any(|candidate| *candidate == normalized_backend) {
+    if supported
+        .iter()
+        .any(|candidate| *candidate == normalized_backend)
+    {
         return Ok(Some(normalized_backend));
     }
 
@@ -13861,7 +13908,9 @@ fn directory_contains_file_name_fragment(directory: &Path, fragments: &[&str]) -
     };
     entries.filter_map(Result::ok).any(|entry| {
         let file_name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-        fragments.iter().any(|fragment| file_name.contains(fragment))
+        fragments
+            .iter()
+            .any(|fragment| file_name.contains(fragment))
     })
 }
 
@@ -14237,8 +14286,7 @@ fn detect_speech_transcript_repeated_phrase_runs(
             }
             let mut count = 1;
             while index + phrase_length * (count + 1) <= characters.len()
-                && characters[index + phrase_length * count
-                    ..index + phrase_length * (count + 1)]
+                && characters[index + phrase_length * count..index + phrase_length * (count + 1)]
                     .iter()
                     .collect::<String>()
                     == phrase
@@ -14273,7 +14321,8 @@ fn dedupe_speech_transcript_repeated_phrase_runs(
     for run in runs {
         let overlaps_existing = deduped.iter().any(|existing| {
             run.start_char >= existing.start_char
-                && run.start_char < existing.start_char + existing.phrase.chars().count() * existing.count
+                && run.start_char
+                    < existing.start_char + existing.phrase.chars().count() * existing.count
         });
         if !overlaps_existing {
             deduped.push(run);
@@ -15025,8 +15074,7 @@ fn read_speech_transcription_retry_request(
         whisper_audio_context: retry_optional_usize_field(task, "whisperAudioContext")?,
         whisper_beam_size: retry_optional_usize_field(task, "whisperBeamSize")?,
         whisper_best_of: retry_optional_usize_field(task, "whisperBestOf")?,
-        whisper_no_fallback: retry_optional_bool_field(task, "whisperNoFallback")?
-            .unwrap_or(false),
+        whisper_no_fallback: retry_optional_bool_field(task, "whisperNoFallback")?.unwrap_or(false),
         language: Some(retry_string_field(task, "language", Some("auto"))?),
         output_root_dir: retry_output_root_dir(task)?,
         executable_path: retry_optional_string_field(task, "executablePath")?,
@@ -16933,7 +16981,7 @@ mod tests {
         toolchain: &AutoCutFfmpegToolchain,
         output_path: &Path,
     ) -> Result<(), String> {
-        let output = Command::new(&toolchain.executable)
+        let output = new_autocut_hidden_child_command(&toolchain.executable)
             .args([
                 "-hide_banner",
                 "-nostdin",
@@ -16966,7 +17014,7 @@ mod tests {
         toolchain: &AutoCutFfmpegToolchain,
         output_path: &Path,
     ) -> Result<(), String> {
-        let output = Command::new(&toolchain.executable)
+        let output = new_autocut_hidden_child_command(&toolchain.executable)
             .args([
                 "-hide_banner",
                 "-nostdin",
@@ -18517,12 +18565,8 @@ mod tests {
             words: None,
         }];
 
-        let guard = evaluate_speech_transcript_quality(
-            &segments,
-            "local-whisper-transcript",
-            None,
-            false,
-        );
+        let guard =
+            evaluate_speech_transcript_quality(&segments, "local-whisper-transcript", None, false);
 
         assert!(!guard.passed);
         assert!(
@@ -18543,12 +18587,8 @@ mod tests {
             Some("chunk-0003"),
             true,
         );
-        let final_guard = evaluate_speech_transcript_quality(
-            &[],
-            "local-whisper-transcript",
-            None,
-            false,
-        );
+        let final_guard =
+            evaluate_speech_transcript_quality(&[], "local-whisper-transcript", None, false);
 
         assert!(chunk_guard.passed);
         assert_eq!(chunk_guard.status, "passed-empty");
@@ -18667,7 +18707,8 @@ mod tests {
         let windows_sidecar_path = windows_sidecar_dir.join("whisper-cli.exe");
         fs::create_dir_all(&windows_sidecar_dir).expect("create speech sidecar dir");
         let sidecar_bytes = b"windows whisper cli cuda fixture";
-        fs::write(&windows_sidecar_path, sidecar_bytes).expect("write bundled speech sidecar fixture");
+        fs::write(&windows_sidecar_path, sidecar_bytes)
+            .expect("write bundled speech sidecar fixture");
         let sidecar_sha256 = sha256_hex(sidecar_bytes);
         let model_path = manifest_root.join("ggml-large-v3-turbo.bin");
         write_minimal_valid_speech_model(&model_path);
@@ -18876,9 +18917,9 @@ mod tests {
             .expect_err("invalid decode settings must fail closed");
 
         assert!(
-            error.contains("whisperAudioContext") ||
-                error.contains("whisperBeamSize") ||
-                error.contains("whisperBestOf")
+            error.contains("whisperAudioContext")
+                || error.contains("whisperBeamSize")
+                || error.contains("whisperBestOf")
         );
     }
 
@@ -19222,9 +19263,7 @@ mod tests {
             Some(true)
         );
         assert_eq!(
-            manifest
-                .get("chunkSourceStrategy")
-                .and_then(Value::as_str),
+            manifest.get("chunkSourceStrategy").and_then(Value::as_str),
             Some("audio-first")
         );
         assert_eq!(
@@ -19289,9 +19328,7 @@ mod tests {
             Some(false)
         );
         assert_eq!(
-            manifest
-                .get("chunkSourceStrategy")
-                .and_then(Value::as_str),
+            manifest.get("chunkSourceStrategy").and_then(Value::as_str),
             Some("audio-first")
         );
     }
@@ -19571,7 +19608,7 @@ mod tests {
         toolchain: &AutoCutFfmpegToolchain,
         output_path: &Path,
     ) -> Result<(), String> {
-        let output = Command::new(&toolchain.executable)
+        let output = new_autocut_hidden_child_command(&toolchain.executable)
             .args([
                 "-hide_banner",
                 "-nostdin",
@@ -19603,7 +19640,7 @@ mod tests {
         toolchain: &AutoCutFfmpegToolchain,
         output_path: &Path,
     ) -> Result<(), String> {
-        let output = Command::new(&toolchain.executable)
+        let output = new_autocut_hidden_child_command(&toolchain.executable)
             .args([
                 "-hide_banner",
                 "-nostdin",
@@ -19651,7 +19688,7 @@ mod tests {
         toolchain: &AutoCutFfmpegToolchain,
         output_path: &Path,
     ) -> Result<(), String> {
-        let output = Command::new(&toolchain.executable)
+        let output = new_autocut_hidden_child_command(&toolchain.executable)
             .args([
                 "-hide_banner",
                 "-nostdin",
@@ -19713,7 +19750,7 @@ mod tests {
         toolchain: &AutoCutFfmpegToolchain,
         input_path: &Path,
     ) -> Result<(), String> {
-        let output = Command::new(&toolchain.executable)
+        let output = new_autocut_hidden_child_command(&toolchain.executable)
             .args(["-hide_banner", "-nostdin", "-i"])
             .arg(input_path)
             .args(["-map", "0:a:0", "-af", "volumedetect", "-f", "null", "-"])
@@ -19851,7 +19888,7 @@ mod tests {
 
     fn progress_streaming_test_command(input_path: &Path) -> Command {
         let toolchain = test_system_ffmpeg_toolchain();
-        let mut command = Command::new(toolchain.executable);
+        let mut command = new_autocut_hidden_child_command(toolchain.executable);
         command.args(["-hide_banner", "-nostdin", "-y", "-re", "-i"]);
         command.arg(input_path);
         command.args(["-vn", "-f", "null", "-"]);
@@ -19931,7 +19968,8 @@ mod tests {
     #[test]
     fn tracked_local_speech_command_can_be_canceled_through_native_task_boundary() {
         let task_uuid = autocut_uuid("ops-task").expect("create task uuid");
-        let mut command = Command::new(test_system_ffmpeg_toolchain().executable);
+        let mut command =
+            new_autocut_hidden_child_command(test_system_ffmpeg_toolchain().executable);
         command.args([
             "-hide_banner",
             "-nostdin",
@@ -19979,7 +20017,8 @@ mod tests {
     #[test]
     fn tracked_native_media_command_kills_child_when_poll_callback_fails() {
         let task_uuid = autocut_uuid("ops-task").expect("create task uuid");
-        let mut command = Command::new(test_system_ffmpeg_toolchain().executable);
+        let mut command =
+            new_autocut_hidden_child_command(test_system_ffmpeg_toolchain().executable);
         command.args([
             "-hide_banner",
             "-nostdin",
@@ -20022,7 +20061,8 @@ mod tests {
     #[test]
     fn tracked_native_media_command_removes_registry_when_poll_callback_fails() {
         let task_uuid = autocut_uuid("ops-task").expect("create task uuid");
-        let mut command = Command::new(test_system_ffmpeg_toolchain().executable);
+        let mut command =
+            new_autocut_hidden_child_command(test_system_ffmpeg_toolchain().executable);
         command.args([
             "-hide_banner",
             "-nostdin",
@@ -21207,6 +21247,22 @@ mod tests {
     }
 
     #[test]
+    fn ffmpeg_media_probe_evidence_parses_streams_and_duration_from_single_output() {
+        let stderr = r#"
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'source.mp4':
+  Duration: 00:01:02.50, start: 0.000000, bitrate: 1200 kb/s
+  Stream #0:0(und): Video: h264 (High), yuv420p(progressive), 1920x1080, 30 fps
+  Stream #0:1(und): Audio: aac (LC), 48000 Hz, stereo, fltp, 128 kb/s
+"#;
+
+        let evidence = parse_ffmpeg_media_probe_evidence(stderr);
+
+        assert!(evidence.has_audio_stream);
+        assert!(evidence.has_video_stream);
+        assert_eq!(evidence.duration_ms, Some(62_500));
+    }
+
+    #[test]
     fn media_import_rejects_relative_and_missing_source_paths() {
         let root = unique_temp_dir("sdkwork-autocut-media-import-invalid");
         let connection = prepared_connection();
@@ -21635,7 +21691,7 @@ mod tests {
         let toolchain = test_system_ffmpeg_toolchain();
 
         let runner = std::thread::spawn(move || {
-            let mut command = Command::new(toolchain.executable);
+            let mut command = new_autocut_hidden_child_command(toolchain.executable);
             command.args([
                 "-hide_banner",
                 "-nostdin",
@@ -21971,7 +22027,7 @@ mod tests {
         let toolchain = test_system_ffmpeg_toolchain();
 
         let runner = std::thread::spawn(move || {
-            let mut command = Command::new(toolchain.executable);
+            let mut command = new_autocut_hidden_child_command(toolchain.executable);
             command.args([
                 "-hide_banner",
                 "-nostdin",

@@ -7,6 +7,54 @@ directory. If a previous version was not successfully released, its change log
 must be folded into the next successful release instead of leaving orphaned
 release notes.
 
+## v0.1.7 - 2026-05-17
+
+Unsigned preview hotfix for Windows desktop native process handling and
+tag-pinned release packaging. This release carries forward the `v0.1.6`
+commercial preview and adds the fixes needed after verifying why GitHub still
+showed `v0.1.1` as Latest and why selecting local media could flash terminal
+windows in the desktop app.
+
+### Release Scope
+
+- Updates the root workspace, every AutoCut package manifest, component specs,
+  Tauri application metadata, Rust desktop crate metadata, release workflow
+  defaults, release evidence defaults, and `sdkwork.app.config.json` to the
+  `0.1.7` release line.
+- Keeps install package metadata GitHub Release based and disabled until real
+  asset digests, installer trust evidence, notarization/signature evidence, and
+  SBOM evidence are recorded.
+- Keeps the GitHub Release as a prerelease preview unless commercial signing,
+  trust, checksum, notarization, and SBOM gates are made ready.
+
+### Desktop Native Process Handling
+
+- Launches AutoCut FFmpeg, Whisper, and platform reveal helper child processes
+  through a shared native command helper that applies `CREATE_NO_WINDOW` on
+  Windows so release builds do not flash console windows while probing or
+  processing media.
+- Reuses a single FFmpeg media probe for local media selection, import, smart
+  slicing, and audio activity analysis paths that need stream and duration
+  evidence, avoiding back-to-back stream and duration subprocess probes for the
+  same source.
+- Moves blocking local media description, audio smoke, and LLM HTTP bridge
+  commands onto the native worker pool so the Tauri command boundary does not
+  block the UI event loop while native work is running.
+
+### Release Verification
+
+- Pins every desktop release workflow checkout to the requested
+  `inputs.release_tag`, so uploaded Windows, Linux, and macOS artifacts are
+  built from the same commit as the GitHub Release tag instead of whatever
+  commit is currently on `main`.
+- Adds governance checks that reject direct `Command::new(...)` child process
+  creation outside the hidden-window helper and reject desktop release
+  workflows that do not check out the requested tag in every release job.
+- Documents the GitHub Latest behavior verified during release checks:
+  prereleases such as `v0.1.6` and this preview line are not selected by
+  GitHub's `/releases/latest` endpoint or Latest badge while `v0.1.1` remains
+  the newest non-prerelease.
+
 ## v0.1.6 - 2026-05-17
 
 Commercial preview release preparation for the rebuilt Smart Slice engine and

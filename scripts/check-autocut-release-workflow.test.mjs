@@ -153,6 +153,12 @@ assert.match(
   /lfs: false/u,
   'workflow explicitly disables Git LFS checkout for native release jobs',
 );
+const releaseTagCheckoutCount = (workflow.match(/ref: \$\{\{ inputs\.release_tag \}\}/gu) ?? []).length;
+assert.equal(
+  releaseTagCheckoutCount,
+  4,
+  'workflow checks out the requested release tag in every release job so uploaded assets match the GitHub Release tag',
+);
 assert.match(
   workflow,
   /\$PSNativeCommandUseErrorActionPreference = \$true[\s\S]*pnpm release:native-smoke -- --run-real-llm-secret-smoke/u,

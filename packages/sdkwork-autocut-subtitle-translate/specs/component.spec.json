@@ -4,7 +4,7 @@
   "component": {
     "name": "@sdkwork/autocut-subtitle-translate",
     "displayName": "SDKWork Autocut Subtitle Translate",
-    "version": "0.1.6",
+    "version": "0.1.7",
     "type": "react-package",
     "root": "sdkwork-video-cut/packages/sdkwork-autocut-subtitle-translate",
     "domain": "content",

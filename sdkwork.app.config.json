@@ -114,7 +114,7 @@
       }
     ],
     "metadata": {
-      "assetVersion": "0.1.6",
+      "assetVersion": "0.1.7",
       "defaultLocale": "en-US"
     }
   },
@@ -173,7 +173,7 @@
           "sourceType": "BINARY_URL",
           "packageFormat": "MSI",
           "platform": "DESKTOP_WINDOWS",
-          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.6/SDKWork%20Video%20Cut_0.1.6_x64_en-US.msi",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.7/SDKWork%20Video%20Cut_0.1.7_x64_en-US.msi",
           "enabled": false,
           "metadata": {
             "releaseAsset": true,
@@ -187,7 +187,7 @@
           "sourceType": "BINARY_URL",
           "packageFormat": "EXE",
           "platform": "DESKTOP_WINDOWS",
-          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.6/SDKWork%20Video%20Cut_0.1.6_x64-setup.exe",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.7/SDKWork%20Video%20Cut_0.1.7_x64-setup.exe",
           "enabled": false,
           "metadata": {
             "releaseAsset": true,
@@ -201,7 +201,7 @@
           "sourceType": "BINARY_URL",
           "packageFormat": "DEB",
           "platform": "DESKTOP_LINUX",
-          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.6/SDKWork%20Video%20Cut_0.1.6_amd64.deb",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.7/SDKWork%20Video%20Cut_0.1.7_amd64.deb",
           "enabled": false,
           "metadata": {
             "releaseAsset": true,
@@ -218,7 +218,7 @@
           "sourceType": "BINARY_URL",
           "packageFormat": "APPIMAGE",
           "platform": "DESKTOP_LINUX",
-          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.6/SDKWork%20Video%20Cut_0.1.6_amd64.AppImage",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.7/SDKWork%20Video%20Cut_0.1.7_amd64.AppImage",
           "enabled": false,
           "metadata": {
             "releaseAsset": true,
@@ -235,7 +235,7 @@
           "sourceType": "BINARY_URL",
           "packageFormat": "DMG",
           "platform": "DESKTOP_MACOS",
-          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.6/SDKWork%20Video%20Cut_0.1.6_x64.dmg",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.7/SDKWork%20Video%20Cut_0.1.7_x64.dmg",
           "enabled": false,
           "metadata": {
             "releaseAsset": true,
@@ -249,7 +249,7 @@
           "sourceType": "BINARY_URL",
           "packageFormat": "DMG",
           "platform": "DESKTOP_MACOS",
-          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.6/SDKWork%20Video%20Cut_0.1.6_aarch64.dmg",
+          "url": "https://github.com/Sdkwork-Cloud/sdkwork-video-cut/releases/download/v0.1.7/SDKWork%20Video%20Cut_0.1.7_aarch64.dmg",
           "enabled": false,
           "metadata": {
             "releaseAsset": true,
@@ -267,12 +267,50 @@
     }
   },
   "release": {
-    "currentVersion": "0.1.6",
+    "currentVersion": "0.1.7",
     "defaultChannel": "STABLE",
     "latest": {
-      "STABLE": "0.1.6"
+      "STABLE": "0.1.7"
     },
     "notes": [
+      {
+        "version": "0.1.7",
+        "releaseChannel": "STABLE",
+        "title": "SDKWork Video Cut 0.1.7",
+        "summary": "Unsigned preview hotfix for Windows native process handling and tag-pinned release packaging.",
+        "content": "Version 0.1.7 carries forward the v0.1.6 commercial preview and adds desktop reliability fixes: native FFmpeg, Whisper, and reveal helpers are launched without visible console windows on Windows; local media selection/import reuse a single FFmpeg probe for stream and duration evidence; blocking media and LLM commands run on the native worker pool; and the GitHub release workflow checks out the requested release tag before building uploaded assets. Install package metadata points to the matching GitHub Release assets but remains disabled until real digest, signature, notarization, and SBOM evidence is recorded.",
+        "highlights": [
+          "Windows native FFmpeg, Whisper, and reveal helper child processes run without visible console windows",
+          "Local media selection and import derive stream and duration evidence from one FFmpeg probe",
+          "Blocking describe, audio smoke, and LLM HTTP commands execute on the native worker pool",
+          "The desktop release workflow builds from the requested Git tag before uploading assets",
+          "Commercial release activation remains blocked until signature, notarization, package trust, checksum, and SBOM evidence is complete"
+        ],
+        "packageIds": [
+          "desktop-windows-msi",
+          "desktop-windows-nsis",
+          "desktop-linux-deb",
+          "desktop-linux-appimage",
+          "desktop-macos-x64-dmg",
+          "desktop-macos-aarch64-dmg"
+        ],
+        "publishedAt": "2026-05-17T00:00:00Z",
+        "current": true,
+        "forceUpdate": false,
+        "minSupportedVersion": "0.1.5",
+        "metadata": {
+          "previewRelease": true,
+          "foldsUnreleasedChangesSince": "v0.1.6",
+          "commercialActivationRequired": [
+            "GitHub Release assets uploaded for every package",
+            "SHA-256 checksum recorded for every enabled package",
+            "Windows Authenticode signature evidence recorded",
+            "macOS Developer ID signing and notarization evidence recorded",
+            "Linux package trust evidence recorded",
+            "SBOM evidence recorded"
+          ]
+        }
+      },
       {
         "version": "0.1.6",
         "releaseChannel": "STABLE",
@@ -295,7 +333,7 @@
           "desktop-macos-aarch64-dmg"
         ],
         "publishedAt": "2026-05-17T00:00:00Z",
-        "current": true,
+        "current": false,
         "forceUpdate": false,
         "minSupportedVersion": "0.1.5",
         "metadata": {

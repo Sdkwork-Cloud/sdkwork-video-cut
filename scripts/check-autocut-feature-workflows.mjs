@@ -3513,7 +3513,7 @@ assertIncludes(nativeMediaRuntime, 'speech_toolchain_rejects_partial_download_mo
 assertIncludes(nativeMediaRuntime, 'speech_toolchain_rejects_too_small_model_files', 'media runtime tests that incomplete local speech model files are rejected');
 assertIncludes(nativeMediaRuntime, 'pub duration_ms: Option<i64>', 'media runtime exposes source media duration for smart slice planning');
 assertIncludes(nativeMediaRuntime, '"durationMs": duration_ms', 'media runtime stores imported media duration in asset metadata for audits');
-assertIncludes(nativeMediaRuntime, 'read_ffmpeg_media_duration_millis(toolchain, &sandbox_path).ok()', 'media runtime probes imported video duration without blocking import on probe failure');
+assertIncludes(nativeMediaRuntime, 'probe_autocut_media_evidence(Some(toolchain), &sandbox_path)', 'media runtime probes imported media stream and duration evidence without blocking import on probe failure');
 assertIncludes(nativeMediaRuntime, 'video_slice_render_dimensions', 'media runtime defines canonical smart slice render dimensions');
 assertIncludes(nativeMediaRuntime, '"9:16" => Some((1080, 1920))', 'media runtime maps 9:16 smart slices to 1080x1920 output');
 assertIncludes(nativeMediaRuntime, 'force_original_aspect_ratio=increase', 'media runtime uses cover scaling for smart slice renderProfile cover mode');

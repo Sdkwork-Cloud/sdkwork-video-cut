@@ -111,11 +111,14 @@ pub async fn autocut_import_media_file(
 }
 
 #[tauri::command]
-pub fn autocut_describe_local_media_file(
+pub async fn autocut_describe_local_media_file(
     app: AppHandle,
     request: AutoCutMediaImportRequest,
 ) -> Result<AutoCutLocalMediaFileDescription, String> {
-    media_runtime::describe_autocut_local_media_file(&app, request)
+    run_autocut_blocking_native_command("autocut_describe_local_media_file", move || {
+        media_runtime::describe_autocut_local_media_file(&app, request)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -361,15 +364,21 @@ pub async fn autocut_enhance_video(
 }
 
 #[tauri::command]
-pub fn autocut_audio_smoke(app: AppHandle) -> Result<AutoCutAudioExtractionResult, String> {
-    media_runtime::run_autocut_audio_smoke(&app)
+pub async fn autocut_audio_smoke(app: AppHandle) -> Result<AutoCutAudioExtractionResult, String> {
+    run_autocut_blocking_native_command("autocut_audio_smoke", move || {
+        media_runtime::run_autocut_audio_smoke(&app)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn autocut_llm_http_request(
+pub async fn autocut_llm_http_request(
     request: AutoCutLlmHttpRequest,
 ) -> Result<AutoCutLlmHttpResponse, String> {
-    llm_http_runtime::send_autocut_llm_http_request(request)
+    run_autocut_blocking_native_command("autocut_llm_http_request", move || {
+        llm_http_runtime::send_autocut_llm_http_request(request)
+    })
+    .await
 }
 
 #[tauri::command]

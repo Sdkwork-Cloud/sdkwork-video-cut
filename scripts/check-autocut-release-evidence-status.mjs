@@ -29,7 +29,7 @@ const __filename = fileURLToPath(import.meta.url);
 const statusSchemaVersion = '2026-05-08.autocut-release-evidence-status.v1';
 const defaultEvidenceDirRelativePath = 'artifacts/release';
 const defaultSbomEvidenceRelativePath = 'artifacts/release/autocut-sbom-evidence.json';
-const defaultReleaseTag = 'v0.1.6';
+const defaultReleaseTag = 'v0.1.7';
 const defaultRepository = 'Sdkwork-Cloud/sdkwork-video-cut';
 
 export function createAutoCutReleaseEvidenceStatusReport({

@@ -4,7 +4,7 @@
   "component": {
     "name": "@sdkwork/autocut-home",
     "displayName": "SDKWork Autocut Home",
-    "version": "0.1.6",
+    "version": "0.1.7",
     "type": "react-package",
     "root": "sdkwork-video-cut/packages/sdkwork-autocut-home",
     "domain": "content",

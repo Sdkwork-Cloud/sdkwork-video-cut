@@ -6,7 +6,7 @@ on:
       release_tag:
         description: GitHub Release tag to upload assets to
         required: true
-        default: v0.1.6
+        default: v0.1.7
       upload_assets:
         description: Upload built assets to the GitHub Release
         required: true
@@ -35,6 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.release_tag }}
           lfs: false
 
       - uses: pnpm/action-setup@v4
@@ -114,6 +115,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.release_tag }}
           lfs: false
 
       - name: Install Linux Tauri dependencies
@@ -217,6 +219,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.release_tag }}
           lfs: false
 
       - uses: pnpm/action-setup@v4
@@ -301,6 +304,8 @@ jobs:
       - build-macos
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
 
       - uses: pnpm/action-setup@v4
         with:
