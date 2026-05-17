@@ -53,6 +53,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install CI FFmpeg
+        run: choco install ffmpeg -y --no-progress
+
       - name: Verify workspace
         run: pnpm test
 
@@ -124,6 +127,7 @@ jobs:
             librsvg2-dev \
             libssl-dev \
             libwebkit2gtk-4.1-dev \
+            ffmpeg \
             cmake \
             patchelf \
             wget \
@@ -230,6 +234,10 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Install CI FFmpeg
+        run: |
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
 
       - name: Verify workspace
         run: pnpm test

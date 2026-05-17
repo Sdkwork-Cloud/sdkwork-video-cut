@@ -11,6 +11,10 @@ import {
   formatAutoCutViteEnvironmentError,
 } from './run-autocut-vite.mjs';
 
+function normalizeMacosPrivateVarPath(value) {
+  return String(value).replace(/^\/private\/var(?=\/)/u, '/var');
+}
+
 function tempRoot(name) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `${name}-`));
 }
@@ -84,9 +88,12 @@ fs.symlinkSync(pnpmViteDir, path.join(pnpmIsolatedRoot, 'node_modules', 'vite'),
 const pnpmIsolatedReport = createAutoCutViteEnvironmentReport({ rootDir: pnpmIsolatedRoot });
 assert.equal(pnpmIsolatedReport.ready, true);
 assert.deepEqual(pnpmIsolatedReport.blockers, []);
+assert.equal(normalizeMacosPrivateVarPath('/private/var/folders/autocut/example'), '/var/folders/autocut/example');
 assert.equal(
-  pnpmIsolatedReport.esbuildPackagePath,
-  path.join(pnpmIsolatedRoot, 'node_modules', '.pnpm', 'node_modules', 'esbuild', 'package.json'),
+  normalizeMacosPrivateVarPath(pnpmIsolatedReport.esbuildPackagePath),
+  normalizeMacosPrivateVarPath(
+    path.join(pnpmIsolatedRoot, 'node_modules', '.pnpm', 'node_modules', 'esbuild', 'package.json'),
+  ),
 );
 
 console.log('ok - autocut vite runner contract');

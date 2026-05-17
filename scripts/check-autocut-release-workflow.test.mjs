@@ -10,6 +10,14 @@ assert.equal(fs.existsSync(workflowPath), true, 'AutoCut desktop release workflo
 
 const workflow = fs.readFileSync(workflowPath, 'utf8');
 
+function workflowJobBody(jobName) {
+  const pattern = new RegExp(`\\n  ${jobName}:\\n(?<body>[\\s\\S]*?)(?=\\n  [a-zA-Z0-9_-]+:\\n|\\n*$)`, 'u');
+  return workflow.match(pattern)?.groups?.body ?? '';
+}
+
+const linuxJob = workflowJobBody('build-linux');
+const macosJob = workflowJobBody('build-macos');
+
 for (const marker of [
   'name: AutoCut Desktop Multiplatform Release',
   'workflow_dispatch:',
@@ -29,6 +37,7 @@ for (const marker of [
   'libayatana-appindicator3-dev',
   'librsvg2-dev',
   'pnpm/action-setup',
+  'Install CI FFmpeg',
   'Prepare release sidecars',
   'prepare:release-sidecars',
   'release:smoke-preflight',
@@ -71,6 +80,31 @@ assert.match(
   workflow,
   /prepare:release-sidecars -- --platform windows-x86_64 --accept-license/u,
   'workflow prepares approved Windows release sidecars without requiring GitHub Actions to fetch Git LFS objects',
+);
+assert.match(
+  workflow,
+  /Install CI FFmpeg[\s\S]*choco install ffmpeg -y --no-progress[\s\S]*Verify workspace/u,
+  'Windows release verification installs CI FFmpeg before pnpm test so Smart Slice real-media e2e does not depend on runner PATH state',
+);
+assert.match(
+  workflow,
+  /Install Linux Tauri dependencies[\s\S]*ffmpeg[\s\S]*Verify workspace/u,
+  'Linux release verification installs FFmpeg before pnpm test so Smart Slice real-media e2e can run in a clean runner',
+);
+assert.match(
+  workflow,
+  /Install CI FFmpeg[\s\S]*brew install ffmpeg[\s\S]*Verify workspace/u,
+  'macOS release verification installs CI FFmpeg before pnpm test so Smart Slice real-media e2e can run in a clean runner',
+);
+assert.equal(
+  linuxJob.includes('brew install ffmpeg'),
+  false,
+  'Linux release job must not call Homebrew when installing FFmpeg',
+);
+assert.match(
+  macosJob,
+  /Install CI FFmpeg[\s\S]*brew list ffmpeg[\s\S]*brew install ffmpeg[\s\S]*Verify workspace/u,
+  'macOS release job installs FFmpeg with Homebrew before pnpm test',
 );
 assert.match(
   workflow,
