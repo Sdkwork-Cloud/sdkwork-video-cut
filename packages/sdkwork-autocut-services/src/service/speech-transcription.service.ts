@@ -10,8 +10,10 @@ import {
   AUTOCUT_MODEL_VENDOR_PRESETS,
   isLowInformationAutoCutTranscriptEvidenceText,
   isAutoCutSpeechTranscriptionModelDownloadPhase,
+  createAutoCutSpeechTranscriptionProviderDefaultOptions,
   getAutoCutSpeechTranscriptionWorkflowPreset,
   getAutoCutSpeechTranscriptionProviderDefinition,
+  type AutoCutSpeechTranscriptionProviderOptions,
   type AutoCutLocalSpeechTranscriptionExecutablePlatform,
   type AutoCutLlmRuntimeConfig,
   type AutoCutLocalSpeechTranscriptionSetupNextAction,
@@ -68,6 +70,7 @@ export interface AutoCutSpeechTranscriptionProviderBridgeResult
 export interface AutoCutSpeechTranscriptionProviderRuntimeConfig extends AutoCutSpeechTranscriptionSettings {
   provider: AutoCutSpeechTranscriptionProviderDefinition;
   requestFormat: 'autocut-speech-transcription-provider';
+  providerOptions?: AutoCutSpeechTranscriptionProviderOptions;
   modelVendorRuntime?: AutoCutLlmRuntimeConfig;
   sessionApiKey?: string;
 }
@@ -825,6 +828,7 @@ async function resolveAutoCutSpeechTranscriptionProviderRuntimeConfigForProvider
         ? settings.baseUrl ?? ''
         : AUTOCUT_MODEL_VENDOR_PRESETS[providerModelVendor].baseUrl,
       model: providerDefaultModel ?? settings.model ?? AUTOCUT_MODEL_VENDOR_PRESETS[providerModelVendor].defaultModel,
+      ...(settings.providerId === provider.id && settings.providerOptions ? { providerOptions: settings.providerOptions } : {}),
       apiKeyConfigured: settings.providerId === provider.id && settings.apiKeyConfigured === true,
       configured: false,
     };
@@ -853,6 +857,7 @@ function sanitizeRuntimeSpeechTranscriptionSettings(
           modelVendor: settings.modelVendor ?? provider.modelVendor ?? 'custom',
           baseUrl: settings.baseUrl ?? '',
           model: settings.model ?? provider.defaultModel,
+          providerOptions: settings.providerOptions ?? createAutoCutSpeechTranscriptionProviderDefaultOptions(provider),
           apiKeyConfigured: settings.apiKeyConfigured === true,
         }
       : {}),
@@ -878,6 +883,7 @@ async function resolveAutoCutSpeechTranscriptionProviderRuntimeConfigFromSetting
       baseUrl: settings.baseUrl || modelVendorRuntime.baseUrl,
       apiKeyConfigured: Boolean(isMatchingRuntime && modelVendorRuntime.apiKeyConfigured),
       configured: Boolean(isMatchingRuntime && modelVendorRuntime.apiKeyConfigured),
+      providerOptions: settings.providerOptions ?? createAutoCutSpeechTranscriptionProviderDefaultOptions(provider),
       requestFormat: 'autocut-speech-transcription-provider',
     };
   }

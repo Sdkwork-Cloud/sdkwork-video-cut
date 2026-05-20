@@ -174,3 +174,366 @@ indexes:
     columns: [tenant_id, organization_id, lease_status, expires_at, id]
   - name: idx_ops_worker_lease_task_updated
     columns: [tenant_id, organization_id, task_uuid, updated_at, id]
+
+table_name: ops_workflow_run
+table_profile: event_log
+owner_team: sdkwork-video-cut-host
+compliance_level: L2
+contract_version: 1.1.0
+system_of_record: true
+write_owner: sdkwork-video-cut-host
+columns:
+  id: { type: int64, required: true, primary_key: true }
+  uuid: { type: string, length: 64, required: true, unique: true }
+  tenant_id: { type: int64, required: true, default: 0 }
+  organization_id: { type: int64, required: true, default: 0 }
+  task_uuid: { type: string, length: 64, required: true }
+  workflow_id: { type: string, length: 96, required: true }
+  workflow_version: { type: int64, required: true }
+  engine_id: { type: string, length: 96, required: true }
+  engine_version: { type: int64, required: true }
+  status: { type: enum_int32, required: true }
+  current_step_key: { type: string, length: 96, required: false }
+  template_snapshot_json: { type: json, required: true, default: "{}" }
+  input_json: { type: json, required: true, default: "{}" }
+  output_json: { type: json, required: true, default: "{}" }
+  checkpoint_json: { type: json, required: true, default: "{}" }
+  created_at: { type: instant, required: true }
+  updated_at: { type: instant, required: true }
+  version: { type: int64, required: true, default: 0 }
+indexes:
+  - name: uk_ops_workflow_run_uuid
+    unique: true
+    columns: [uuid]
+  - name: idx_ops_workflow_run_task_status
+    columns: [tenant_id, organization_id, task_uuid, status, updated_at, id]
+
+table_name: ops_step_run
+table_profile: event_log
+owner_team: sdkwork-video-cut-host
+compliance_level: L2
+contract_version: 1.1.0
+system_of_record: true
+write_owner: sdkwork-video-cut-host
+columns:
+  id: { type: int64, required: true, primary_key: true }
+  uuid: { type: string, length: 64, required: true, unique: true }
+  tenant_id: { type: int64, required: true, default: 0 }
+  organization_id: { type: int64, required: true, default: 0 }
+  workflow_run_uuid: { type: string, length: 64, required: true }
+  task_uuid: { type: string, length: 64, required: true }
+  step_key: { type: string, length: 96, required: true }
+  step_phase: { type: string, length: 64, required: true }
+  step_order: { type: int64, required: true }
+  status: { type: enum_int32, required: true }
+  attempt_no: { type: int64, required: true, default: 1 }
+  progress: { type: int64, required: true, default: 0 }
+  created_at: { type: instant, required: true }
+  updated_at: { type: instant, required: true }
+  version: { type: int64, required: true, default: 0 }
+indexes:
+  - name: uk_ops_step_run_uuid
+    unique: true
+    columns: [uuid]
+  - name: idx_ops_step_run_workflow_order
+    columns: [tenant_id, organization_id, workflow_run_uuid, step_order, id]
+  - name: idx_ops_step_run_task_status
+    columns: [tenant_id, organization_id, task_uuid, status, updated_at, id]
+
+table_name: ops_step_item_run
+table_profile: event_log
+owner_team: sdkwork-video-cut-host
+compliance_level: L2
+contract_version: 1.1.0
+system_of_record: true
+write_owner: sdkwork-video-cut-host
+columns:
+  id: { type: int64, required: true, primary_key: true }
+  uuid: { type: string, length: 64, required: true, unique: true }
+  tenant_id: { type: int64, required: true, default: 0 }
+  organization_id: { type: int64, required: true, default: 0 }
+  workflow_run_uuid: { type: string, length: 64, required: true }
+  step_run_uuid: { type: string, length: 64, required: true }
+  task_uuid: { type: string, length: 64, required: true }
+  item_type: { type: string, length: 64, required: true }
+  item_uuid: { type: string, length: 64, required: true }
+  item_key: { type: string, length: 128, required: true }
+  status: { type: enum_int32, required: true }
+  attempt_no: { type: int64, required: true, default: 1 }
+  worker_id: { type: string, length: 128, required: false }
+  started_at: { type: instant, required: false }
+  finished_at: { type: instant, required: false }
+  input_json: { type: json, required: true, default: "{}" }
+  output_json: { type: json, required: true, default: "{}" }
+  checkpoint_json: { type: json, required: true, default: "{}" }
+  evidence_artifact_uuid: { type: string, length: 64, required: false }
+  error_code: { type: string, length: 128, required: false }
+  error_message: { type: string, length: 1024, required: false }
+  created_at: { type: instant, required: true }
+  updated_at: { type: instant, required: true }
+  version: { type: int64, required: true, default: 0 }
+indexes:
+  - name: uk_ops_step_item_run_uuid
+    unique: true
+    columns: [uuid]
+  - name: idx_ops_step_item_run_step_status
+    columns: [tenant_id, organization_id, step_run_uuid, status, updated_at, id]
+
+table_name: media_text_track
+table_profile: core_entity
+owner_team: sdkwork-video-cut-host
+compliance_level: L2
+contract_version: 1.1.0
+system_of_record: true
+write_owner: sdkwork-video-cut-host
+columns:
+  id: { type: int64, required: true, primary_key: true }
+  uuid: { type: string, length: 64, required: true, unique: true }
+  tenant_id: { type: int64, required: true, default: 0 }
+  organization_id: { type: int64, required: true, default: 0 }
+  source_asset_uuid: { type: string, length: 64, required: true }
+  task_uuid: { type: string, length: 64, required: false }
+  clip_uuid: { type: string, length: 64, required: false }
+  scope_type: { type: string, length: 64, required: true }
+  track_role: { type: string, length: 64, required: true }
+  created_at: { type: instant, required: true }
+  updated_at: { type: instant, required: true }
+  version: { type: int64, required: true, default: 0 }
+indexes:
+  - name: uk_media_text_track_uuid
+    unique: true
+    columns: [uuid]
+  - name: idx_media_text_track_source_role
+    columns: [tenant_id, organization_id, source_asset_uuid, track_role, created_at, id]
+
+table_name: media_text_segment
+table_profile: core_entity
+owner_team: sdkwork-video-cut-host
+compliance_level: L2
+contract_version: 1.1.0
+system_of_record: true
+write_owner: sdkwork-video-cut-host
+columns:
+  id: { type: int64, required: true, primary_key: true }
+  uuid: { type: string, length: 64, required: true, unique: true }
+  tenant_id: { type: int64, required: true, default: 0 }
+  organization_id: { type: int64, required: true, default: 0 }
+  text_track_uuid: { type: string, length: 64, required: true }
+  source_asset_uuid: { type: string, length: 64, required: true }
+  segment_index: { type: int64, required: true }
+  start_ms: { type: int64, required: true }
+  end_ms: { type: int64, required: true }
+  text: { type: string, length: 8192, required: true }
+  created_at: { type: instant, required: true }
+  updated_at: { type: instant, required: true }
+  version: { type: int64, required: true, default: 0 }
+indexes:
+  - name: uk_media_text_segment_uuid
+    unique: true
+    columns: [uuid]
+  - name: idx_media_text_segment_track_time
+    columns: [tenant_id, organization_id, text_track_uuid, start_ms, end_ms, id]
+
+table_name: media_content_unit
+table_profile: core_entity
+owner_team: sdkwork-video-cut-host
+compliance_level: L2
+contract_version: 1.1.0
+system_of_record: true
+write_owner: sdkwork-video-cut-host
+columns:
+  id: { type: int64, required: true, primary_key: true }
+  uuid: { type: string, length: 64, required: true, unique: true }
+  tenant_id: { type: int64, required: true, default: 0 }
+  organization_id: { type: int64, required: true, default: 0 }
+  source_asset_uuid: { type: string, length: 64, required: true }
+  engine_id: { type: string, length: 96, required: true }
+  unit_index: { type: int64, required: true }
+  start_ms: { type: int64, required: true }
+  end_ms: { type: int64, required: true }
+  created_at: { type: instant, required: true }
+  updated_at: { type: instant, required: true }
+  version: { type: int64, required: true, default: 0 }
+indexes:
+  - name: uk_media_content_unit_uuid
+    unique: true
+    columns: [uuid]
+  - name: idx_media_content_unit_source_time
+    columns: [tenant_id, organization_id, source_asset_uuid, start_ms, end_ms, id]
+
+table_name: studio_timeline
+table_profile: owner_entity
+owner_team: sdkwork-video-cut-host
+compliance_level: L2
+contract_version: 1.1.0
+system_of_record: true
+write_owner: sdkwork-video-cut-host
+columns:
+  id: { type: int64, required: true, primary_key: true }
+  uuid: { type: string, length: 64, required: true, unique: true }
+  tenant_id: { type: int64, required: true, default: 0 }
+  organization_id: { type: int64, required: true, default: 0 }
+  task_uuid: { type: string, length: 64, required: true }
+  timeline_type: { type: string, length: 64, required: true }
+  status: { type: enum_int32, required: true }
+  duration_ms: { type: int64, required: true, default: 0 }
+  schema_version: { type: string, length: 64, required: true }
+  created_at: { type: instant, required: true }
+  updated_at: { type: instant, required: true }
+  version: { type: int64, required: true, default: 0 }
+indexes:
+  - name: uk_studio_timeline_uuid
+    unique: true
+    columns: [uuid]
+  - name: idx_studio_timeline_task_status
+    columns: [tenant_id, organization_id, task_uuid, status, updated_at, id]
+
+table_name: studio_clip
+table_profile: core_entity
+owner_team: sdkwork-video-cut-host
+compliance_level: L2
+contract_version: 1.1.0
+system_of_record: true
+write_owner: sdkwork-video-cut-host
+columns:
+  id: { type: int64, required: true, primary_key: true }
+  uuid: { type: string, length: 64, required: true, unique: true }
+  tenant_id: { type: int64, required: true, default: 0 }
+  organization_id: { type: int64, required: true, default: 0 }
+  timeline_uuid: { type: string, length: 64, required: true }
+  task_uuid: { type: string, length: 64, required: true }
+  engine_id: { type: string, length: 96, required: true }
+  clip_type: { type: string, length: 64, required: true }
+  clip_order: { type: int64, required: true }
+  status: { type: enum_int32, required: true }
+  selected: { type: bool, required: true, default: false }
+  start_ms: { type: int64, required: true }
+  end_ms: { type: int64, required: true }
+  duration_ms: { type: int64, required: true }
+  boundary_version: { type: int64, required: true, default: 1 }
+  created_at: { type: instant, required: true }
+  updated_at: { type: instant, required: true }
+  version: { type: int64, required: true, default: 0 }
+indexes:
+  - name: uk_studio_clip_uuid
+    unique: true
+    columns: [uuid]
+  - name: idx_studio_clip_timeline_order
+    columns: [tenant_id, organization_id, timeline_uuid, clip_order, id]
+  - name: idx_studio_clip_task_status
+    columns: [tenant_id, organization_id, task_uuid, status, updated_at, id]
+
+table_name: studio_clip_source_ref
+table_profile: core_entity
+owner_team: sdkwork-video-cut-host
+compliance_level: L2
+contract_version: 1.1.0
+system_of_record: true
+write_owner: sdkwork-video-cut-host
+columns:
+  id: { type: int64, required: true, primary_key: true }
+  uuid: { type: string, length: 64, required: true, unique: true }
+  tenant_id: { type: int64, required: true, default: 0 }
+  organization_id: { type: int64, required: true, default: 0 }
+  clip_uuid: { type: string, length: 64, required: true }
+  source_type: { type: string, length: 64, required: true }
+  source_uuid: { type: string, length: 64, required: true }
+  created_at: { type: instant, required: true }
+  updated_at: { type: instant, required: true }
+  version: { type: int64, required: true, default: 0 }
+indexes:
+  - name: uk_studio_clip_source_ref_uuid
+    unique: true
+    columns: [uuid]
+  - name: idx_studio_clip_source_ref_clip
+    columns: [tenant_id, organization_id, clip_uuid, source_type, source_index, id]
+
+table_name: studio_clip_processing_operation
+table_profile: event_log
+owner_team: sdkwork-video-cut-host
+compliance_level: L2
+contract_version: 1.1.0
+system_of_record: true
+write_owner: sdkwork-video-cut-host
+columns:
+  id: { type: int64, required: true, primary_key: true }
+  uuid: { type: string, length: 64, required: true, unique: true }
+  tenant_id: { type: int64, required: true, default: 0 }
+  organization_id: { type: int64, required: true, default: 0 }
+  timeline_uuid: { type: string, length: 64, required: true }
+  clip_uuid: { type: string, length: 64, required: true }
+  task_uuid: { type: string, length: 64, required: true }
+  workflow_run_uuid: { type: string, length: 64, required: false }
+  step_run_uuid: { type: string, length: 64, required: false }
+  operation_key: { type: string, length: 96, required: true, allowed: "denoise-audio|normalize-loudness|remove-cough-and-breath-noise|trim-silence|filter-repeated-content|check-duplicate-content|refine-subtitle-cues|select-cover-frame" }
+  operation_order: { type: int64, required: true }
+  execution_stage: { type: string, length: 64, required: true, allowed: "audio-foundation|speech-cleanup|content-cleanup|publishing-assets" }
+  dependency_operation_keys_json: { type: json, required: true, default: "[]" }
+  blocked_by_operation_keys_json: { type: json, required: true, default: "[]" }
+  blocking_reason: { type: string, length: 64, required: false, allowed: "waiting-for-dependencies|timeline-not-ready|clip-not-selected" }
+  status: { type: enum_int32, required: true, allowed: "10|20|30|40|50|60|70" }
+  status_key: { type: string, length: 32, required: true, allowed: "blocked|pending|running|succeeded|skipped|failed|invalidated" }
+  enabled: { type: bool, required: true, default: true }
+  attempt_no: { type: int64, required: true, default: 0 }
+  max_attempts: { type: int64, required: true, default: 3 }
+  started_at: { type: instant, required: false }
+  completed_at: { type: instant, required: false }
+  duration_ms: { type: int64, required: false }
+  worker_id: { type: string, length: 128, required: false }
+  clip_boundary_version: { type: int64, required: true, default: 1 }
+  source_start_ms: { type: int64, required: true }
+  source_end_ms: { type: int64, required: true }
+  source_duration_ms: { type: int64, required: true }
+  input_json: { type: json, required: true, default: "{}" }
+  output_json: { type: json, required: true, default: "{}" }
+  evidence_artifact_uuid: { type: string, length: 64, required: false }
+  error_code: { type: string, length: 128, required: false }
+  error_message: { type: string, length: 1024, required: false }
+  invalidated_by_event_uuid: { type: string, length: 64, required: false }
+  invalidated_at: { type: instant, required: false }
+  metadata_json: { type: json, required: true, default: "{}" }
+  created_at: { type: instant, required: true }
+  updated_at: { type: instant, required: true }
+  version: { type: int64, required: true, default: 0 }
+indexes:
+  - name: uk_studio_clip_processing_operation_uuid
+    unique: true
+    columns: [uuid]
+  - name: idx_studio_clip_processing_operation_clip_status
+    columns: [tenant_id, organization_id, clip_uuid, status, operation_order, id]
+  - name: idx_studio_clip_processing_operation_task_key
+    columns: [tenant_id, organization_id, task_uuid, operation_key, status, updated_at, id]
+  - name: idx_studio_clip_processing_operation_clip_range
+    columns: [tenant_id, organization_id, clip_uuid, clip_boundary_version, source_start_ms, source_end_ms, operation_order, id]
+  - name: idx_studio_clip_processing_operation_invalidated_event
+    columns: [tenant_id, organization_id, invalidated_by_event_uuid, clip_uuid, operation_order, id]
+
+table_name: studio_clip_event
+table_profile: event_log
+owner_team: sdkwork-video-cut-host
+compliance_level: L2
+contract_version: 1.1.0
+system_of_record: true
+write_owner: sdkwork-video-cut-host
+columns:
+  id: { type: int64, required: true, primary_key: true }
+  uuid: { type: string, length: 64, required: true, unique: true }
+  tenant_id: { type: int64, required: true, default: 0 }
+  organization_id: { type: int64, required: true, default: 0 }
+  timeline_uuid: { type: string, length: 64, required: true }
+  clip_uuid: { type: string, length: 64, required: false }
+  task_uuid: { type: string, length: 64, required: true }
+  event_type: { type: string, length: 96, required: true }
+  payload_json: { type: json, required: true, default: "{}" }
+  invalidated_step_keys_json: { type: json, required: true, default: "[]" }
+  invalidated_operation_keys_json: { type: json, required: true, default: "[]" }
+  created_by: { type: string, length: 64, required: true }
+  created_at: { type: instant, required: true }
+  updated_at: { type: instant, required: true }
+  version: { type: int64, required: true, default: 0 }
+indexes:
+  - name: uk_studio_clip_event_uuid
+    unique: true
+    columns: [uuid]
+  - name: idx_studio_clip_event_timeline_created
+    columns: [tenant_id, organization_id, timeline_uuid, created_at, id]

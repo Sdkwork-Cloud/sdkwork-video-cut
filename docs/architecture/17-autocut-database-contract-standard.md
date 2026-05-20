@@ -214,6 +214,67 @@ SQLite directly. The `nativeWorkerLeaseReady` capability means this lease table,
 runtime helper, heartbeat, release, and snapshot contract are present; it does
 not by itself make `ffmpegExecutionReady` true.
 
+## Unified Clip Workflow Contract
+
+Every intelligent slicing engine MUST converge on a Clip-backed timeline before
+rendering. Engine-specific analysis may differ, but the durable workflow shape is
+`prepare-source`, `probe-media`, engine analysis, `generate-clips`,
+`timeline-preview-edit`, `refine-clips`, `process-clips`, `render-clips`,
+`verify-clips`, and `persist-results`.
+
+Speech and talking-head slicing MUST NOT treat transcript normalization as the
+canonical segmentation boundary. The engine first stores STT evidence in
+`media_text_track` and `media_text_segment`, builds content-understanding units
+in `media_content_unit`, then creates editable `studio_clip` rows through
+`generate-clips`. Those clips are the visible timeline objects: each clip has
+source start and end bounds, source evidence references, selected status,
+processing plan, quality signals, risks, and preview range.
+
+The workbench edits the `studio_timeline` and `studio_clip` state directly.
+Left/right trim operations MUST append `studio_clip_event` rows with downstream
+step invalidation for `refine-clips`, `process-clips`, `render-clips`,
+`verify-clips`, and `persist-results`. Per-clip processing such as denoise,
+loudness normalization, silence trimming, repeat filtering, duplicate-content
+checks, subtitle cue refinement, and cover-frame selection runs after the human
+or engine has produced the final clip boundaries. `ops_workflow_run` owns the
+workflow attempt, `ops_step_run` records each planned engine/shared workflow
+step, and `ops_step_item_run` tracks per-clip execution so clip-level processing
+can run in parallel without losing auditability. The ordered processing plan is
+materialized in `studio_clip.processing_plan_json` for the editor snapshot and in
+`studio_clip_processing_operation` rows for operation-level status, evidence,
+retry, and invalidation tracking. Boundary edits invalidate the downstream
+workflow steps and every pending operation row for that clip. `studio_clip_event`
+stores those invalidated step keys and operation keys in explicit JSON columns in
+addition to the event payload so audit queries do not need to parse every payload
+shape. Every clip boundary edit increments `studio_clip.boundary_version`, and
+each operation row stores the `clip_boundary_version` it was created from. That
+version is part of operation identity, so a user can drag a clip away from a
+source range and later return to the same range without colliding with older
+invalidated operation rows. Operation rows enforce the canonical `process-clips`
+operation sequence:
+`denoise-audio=1`, `normalize-loudness=2`, `remove-cough-and-breath-noise=3`,
+`trim-silence=4`, `filter-repeated-content=5`, `check-duplicate-content=6`,
+`refine-subtitle-cues=7`, and `select-cover-frame=8`. They store both an indexed
+numeric `status` and a textual `status_key`; the canonical mapping is
+`blocked=10`, `pending=20`, `running=30`, `succeeded=40`, `skipped=50`,
+`failed=60`, and `invalidated=70`. Retry and execution lifecycle are explicit:
+`attempt_no`, `max_attempts`, `started_at`, `completed_at`, `duration_ms`, and
+`worker_id` are first-class columns. `blocked` and `pending` operations MUST NOT
+claim a started attempt or execution timestamp. `running` operations MUST have an
+attempt and `started_at`. Terminal operations, including `succeeded`, `skipped`,
+`failed`, and `invalidated`, MUST have `completed_at`; skipped and invalidated
+rows use `duration_ms=0` when no worker execution occurred. The operation source
+range is stored in explicit `source_start_ms`, `source_end_ms`, and
+`source_duration_ms` columns because operation identity, invalidation, and range
+queries must not depend on parsing `input_json`. When a WYSIWYG boundary edit
+changes an approved clip, existing per-clip operation rows are updated in place
+to `invalidated`, disabled for execution, and linked back through
+`invalidated_by_event_uuid` plus `invalidated_at`; regenerated rows for the new
+boundary version and source range become the next executable pending operations.
+`ready_for_review` timelines keep operations blocked, `ready_for_render` unlocks
+selected clips for pending parallel work, and excluded or duplicate clips stay
+skipped with terminal lifecycle audit.
+
 This baseline is intentionally still a host database contract, not proof that
 FFmpeg execution is production-ready. `ffmpegExecutionReady` MUST remain false
 until real file sandboxing, durable task execution, stage events, failure

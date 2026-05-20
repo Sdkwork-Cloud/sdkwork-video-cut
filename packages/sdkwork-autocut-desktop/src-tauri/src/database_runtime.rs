@@ -12,8 +12,8 @@ pub const AUTOCUT_SQLITE_BASELINE_SQL: &str =
     include_str!("../database/schema/sqlite/001_baseline.sql");
 
 const AUTOCUT_SQLITE_FILE_NAME: &str = "sdkwork-autocut.sqlite3";
-const REQUIRED_IDENTITY_COLUMNS: &[&str] = &["id", "uuid", "created_at", "updated_at", "version"];
 
+const REQUIRED_IDENTITY_COLUMNS: &[&str] = &["id", "uuid", "created_at", "updated_at", "version"];
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoCutDatabaseHealth {
@@ -152,9 +152,16 @@ pub fn verify_autocut_database_schema(
             continue;
         }
 
+        for column in table.columns {
+            if !sqlite_column_exists(connection, table.name, column.name)? {
+                diagnostics.push(format!("missing column {}.{}", table.name, column.name));
+            }
+        }
+
+        // Verify every table carries the standard identity columns regardless of its contract definition
         for column_name in REQUIRED_IDENTITY_COLUMNS {
             if !sqlite_column_exists(connection, table.name, column_name)? {
-                diagnostics.push(format!("missing column {}.{}", table.name, column_name));
+                diagnostics.push(format!("missing required identity column {}.{}", table.name, column_name));
             }
         }
 
@@ -310,10 +317,21 @@ mod tests {
         for table_name in [
             "media_asset",
             "media_artifact",
+            "media_text_track",
+            "media_text_segment",
+            "media_content_unit",
             "ops_task",
             "ops_task_event",
             "ops_stage_run",
             "ops_worker_lease",
+            "ops_workflow_run",
+            "ops_step_run",
+            "ops_step_item_run",
+            "studio_timeline",
+            "studio_clip",
+            "studio_clip_source_ref",
+            "studio_clip_processing_operation",
+            "studio_clip_event",
             "ops_schema_migration",
         ] {
             assert!(
@@ -345,6 +363,850 @@ mod tests {
                 "missing ops_worker_lease.{column_name}"
             );
         }
+        for column_name in [
+            "boundary_version",
+        ] {
+            assert!(
+                column_exists(&connection, "studio_clip", column_name),
+                "missing studio_clip.{column_name}"
+            );
+        }
+        for column_name in [
+            "status_key",
+            "execution_stage",
+            "dependency_operation_keys_json",
+            "blocked_by_operation_keys_json",
+            "blocking_reason",
+            "attempt_no",
+            "max_attempts",
+            "started_at",
+            "completed_at",
+            "duration_ms",
+            "worker_id",
+            "clip_boundary_version",
+            "source_start_ms",
+            "source_end_ms",
+            "source_duration_ms",
+            "invalidated_by_event_uuid",
+            "invalidated_at",
+        ] {
+            assert!(
+                column_exists(
+                    &connection,
+                    "studio_clip_processing_operation",
+                    column_name
+                ),
+                "missing studio_clip_processing_operation.{column_name}"
+            );
+        }
+        for column_name in [
+            "invalidated_step_keys_json",
+            "invalidated_operation_keys_json",
+        ] {
+            assert!(
+                column_exists(&connection, "studio_clip_event", column_name),
+                "missing studio_clip_event.{column_name}"
+            );
+        }
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO studio_clip (
+                    id,
+                    uuid,
+                    timeline_uuid,
+                    task_uuid,
+                    engine_id,
+                    clip_type,
+                    clip_order,
+                    status,
+                    start_ms,
+                    end_ms,
+                    duration_ms,
+                    boundary_version,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    1,
+                    'test-clip-invalid-boundary-version',
+                    'timeline-1',
+                    'task-1',
+                    'transcript-semantic-v2',
+                    'speech',
+                    1,
+                    20,
+                    1000,
+                    2000,
+                    1000,
+                    0,
+                    datetime('now'),
+                    datetime('now')
+                )
+                "#,
+                [],
+            )
+            .expect_err("clip boundary versions below one should be rejected");
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO studio_clip_processing_operation (
+                    id,
+                    uuid,
+                    timeline_uuid,
+                    clip_uuid,
+                    task_uuid,
+                    operation_key,
+                    operation_order,
+                    execution_stage,
+                    dependency_operation_keys_json,
+                    status,
+                    status_key,
+                    clip_boundary_version,
+                    source_start_ms,
+                    source_end_ms,
+                    source_duration_ms,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    1,
+                    'test-operation-invalid-status-key',
+                    'timeline-1',
+                    'clip-1',
+                    'task-1',
+                    'denoise-audio',
+                    1,
+                    'audio-foundation',
+                    '[]',
+                    20,
+                    'invalidated',
+                    1,
+                    1000,
+                    2000,
+                    1000,
+                    datetime('now'),
+                    datetime('now')
+                )
+                "#,
+                [],
+            )
+            .expect_err("mismatched operation status and status_key should be rejected");
+        connection
+            .execute(
+                r#"
+                INSERT INTO studio_clip_processing_operation (
+                    id,
+                    uuid,
+                    timeline_uuid,
+                    clip_uuid,
+                    task_uuid,
+                    operation_key,
+                    operation_order,
+                    execution_stage,
+                    dependency_operation_keys_json,
+                    status,
+                    status_key,
+                    clip_boundary_version,
+                    source_start_ms,
+                    source_end_ms,
+                    source_duration_ms,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    2,
+                    'test-operation-invalid-source-range',
+                    'timeline-1',
+                    'clip-1',
+                    'task-1',
+                    'denoise-audio',
+                    1,
+                    'audio-foundation',
+                    '[]',
+                    20,
+                    'pending',
+                    1,
+                    2000,
+                    1000,
+                    1000,
+                    datetime('now'),
+                    datetime('now')
+                )
+                "#,
+                [],
+            )
+            .expect_err("invalid operation source ranges should be rejected");
+        connection
+            .execute(
+                r#"
+                INSERT INTO studio_clip_processing_operation (
+                    id,
+                    uuid,
+                    timeline_uuid,
+                    clip_uuid,
+                    task_uuid,
+                    operation_key,
+                    operation_order,
+                    execution_stage,
+                    dependency_operation_keys_json,
+                    status,
+                    status_key,
+                    clip_boundary_version,
+                    source_start_ms,
+                    source_end_ms,
+                    source_duration_ms,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    3,
+                    'test-operation-invalid-key',
+                    'timeline-1',
+                    'clip-1',
+                    'task-1',
+                    'custom-operation',
+                    1,
+                    'audio-foundation',
+                    '[]',
+                    20,
+                    'pending',
+                    1,
+                    1000,
+                    2000,
+                    1000,
+                    datetime('now'),
+                    datetime('now')
+                )
+                "#,
+                [],
+            )
+            .expect_err("unknown processing operation keys should be rejected");
+        connection
+            .execute(
+                r#"
+                INSERT INTO studio_clip_processing_operation (
+                    id,
+                    uuid,
+                    timeline_uuid,
+                    clip_uuid,
+                    task_uuid,
+                    operation_key,
+                    operation_order,
+                    execution_stage,
+                    dependency_operation_keys_json,
+                    status,
+                    status_key,
+                    clip_boundary_version,
+                    source_start_ms,
+                    source_end_ms,
+                    source_duration_ms,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    4,
+                    'test-operation-invalid-order',
+                    'timeline-1',
+                    'clip-1',
+                    'task-1',
+                    'select-cover-frame',
+                    1,
+                    'publishing-assets',
+                    '["check-duplicate-content"]',
+                    20,
+                    'pending',
+                    1,
+                    1000,
+                    2000,
+                    1000,
+                    datetime('now'),
+                    datetime('now')
+                )
+                "#,
+                [],
+            )
+            .expect_err("mismatched processing operation key and order should be rejected");
+        connection
+            .execute(
+                r#"
+                INSERT INTO studio_clip_processing_operation (
+                    id,
+                    uuid,
+                    timeline_uuid,
+                    clip_uuid,
+                    task_uuid,
+                    operation_key,
+                    operation_order,
+                    execution_stage,
+                    dependency_operation_keys_json,
+                    status,
+                    status_key,
+                    clip_boundary_version,
+                    source_start_ms,
+                    source_end_ms,
+                    source_duration_ms,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    5,
+                    'test-operation-invalid-boundary-version',
+                    'timeline-1',
+                    'clip-1',
+                    'task-1',
+                    'denoise-audio',
+                    1,
+                    'audio-foundation',
+                    '[]',
+                    20,
+                    'pending',
+                    0,
+                    1000,
+                    2000,
+                    1000,
+                    datetime('now'),
+                    datetime('now')
+                )
+                "#,
+                [],
+            )
+            .expect_err("operation clip boundary versions below one should be rejected");
+        connection
+            .execute(
+                r#"
+                INSERT INTO studio_clip_processing_operation (
+                    id,
+                    uuid,
+                    timeline_uuid,
+                    clip_uuid,
+                    task_uuid,
+                    operation_key,
+                    operation_order,
+                    execution_stage,
+                    dependency_operation_keys_json,
+                    status,
+                    status_key,
+                    attempt_no,
+                    max_attempts,
+                    clip_boundary_version,
+                    source_start_ms,
+                    source_end_ms,
+                    source_duration_ms,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    6,
+                    'test-operation-invalid-attempt-count',
+                    'timeline-1',
+                    'clip-1',
+                    'task-1',
+                    'denoise-audio',
+                    1,
+                    'audio-foundation',
+                    '[]',
+                    20,
+                    'pending',
+                    4,
+                    3,
+                    1,
+                    1000,
+                    2000,
+                    1000,
+                    datetime('now'),
+                    datetime('now')
+                )
+                "#,
+                [],
+            )
+            .expect_err("operation attempts beyond max attempts should be rejected");
+        connection
+            .execute(
+                r#"
+                INSERT INTO studio_clip_processing_operation (
+                    id,
+                    uuid,
+                    timeline_uuid,
+                    clip_uuid,
+                    task_uuid,
+                    operation_key,
+                    operation_order,
+                    execution_stage,
+                    dependency_operation_keys_json,
+                    status,
+                    status_key,
+                    attempt_no,
+                    max_attempts,
+                    started_at,
+                    clip_boundary_version,
+                    source_start_ms,
+                    source_end_ms,
+                    source_duration_ms,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    7,
+                    'test-operation-pending-with-started-at',
+                    'timeline-1',
+                    'clip-1',
+                    'task-1',
+                    'denoise-audio',
+                    1,
+                    'audio-foundation',
+                    '[]',
+                    20,
+                    'pending',
+                    1,
+                    3,
+                    datetime('now'),
+                    1,
+                    1000,
+                    2000,
+                    1000,
+                    datetime('now'),
+                    datetime('now')
+                )
+                "#,
+                [],
+            )
+            .expect_err("pending operation lifecycle should not claim a started attempt");
+        connection
+            .execute(
+                r#"
+                INSERT INTO studio_clip_processing_operation (
+                    id,
+                    uuid,
+                    timeline_uuid,
+                    clip_uuid,
+                    task_uuid,
+                    operation_key,
+                    operation_order,
+                    execution_stage,
+                    dependency_operation_keys_json,
+                    status,
+                    status_key,
+                    attempt_no,
+                    max_attempts,
+                    clip_boundary_version,
+                    source_start_ms,
+                    source_end_ms,
+                    source_duration_ms,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    8,
+                    'test-operation-running-without-started-at',
+                    'timeline-1',
+                    'clip-1',
+                    'task-1',
+                    'denoise-audio',
+                    1,
+                    'audio-foundation',
+                    '[]',
+                    30,
+                    'running',
+                    1,
+                    3,
+                    1,
+                    1000,
+                    2000,
+                    1000,
+                    datetime('now'),
+                    datetime('now')
+                )
+                "#,
+                [],
+            )
+            .expect_err("running operation lifecycle should require started_at");
+        connection
+            .execute(
+                r#"
+                INSERT INTO studio_clip_processing_operation (
+                    id,
+                    uuid,
+                    timeline_uuid,
+                    clip_uuid,
+                    task_uuid,
+                    operation_key,
+                    operation_order,
+                    execution_stage,
+                    dependency_operation_keys_json,
+                    status,
+                    status_key,
+                    attempt_no,
+                    max_attempts,
+                    started_at,
+                    clip_boundary_version,
+                    source_start_ms,
+                    source_end_ms,
+                    source_duration_ms,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    9,
+                    'test-operation-succeeded-without-completed-at',
+                    'timeline-1',
+                    'clip-1',
+                    'task-1',
+                    'denoise-audio',
+                    1,
+                    'audio-foundation',
+                    '[]',
+                    40,
+                    'succeeded',
+                    1,
+                    3,
+                    datetime('now'),
+                    1,
+                    1000,
+                    2000,
+                    1000,
+                    datetime('now'),
+                    datetime('now')
+                )
+                "#,
+                [],
+            )
+            .expect_err("terminal operation lifecycle should require completed_at");
+        connection
+            .execute(
+                r#"
+                INSERT INTO studio_clip_processing_operation (
+                    id,
+                    uuid,
+                    timeline_uuid,
+                    clip_uuid,
+                    task_uuid,
+                    operation_key,
+                    operation_order,
+                    execution_stage,
+                    dependency_operation_keys_json,
+                    status,
+                    status_key,
+                    attempt_no,
+                    max_attempts,
+                    started_at,
+                    completed_at,
+                    duration_ms,
+                    clip_boundary_version,
+                    source_start_ms,
+                    source_end_ms,
+                    source_duration_ms,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    10,
+                    'test-operation-negative-duration',
+                    'timeline-1',
+                    'clip-1',
+                    'task-1',
+                    'denoise-audio',
+                    1,
+                    'audio-foundation',
+                    '[]',
+                    40,
+                    'succeeded',
+                    1,
+                    3,
+                    datetime('now'),
+                    datetime('now'),
+                    -1,
+                    1,
+                    1000,
+                    2000,
+                    1000,
+                    datetime('now'),
+                    datetime('now')
+                )
+                "#,
+                [],
+            )
+            .expect_err("operation lifecycle duration should not be negative");
+        connection
+            .execute(
+                r#"
+                INSERT INTO studio_clip_processing_operation (
+                    id,
+                    uuid,
+                    timeline_uuid,
+                    clip_uuid,
+                    task_uuid,
+                    operation_key,
+                    operation_order,
+                    execution_stage,
+                    dependency_operation_keys_json,
+                    status,
+                    status_key,
+                    clip_boundary_version,
+                    source_start_ms,
+                    source_end_ms,
+                    source_duration_ms,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    11,
+                    'test-operation-invalid-execution-stage',
+                    'timeline-1',
+                    'clip-1',
+                    'task-1',
+                    'denoise-audio',
+                    1,
+                    '',
+                    '[]',
+                    20,
+                    'pending',
+                    1,
+                    1000,
+                    2000,
+                    1000,
+                    datetime('now'),
+                    datetime('now')
+                )
+                "#,
+                [],
+            )
+            .expect_err("empty operation execution stage should be rejected");
+        connection
+            .execute(
+                r#"
+                INSERT INTO studio_clip_processing_operation (
+                    id,
+                    uuid,
+                    timeline_uuid,
+                    clip_uuid,
+                    task_uuid,
+                    operation_key,
+                    operation_order,
+                    execution_stage,
+                    dependency_operation_keys_json,
+                    status,
+                    status_key,
+                    clip_boundary_version,
+                    source_start_ms,
+                    source_end_ms,
+                    source_duration_ms,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    12,
+                    'test-operation-mismatched-stage',
+                    'timeline-1',
+                    'clip-1',
+                    'task-1',
+                    'select-cover-frame',
+                    8,
+                    'audio-foundation',
+                    '["check-duplicate-content"]',
+                    20,
+                    'pending',
+                    1,
+                    1000,
+                    2000,
+                    1000,
+                    datetime('now'),
+                    datetime('now')
+                )
+                "#,
+                [],
+            )
+            .expect_err("operation key and execution stage must match the canonical DAG");
+        connection
+            .execute(
+                r#"
+                INSERT INTO studio_clip_processing_operation (
+                    id,
+                    uuid,
+                    timeline_uuid,
+                    clip_uuid,
+                    task_uuid,
+                    operation_key,
+                    operation_order,
+                    execution_stage,
+                    dependency_operation_keys_json,
+                    status,
+                    status_key,
+                    clip_boundary_version,
+                    source_start_ms,
+                    source_end_ms,
+                    source_duration_ms,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    13,
+                    'test-operation-mismatched-dependencies',
+                    'timeline-1',
+                    'clip-1',
+                    'task-1',
+                    'normalize-loudness',
+                    2,
+                    'audio-foundation',
+                    '[]',
+                    20,
+                    'pending',
+                    1,
+                    1000,
+                    2000,
+                    1000,
+                    datetime('now'),
+                    datetime('now')
+                )
+                "#,
+                [],
+            )
+            .expect_err("operation dependency JSON must match the canonical DAG");
+        connection
+            .execute(
+                r#"
+                INSERT INTO studio_clip_processing_operation (
+                    id,
+                    uuid,
+                    timeline_uuid,
+                    clip_uuid,
+                    task_uuid,
+                    operation_key,
+                    operation_order,
+                    execution_stage,
+                    dependency_operation_keys_json,
+                    blocked_by_operation_keys_json,
+                    status,
+                    status_key,
+                    clip_boundary_version,
+                    source_start_ms,
+                    source_end_ms,
+                    source_duration_ms,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    14,
+                    'test-operation-blocked-without-reason',
+                    'timeline-1',
+                    'clip-1',
+                    'task-1',
+                    'normalize-loudness',
+                    2,
+                    'audio-foundation',
+                    '["denoise-audio"]',
+                    '["denoise-audio"]',
+                    10,
+                    'blocked',
+                    1,
+                    1000,
+                    2000,
+                    1000,
+                    datetime('now'),
+                    datetime('now')
+                )
+                "#,
+                [],
+            )
+            .expect_err("blocked operations must persist an explicit blocking reason");
+        connection
+            .execute(
+                r#"
+                INSERT INTO studio_clip_processing_operation (
+                    id,
+                    uuid,
+                    timeline_uuid,
+                    clip_uuid,
+                    task_uuid,
+                    operation_key,
+                    operation_order,
+                    execution_stage,
+                    dependency_operation_keys_json,
+                    blocked_by_operation_keys_json,
+                    blocking_reason,
+                    status,
+                    status_key,
+                    clip_boundary_version,
+                    source_start_ms,
+                    source_end_ms,
+                    source_duration_ms,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    15,
+                    'test-operation-pending-with-blocked-by',
+                    'timeline-1',
+                    'clip-1',
+                    'task-1',
+                    'normalize-loudness',
+                    2,
+                    'audio-foundation',
+                    '["denoise-audio"]',
+                    '["denoise-audio"]',
+                    'waiting-for-dependencies',
+                    20,
+                    'pending',
+                    1,
+                    1000,
+                    2000,
+                    1000,
+                    datetime('now'),
+                    datetime('now')
+                )
+                "#,
+                [],
+            )
+            .expect_err("pending operations must not persist blocked dependency keys");
+        connection
+            .execute(
+                r#"
+                INSERT INTO studio_clip_processing_operation (
+                    id,
+                    uuid,
+                    timeline_uuid,
+                    clip_uuid,
+                    task_uuid,
+                    operation_key,
+                    operation_order,
+                    execution_stage,
+                    dependency_operation_keys_json,
+                    blocking_reason,
+                    status,
+                    status_key,
+                    clip_boundary_version,
+                    source_start_ms,
+                    source_end_ms,
+                    source_duration_ms,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    16,
+                    'test-operation-pending-with-blocking-reason',
+                    'timeline-1',
+                    'clip-1',
+                    'task-1',
+                    'normalize-loudness',
+                    2,
+                    'audio-foundation',
+                    '["denoise-audio"]',
+                    'waiting-for-dependencies',
+                    20,
+                    'pending',
+                    1,
+                    1000,
+                    2000,
+                    1000,
+                    datetime('now'),
+                    datetime('now')
+                )
+                "#,
+                [],
+            )
+            .expect_err("pending operations must not persist a blocking reason");
 
         let applied_count = connection
             .query_row(

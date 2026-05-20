@@ -1,17 +1,22 @@
 import { analyzeVideoSlicePlan, processVideoSlice, renderVideoSlicePlan, saveVideoSliceReviewDraft } from '../service/slicerService';
-import React, { Suspense, useState, useEffect, useMemo, useRef, useImperativeHandle, forwardRef } from "react";
+import React, { Suspense, useState, useEffect, useMemo, useRef, useImperativeHandle, forwardRef, useCallback } from "react";
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowLeft, Play, Pause, Settings2, Scissors, CheckCircle2, MicOff, Waves, Video, RefreshCcw, XCircle, ChevronRight, Type, Download, AlertTriangle, ExternalLink, Loader2 } from "lucide-react";
 import { Button, useToast, TaskFailureState, VideoDedupWorkbench, useAutoCutCommonLabels, createAutoCutTrustedLocalFile, resolveAutoCutTrustedSourcePath, type AutoCutTrustedFileSourceDescriptor } from "@sdkwork/autocut-commons";
-import { AUTOCUT_DEFAULT_SMART_SLICE_SEGMENTATION_AGENT_ID, AUTOCUT_DEFAULT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESET_ID, AUTOCUT_MODEL_VENDOR_PRESETS, AUTOCUT_SLICE_LLM_MODEL_OPTIONS, AUTOCUT_SMART_SLICE_SEGMENTATION_AGENTS, AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE, AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS, AUTOCUT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESETS, AUTOCUT_TASK_STATUS, AUTOCUT_TASK_TYPE, getAutoCutSmartSliceSegmentationAgentDefinition, type AutoCutLlmRuntimeConfig, type AutoCutLocalSpeechTranscriptionSetupStatus, type AutoCutSliceManualEdit, type AutoCutSliceReviewSegment, type AutoCutSliceReviewSession, type AutoCutSmartSliceSegmentationAgentId, type AutoCutSpeechTranscriptionModelDownloadProgressEvent, type AutoCutSpeechTranscriptionWorkflowPreset, type ModelVendor, type SliceMode, type SliceLLM, type SliceTargetPlatform, type SliceTargetAspectRatio, type SliceVideoObjectFit, type SliceContinuityLevel, type SliceSegmentationDensity, type SliceSubtitleMode, type AppTask, type VideoDedupParams, type VideoDedupReport, type VideoSliceParams } from "@sdkwork/autocut-types";
-import { createAutoCutId, createAutoCutObjectUrl, createAutoCutTimestamp, createDefaultAutoCutVideoDedupParams, formatAutoCutTimeOfDay, getAutoCutNativeHostClient, getAutoCutProcessingTaskErrorTaskId, getAutoCutWorkflowPreferences, getTasks, initializeAutoCutLocalSpeechTranscriptionSetup, inspectAutoCutLocalSpeechTranscriptionSetup, listenAutoCutEvent, reportAutoCutDiagnostic, resolveAutoCutLlmRuntimeConfig, revokeAutoCutObjectUrl, saveAutoCutVideoSlicePreferences, selectAutoCutTrustedLocalVideoFile, sortAutoCutRecordsByCreatedAtDesc, writeAutoCutClipboardText } from "@sdkwork/autocut-services";
+import { AUTOCUT_DEFAULT_SMART_SLICE_SEGMENTATION_AGENT_ID, AUTOCUT_DEFAULT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESET_ID, AUTOCUT_MODEL_VENDOR_PRESETS, AUTOCUT_SLICE_LLM_MODEL_OPTIONS, AUTOCUT_SMART_SLICE_SEGMENTATION_AGENTS, AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_DOWNLOAD_PHASE, AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS, AUTOCUT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESETS, AUTOCUT_TASK_STATUS, AUTOCUT_TASK_TYPE, type AutoCutLlmRuntimeConfig, type AutoCutLocalSpeechTranscriptionSetupStatus, type AutoCutSliceManualEdit, type AutoCutSliceReviewSegment, type AutoCutSliceReviewSession, type AutoCutSmartSliceSegmentationAgentId, type AutoCutSpeechTranscriptionModelDownloadProgressEvent, type AutoCutSpeechTranscriptionWorkflowPreset, type ModelVendor, type SliceMode, type SliceLLM, type SliceTargetPlatform, type SliceTargetAspectRatio, type SliceVideoObjectFit, type SliceContinuityLevel, type SliceSegmentationDensity, type SliceSubtitleMode, type AppTask, type VideoDedupParams, type VideoDedupReport, type VideoSliceParams } from "@sdkwork/autocut-types";
+import { createAutoCutObjectUrl, createAutoCutTimestamp, createDefaultAutoCutVideoDedupParams, formatAutoCutTimeOfDay, getAutoCutNativeHostClient, getAutoCutProcessingTaskErrorTaskId, getAutoCutWorkflowPreferences, getTasks, initializeAutoCutLocalSpeechTranscriptionSetup, inspectAutoCutLocalSpeechTranscriptionSetup, listenAutoCutEvent, reportAutoCutDiagnostic, resolveAutoCutLlmRuntimeConfig, revokeAutoCutObjectUrl, saveAutoCutVideoSlicePreferences, selectAutoCutTrustedLocalVideoFile, sortAutoCutRecordsByCreatedAtDesc, writeAutoCutClipboardText } from "@sdkwork/autocut-services";
+import { correctSliceReviewSegmentOnStudioTimeline, createSliceReviewSessionFromSegments, createStudioClipTimelineSnapshotForReviewSession, createStudioClipTimelineSnapshotForSourcePreview, markSliceReviewSegmentAsDuplicateOnStudioTimeline, mergeSliceReviewSegmentsOnStudioTimeline, restoreSliceReviewSegmentOnStudioTimeline, selectAllSliceReviewSegmentsForRender, setSliceReviewSegmentRenderSelectionOnStudioTimeline, setSliceReviewSegmentsRenderSelectionForRender } from "../service/clipWorkflow";
+import {
+  SmartSliceTimelineWorkbench,
+  useSmartSliceTimelineReviewController,
+  type SmartSliceTimelineReviewCommitOptions,
+} from "../components/smart-slice-timeline";
 import type { WebGLPlayerRef, TextEffectStyle, TextEffectDragPayload } from "../components/WebGLPlayer";
 
 const WebGLPlayer = React.lazy(() => import("../components/WebGLPlayer"));
 const SMART_SLICE_DEDUP_REVIEW_RISK_CODE = 'smart-dedup-review';
-const SMART_SLICE_GPU_STT_RUNTIME_REQUIRED_REASON =
-  'GPU local requires a CUDA, Vulkan, Metal, Core ML, or OpenVINO whisper.cpp runtime in Settings.';
+const SMART_SLICE_DEFAULT_TARGET_PLATFORM: SliceTargetPlatform = 'generic';
 
 function sortSlicerTasksByCreatedAtDesc(tasks: readonly AppTask[]): AppTask[] {
   return sortAutoCutRecordsByCreatedAtDesc([...tasks]);
@@ -34,35 +39,8 @@ function mergeSlicerTaskUpdate(tasks: readonly AppTask[], updatedTask: AppTask):
   return tasks.map((task, index) => (index === taskIndex ? updatedTask : task));
 }
 
-function createSliceReviewSessionFromSegments(
-  baseSession: AutoCutSliceReviewSession,
-  segments: readonly AutoCutSliceReviewSegment[],
-  manualEdits: readonly AutoCutSliceManualEdit[] = [],
-): AutoCutSliceReviewSession {
-  const selectedSegmentIds = segments
-    .filter((segment) => segment.selected && segment.status === 'selected')
-    .map((segment) => segment.id);
-  return {
-    ...baseSession,
-    updatedAt: createAutoCutTimestamp(),
-    segments: segments.map((segment) => ({ ...segment })),
-    manualEdits: [...baseSession.manualEdits, ...manualEdits],
-    selectedSegmentIds,
-  };
-}
-
-function createSliceReviewManualEdit(
-  kind: AutoCutSliceManualEdit['kind'],
-  segmentIds: string[],
-  detail: Omit<Partial<AutoCutSliceManualEdit>, 'id' | 'kind' | 'segmentIds' | 'createdAt'> = {},
-): AutoCutSliceManualEdit {
-  return {
-    id: createAutoCutId('slice-manual-edit'),
-    kind,
-    segmentIds,
-    createdAt: createAutoCutTimestamp(),
-    ...detail,
-  };
+function updateSlicerTask(tasks: readonly AppTask[], taskId: string, update: (task: AppTask) => AppTask): AppTask[] {
+  return tasks.map((task) => task.id === taskId ? update(task) : task);
 }
 
 function shouldHydrateSmartSliceReviewSessionFromTask({
@@ -87,44 +65,6 @@ function shouldHydrateSmartSliceReviewSessionFromTask({
   }
 
   return true;
-}
-
-function filterSliceReviewTranscriptSegmentsForPreview(
-  segment: AutoCutSliceReviewSegment,
-  startMs: number,
-  endMs: number,
-) {
-  return (segment.transcriptSegments ?? [])
-    .filter((transcriptSegment) => transcriptSegment.endMs > startMs && transcriptSegment.startMs < endMs)
-    .map((transcriptSegment) => ({
-      ...transcriptSegment,
-      startMs: Math.max(startMs, transcriptSegment.startMs),
-      endMs: Math.min(endMs, transcriptSegment.endMs),
-    }))
-    .filter((transcriptSegment) => transcriptSegment.endMs > transcriptSegment.startMs);
-}
-
-function createSliceReviewTranscriptTextForPreview(segment: AutoCutSliceReviewSegment) {
-  return segment.transcriptSegments?.map((item) => item.text).filter(Boolean).join(' ') || segment.transcriptText;
-}
-
-function createSliceReviewSpeechRangeForPreview(
-  segment: AutoCutSliceReviewSegment,
-  startMs: number,
-  endMs: number,
-) {
-  const transcriptSegments = filterSliceReviewTranscriptSegmentsForPreview(segment, startMs, endMs);
-  const speechStartMs = transcriptSegments[0]?.startMs ?? segment.speechStartMs;
-  const speechEndMs = transcriptSegments.at(-1)?.endMs ?? segment.speechEndMs;
-  if (speechStartMs === undefined || speechEndMs === undefined) {
-    return {};
-  }
-  const clippedSpeechStartMs = Math.max(startMs, Math.min(endMs, Math.round(speechStartMs)));
-  const clippedSpeechEndMs = Math.max(clippedSpeechStartMs, Math.min(endMs, Math.round(speechEndMs)));
-  return {
-    speechStartMs: clippedSpeechStartMs,
-    speechEndMs: clippedSpeechEndMs,
-  };
 }
 
 function setWebGlTextEffectDragPayload(payload: TextEffectDragPayload | null) {
@@ -252,12 +192,31 @@ interface VisibleLlmModelOption {
 type SmartSliceVisibleSttWorkflowPreset = AutoCutSpeechTranscriptionWorkflowPreset & {
   selectable: boolean;
   uiDisabledReason?: string;
+  uiDetail: string;
   uiLabel: string;
 };
 
 type AutoCutTranslate = ReturnType<typeof useTranslation>['t'];
 type SmartSliceRunMode = 'auto-render' | 'review-before-render';
 type SliceReviewVisibilityFilter = 'all' | 'selected' | 'duplicates' | 'excluded';
+type SmartSliceReviewCorrectionDraft = {
+  title: string;
+  startMs: string;
+  endMs: string;
+  transcriptText: string;
+  speakerRoles: string;
+  manualNotes: string;
+};
+type SmartSliceReviewCorrectionField = {
+  id: keyof SmartSliceReviewCorrectionDraft;
+  control: 'input' | 'textarea';
+  inputType?: 'text' | 'number';
+  value: string;
+  placeholder: string;
+  className: string;
+};
+type SmartSliceAdvancedI18nGroup = 'sceneOptions' | 'sttPresets' | 'segmentationAgents';
+type SmartSliceAdvancedI18nField = 'label' | 'detail' | 'title';
 
 const MODES: SliceMode[] = [
   'general',
@@ -268,21 +227,6 @@ const MODES: SliceMode[] = [
   'performance',
   'film',
 ];
-
-const SMART_CUT_ENGINE_PIPELINE_STEPS = [
-  'Speech-to-text evidence',
-  'Speaker diarization',
-  'Semantic content units',
-  'Candidate ID review',
-  'Post-filter render',
-] as const;
-
-const SMART_CUT_ENGINE_BADGES = [
-  'Speech-first',
-  'speaker-aware',
-  'ID-only LLM',
-  'post-filter',
-] as const;
 
 type SmartCutEngineProductProfileId = 'commerce-live' | 'talking-head' | 'dialogue' | 'meeting' | 'performance' | 'film' | 'general';
 
@@ -465,6 +409,77 @@ function formatSmartCutEngineModeLabel(mode: SliceMode | string) {
   return resolveSmartCutEngineProductProfile(mode).title;
 }
 
+function createSmartSliceAdvancedI18nKey(
+  group: SmartSliceAdvancedI18nGroup,
+  id: string,
+  field: SmartSliceAdvancedI18nField,
+) {
+  return `slicer.settings.advanced.${group}.${id}.${field}`;
+}
+
+function formatSmartSliceAdvancedI18nText(
+  t: AutoCutTranslate,
+  group: SmartSliceAdvancedI18nGroup,
+  id: string,
+  field: SmartSliceAdvancedI18nField,
+  fallback: string,
+  values?: Record<string, string | number>,
+) {
+  const key = createSmartSliceAdvancedI18nKey(group, id, field);
+  const translated = values ? t(key, values) : t(key);
+  return translated === key ? fallback : translated;
+}
+
+function formatSmartSliceSttWorkflowPresetLabel(
+  preset: AutoCutSpeechTranscriptionWorkflowPreset,
+  t: AutoCutTranslate,
+  status?: 'gpuRuntimeRequired' | 'configureVendorApiKey' | 'recommended',
+) {
+  const label = formatSmartSliceAdvancedI18nText(t, 'sttPresets', preset.id, 'label', preset.label);
+  if (status === 'gpuRuntimeRequired') {
+    return t('slicer.settings.advanced.gpuRuntimeRequiredSuffix', { label });
+  }
+  if (status === 'configureVendorApiKey') {
+    return t('slicer.settings.advanced.configureApiKeySuffix', { label });
+  }
+  if (status === 'recommended') {
+    return t('slicer.settings.advanced.recommendedSuffix', { label });
+  }
+  return label;
+}
+
+function createSmartSliceSttWorkflowPresetDisabledReason(
+  preset: AutoCutSpeechTranscriptionWorkflowPreset,
+  t: AutoCutTranslate,
+  reason: 'gpuRuntimeRequired' | 'configureVendorApiKey',
+  gpuDiagnostic?: string,
+) {
+  if (reason === 'gpuRuntimeRequired') {
+    return gpuDiagnostic?.trim() || t('slicer.settings.advanced.gpuRuntimeRequired');
+  }
+  return t('slicer.settings.advanced.configureVendorApiKey', {
+    vendor: preset.modelVendor ?? t('slicer.settings.advanced.matchingVendor'),
+  });
+}
+
+function createSmartSliceSttWorkflowPresetDetail(
+  preset: AutoCutSpeechTranscriptionWorkflowPreset,
+  t: AutoCutTranslate,
+) {
+  if (preset.localWhisper) {
+    return t('slicer.settings.advanced.localExecutionDetail', {
+      profile: preset.executionProfile,
+      strategy: preset.localWhisper.chunkSourceStrategy,
+      parallelism: preset.localWhisper.chunkParallelism,
+      threads: preset.localWhisper.chunkThreadCount,
+    });
+  }
+  return t('slicer.settings.advanced.cloudExecutionDetail', {
+    profile: preset.executionProfile,
+    vendor: preset.modelVendor ?? t('slicer.settings.advanced.apiVendor'),
+  });
+}
+
 function createSmartCutEngineProductExperience({
   mode,
   targetPlatform,
@@ -530,10 +545,6 @@ function createSmartCutEngineProductExperience({
   };
 }
 
-function smartCutRequiresSpeakerDiarization(mode: SliceMode | string) {
-  return /interview|dialogue|meeting|conference|qa|q&a|\u8fde\u7ebf|\u53cc\u4eba|\u591a\u4eba|\u4f1a\u8bae|\u8bbf\u8c08|\u5bf9\u8bdd|\u95ee\u7b54/iu.test(String(mode));
-}
-
 function normalizeSlicerNumberInput(
   rawValue: string,
   currentValue: number,
@@ -546,6 +557,47 @@ function normalizeSlicerNumberInput(
   }
 
   return Math.max(minValue, Math.min(maxValue, Math.round(numericValue)));
+}
+
+function formatSlicerTimelineTime(timeInSecs: number) {
+  if (!timeInSecs || Number.isNaN(timeInSecs)) {
+    return '00:00';
+  }
+  const mins = Math.floor(timeInSecs / 60).toString().padStart(2, '0');
+  const secs = Math.floor(timeInSecs % 60).toString().padStart(2, '0');
+  return `${mins}:${secs}`;
+}
+
+function isSliceLlmModelId(value: string): value is SliceLLM {
+  return AUTOCUT_SLICE_LLM_MODEL_OPTIONS.some((model) => model.id === value);
+}
+
+function resolveSmartSliceLlmModelForVendor(vendor: ModelVendor, value: string): SliceLLM {
+  if (vendor === 'custom') {
+    return value;
+  }
+
+  const providerModel = AUTOCUT_SLICE_LLM_MODEL_OPTIONS.find((model) => model.vendor === vendor && model.id === value);
+  if (providerModel && isSliceLlmModelId(providerModel.id)) {
+    return providerModel.id;
+  }
+
+  const defaultModel = AUTOCUT_MODEL_VENDOR_PRESETS[vendor].defaultModel;
+  const defaultProviderModel = AUTOCUT_SLICE_LLM_MODEL_OPTIONS.find(
+    (model) => model.vendor === vendor && model.id === defaultModel,
+  );
+  if (defaultProviderModel && isSliceLlmModelId(defaultProviderModel.id)) {
+    return defaultProviderModel.id;
+  }
+
+  const fallbackModel = AUTOCUT_SLICE_LLM_MODEL_OPTIONS.find(
+    (model) => model.vendor === 'deepseek' && model.id === AUTOCUT_MODEL_VENDOR_PRESETS.deepseek.defaultModel,
+  );
+  if (fallbackModel && isSliceLlmModelId(fallbackModel.id)) {
+    return fallbackModel.id;
+  }
+
+  return 'deepseek-v4-flash';
 }
 
 function getSmartSliceErrorMessage(error: unknown) {
@@ -788,7 +840,6 @@ export function SlicerPage() {
   const [runMode, setRunMode] = useState<SmartSliceRunMode>('review-before-render');
   const [activeReviewTaskId, setActiveReviewTaskId] = useState<string>(initialReviewTaskId);
   const [reviewSessionDraft, setReviewSessionDraft] = useState<AutoCutSliceReviewSession | null>(null);
-  const [selectedReviewSegmentIds, setSelectedReviewSegmentIds] = useState<string[]>([]);
   const [reviewVisibilityFilter, setReviewVisibilityFilter] = useState<SliceReviewVisibilityFilter>('all');
   const [activeReviewSegmentId, setActiveReviewSegmentId] = useState<string>('');
   const [reviewManualEdits, setReviewManualEdits] = useState<AutoCutSliceManualEdit[]>([]);
@@ -796,7 +847,9 @@ export function SlicerPage() {
   const [isSavingReviewDraft, setIsSavingReviewDraft] = useState(false);
   const [reviewDraftSavedAt, setReviewDraftSavedAt] = useState<string>('');
   const [reviewDraftSaveError, setReviewDraftSaveError] = useState<string>('');
-  const [reviewCorrectionDraft, setReviewCorrectionDraft] = useState({
+  const [showReviewCorrectionEditor, setShowReviewCorrectionEditor] = useState(false);
+  const [expandedReviewSegmentActionId, setExpandedReviewSegmentActionId] = useState<string>('');
+  const [reviewCorrectionDraft, setReviewCorrectionDraft] = useState<SmartSliceReviewCorrectionDraft>({
     title: '',
     startMs: '',
     endMs: '',
@@ -812,6 +865,10 @@ export function SlicerPage() {
   const [isInitializingSpeechSetup, setIsInitializingSpeechSetup] = useState(false);
   const [speechModelDownloadProgress, setSpeechModelDownloadProgress] = useState<AutoCutSpeechTranscriptionModelDownloadProgressEvent | null>(null);
   const [enableOverlayEditor, setEnableOverlayEditor] = useState(false);
+  const [currentTime, setCurrentTime] = useState<number>(0);
+  const [duration, setDuration] = useState<number>(0);
+  const [videoProgress, setVideoProgress] = useState<number>(0);
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const webGlPlayerRef = playerRef as React.MutableRefObject<WebGLPlayerRef | null>;
   const shouldUseWebGlOverlayEditor = enableOverlayEditor && videoSrc;
   const speechModelDownloadPhase = speechModelDownloadProgress?.phase;
@@ -836,7 +893,6 @@ export function SlicerPage() {
   const speechSetupBusy = isInspectingSpeechSetup || isInitializingSpeechSetup;
 
   // Slicing advanced parameters
-  const [targetPlatform, setTargetPlatform] = useState<SliceTargetPlatform>('douyin');
   const [idealDuration, setIdealDuration] = useState<number>(45);
   const [continuityLevel, setContinuityLevel] = useState<SliceContinuityLevel>('standard');
   const [segmentationDensity, setSegmentationDensity] = useState<SliceSegmentationDensity>('default');
@@ -854,14 +910,11 @@ export function SlicerPage() {
   const [coughFilter, setCoughFilter] = useState<boolean>(true);
   const [repeatFilter, setRepeatFilter] = useState<boolean>(false);
   const [enableSmartDedup, setEnableSmartDedup] = useState<boolean>(false);
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [videoDedupParams, setVideoDedupParams] = useState<VideoDedupParams>(() =>
     createDefaultAutoCutVideoDedupParams({ mode: 'slice-result-dedup' }),
   );
   const [latestVideoDedupReport, setLatestVideoDedupReport] = useState<VideoDedupReport | null>(null);
-  const selectedSegmentationAgent = useMemo(
-    () => getAutoCutSmartSliceSegmentationAgentDefinition(segmentationAgentId),
-    [segmentationAgentId],
-  );
   const speechGpuDiagnosticsText = speechSetupStatus?.gpu.diagnostics.join('\n') ?? '';
   const availableSttWorkflowPresets = useMemo<SmartSliceVisibleSttWorkflowPreset[]>(
     () => AUTOCUT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESETS.filter((preset) => preset.available).map((preset) => {
@@ -871,25 +924,32 @@ export function SlicerPage() {
         preset.executionProfile === 'cloud' &&
         (!activeLlmRuntimeConfig?.apiKeyConfigured ||
           (preset.modelVendor !== undefined && activeLlmRuntimeConfig.modelVendor !== preset.modelVendor));
-      const uiDisabledReason = gpuPresetWithoutRuntime
-        ? speechSetupStatus?.gpu.diagnostics[0] ?? SMART_SLICE_GPU_STT_RUNTIME_REQUIRED_REASON
+      const sttWorkflowState = gpuPresetWithoutRuntime
+        ? 'gpuRuntimeRequired'
         : apiPresetWithoutCredentials
-          ? `Configure the ${preset.modelVendor ?? 'matching'} ModelVendor API key in Settings before using Smart cloud STT.`
+          ? 'configureVendorApiKey'
+          : 'recommended' in preset && preset.recommended === true
+            ? 'recommended'
+            : undefined;
+      const uiDisabledReason = gpuPresetWithoutRuntime
+        ? createSmartSliceSttWorkflowPresetDisabledReason(
+          preset,
+          t,
+          'gpuRuntimeRequired',
+          speechSetupStatus?.gpu.diagnostics[0],
+        )
+        : apiPresetWithoutCredentials
+          ? createSmartSliceSttWorkflowPresetDisabledReason(preset, t, 'configureVendorApiKey')
           : undefined;
       return {
         ...preset,
         selectable: !gpuPresetWithoutRuntime && !apiPresetWithoutCredentials,
         ...(uiDisabledReason ? { uiDisabledReason } : {}),
-        uiLabel: gpuPresetWithoutRuntime
-          ? `${preset.label} (requires GPU runtime)`
-          : apiPresetWithoutCredentials
-            ? `${preset.label} (configure API key)`
-            : 'recommended' in preset && preset.recommended === true
-              ? `${preset.label} (recommended)`
-              : preset.label,
+        uiDetail: createSmartSliceSttWorkflowPresetDetail(preset, t),
+        uiLabel: formatSmartSliceSttWorkflowPresetLabel(preset, t, sttWorkflowState),
       };
     }),
-    [activeLlmRuntimeConfig?.apiKeyConfigured, activeLlmRuntimeConfig?.modelVendor, speechGpuDiagnosticsText, speechSetupStatus?.gpu.ready],
+    [activeLlmRuntimeConfig?.apiKeyConfigured, activeLlmRuntimeConfig?.modelVendor, speechGpuDiagnosticsText, speechSetupStatus?.gpu.ready, t],
   );
   const selectedSttWorkflowPreset = useMemo(
     () =>
@@ -909,7 +969,7 @@ export function SlicerPage() {
   }, [effectiveSttPresetId, selectedSttWorkflowPresetDisabledReason, speechSetupStatus, sttPresetId]);
   const smartCutExperience = createSmartCutEngineProductExperience({
     mode: selectedMode,
-    targetPlatform,
+    targetPlatform: SMART_SLICE_DEFAULT_TARGET_PLATFORM,
     aspectRatio,
     idealDuration,
     enableSubtitles,
@@ -920,10 +980,181 @@ export function SlicerPage() {
     coughFilter,
     repeatFilter,
   });
-  const requiresSpeakerDiarization =
-    smartCutExperience.requiresSpeakerDiarization || smartCutRequiresSpeakerDiarization(selectedMode);
   const hasVideoSource = Boolean(file || fileId || sourceUrl || videoSrc);
   const strategyExecutionSupport = smartCutExperience.profile.executionSupport;
+  const smartSliceSpeechReady =
+    speechModelReadyForDisplay ||
+    speechSetupStatus?.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready;
+  const smartSliceReadyForRun = hasVideoSource && strategyExecutionSupport.ready;
+  const smartSliceSettingsReadinessItems = [
+    {
+      id: 'source',
+      label: t('slicer.settings.status.source'),
+      value: hasVideoSource ? t('slicer.settings.status.sourceReady') : t('slicer.settings.status.sourceMissing'),
+      ready: hasVideoSource,
+    },
+    {
+      id: 'stt',
+      label: t('slicer.settings.status.stt'),
+      value: smartSliceSpeechReady ? t('slicer.settings.status.sttReady') : t('slicer.settings.status.sttCheck'),
+      ready: smartSliceSpeechReady,
+    },
+    {
+      id: 'strategy',
+      label: t('slicer.settings.status.strategy'),
+      value: strategyExecutionSupport.ready ? t('slicer.settings.status.strategyReady') : t('slicer.settings.status.strategyBlocked'),
+      ready: strategyExecutionSupport.ready,
+    },
+  ];
+  const smartSliceRunModeOptions = [
+    {
+      id: 'review-before-render',
+      label: t('slicer.settings.runMode.review.label'),
+      detail: t('slicer.settings.runMode.review.detail'),
+    },
+    {
+      id: 'auto-render',
+      label: t('slicer.settings.runMode.auto.label'),
+      detail: t('slicer.settings.runMode.auto.detail'),
+    },
+  ] satisfies Array<{ id: SmartSliceRunMode; label: string; detail: string }>;
+  const smartSliceDurationControls = [
+    {
+      id: 'min',
+      label: t('slicer.settings.basic.minDuration'),
+      value: minDuration,
+      min: 5,
+      max: Math.min(180, maxDuration),
+      update: setMinDuration,
+    },
+    {
+      id: 'ideal',
+      label: t('slicer.settings.basic.idealDuration'),
+      value: idealDuration,
+      min: minDuration,
+      max: maxDuration,
+      update: setIdealDuration,
+    },
+    {
+      id: 'max',
+      label: t('slicer.settings.basic.maxDuration'),
+      value: maxDuration,
+      min: Math.max(10, minDuration),
+      max: 600,
+      update: setMaxDuration,
+    },
+  ];
+  const smartSliceAspectRatioOptions = [
+    { value: 'auto', label: t('slicer.settings.basic.aspectAuto', { ratio: detectedRatio }) },
+    { value: '16:9', label: '16:9' },
+    { value: '9:16', label: '9:16' },
+    { value: '1:1', label: '1:1' },
+    { value: '4:3', label: '4:3' },
+  ] satisfies Array<{ value: SliceTargetAspectRatio; label: string }>;
+  const smartSliceObjectFitOptions = [
+    { value: 'contain', label: t('slicer.settings.basic.fitContain') },
+    { value: 'cover', label: t('slicer.settings.basic.fitCover') },
+  ] satisfies Array<{ value: SliceVideoObjectFit; label: string }>;
+  const smartSliceAudioCleanupControls = [
+    {
+      id: 'noise',
+      icon: <Waves size={12} />,
+      label: t('slicer.settings.basic.noiseReduction'),
+      enabled: noiseReduction,
+      toggle: () => setNoiseReduction((enabled) => !enabled),
+    },
+    {
+      id: 'cough',
+      icon: <MicOff size={12} />,
+      label: t('slicer.settings.basic.silenceCleanup'),
+      enabled: coughFilter,
+      toggle: () => setCoughFilter((enabled) => !enabled),
+    },
+    {
+      id: 'repeat',
+      icon: <CheckCircle2 size={12} />,
+      label: t('slicer.settings.basic.repeatFilter'),
+      enabled: repeatFilter,
+      toggle: () => setRepeatFilter((enabled) => !enabled),
+    },
+  ];
+  const smartSliceContinuityOptions = [
+    { value: 'standard', label: t('slicer.settings.advanced.continuityStandard') },
+    { value: 'strict', label: t('slicer.settings.advanced.continuityStrict') },
+  ] satisfies Array<{ value: SliceContinuityLevel; label: string }>;
+  const smartSliceSegmentationOptions = [
+    { value: 'default', label: t('slicer.settings.advanced.segmentationDefault') },
+    { value: 'maximize-continuity', label: t('slicer.settings.advanced.segmentationContinuous') },
+  ] satisfies Array<{ value: SliceSegmentationDensity; label: string }>;
+  const smartSliceSceneOptions = MODES.map((mode) => {
+    const profile = resolveSmartCutEngineProductProfile(mode);
+    return {
+      id: mode,
+      label: formatSmartSliceAdvancedI18nText(
+        t,
+        'sceneOptions',
+        profile.id,
+        'label',
+        formatSmartCutEngineModeLabel(mode),
+      ),
+      detail: formatSmartSliceAdvancedI18nText(
+        t,
+        'sceneOptions',
+        profile.id,
+        'detail',
+        profile.primarySlicer,
+      ),
+      title: formatSmartSliceAdvancedI18nText(
+        t,
+        'sceneOptions',
+        profile.id,
+        'title',
+        profile.strategy,
+      ),
+    };
+  }) satisfies Array<{ id: SliceMode; label: string; detail: string; title: string }>;
+  const smartSliceSubtitleModeOptions = [
+    { value: 'srt', label: 'SRT' },
+    { value: 'burned', label: t('slicer.settings.basic.subtitleBurned') },
+    { value: 'both', label: t('slicer.settings.basic.subtitleBoth') },
+  ] satisfies Array<{ value: SliceSubtitleMode; label: string }>;
+  const smartSliceReviewFilterOptions = [
+    { id: 'all', label: t('slicer.settings.review.filter.all') },
+    { id: 'selected', label: t('slicer.settings.review.filter.selected') },
+    { id: 'duplicates', label: t('slicer.settings.review.filter.duplicates') },
+    { id: 'excluded', label: t('slicer.settings.review.filter.excluded') },
+  ] satisfies Array<{ id: SliceReviewVisibilityFilter; label: string }>;
+  const smartSlicePrimaryActionLabel = isProcessing
+    ? t('slicer.settings.action.running')
+    : hasVideoSource
+      ? runMode === 'review-before-render'
+        ? t('slicer.settings.action.analyze')
+        : t('slicer.settings.action.run')
+      : t('slicer.settings.action.selectSource');
+  const handleSmartSliceAspectRatioChange = (value: string) => {
+    const option = smartSliceAspectRatioOptions.find((item) => item.value === value);
+    if (option) {
+      setAspectRatio(option.value);
+    }
+  };
+  const handleSmartSliceObjectFitChange = (value: string) => {
+    const option = smartSliceObjectFitOptions.find((item) => item.value === value);
+    if (option) {
+      setVideoObjectFit(option.value);
+    }
+  };
+  const handleSmartSliceContinuityChange = (value: string) => {
+    const option = smartSliceContinuityOptions.find((item) => item.value === value);
+    if (option) {
+      setContinuityLevel(option.value);
+    }
+  };
+  const handleSmartSliceSegmentationChange = (value: string) => {
+    const option = smartSliceSegmentationOptions.find((item) => item.value === value);
+    if (option) {
+      setSegmentationDensity(option.value);
+    }
+  };
   const activeReviewTask = useMemo(
     () => slicerTasks.find((task) => task.id === activeReviewTaskId && task.sliceReviewSession) ??
       (!hasVideoSource && !activeReviewTaskId
@@ -933,17 +1164,150 @@ export function SlicerPage() {
   );
   const effectiveReviewSession = reviewSessionDraft ?? activeReviewTask?.sliceReviewSession ?? null;
   const reviewSegments = effectiveReviewSession?.segments ?? [];
+  const activeStudioClipTimelineSnapshot = useMemo(
+    () => {
+      if (!effectiveReviewSession) {
+        return activeReviewTask?.studioClipTimeline ?? null;
+      }
+      return createStudioClipTimelineSnapshotForReviewSession(
+        effectiveReviewSession,
+        activeReviewTask?.studioClipTimeline?.processingOperations ?? [],
+      );
+    },
+    [activeReviewTask?.studioClipTimeline?.processingOperations, activeReviewTask?.studioClipTimeline, effectiveReviewSession],
+  );
+  const sourcePreviewTimeline = useMemo(
+    () => {
+      if (!hasVideoSource || effectiveReviewSession || activeStudioClipTimelineSnapshot) {
+        return null;
+      }
+      return createStudioClipTimelineSnapshotForSourcePreview({
+        sourceDurationMs: Math.max(1, Math.round(duration * 1_000)),
+        sourceLabel: file?.name || sourceUrl || fileId || 'Source video',
+        taskId: activeReviewTaskId || fileId || 'source-preview',
+      });
+    },
+    [activeReviewTaskId, activeStudioClipTimelineSnapshot, duration, effectiveReviewSession, file?.name, fileId, hasVideoSource, sourceUrl],
+  );
+  const displayStudioClipTimelineSnapshot =
+    activeStudioClipTimelineSnapshot ?? sourcePreviewTimeline?.timelineSnapshot ?? null;
+  const displayReviewSegments = effectiveReviewSession
+    ? reviewSegments
+    : sourcePreviewTimeline?.reviewSegments ?? reviewSegments;
+  const studioClipTimelineDurationMs = Math.max(
+    1,
+    displayStudioClipTimelineSnapshot?.timeline.durationMs ??
+      effectiveReviewSession?.sourceDurationMs ??
+      Math.round(duration * 1_000),
+  );
+  const publishableReviewSegmentCount = reviewSegments.filter((segment) => segment.status !== 'duplicate').length;
+  const renderableReviewSegmentIds = reviewSegments
+    .filter((segment) => segment.selected && segment.status === 'selected')
+    .map((segment) => segment.id);
+  const renderableReviewSegmentCount = renderableReviewSegmentIds.length;
+  const selectedReviewSegmentIds = renderableReviewSegmentIds;
   const selectedReviewSegmentCount = selectedReviewSegmentIds.length;
+  const canSelectAllReviewSegments = publishableReviewSegmentCount > 0;
+  const canClearReviewSegmentSelection = selectedReviewSegmentCount > 0;
   const duplicateReviewSegmentCount = reviewSegments.filter((segment) => segment.status === 'duplicate').length;
   const duplicateReviewGroupCount = effectiveReviewSession?.duplicateGroups.length ?? 0;
   const smartDedupRiskSegmentCount = reviewSegments.filter((segment) =>
     segment.risks.includes(SMART_SLICE_DEDUP_REVIEW_RISK_CODE),
   ).length;
   const excludedReviewSegmentCount = reviewSegments.filter((segment) => segment.status === 'excluded').length;
+  const smartSliceReviewStatusBadge = isSavingReviewDraft
+    ? t('slicer.settings.review.status.saving')
+    : reviewDraftSaveError
+      ? t('slicer.settings.review.status.saveFailed')
+      : reviewDraftSavedAt
+        ? t('slicer.settings.review.status.saved', { time: reviewDraftSavedAt })
+        : effectiveReviewSession
+          ? t('slicer.settings.review.status.ready')
+          : t('slicer.settings.review.status.noPlan');
+  const smartSliceReviewMetricItems = [
+    {
+      id: 'segments',
+      label: t('slicer.settings.review.metric.segments'),
+      value: reviewSegments.length,
+      valueClassName: 'text-gray-100',
+    },
+    {
+      id: 'selected',
+      label: t('slicer.settings.review.metric.selected'),
+      value: selectedReviewSegmentCount,
+      valueClassName: 'text-emerald-200',
+    },
+    {
+      id: 'duplicates',
+      label: t('slicer.settings.review.metric.duplicates'),
+      value: duplicateReviewSegmentCount,
+      valueClassName: 'text-amber-200',
+      detail: duplicateReviewGroupCount || smartDedupRiskSegmentCount
+        ? t('slicer.settings.review.metric.duplicateDetail', {
+            groups: duplicateReviewGroupCount,
+            risks: smartDedupRiskSegmentCount,
+          })
+        : '',
+    },
+    {
+      id: 'excluded',
+      label: t('slicer.settings.review.metric.excluded'),
+      value: excludedReviewSegmentCount,
+      valueClassName: 'text-gray-300',
+    },
+  ];
+  const smartSliceReviewCorrectionFields = [
+    {
+      id: 'title',
+      control: 'input',
+      inputType: 'text',
+      value: reviewCorrectionDraft.title,
+      placeholder: t('slicer.settings.review.correction.titlePlaceholder'),
+      className: 'col-span-2 text-gray-200',
+    },
+    {
+      id: 'startMs',
+      control: 'input',
+      inputType: 'number',
+      value: reviewCorrectionDraft.startMs,
+      placeholder: t('slicer.settings.review.correction.startPlaceholder'),
+      className: 'text-gray-200',
+    },
+    {
+      id: 'endMs',
+      control: 'input',
+      inputType: 'number',
+      value: reviewCorrectionDraft.endMs,
+      placeholder: t('slicer.settings.review.correction.endPlaceholder'),
+      className: 'text-gray-200',
+    },
+    {
+      id: 'speakerRoles',
+      control: 'input',
+      inputType: 'text',
+      value: reviewCorrectionDraft.speakerRoles,
+      placeholder: t('slicer.settings.review.correction.speakerPlaceholder'),
+      className: 'col-span-2 text-gray-200',
+    },
+    {
+      id: 'transcriptText',
+      control: 'textarea',
+      value: reviewCorrectionDraft.transcriptText,
+      placeholder: t('slicer.settings.review.correction.transcriptPlaceholder'),
+      className: 'col-span-2 min-h-16 leading-4 text-gray-200',
+    },
+    {
+      id: 'manualNotes',
+      control: 'textarea',
+      value: reviewCorrectionDraft.manualNotes,
+      placeholder: t('slicer.settings.review.correction.notesPlaceholder'),
+      className: 'col-span-2 min-h-12 leading-4 text-gray-200',
+    },
+  ] satisfies SmartSliceReviewCorrectionField[];
   const visibleReviewSegments = useMemo(() => {
     if (reviewVisibilityFilter === 'selected') {
       return reviewSegments.filter((segment) =>
-        selectedReviewSegmentIds.includes(segment.id) && segment.status === 'selected',
+        segment.selected && segment.status === 'selected',
       );
     }
     if (reviewVisibilityFilter === 'duplicates') {
@@ -958,7 +1322,13 @@ export function SlicerPage() {
     () => reviewSegments.find((segment) => segment.id === activeReviewSegmentId) ?? visibleReviewSegments[0] ?? reviewSegments[0],
     [activeReviewSegmentId, reviewSegments, visibleReviewSegments],
   );
+  const displayActiveReviewSegmentId = activeReviewSegment?.id ||
+    activeReviewSegmentId ||
+    displayReviewSegments[0]?.id ||
+    '';
   useEffect(() => {
+    setShowReviewCorrectionEditor(false);
+    setExpandedReviewSegmentActionId('');
     if (!activeReviewSegment) {
       setReviewCorrectionDraft({
         title: '',
@@ -982,53 +1352,6 @@ export function SlicerPage() {
       manualNotes: activeReviewSegment.manualNotes ?? '',
     });
   }, [activeReviewSegment?.id]);
-  const engineReadinessItems = [
-    {
-      label: 'STT',
-      value: speechModelReadyForDisplay || speechSetupStatus?.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready ? 'Ready' : 'Check',
-    },
-    {
-      label: 'Speaker',
-      value: requiresSpeakerDiarization ? 'Required' : 'Adaptive',
-    },
-    {
-      label: 'Strategy',
-      value: strategyExecutionSupport.label,
-    },
-    {
-      label: 'Audit',
-      value: 'contentUnitIds + speakerRoles',
-    },
-  ];
-  const commercialReadinessItems = [
-    {
-      label: 'Source Evidence',
-      value: hasVideoSource ? 'Ready' : 'Missing source video',
-      blocked: !hasVideoSource,
-    },
-    {
-      label: 'Speech Evidence',
-      value: speechModelReadyForDisplay || speechSetupStatus?.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready ? 'STT ready' : 'STT preflight required',
-      blocked: false,
-    },
-    {
-      label: 'Speaker Evidence',
-      value: requiresSpeakerDiarization ? 'Diarization required' : 'Single speaker adapter allowed',
-      blocked: false,
-    },
-    {
-      label: 'Strategy Capability',
-      value: strategyExecutionSupport.ready ? strategyExecutionSupport.label : 'Native evidence adapter required',
-      blocked: !strategyExecutionSupport.ready,
-    },
-    {
-      label: 'Export Contract',
-      value: smartCutExperience.formatContract,
-      blocked: false,
-    },
-  ];
-  const hasCommercialReadinessBlocker = commercialReadinessItems.some((item) => item.blocked);
-
   const TEXT_EFFECTS: TextEffectPreset[] = [
     {
       id: 'tiktok',
@@ -1223,7 +1546,6 @@ export function SlicerPage() {
     }
     setActiveReviewTaskId(activeReviewTask.id);
     setReviewSessionDraft(nextReviewSession);
-    setSelectedReviewSegmentIds(nextReviewSession.selectedSegmentIds);
     setActiveReviewSegmentId(
       nextReviewSession.selectedSegmentIds[0] ??
         nextReviewSession.segments[0]?.id ??
@@ -1233,33 +1555,11 @@ export function SlicerPage() {
   }, [activeReviewTask?.id, activeReviewTask?.sliceReviewSession, activeReviewTaskId, reviewManualEdits.length, reviewSessionDraft?.id]);
 
   useEffect(() => {
-    if (targetPlatform === 'bilibili') {
-      setAspectRatio('16:9');
-      setVideoObjectFit('contain');
-      setIdealDuration(90);
-      return;
-    }
-
-    if (targetPlatform === 'xiaohongshu') {
-      setAspectRatio('9:16');
-      setVideoObjectFit('cover');
-      setIdealDuration(35);
-      return;
-    }
-
-    if (targetPlatform !== 'generic') {
-      setAspectRatio('9:16');
-      setVideoObjectFit('cover');
-      setIdealDuration(45);
-    }
-  }, [targetPlatform]);
-
-  useEffect(() => {
     resolveAutoCutLlmRuntimeConfig()
       .then((config) => {
         setActiveLlmRuntimeConfig(config);
         setActiveLlmRuntimeModelVendor(config.modelVendor);
-        setLlmModel(config.model as SliceLLM);
+        setLlmModel(resolveSmartSliceLlmModelForVendor(config.modelVendor, config.model));
         setSegmentationAgentId(config.defaultSegmentationAgentId);
       })
       .catch((error) => reportAutoCutDiagnostic('warning', 'slicer', 'Load default LLM model failed', error));
@@ -1282,15 +1582,12 @@ export function SlicerPage() {
   useEffect(() => {
     const currentModelIsVisible = visibleLlmModelOptions.some((model) => model.id === llmModel);
     if (!currentModelIsVisible) {
-      setLlmModel(AUTOCUT_MODEL_VENDOR_PRESETS[activeLlmRuntimeModelVendor].defaultModel as SliceLLM);
+      setLlmModel(resolveSmartSliceLlmModelForVendor(
+        activeLlmRuntimeModelVendor,
+        AUTOCUT_MODEL_VENDOR_PRESETS[activeLlmRuntimeModelVendor].defaultModel,
+      ));
     }
   }, [activeLlmRuntimeModelVendor, llmModel, visibleLlmModelOptions]);
-
-  // Video Player state
-  const [currentTime, setCurrentTime] = useState<number>(0);
-  const [duration, setDuration] = useState<number>(0);
-  const [videoProgress, setVideoProgress] = useState<number>(0);
-  const [isPlaying, setIsPlaying] = useState<boolean>(false);
 
   useEffect(() => {
     getAutoCutWorkflowPreferences()
@@ -1304,7 +1601,6 @@ export function SlicerPage() {
         setEnableSubtitles(videoSlice.enableSubtitles);
         setSubtitleMode(videoSlice.subtitleMode);
         setSelectedSubtitleStyle(videoSlice.subtitleStyleId);
-        setTargetPlatform(videoSlice.targetPlatform);
         setIdealDuration(videoSlice.idealDuration);
         setContinuityLevel(videoSlice.continuityLevel);
         setSegmentationDensity(videoSlice.segmentationDensity);
@@ -1345,12 +1641,27 @@ export function SlicerPage() {
     };
   }, []);
 
-  const formatTime = (timeInSecs: number) => {
-    if (!timeInSecs || isNaN(timeInSecs)) return "00:00";
-    const mins = Math.floor(timeInSecs / 60).toString().padStart(2, '0');
-    const secs = Math.floor(timeInSecs % 60).toString().padStart(2, '0');
-    return `${mins}:${secs}`;
+  const formatTime = formatSlicerTimelineTime;
+  const handleSmartSliceVideoTimeUpdate = (currentSeconds: number, durationSeconds: number) => {
+    setCurrentTime(currentSeconds);
+    setDuration(durationSeconds);
+    setVideoProgress(durationSeconds > 0 ? (currentSeconds / durationSeconds) * 100 : 0);
+    timelineController.syncPreviewPlayback(currentSeconds, durationSeconds);
   };
+  const smartSliceReviewPreviewMetaItems = activeReviewSegment
+    ? [
+        {
+          id: 'time',
+          label: `${formatTime(activeReviewSegment.startMs / 1_000)} - ${formatTime(activeReviewSegment.endMs / 1_000)}`,
+        },
+        {
+          id: 'speaker',
+          label: activeReviewSegment.speakerRoles.join(', ') ||
+            activeReviewSegment.speakerIds.join(', ') ||
+            t('slicer.settings.review.preview.speakerPending'),
+        },
+      ]
+    : [];
 
   const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
      const rect = e.currentTarget.getBoundingClientRect();
@@ -1483,7 +1794,7 @@ export function SlicerPage() {
       file,
       ...(fileId && !file ? { fileId } : {}),
       llmModel,
-      targetPlatform,
+      targetPlatform: SMART_SLICE_DEFAULT_TARGET_PLATFORM,
       targetAspectRatio: aspectRatio,
       videoObjectFit,
       idealDuration,
@@ -1525,7 +1836,7 @@ export function SlicerPage() {
     const effectiveSubtitleMode = enableSubtitles && subtitleMode === 'none' ? 'both' : subtitleMode;
     await saveAutoCutVideoSlicePreferences({
       mode: selectedMode,
-      targetPlatform,
+      targetPlatform: SMART_SLICE_DEFAULT_TARGET_PLATFORM,
       targetAspectRatio: aspectRatio,
       videoObjectFit,
       idealDuration,
@@ -1554,29 +1865,43 @@ export function SlicerPage() {
     baseSession: AutoCutSliceReviewSession,
     segments: readonly AutoCutSliceReviewSegment[],
     manualEdit?: AutoCutSliceManualEdit,
+    options: SmartSliceTimelineReviewCommitOptions = {},
   ) => {
     const nextSession = createSliceReviewSessionFromSegments(
       baseSession,
       segments,
       manualEdit ? [manualEdit] : [],
     );
-    setReviewSessionDraft(nextSession);
-    setSelectedReviewSegmentIds(nextSession.selectedSegmentIds);
     const nextManualEdits = manualEdit ? [...reviewManualEdits, manualEdit] : reviewManualEdits;
+    const nextStudioClipTimeline = createStudioClipTimelineSnapshotForReviewSession(
+      nextSession,
+      options.processingOperations ?? activeStudioClipTimelineSnapshot?.processingOperations ?? [],
+    );
+    setReviewSessionDraft(nextSession);
     if (manualEdit) {
       setReviewManualEdits(nextManualEdits);
     }
     const taskId = activeReviewTask?.id ?? activeReviewTaskId;
-    if (!taskId) {
-      return;
+    if (taskId) {
+      setSlicerTasks((currentTasks) =>
+        updateSlicerTask(currentTasks, taskId, (task) => ({
+          ...task,
+          sliceReviewSession: nextSession,
+          studioClipTimeline: nextStudioClipTimeline,
+        }))
+      );
     }
     setReviewDraftSaveError('');
     setIsSavingReviewDraft(true);
+    if (!taskId) {
+      setIsSavingReviewDraft(false);
+      return;
+    }
     void saveVideoSliceReviewDraft(taskId, {
       reviewSessionId: nextSession.id,
       selectedSegmentIds: nextSession.selectedSegmentIds,
       manualEdits: nextManualEdits,
-    })
+    }, nextStudioClipTimeline.processingOperations)
       .then(() => {
         setReviewDraftSavedAt(formatAutoCutTimeOfDay(createAutoCutTimestamp()));
       })
@@ -1589,35 +1914,33 @@ export function SlicerPage() {
       });
   };
 
-  const handlePreviewReviewSegment = (segment: AutoCutSliceReviewSegment) => {
-    setActiveReviewSegmentId(segment.id);
+  const seekSmartSlicePreviewMs = useCallback((timeMs: number) => {
     if (duration > 0) {
-      playerRef.current?.seek(Math.max(0, segment.startMs / 1_000) / duration);
+      playerRef.current?.seek(Math.max(0, timeMs / 1_000) / duration);
     }
-  };
+  }, [duration]);
+
+  const timelineController = useSmartSliceTimelineReviewController({
+    reviewSession: effectiveReviewSession,
+    timelineSnapshot: displayStudioClipTimelineSnapshot,
+    timelineDurationMs: studioClipTimelineDurationMs,
+    onActiveReviewSegmentIdChange: setActiveReviewSegmentId,
+    onSeekPreviewMs: seekSmartSlicePreviewMs,
+    onCommitReviewSessionDraft: commitReviewSessionDraft,
+  });
 
   const handleSelectAllReviewSegments = () => {
     const baseSession = effectiveReviewSession;
     if (!baseSession) {
       return;
     }
-    const publishableSegments = baseSession.segments.filter((segment) => segment.status !== 'duplicate');
-    const edit = createSliceReviewManualEdit('select', publishableSegments.map((segment) => segment.id), {
-      reason: 'manual bulk select all publishable review segments',
+    const selectResult = selectAllSliceReviewSegmentsForRender({
+      reviewSession: baseSession,
     });
-    commitReviewSessionDraft(
-      baseSession,
-      baseSession.segments.map((segment) =>
-        segment.status === 'duplicate'
-          ? segment
-          : {
-              ...segment,
-              selected: true,
-              status: 'selected',
-            },
-      ),
-      edit,
-    );
+    if (!selectResult) {
+      return;
+    }
+    commitReviewSessionDraft(baseSession, selectResult.segments, selectResult.manualEdit);
   };
 
   const handleClearReviewSegmentSelection = () => {
@@ -1625,25 +1948,14 @@ export function SlicerPage() {
     if (!baseSession) {
       return;
     }
-    const selectedIds = baseSession.segments
-      .filter((segment) => segment.selected && segment.status === 'selected')
-      .map((segment) => segment.id);
-    const edit = createSliceReviewManualEdit('exclude', selectedIds, {
-      reason: 'manual clear selected review segments',
+    const clearResult = setSliceReviewSegmentsRenderSelectionForRender({
+      reviewSession: baseSession,
+      selected: false,
     });
-    commitReviewSessionDraft(
-      baseSession,
-      baseSession.segments.map((segment) =>
-        segment.status === 'selected'
-          ? {
-              ...segment,
-              selected: false,
-              status: 'excluded',
-            }
-          : segment,
-      ),
-      edit,
-    );
+    if (!clearResult) {
+      return;
+    }
+    commitReviewSessionDraft(baseSession, clearResult.segments, clearResult.manualEdit);
   };
 
   const handleToggleReviewSegment = (segmentId: string) => {
@@ -1656,73 +1968,15 @@ export function SlicerPage() {
       return;
     }
     const shouldSelect = !(targetSegment.selected && targetSegment.status === 'selected');
-    const edit = createSliceReviewManualEdit(shouldSelect ? 'select' : 'exclude', [segmentId], {
-      reason: shouldSelect ? 'manual segment selected for render' : 'manual segment excluded from render',
+    const toggleResult = setSliceReviewSegmentRenderSelectionOnStudioTimeline({
+      reviewSession: baseSession,
+      segmentId,
+      selected: shouldSelect,
     });
-    commitReviewSessionDraft(
-      baseSession,
-      baseSession.segments.map((segment) =>
-        segment.id === segmentId
-          ? {
-              ...segment,
-              selected: shouldSelect,
-              status: shouldSelect ? 'selected' : 'excluded',
-            }
-          : segment,
-      ),
-      edit,
-    );
-  };
-
-  const handleSplitReviewSegment = (segmentId: string) => {
-    const baseSession = effectiveReviewSession;
-    const segment = baseSession?.segments.find((candidate) => candidate.id === segmentId);
-    if (!baseSession || !segment || segment.endMs <= segment.startMs + 1_000) {
+    if (!toggleResult) {
       return;
     }
-    const transcriptBoundaryMs = segment.transcriptSegments?.find((transcriptSegment) =>
-      transcriptSegment.endMs > segment.startMs + 500 &&
-      transcriptSegment.endMs < segment.endMs - 500
-    )?.endMs;
-    const splitAtMs = Math.round(transcriptBoundaryMs ?? (segment.startMs + segment.endMs) / 2);
-    const firstSegment: AutoCutSliceReviewSegment = {
-      ...segment,
-      id: `${segment.id}-a`,
-      title: `${segment.title} A`,
-      endMs: splitAtMs,
-      durationMs: Math.max(1, splitAtMs - segment.startMs),
-      ...createSliceReviewSpeechRangeForPreview(segment, segment.startMs, splitAtMs),
-      transcriptSegments: filterSliceReviewTranscriptSegmentsForPreview(segment, segment.startMs, splitAtMs),
-    };
-    const firstTranscriptText = createSliceReviewTranscriptTextForPreview(firstSegment);
-    if (firstTranscriptText !== undefined) {
-      firstSegment.transcriptText = firstTranscriptText;
-    }
-    const secondSegment: AutoCutSliceReviewSegment = {
-      ...segment,
-      id: `${segment.id}-b`,
-      title: `${segment.title} B`,
-      startMs: splitAtMs,
-      durationMs: Math.max(1, segment.endMs - splitAtMs),
-      ...createSliceReviewSpeechRangeForPreview(segment, splitAtMs, segment.endMs),
-      transcriptSegments: filterSliceReviewTranscriptSegmentsForPreview(segment, splitAtMs, segment.endMs),
-    };
-    const secondTranscriptText = createSliceReviewTranscriptTextForPreview(secondSegment);
-    if (secondTranscriptText !== undefined) {
-      secondSegment.transcriptText = secondTranscriptText;
-    }
-    const edit = createSliceReviewManualEdit('split', [segmentId], {
-      splitAtMs,
-      createdSegmentIds: [firstSegment.id, secondSegment.id],
-      reason: 'manual split at reviewed transcript boundary',
-    });
-    commitReviewSessionDraft(
-      baseSession,
-      baseSession.segments.flatMap((candidate) =>
-        candidate.id === segmentId ? [firstSegment, secondSegment] : [candidate],
-      ),
-      edit,
-    );
+    commitReviewSessionDraft(baseSession, toggleResult.segments, toggleResult.manualEdit);
   };
 
   const handleMergeReviewSegment = (segmentId: string, direction: 'previous' | 'next') => {
@@ -1730,47 +1984,15 @@ export function SlicerPage() {
     if (!baseSession) {
       return;
     }
-    const segmentIndex = baseSession.segments.findIndex((segment) => segment.id === segmentId);
-    const neighborIndex = direction === 'previous' ? segmentIndex - 1 : segmentIndex + 1;
-    const currentSegment = baseSession.segments[segmentIndex];
-    const neighborSegment = baseSession.segments[neighborIndex];
-    if (!currentSegment || !neighborSegment) {
-      return;
-    }
-    const mergeSegments = [currentSegment, neighborSegment].sort((a, b) => a.startMs - b.startMs);
-    const baseMergeSegment = mergeSegments[0];
-    if (!baseMergeSegment) {
-      return;
-    }
-    const mergedSegment: AutoCutSliceReviewSegment = {
-      ...baseMergeSegment,
-      id: mergeSegments.map((segment) => segment.id).join('-'),
-      title: mergeSegments.map((segment) => segment.title).join(' + '),
-      startMs: Math.min(...mergeSegments.map((segment) => segment.startMs)),
-      endMs: Math.max(...mergeSegments.map((segment) => segment.endMs)),
-      durationMs: Math.max(...mergeSegments.map((segment) => segment.endMs)) - Math.min(...mergeSegments.map((segment) => segment.startMs)),
-      contentUnitIds: [...new Set(mergeSegments.flatMap((segment) => segment.contentUnitIds))],
-      speakerIds: [...new Set(mergeSegments.flatMap((segment) => segment.speakerIds))],
-      speakerRoles: [...new Set(mergeSegments.flatMap((segment) => segment.speakerRoles))],
-      transcriptSegments: mergeSegments.flatMap((segment) => segment.transcriptSegments ?? []),
-      transcriptText: mergeSegments.map((segment) => segment.transcriptText).filter(Boolean).join(' '),
-      risks: [...new Set(mergeSegments.flatMap((segment) => segment.risks))],
-      selected: mergeSegments.some((segment) => segment.selected),
-      status: mergeSegments.some((segment) => segment.selected) ? 'selected' : 'excluded',
-    };
-    const mergeIds = new Set(mergeSegments.map((segment) => segment.id));
-    const firstIndex = Math.min(segmentIndex, neighborIndex);
-    const retainedSegments = baseSession.segments.filter((segment) => !mergeIds.has(segment.id));
-    const nextSegments = [
-      ...retainedSegments.slice(0, firstIndex),
-      mergedSegment,
-      ...retainedSegments.slice(firstIndex),
-    ];
-    const edit = createSliceReviewManualEdit('merge', [...mergeIds], {
-      createdSegmentIds: [mergedSegment.id],
-      reason: 'manual merge to preserve continuous context',
+    const mergeResult = mergeSliceReviewSegmentsOnStudioTimeline({
+      reviewSession: baseSession,
+      segmentId,
+      direction,
     });
-    commitReviewSessionDraft(baseSession, nextSegments, edit);
+    if (!mergeResult) {
+      return;
+    }
+    commitReviewSessionDraft(baseSession, mergeResult.segments, mergeResult.manualEdit);
   };
 
   const handleDeleteDuplicateReviewSegment = (segmentId: string) => {
@@ -1778,27 +2000,14 @@ export function SlicerPage() {
     if (!baseSession) {
       return;
     }
-    const keepSegmentId = baseSession.selectedSegmentIds.find((id) => id !== segmentId) ??
-      baseSession.segments.find((segment) => segment.id !== segmentId)?.id;
-    const duplicateEditSegmentIds = keepSegmentId ? [keepSegmentId, segmentId] : [segmentId];
-    const edit = createSliceReviewManualEdit('deleteDuplicate', duplicateEditSegmentIds, {
-      ...(keepSegmentId ? { keepSegmentId } : {}),
-      reason: 'manual duplicate content deletion',
+    const duplicateResult = markSliceReviewSegmentAsDuplicateOnStudioTimeline({
+      reviewSession: baseSession,
+      segmentId,
     });
-    commitReviewSessionDraft(
-      baseSession,
-      baseSession.segments.map((segment) =>
-        segment.id === segmentId
-          ? {
-              ...segment,
-              selected: false,
-              status: 'duplicate',
-              duplicateOfSegmentId: keepSegmentId,
-            }
-          : segment,
-      ),
-      edit,
-    );
+    if (!duplicateResult) {
+      return;
+    }
+    commitReviewSessionDraft(baseSession, duplicateResult.segments, duplicateResult.manualEdit);
   };
 
   const handleRestoreReviewSegment = (segmentId: string) => {
@@ -1806,24 +2015,25 @@ export function SlicerPage() {
     if (!baseSession) {
       return;
     }
-    const edit = createSliceReviewManualEdit('restore', [segmentId], {
-      reason: 'manual restore before render',
+    const restoreResult = restoreSliceReviewSegmentOnStudioTimeline({
+      reviewSession: baseSession,
+      segmentId,
     });
-    commitReviewSessionDraft(
-      baseSession,
-      baseSession.segments.map((segment) =>
-        segment.id === segmentId
-          ? {
-              ...segment,
-              selected: true,
-              status: 'selected',
-              duplicateGroupId: undefined,
-              duplicateOfSegmentId: undefined,
-            }
-          : segment,
-      ),
-      edit,
-    );
+    if (!restoreResult) {
+      return;
+    }
+    commitReviewSessionDraft(baseSession, restoreResult.segments, restoreResult.manualEdit);
+  };
+
+  const handleToggleReviewSegmentActions = (segmentId: string) => {
+    setExpandedReviewSegmentActionId((expandedId) => (expandedId === segmentId ? '' : segmentId));
+  };
+
+  const updateSmartSliceReviewCorrectionDraftField = (
+    field: keyof SmartSliceReviewCorrectionDraft,
+    value: string,
+  ) => {
+    setReviewCorrectionDraft((draft) => ({ ...draft, [field]: value }));
   };
 
   const handleApplyReviewSegmentCorrection = () => {
@@ -1850,63 +2060,46 @@ export function SlicerPage() {
       .filter(Boolean);
     const correctedTranscriptText = reviewCorrectionDraft.transcriptText.trim();
     const correctedManualNotes = reviewCorrectionDraft.manualNotes.trim();
-    const correctedSpeechRange = createSliceReviewSpeechRangeForPreview(segment, correctedStartMs, correctedEndMs);
-    const correctedTranscriptSegments = filterSliceReviewTranscriptSegmentsForPreview(segment, correctedStartMs, correctedEndMs);
-    const correctedSegment: AutoCutSliceReviewSegment = {
-      ...segment,
-      title: reviewCorrectionDraft.title.trim() || segment.title,
-      startMs: correctedStartMs,
-      endMs: Math.max(correctedStartMs + 1, correctedEndMs),
-      durationMs: Math.max(1, correctedEndMs - correctedStartMs),
-      speakerRoles,
-      speakerIds: speakerRoles.length ? speakerRoles : segment.speakerIds,
-      ...correctedSpeechRange,
-      transcriptSegments: correctedTranscriptSegments,
-      ...(correctedTranscriptText ? { transcriptText: correctedTranscriptText } : {}),
-      ...(correctedManualNotes ? { manualNotes: correctedManualNotes } : {}),
-    };
-    const correctionPatch: NonNullable<AutoCutSliceManualEdit['patch']> = {
-      title: correctedSegment.title,
-      startMs: correctedSegment.startMs,
-      endMs: correctedSegment.endMs,
-      ...(correctedSegment.speechStartMs !== undefined ? { speechStartMs: correctedSegment.speechStartMs } : {}),
-      ...(correctedSegment.speechEndMs !== undefined ? { speechEndMs: correctedSegment.speechEndMs } : {}),
-      ...(correctedTranscriptText ? { transcriptText: correctedTranscriptText } : {}),
-      speakerIds: correctedSegment.speakerIds,
-      speakerRoles: correctedSegment.speakerRoles,
-      ...(correctedManualNotes ? { manualNotes: correctedManualNotes } : {}),
-    };
-    const edit = createSliceReviewManualEdit('correctSegment', [segment.id], {
-      reason: 'manual real-time segment correction',
-      patch: correctionPatch,
+    const correctionResult = correctSliceReviewSegmentOnStudioTimeline({
+      reviewSession: baseSession,
+      segmentId: segment.id,
+      patch: {
+        title: reviewCorrectionDraft.title.trim() || segment.title,
+        startMs: correctedStartMs,
+        endMs: Math.max(correctedStartMs + 1, correctedEndMs),
+        speakerIds: speakerRoles.length ? speakerRoles : segment.speakerIds,
+        speakerRoles,
+        ...(correctedTranscriptText ? { transcriptText: correctedTranscriptText } : {}),
+        ...(correctedManualNotes ? { manualNotes: correctedManualNotes } : {}),
+      },
     });
-    commitReviewSessionDraft(
-      baseSession,
-      baseSession.segments.map((candidate) => candidate.id === segment.id ? correctedSegment : candidate),
-      edit,
-    );
+    if (!correctionResult) {
+      return;
+    }
+    commitReviewSessionDraft(baseSession, correctionResult.segments, correctionResult.manualEdit);
+    setShowReviewCorrectionEditor(false);
   };
 
   const handleRenderSelectedReviewSegments = async () => {
     const baseSession = effectiveReviewSession;
     const taskId = activeReviewTask?.id ?? activeReviewTaskId;
     if (!baseSession || !taskId) {
-      toast('No reviewed segment plan is ready for rendering.', 'error');
+      toast(t('slicer.settings.review.toast.noPlan'), 'error');
       return;
     }
-    if (selectedReviewSegmentIds.length === 0) {
-      toast('Select at least one review segment before rendering.', 'error');
+    if (renderableReviewSegmentCount === 0) {
+      toast(t('slicer.settings.review.toast.noSelection'), 'error');
       return;
     }
     setIsRenderingReviewSelection(true);
     try {
       await renderVideoSlicePlan(taskId, {
         reviewSessionId: baseSession.id,
-        selectedSegmentIds: selectedReviewSegmentIds,
+        selectedSegmentIds: renderableReviewSegmentIds,
         manualEdits: reviewManualEdits,
       });
       setActiveLeftTab('tasks');
-      toast('Render selected Smart Slice segments submitted.', 'success');
+      toast(t('slicer.settings.review.toast.renderSubmitted'), 'success');
     } catch (error) {
       reportAutoCutDiagnostic('error', 'slicer.review-render', 'Render selected Smart Slice segments failed', error);
       toast(createSmartSliceFailureToastMessage(error, t), 'error');
@@ -1917,7 +2110,7 @@ export function SlicerPage() {
 
   const handleStart = async () => {
     if (!hasVideoSource) {
-      toast('Select a source video before running Smart Cut Engine.', 'error');
+      toast(t('slicer.settings.review.toast.selectSource'), 'error');
       return;
     }
     if (!strategyExecutionSupport.ready) {
@@ -1946,7 +2139,7 @@ export function SlicerPage() {
         resetSmartSliceReviewWorkbenchForNewPlan();
         const result = await analyzeVideoSlicePlan(sliceParams);
         setActiveReviewTaskId(result.taskId);
-        toast('Analyze complete. Segment Review Workbench will open when the plan is ready.', 'success');
+        toast(t('slicer.settings.review.toast.analyzeComplete'), 'success');
       } else {
         resetSmartSliceReviewWorkbenchForNewPlan();
         await processVideoSlice(sliceParams);
@@ -1980,12 +2173,13 @@ export function SlicerPage() {
   const resetSmartSliceReviewWorkbenchForNewPlan = () => {
     setActiveReviewTaskId('');
     setReviewSessionDraft(null);
-    setSelectedReviewSegmentIds([]);
     setReviewVisibilityFilter('all');
     setActiveReviewSegmentId('');
+    setExpandedReviewSegmentActionId('');
     setReviewManualEdits([]);
     setIsRenderingReviewSelection(false);
     setLatestVideoDedupReport(null);
+    timelineController.reset();
   };
 
   const resetSmartSliceReviewWorkbenchForSourceChange = () => {
@@ -2165,7 +2359,6 @@ export function SlicerPage() {
                             if (task.sliceReviewSession) {
                               setActiveReviewTaskId(task.id);
                               setReviewSessionDraft(task.sliceReviewSession);
-                              setSelectedReviewSegmentIds(task.sliceReviewSession.selectedSegmentIds);
                               setReviewManualEdits([]);
                             }
                           }}
@@ -2230,9 +2423,7 @@ export function SlicerPage() {
                              else setDetectedRatio(`${w}:${h}`);
                           }}
                           onTimeUpdate={(c, d) => {
-                              setCurrentTime(c);
-                              setDuration(d);
-                              setVideoProgress(d > 0 ? (c / d) * 100 : 0);
+                              handleSmartSliceVideoTimeUpdate(c, d);
                           }}
                           onPlayStateChange={setIsPlaying}
                         />
@@ -2253,9 +2444,7 @@ export function SlicerPage() {
                            else setDetectedRatio(`${w}:${h}`);
                         }}
                         onTimeUpdate={(c, d) => {
-                            setCurrentTime(c);
-                            setDuration(d);
-                            setVideoProgress(d > 0 ? (c / d) * 100 : 0);
+                            handleSmartSliceVideoTimeUpdate(c, d);
                         }}
                         onPlayStateChange={setIsPlaying}
                      />
@@ -2275,9 +2464,7 @@ export function SlicerPage() {
                          else setDetectedRatio(`${w}:${h}`);
                       }}
                       onTimeUpdate={(c, d) => {
-                          setCurrentTime(c);
-                          setDuration(d);
-                          setVideoProgress(d > 0 ? (c / d) * 100 : 0);
+                          handleSmartSliceVideoTimeUpdate(c, d);
                       }}
                       onPlayStateChange={setIsPlaying}
                    />
@@ -2338,30 +2525,50 @@ export function SlicerPage() {
                     </div>
                   </div>
                 <div className="flex items-center gap-2 text-gray-400">
-                     <select
-                         value={aspectRatio}
-                          onChange={e => setAspectRatio(e.target.value as SliceTargetAspectRatio)}
-                         className="bg-[#222] border border-[#333] text-gray-300 text-[11px] rounded px-2 py-1 outline-none focus:border-blue-500 transition-colors"
-                      >
-                       <option value="auto">Auto ({detectedRatio})</option>
-                       <option value="16:9">16:9 Landscape</option>
-                       <option value="9:16">9:16 Vertical</option>
-                       <option value="1:1">1:1 Square</option>
-                       <option value="4:3">4:3 Standard</option>
-                     </select>
+                      <select
+                          value={aspectRatio}
+                          onChange={(event) => handleSmartSliceAspectRatioChange(event.target.value)}
+                          className="bg-[#222] border border-[#333] text-gray-300 text-[11px] rounded px-2 py-1 outline-none focus:border-blue-500 transition-colors"
+                       >
+                        {smartSliceAspectRatioOptions.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
 
-                     <select
-                         value={videoObjectFit}
-                          onChange={e => setVideoObjectFit(e.target.value as SliceVideoObjectFit)}
-                         className="bg-[#222] border border-[#333] text-gray-300 text-[11px] rounded px-2 py-1 outline-none focus:border-blue-500 transition-colors"
-                      >
-                       <option value="contain">Contain</option>
-                       <option value="cover">Cover</option>
-                     </select>
+                      <select
+                          value={videoObjectFit}
+                          onChange={(event) => handleSmartSliceObjectFitChange(event.target.value)}
+                          className="bg-[#222] border border-[#333] text-gray-300 text-[11px] rounded px-2 py-1 outline-none focus:border-blue-500 transition-colors"
+                       >
+                        {smartSliceObjectFitOptions.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
 
                      <Settings2 size={16} className="cursor-pointer hover:text-white transition-colors ml-2" />
                   </div>
                 </div>
+                {displayStudioClipTimelineSnapshot ? (
+                  <div className="border-t border-[#262626] pt-3">
+                    <SmartSliceTimelineWorkbench
+                      snapshot={displayStudioClipTimelineSnapshot}
+                      reviewSegments={displayReviewSegments}
+                      activeReviewSegmentId={displayActiveReviewSegmentId}
+                      currentTimeMs={Math.round(currentTime * 1_000)}
+                      durationMs={studioClipTimelineDurationMs}
+                      previewRange={timelineController.previewRange}
+                      boundaryPreview={timelineController.boundaryPreview}
+                      isEditable={Boolean(effectiveReviewSession)}
+                      isPlaying={isPlaying}
+                      onTogglePlay={() => playerRef.current?.togglePlay()}
+                      onSeekMs={timelineController.seekTimelineMs}
+                      onPreviewClip={timelineController.previewClip}
+                      onPreviewClipBoundaryDrag={timelineController.previewClipBoundaryDrag}
+                      onCommitClipBoundary={timelineController.commitClipBoundary}
+                      onSplitClipAtTime={timelineController.splitClipAtTime}
+                    />
+                  </div>
+                ) : null}
             </div>
 
             {/* File Info Bar */}
@@ -2405,7 +2612,7 @@ export function SlicerPage() {
         </div>
 
         {/* Right: Parameters Sidebar */}
-        <aside className="w-[320px] xl:w-[340px] bg-[#0A0A0A] border-l border-[#222] flex flex-col shrink-0 z-10 shadow-[-4px_0_15px_-3px_rgba(0,0,0,0.5)]">
+        <aside className="w-[430px] xl:w-[460px] bg-[#0A0A0A] border-l border-[#222] flex flex-col shrink-0 z-10 shadow-[-4px_0_15px_-3px_rgba(0,0,0,0.5)]">
           {selectedTextInfo ? (
             <>
               <div className="h-14 border-b border-[#222] flex items-center px-5 shrink-0 justify-between">
@@ -2504,31 +2711,48 @@ export function SlicerPage() {
             </>
           ) : (
             <>
-              <div className="h-14 border-b border-[#222] flex items-center px-5 shrink-0 justify-between">
+              <div className="h-14 border-b border-[#222] flex items-center px-5 shrink-0">
                 <h2 className="text-[13px] font-bold text-gray-200 flex items-center gap-2 tracking-wide">
                   <Settings2 size={16} className="text-blue-500" />
-                  Smart Cut Engine Workbench
+                  {t('slicer.settings.title')}
                 </h2>
-                <span className="text-[11px] text-blue-400">commercial brief</span>
               </div>
 
               <div className="p-5 flex-1 overflow-y-auto w-full custom-scrollbar styled-scrollbar">
-                <div className="space-y-6">
+                <div className="space-y-5">
               <section className="rounded-lg border border-[#262626] bg-[#101010] p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="text-[11px] font-bold uppercase tracking-wider text-blue-300">Workflow Mode</div>
-                    <div className="mt-1 text-xs leading-5 text-gray-300">Auto render or review before render</div>
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-blue-300">{t('slicer.settings.status.title')}</div>
                   </div>
-                  <span className="rounded border border-[#333] bg-[#141414] px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-300">
-                    {runMode === 'review-before-render' ? 'Human-in-loop' : 'One-click'}
+                  <span className={`rounded border px-2 py-1 text-[10px] font-bold uppercase tracking-wider ${
+                    smartSliceReadyForRun
+                      ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                      : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+                  }`}>
+                    {smartSliceReadyForRun ? t('slicer.settings.status.ready') : t('slicer.settings.status.needsSetup')}
                   </span>
                 </div>
+                <div className="mt-3 divide-y divide-[#222] overflow-hidden rounded-md border border-[#222]">
+                  {smartSliceSettingsReadinessItems.map((item) => (
+                    <div key={item.id} className="flex items-center justify-between gap-3 bg-[#141414] px-3 py-2">
+                      <span className="text-[11px] font-medium text-gray-400">{item.label}</span>
+                      <span className={`inline-flex items-center gap-1.5 text-[11px] font-semibold ${item.ready ? 'text-emerald-300' : 'text-amber-300'}`}>
+                        {item.ready ? <CheckCircle2 size={12} /> : <AlertTriangle size={12} />}
+                        {item.value}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+              <section className="rounded-lg border border-[#262626] bg-[#101010] p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-blue-300">{t('slicer.settings.runMode.title')}</div>
+                  </div>
+                </div>
                 <div className="mt-3 grid grid-cols-2 gap-2">
-                  {[
-                    { id: 'review-before-render' as const, label: 'Review before render', detail: 'Analyze first, edit segments, then render selected.' },
-                    { id: 'auto-render' as const, label: 'Auto render', detail: 'Plan, filter, and render in one automated run.' },
-                  ].map((option) => (
+                  {smartSliceRunModeOptions.map((option) => (
                     <button
                       key={option.id}
                       type="button"
@@ -2549,64 +2773,176 @@ export function SlicerPage() {
               <section className="rounded-lg border border-[#262626] bg-[#101010] p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="text-[11px] font-bold uppercase tracking-wider text-blue-300">Segment Review Workbench</div>
-                    <div className="mt-1 text-xs leading-5 text-gray-300">Preview planned segments, select exports, and remove duplicate content</div>
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-blue-300">{t('slicer.settings.basic.title')}</div>
                   </div>
-                  <span className={`rounded border px-2 py-1 text-[10px] font-bold uppercase tracking-wider ${
-                    effectiveReviewSession
-                      ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
-                      : 'border-[#333] bg-[#141414] text-gray-500'
-                  }`}>
-                    {isSavingReviewDraft
-                      ? 'Saving'
-                      : reviewDraftSaveError
-                        ? 'Save failed'
-                        : reviewDraftSavedAt
-                          ? `Saved ${reviewDraftSavedAt}`
-                          : effectiveReviewSession
-                            ? 'Ready'
-                            : 'No plan'}
-                  </span>
                 </div>
-                {reviewDraftSaveError ? (
-                  <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[10px] leading-4 text-amber-100">
-                    {reviewDraftSaveError}
-                  </div>
-                ) : null}
 
-                {effectiveReviewSession ? (
+                <div className="mt-4 space-y-4">
+                  <div>
+                    <label className="mb-2.5 flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-gray-500">
+                      <span>{t('slicer.settings.basic.duration')}</span>
+                      <span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] text-blue-400">{minDuration}s - {maxDuration}s</span>
+                    </label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {smartSliceDurationControls.map((item) => (
+                        <div key={item.id} className="relative">
+                          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] font-medium text-gray-500">{item.label}</span>
+                          <input
+                            type="number"
+                            value={item.value}
+                            onChange={(event) =>
+                              item.update((currentValue) =>
+                                normalizeSlicerNumberInput(event.target.value, currentValue, item.min, item.max),
+                              )
+                            }
+                            className="w-full rounded-lg border border-[#222] bg-[#141414] py-1.5 pl-12 pr-2 text-xs text-white outline-none transition-all focus:border-blue-500 focus:bg-[#1A1A1A]"
+                            min={item.min}
+                            max={item.max}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-[11px] font-bold uppercase tracking-wider text-gray-500">{t('slicer.settings.basic.format')}</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <select
+                        value={aspectRatio}
+                        onChange={(event) => handleSmartSliceAspectRatioChange(event.target.value)}
+                        className="rounded-lg border border-[#222] bg-[#141414] px-3 py-2 text-xs text-gray-200 outline-none transition-all focus:border-blue-500"
+                      >
+                        {smartSliceAspectRatioOptions.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={videoObjectFit}
+                        onChange={(event) => handleSmartSliceObjectFitChange(event.target.value)}
+                        className="rounded-lg border border-[#222] bg-[#141414] px-3 py-2 text-xs text-gray-200 outline-none transition-all focus:border-blue-500"
+                      >
+                        {smartSliceObjectFitOptions.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-[11px] font-bold uppercase tracking-wider text-gray-400">{t('slicer.settings.basic.subtitles')}</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleSubtitleToggle}
+                        className={`inline-flex min-w-[68px] shrink-0 items-center gap-1.5 rounded border px-2 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                          enableSubtitles
+                            ? 'border-blue-500/40 bg-blue-500/15 text-blue-200'
+                            : 'border-[#333] bg-[#141414] text-gray-400 hover:border-[#444] hover:text-gray-200'
+                        }`}
+                        aria-pressed={enableSubtitles}
+                      >
+                        <Type size={12} />
+                        {enableSubtitles ? t('slicer.settings.common.on') : t('slicer.settings.common.off')}
+                      </button>
+                    </div>
+                    {enableSubtitles ? (
+                      <div className="mt-3 rounded-lg border border-[#222] bg-[#141414] p-3">
+                        <div className="mb-3 grid grid-cols-3 gap-1">
+                          {smartSliceSubtitleModeOptions.map((option) => (
+                            <button
+                              key={option.value}
+                              type="button"
+                              onClick={() => setSubtitleMode(option.value)}
+                              className={`rounded border px-2 py-1.5 text-[10px] font-medium transition-colors ${
+                                subtitleMode === option.value
+                                  ? 'border-blue-500/60 bg-blue-500/15 text-blue-200'
+                                  : 'border-[#333] bg-[#0A0A0A] text-gray-400 hover:border-[#444] hover:text-gray-200'
+                              }`}
+                            >
+                              {option.label}
+                            </button>
+                          ))}
+                        </div>
+                        <select
+                          value={selectedSubtitleStyle}
+                          onChange={(event) => setSelectedSubtitleStyle(event.target.value)}
+                          className="w-full rounded border border-[#333] bg-[#0A0A0A] px-2.5 py-1.5 text-xs text-gray-200 outline-none transition-all focus:border-blue-500"
+                        >
+                          {TEXT_EFFECTS.map((effect) => (
+                            <option key={effect.id} value={effect.id}>{effect.name} - {effect.text}</option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-[11px] font-bold uppercase tracking-wider text-gray-500">{t('slicer.settings.basic.audio')}</label>
+                    <div className="space-y-1">
+                      {smartSliceAudioCleanupControls.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={item.toggle}
+                          className="flex w-full items-center justify-between rounded-lg px-1.5 py-1.5 text-left transition-colors hover:bg-[#111]"
+                          aria-pressed={item.enabled}
+                        >
+                          <span className="flex items-center gap-2.5 text-xs font-medium text-gray-300">
+                            <span className="flex h-6 w-6 items-center justify-center rounded border border-[#222] bg-[#1A1A1A] text-gray-400">{item.icon}</span>
+                            {item.label}
+                          </span>
+                          <span className={`relative h-4 w-7 rounded-full p-0.5 transition-colors ${item.enabled ? 'bg-blue-600' : 'bg-[#333]'}`}>
+                            <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition-transform ${item.enabled ? 'translate-x-3' : 'translate-x-0'}`} />
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              {effectiveReviewSession ? (
+                <section className="rounded-lg border border-[#262626] bg-[#101010] p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[11px] font-bold uppercase tracking-wider text-blue-300">{t('slicer.settings.review.title')}</div>
+                    </div>
+                    <span className="rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-200">
+                      {smartSliceReviewStatusBadge}
+                    </span>
+                  </div>
+                  {reviewDraftSaveError ? (
+                    <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[10px] leading-4 text-amber-100">
+                      {reviewDraftSaveError}
+                    </div>
+                  ) : null}
+
                   <div className="mt-3 space-y-3">
                     <div className="grid grid-cols-4 gap-2">
-                      <div className="rounded border border-[#252525] bg-[#141414] px-2 py-2">
-                        <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Segments</div>
-                        <div className="mt-1 text-[12px] font-semibold text-gray-100">{reviewSegments.length}</div>
-                      </div>
-                      <div className="rounded border border-[#252525] bg-[#141414] px-2 py-2">
-                        <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Selected</div>
-                        <div className="mt-1 text-[12px] font-semibold text-emerald-200">{selectedReviewSegmentCount}</div>
-                      </div>
-                      <div className="rounded border border-[#252525] bg-[#141414] px-2 py-2">
-                        <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Duplicates</div>
-                        <div className="mt-1 text-[12px] font-semibold text-amber-200">{duplicateReviewSegmentCount}</div>
-                        {duplicateReviewGroupCount || smartDedupRiskSegmentCount ? (
-                          <div className="mt-0.5 text-[9px] text-gray-500">
-                            {duplicateReviewGroupCount} groups / {smartDedupRiskSegmentCount} AI risk
-                          </div>
-                        ) : null}
-                      </div>
-                      <div className="rounded border border-[#252525] bg-[#141414] px-2 py-2">
-                        <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Excluded</div>
-                        <div className="mt-1 text-[12px] font-semibold text-gray-300">{excludedReviewSegmentCount}</div>
-                      </div>
+                      {smartSliceReviewMetricItems.map((metric) => (
+                        <div key={metric.id} className="rounded border border-[#252525] bg-[#141414] px-2 py-2">
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{metric.label}</div>
+                          <div className={`mt-1 text-[12px] font-semibold ${metric.valueClassName}`}>{metric.value}</div>
+                          {metric.detail ? (
+                            <div className="mt-0.5 text-[9px] text-gray-500">{metric.detail}</div>
+                          ) : null}
+                        </div>
+                      ))}
                     </div>
 
                     {effectiveReviewSession.smartDedupReport ? (
                       <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2">
                         <div className="flex items-center justify-between gap-3">
                           <div className="min-w-0">
-                            <div className="text-[10px] font-bold uppercase tracking-wider text-amber-200">Smart dedup review</div>
+                            <div className="text-[10px] font-bold uppercase tracking-wider text-amber-200">{t('slicer.settings.review.dedup.title')}</div>
                             <div className="mt-1 truncate text-[10px] text-amber-100/80">
-                              {effectiveReviewSession.smartDedupReport.matchCount} matches / {smartDedupRiskSegmentCount} risk segments / {effectiveReviewSession.smartDedupReport.strategies.join(', ')}
+                              {t('slicer.settings.review.dedup.detail', {
+                                matches: effectiveReviewSession.smartDedupReport.matchCount,
+                                risks: smartDedupRiskSegmentCount,
+                                strategies: effectiveReviewSession.smartDedupReport.strategies.join(', '),
+                              })}
                             </div>
                           </div>
                           <button
@@ -2614,7 +2950,7 @@ export function SlicerPage() {
                             onClick={() => setReviewVisibilityFilter('duplicates')}
                             className="shrink-0 rounded border border-amber-400/40 bg-[#101010] px-2 py-1 text-[10px] font-semibold text-amber-100 hover:border-amber-300"
                           >
-                            Review
+                            {t('slicer.settings.review.action.reviewDuplicates')}
                           </button>
                         </div>
                       </div>
@@ -2623,28 +2959,36 @@ export function SlicerPage() {
                     <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
                       <div className="flex items-center justify-between gap-3">
                         <div>
-                          <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Previewing Segment</div>
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{t('slicer.settings.review.preview.title')}</div>
                           <div className="mt-1 truncate text-[12px] font-semibold text-gray-100">
-                            {activeReviewSegment ? activeReviewSegment.title : 'No segment selected'}
+                            {activeReviewSegment ? activeReviewSegment.title : t('slicer.settings.review.preview.emptyTitle')}
                           </div>
                         </div>
                         {activeReviewSegment ? (
                           <button
                             type="button"
-                            onClick={() => handlePreviewReviewSegment(activeReviewSegment)}
+                            onClick={() => timelineController.previewReviewSegment(activeReviewSegment)}
                             className="shrink-0 rounded border border-blue-500/40 bg-blue-500/10 px-2 py-1 text-[10px] font-semibold text-blue-200 hover:border-blue-400"
                           >
-                            Preview
+                            {t('slicer.settings.review.action.preview')}
                           </button>
                         ) : null}
                       </div>
-                      <div className="mt-2 text-[10px] leading-4 text-gray-500">
-                        {activeReviewSegment
-                          ? `${formatTime(activeReviewSegment.startMs / 1_000)} - ${formatTime(activeReviewSegment.endMs / 1_000)} | ${activeReviewSegment.speakerRoles.join(', ') || activeReviewSegment.speakerIds.join(', ') || 'speaker evidence pending'}`
-                          : 'Run analysis to generate a reviewable semantic segment plan.'}
-                      </div>
+                      {activeReviewSegment ? (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {smartSliceReviewPreviewMetaItems.map((item) => (
+                            <span key={item.id} className="rounded border border-[#303030] bg-[#101010] px-1.5 py-0.5 text-[9px] font-semibold text-gray-400">
+                              {item.label}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-[10px] leading-4 text-gray-500">
+                          {t('slicer.settings.review.preview.emptyDetail')}
+                        </div>
+                      )}
                       <div className="mt-2 line-clamp-3 text-[10px] leading-4 text-gray-400">
-                        {activeReviewSegment?.transcriptText || activeReviewSegment?.summary || 'Transcript and speaker evidence will appear here for manual boundary review.'}
+                        {activeReviewSegment?.transcriptText || activeReviewSegment?.summary || t('slicer.settings.review.preview.transcriptPending')}
                       </div>
                     </div>
 
@@ -2652,96 +2996,87 @@ export function SlicerPage() {
                       <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
                         <div className="flex items-center justify-between gap-3">
                           <div>
-                            <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Real-time Correction</div>
+                            <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{t('slicer.settings.review.correction.title')}</div>
                             <div className="mt-1 text-[10px] leading-4 text-gray-500">
-                              Edit boundaries, transcript, speaker labels, and review notes before rendering.
+                              {t('slicer.settings.review.correction.description')}
                             </div>
                           </div>
                           <button
                             type="button"
-                            onClick={handleApplyReviewSegmentCorrection}
+                            onClick={() => setShowReviewCorrectionEditor((shown) => !shown)}
+                            aria-expanded={showReviewCorrectionEditor}
                             className="shrink-0 rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-semibold text-cyan-200 hover:border-cyan-400"
                           >
-                            Save correction
+                            {showReviewCorrectionEditor
+                              ? t('slicer.settings.review.action.hideCorrection')
+                              : t('slicer.settings.review.action.editCorrection')}
                           </button>
                         </div>
-                        <div className="mt-3 grid grid-cols-2 gap-2">
-                          <input
-                            type="text"
-                            value={reviewCorrectionDraft.title}
-                            onChange={(event) => setReviewCorrectionDraft((draft) => ({ ...draft, title: event.target.value }))}
-                            className="col-span-2 rounded border border-[#303030] bg-[#101010] px-2 py-1.5 text-[10px] text-gray-200 outline-none focus:border-cyan-500"
-                            placeholder="Segment title"
-                          />
-                          <input
-                            type="number"
-                            value={reviewCorrectionDraft.startMs}
-                            onChange={(event) => setReviewCorrectionDraft((draft) => ({ ...draft, startMs: event.target.value }))}
-                            className="rounded border border-[#303030] bg-[#101010] px-2 py-1.5 text-[10px] text-gray-200 outline-none focus:border-cyan-500"
-                            placeholder="Start ms"
-                          />
-                          <input
-                            type="number"
-                            value={reviewCorrectionDraft.endMs}
-                            onChange={(event) => setReviewCorrectionDraft((draft) => ({ ...draft, endMs: event.target.value }))}
-                            className="rounded border border-[#303030] bg-[#101010] px-2 py-1.5 text-[10px] text-gray-200 outline-none focus:border-cyan-500"
-                            placeholder="End ms"
-                          />
-                          <input
-                            type="text"
-                            value={reviewCorrectionDraft.speakerRoles}
-                            onChange={(event) => setReviewCorrectionDraft((draft) => ({ ...draft, speakerRoles: event.target.value }))}
-                            className="col-span-2 rounded border border-[#303030] bg-[#101010] px-2 py-1.5 text-[10px] text-gray-200 outline-none focus:border-cyan-500"
-                            placeholder="Speaker labels, comma separated"
-                          />
-                          <textarea
-                            value={reviewCorrectionDraft.transcriptText}
-                            onChange={(event) => setReviewCorrectionDraft((draft) => ({ ...draft, transcriptText: event.target.value }))}
-                            className="col-span-2 min-h-16 rounded border border-[#303030] bg-[#101010] px-2 py-1.5 text-[10px] leading-4 text-gray-200 outline-none focus:border-cyan-500"
-                            placeholder="Transcript correction"
-                          />
-                          <textarea
-                            value={reviewCorrectionDraft.manualNotes}
-                            onChange={(event) => setReviewCorrectionDraft((draft) => ({ ...draft, manualNotes: event.target.value }))}
-                            className="col-span-2 min-h-12 rounded border border-[#303030] bg-[#101010] px-2 py-1.5 text-[10px] leading-4 text-gray-200 outline-none focus:border-cyan-500"
-                            placeholder="Review notes"
-                          />
-                        </div>
+                        {showReviewCorrectionEditor ? (
+                          <div className="mt-3 space-y-2">
+                            <div className="grid grid-cols-2 gap-2">
+                              {smartSliceReviewCorrectionFields.map((field) =>
+                                field.control === 'textarea' ? (
+                                  <textarea
+                                    key={field.id}
+                                    value={field.value}
+                                    onChange={(event) => updateSmartSliceReviewCorrectionDraftField(field.id, event.target.value)}
+                                    className={`rounded border border-[#303030] bg-[#101010] px-2 py-1.5 text-[10px] outline-none focus:border-cyan-500 ${field.className}`}
+                                    placeholder={field.placeholder}
+                                  />
+                                ) : (
+                                  <input
+                                    key={field.id}
+                                    type={field.inputType}
+                                    value={field.value}
+                                    onChange={(event) => updateSmartSliceReviewCorrectionDraftField(field.id, event.target.value)}
+                                    className={`rounded border border-[#303030] bg-[#101010] px-2 py-1.5 text-[10px] outline-none focus:border-cyan-500 ${field.className}`}
+                                    placeholder={field.placeholder}
+                                  />
+                                ),
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={handleApplyReviewSegmentCorrection}
+                              className="w-full rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1.5 text-[10px] font-semibold text-cyan-200 hover:border-cyan-400"
+                            >
+                              {t('slicer.settings.review.action.saveCorrection')}
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
 
                     <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
                       <div className="flex items-center justify-between gap-3">
                         <div>
-                          <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Review Queue</div>
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{t('slicer.settings.review.queue.title')}</div>
                           <div className="mt-1 text-[10px] leading-4 text-gray-500">
-                            Filter segments, resolve duplicates, then render only confirmed selections.
+                            {t('slicer.settings.review.queue.description')}
                           </div>
                         </div>
                         <div className="flex shrink-0 gap-1">
                           <button
                             type="button"
                             onClick={handleSelectAllReviewSegments}
-                            className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-200 hover:border-emerald-400"
+                            disabled={!canSelectAllReviewSegments}
+                            className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-200 hover:border-emerald-400 disabled:cursor-not-allowed disabled:border-[#333] disabled:bg-[#101010] disabled:text-gray-600"
                           >
-                            Select all publishable
+                            {t('slicer.settings.review.action.selectAll')}
                           </button>
                           <button
                             type="button"
                             onClick={handleClearReviewSegmentSelection}
-                            className="rounded border border-[#333] bg-[#101010] px-2 py-1 text-[10px] font-semibold text-gray-300 hover:border-[#444]"
+                            disabled={!canClearReviewSegmentSelection}
+                            className="rounded border border-[#333] bg-[#101010] px-2 py-1 text-[10px] font-semibold text-gray-300 hover:border-[#444] disabled:cursor-not-allowed disabled:text-gray-600 disabled:hover:border-[#333]"
                           >
-                            Clear selection
+                            {t('slicer.settings.review.action.clearSelection')}
                           </button>
                         </div>
                       </div>
                       <div className="mt-3 grid grid-cols-4 gap-1">
-                        {[
-                          { id: 'all' as const, label: 'All segments' },
-                          { id: 'selected' as const, label: 'Selected only' },
-                          { id: 'duplicates' as const, label: 'Duplicates only' },
-                          { id: 'excluded' as const, label: 'Excluded only' },
-                        ].map((filter) => (
+                        {smartSliceReviewFilterOptions.map((filter) => (
                           <button
                             key={filter.id}
                             type="button"
@@ -2761,12 +3096,82 @@ export function SlicerPage() {
                     <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
                       {visibleReviewSegments.length === 0 ? (
                         <div className="rounded-lg border border-dashed border-[#303030] bg-[#141414] p-4 text-[11px] leading-5 text-gray-500">
-                          No segments match the current review filter.
+                          {t('slicer.settings.review.queue.empty')}
                         </div>
                       ) : visibleReviewSegments.map((segment) => {
                         const index = Math.max(0, reviewSegments.findIndex((candidate) => candidate.id === segment.id));
-                        const selected = selectedReviewSegmentIds.includes(segment.id) && segment.status === 'selected';
+                        const selected = segment.selected && segment.status === 'selected';
                         const previewing = activeReviewSegment?.id === segment.id;
+                        const reviewSegmentActionsExpanded = expandedReviewSegmentActionId === segment.id;
+                        const previousReviewSegment = reviewSegments[index - 1];
+                        const nextReviewSegment = reviewSegments[index + 1];
+                        const canMergeWithPreviousReviewSegment =
+                          segment.status !== 'duplicate' && previousReviewSegment !== undefined && previousReviewSegment.status !== 'duplicate';
+                        const canMergeWithNextReviewSegment =
+                          segment.status !== 'duplicate' && nextReviewSegment !== undefined && nextReviewSegment.status !== 'duplicate';
+                        const reviewSegmentBadgeItems = [
+                          ...segment.speakerRoles.slice(0, 3).map((speakerRole, speakerRoleIndex) => ({
+                            id: `speaker-${speakerRoleIndex}-${speakerRole}`,
+                            label: speakerRole,
+                            className: 'border-[#333] bg-[#101010] text-gray-400',
+                          })),
+                          ...segment.risks.slice(0, 3).map((risk, riskIndex) => ({
+                            id: `risk-${riskIndex}-${risk}`,
+                            label: risk,
+                            className: 'border-amber-500/30 bg-amber-500/10 text-amber-200',
+                          })),
+                          ...(segment.status === 'duplicate'
+                            ? [{
+                                id: 'duplicate-excluded',
+                                label: t('slicer.settings.review.segment.duplicateExcluded'),
+                                className: 'border-amber-500/30 bg-amber-500/10 text-amber-200',
+                              }]
+                            : []),
+                          ...(previewing
+                            ? [{
+                                id: 'previewing',
+                                label: t('slicer.settings.review.segment.previewing'),
+                                className: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-200',
+                              }]
+                            : []),
+                        ];
+                        const reviewSegmentActionItems = [
+                          {
+                            id: 'split',
+                            label: t('slicer.settings.review.action.split'),
+                            onClick: () => timelineController.splitClipAtTime(segment.id),
+                            className: 'border-[#333] bg-[#101010] text-gray-300 hover:border-blue-500/50 hover:text-blue-200',
+                          },
+                          ...(canMergeWithPreviousReviewSegment
+                            ? [{
+                                id: 'merge-previous',
+                                label: t('slicer.settings.review.action.mergePrevious'),
+                                onClick: () => handleMergeReviewSegment(segment.id, 'previous'),
+                                className: 'border-[#333] bg-[#101010] text-gray-300 hover:border-blue-500/50 hover:text-blue-200',
+                              }]
+                            : []),
+                          ...(canMergeWithNextReviewSegment
+                            ? [{
+                                id: 'merge-next',
+                                label: t('slicer.settings.review.action.mergeNext'),
+                                onClick: () => handleMergeReviewSegment(segment.id, 'next'),
+                                className: 'border-[#333] bg-[#101010] text-gray-300 hover:border-blue-500/50 hover:text-blue-200',
+                              }]
+                            : []),
+                          segment.status === 'duplicate' || !segment.selected
+                            ? {
+                                id: 'restore',
+                                label: t('slicer.settings.review.action.restore'),
+                                onClick: () => handleRestoreReviewSegment(segment.id),
+                                className: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:border-emerald-400',
+                              }
+                            : {
+                                id: 'delete-duplicate',
+                                label: t('slicer.settings.review.action.deleteDuplicate'),
+                                onClick: () => handleDeleteDuplicateReviewSegment(segment.id),
+                                className: 'border-amber-500/30 bg-amber-500/10 text-amber-200 hover:border-amber-400',
+                              },
+                        ];
                         return (
                           <div
                             key={segment.id}
@@ -2785,6 +3190,7 @@ export function SlicerPage() {
                                 type="checkbox"
                                 checked={selected}
                                 onChange={() => handleToggleReviewSegment(segment.id)}
+                                disabled={segment.status === 'duplicate'}
                                 className="mt-1 h-4 w-4 accent-blue-500"
                                 aria-label={`Select review segment ${index + 1}`}
                               />
@@ -2792,7 +3198,7 @@ export function SlicerPage() {
                                 <div className="flex items-center justify-between gap-2">
                                   <button
                                     type="button"
-                                    onClick={() => handlePreviewReviewSegment(segment)}
+                                    onClick={() => timelineController.previewReviewSegment(segment)}
                                     className="truncate text-left text-[11px] font-bold text-gray-100 hover:text-blue-300"
                                   >
                                     {String(index + 1).padStart(2, '0')}. {segment.title}
@@ -2802,50 +3208,41 @@ export function SlicerPage() {
                                   </span>
                                 </div>
                                 <div className="mt-1 line-clamp-2 text-[10px] leading-4 text-gray-500">
-                                  {segment.transcriptText || segment.summary || 'Transcript evidence retained for this segment.'}
+                                  {segment.transcriptText || segment.summary || t('slicer.settings.review.segment.transcriptFallback')}
                                 </div>
                                 <div className="mt-2 flex flex-wrap gap-1">
-                                  {segment.speakerRoles.slice(0, 3).map((speakerRole) => (
-                                    <span key={speakerRole} className="rounded border border-[#333] bg-[#101010] px-1.5 py-0.5 text-[9px] font-semibold text-gray-400">
-                                      {speakerRole}
+                                  {reviewSegmentBadgeItems.map((badge) => (
+                                    <span key={badge.id} className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold ${badge.className}`}>
+                                      {badge.label}
                                     </span>
                                   ))}
-                                  {segment.risks.slice(0, 3).map((risk) => (
-                                    <span key={risk} className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-amber-200">
-                                      {risk}
-                                    </span>
-                                  ))}
-                                  {segment.status === 'duplicate' ? (
-                                    <span className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-amber-200">
-                                      duplicate excluded
-                                    </span>
-                                  ) : null}
-                                  {previewing ? (
-                                    <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-cyan-200">
-                                      previewing
-                                    </span>
-                                  ) : null}
                                 </div>
-                                <div className="mt-2 grid grid-cols-4 gap-1">
-                                  <button type="button" onClick={() => handleSplitReviewSegment(segment.id)} className="rounded border border-[#333] bg-[#101010] px-1.5 py-1 text-[9px] font-semibold text-gray-300 hover:border-blue-500/50 hover:text-blue-200">
-                                    Split
+                                <div className="mt-2 flex items-center justify-end">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleReviewSegmentActions(segment.id)}
+                                    aria-expanded={reviewSegmentActionsExpanded}
+                                    className="rounded border border-[#333] bg-[#101010] px-2 py-1 text-[9px] font-semibold text-gray-300 hover:border-[#444] hover:text-gray-100"
+                                  >
+                                    {reviewSegmentActionsExpanded
+                                      ? t('slicer.settings.review.action.hideSegmentActions')
+                                      : t('slicer.settings.review.action.showSegmentActions')}
                                   </button>
-                                  <button type="button" onClick={() => handleMergeReviewSegment(segment.id, 'previous')} className="rounded border border-[#333] bg-[#101010] px-1.5 py-1 text-[9px] font-semibold text-gray-300 hover:border-blue-500/50 hover:text-blue-200">
-                                    Merge prev
-                                  </button>
-                                  <button type="button" onClick={() => handleMergeReviewSegment(segment.id, 'next')} className="rounded border border-[#333] bg-[#101010] px-1.5 py-1 text-[9px] font-semibold text-gray-300 hover:border-blue-500/50 hover:text-blue-200">
-                                    Merge next
-                                  </button>
-                                  {segment.status === 'duplicate' || !segment.selected ? (
-                                    <button type="button" onClick={() => handleRestoreReviewSegment(segment.id)} className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-1 text-[9px] font-semibold text-emerald-200 hover:border-emerald-400">
-                                      Restore
-                                    </button>
-                                  ) : (
-                                    <button type="button" onClick={() => handleDeleteDuplicateReviewSegment(segment.id)} className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-1 text-[9px] font-semibold text-amber-200 hover:border-amber-400">
-                                      Delete dup
-                                    </button>
-                                  )}
                                 </div>
+                                {reviewSegmentActionsExpanded ? (
+                                  <div className="mt-2 grid grid-cols-2 gap-1">
+                                    {reviewSegmentActionItems.map((action) => (
+                                      <button
+                                        key={action.id}
+                                        type="button"
+                                        onClick={action.onClick}
+                                        className={`rounded border px-1.5 py-1 text-[9px] font-semibold ${action.className}`}
+                                      >
+                                        {action.label}
+                                      </button>
+                                    ))}
+                                  </div>
+                                ) : null}
                               </div>
                             </div>
                           </div>
@@ -2858,279 +3255,81 @@ export function SlicerPage() {
                       size="lg"
                       className="w-full justify-center gap-2 rounded-lg bg-emerald-600 py-3 text-xs font-bold text-white hover:bg-emerald-500 disabled:bg-[#252525] disabled:text-gray-500"
                       onClick={handleRenderSelectedReviewSegments}
-                      disabled={isRenderingReviewSelection || selectedReviewSegmentIds.length === 0}
+                      disabled={isRenderingReviewSelection || renderableReviewSegmentCount === 0}
                     >
                       <Scissors size={16} />
-                      {isRenderingReviewSelection ? 'Rendering selected...' : `Render selected (${selectedReviewSegmentIds.length})`}
+                      {isRenderingReviewSelection
+                        ? t('slicer.settings.review.action.rendering')
+                        : t('slicer.settings.review.action.renderSelected', { count: renderableReviewSegmentCount })}
                     </Button>
                   </div>
-                ) : (
-                  <div className="mt-3 rounded-lg border border-dashed border-[#303030] bg-[#141414] p-4 text-[11px] leading-5 text-gray-500">
-                    Run Review before render to create an editable segment plan. Automatic slicing remains available through Auto render.
-                  </div>
-                )}
-              </section>
+                </section>
+              ) : (
+                <div className="rounded-lg border border-dashed border-[#303030] bg-[#101010] p-4 text-[11px] leading-5 text-gray-500">
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-blue-300">{t('slicer.settings.review.emptyTitle')}</div>
+                </div>
+              )}
 
-              <section className="rounded-lg border border-[#262626] bg-[#101010] p-4">
-                <div className="flex items-start justify-between gap-3">
+              <section className="rounded-lg border border-[#262626] bg-[#101010]">
+                <button
+                  type="button"
+                  onClick={() => setShowAdvancedSettings((shown) => !shown)}
+                  className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+                  aria-expanded={showAdvancedSettings}
+                >
                   <div>
-                    <div className="text-[11px] font-bold uppercase tracking-wider text-blue-300">Smart Cut Engine</div>
-                    <div className="mt-1 text-xs leading-5 text-gray-300">Semantic boundaries first, filters second</div>
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-blue-300">{t('slicer.settings.advanced.title')}</div>
                   </div>
-                  <span className={`rounded border px-2 py-1 text-[10px] font-bold uppercase tracking-wider ${
-                    requiresSpeakerDiarization
-                      ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
-                      : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
-                  }`}>
-                    {requiresSpeakerDiarization ? 'Multi-speaker gate' : 'Single-speaker ready'}
-                  </span>
-                </div>
+                  <ChevronRight size={16} className={`text-gray-500 transition-transform ${showAdvancedSettings ? 'rotate-90' : ''}`} />
+                </button>
 
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {SMART_CUT_ENGINE_BADGES.map((badge) => (
-                    <span key={badge} className="rounded border border-[#303030] bg-[#151515] px-2 py-1 text-[10px] font-semibold text-gray-300">
-                      {badge}
-                    </span>
-                  ))}
-                </div>
-
-                <div className="mt-4 rounded-lg border border-[#252525] bg-[#141414] p-3">
-                  <div className="flex items-center justify-between gap-3">
+                {showAdvancedSettings ? (
+                  <div className="space-y-4 border-t border-[#222] p-4">
                     <div>
-                      <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Scene Strategy</div>
-                      <div className="mt-1 text-[12px] font-semibold text-gray-100">{smartCutExperience.profile.title}</div>
-                    </div>
-                    <span className="rounded border border-[#333] bg-[#101010] px-2 py-1 text-[10px] font-semibold text-gray-300">
-                      {smartCutExperience.profile.primarySlicer}
-                    </span>
-                  </div>
-                  <div className="mt-2 text-[10px] leading-4 text-gray-500">{smartCutExperience.profile.strategy}</div>
-                </div>
-
-                <div className="mt-3 rounded-lg border border-[#252525] bg-[#141414] p-3">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Operator Brief</div>
-                  <div className="mt-2 space-y-1.5 text-[10px] leading-4 text-gray-400">
-                    <div><span className="font-semibold text-gray-200">Clip:</span> {smartCutExperience.publishableClipContract}</div>
-                    <div><span className="font-semibold text-gray-200">Split:</span> {smartCutExperience.qaSplitContract}</div>
-                    <div><span className="font-semibold text-gray-200">Format:</span> {smartCutExperience.formatContract}</div>
-                    <div><span className="font-semibold text-gray-200">Duration:</span> {smartCutExperience.durationContract}</div>
-                  </div>
-                </div>
-
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Evidence Gate</div>
-                    <div className="mt-1 text-[11px] font-semibold text-gray-200">
-                      {requiresSpeakerDiarization ? 'STT + speaker diarization' : 'STT + adaptive speaker evidence'}
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Boundary Contract</div>
-                    <div className="mt-1 text-[11px] leading-4 text-gray-200">{smartCutExperience.profile.boundaryContract}</div>
-                  </div>
-                  <div className="rounded-lg border border-[#252525] bg-[#141414] p-3 col-span-2">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Review Contract</div>
-                    <div className="mt-1 text-[11px] leading-4 text-gray-200">{smartCutExperience.profile.reviewContract}</div>
-                  </div>
-                </div>
-
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Quality Gate</div>
-                    <div className="mt-1 text-[11px] leading-4 text-gray-200">9:16 / 1080x1920 / 30fps MP4</div>
-                    <div className="mt-1 text-[10px] leading-4 text-gray-500">{smartCutExperience.subtitleContract}</div>
-                  </div>
-                  <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Fail Closed</div>
-                    <div className="mt-1 text-[11px] leading-4 text-gray-200">{smartCutExperience.failClosedPolicy}</div>
-                  </div>
-                  <div className="rounded-lg border border-[#252525] bg-[#141414] p-3 col-span-2">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Human Review</div>
-                    <div className="mt-1 text-[11px] leading-4 text-gray-200">{smartCutExperience.reviewCheckpoint}</div>
-                    <div className="mt-1 text-[10px] leading-4 text-gray-500">{smartCutExperience.coverContract}</div>
-                  </div>
-                </div>
-
-                <div className="mt-4 space-y-2">
-                  {SMART_CUT_ENGINE_PIPELINE_STEPS.map((step, index) => (
-                    <div key={step} className="grid grid-cols-[22px_1fr] items-start gap-2">
-                      <div className="flex h-5 w-5 items-center justify-center rounded border border-[#303030] bg-[#181818] text-[10px] font-bold text-gray-400">
-                        {index + 1}
-                      </div>
-                      <div>
-                        <div className="text-[11px] font-semibold text-gray-200">{step}</div>
-                        <div className="text-[10px] leading-4 text-gray-500">
-                          {step === 'Speech-to-text evidence' ? 'Timestamped transcript is the source of truth.' : null}
-                          {step === 'Speaker diarization' ? (requiresSpeakerDiarization ? 'Interview, dialogue, and meeting modes require real speaker labels.' : 'Talking-head mode can use a rule-based single-speaker adapter.') : null}
-                          {step === 'Semantic content units' ? 'Complete logical units are built before destructive media filters.' : null}
-                          {step === 'Candidate ID review' ? 'LLM ranks stable candidate ids and content unit ids only.' : null}
-                          {step === 'Post-filter render' ? 'Denoise, silence trim, abnormal fragment removal, and repeat dedupe run after accepted boundaries.' : null}
-                        </div>
+                      <label className="mb-2 block text-[11px] font-bold uppercase tracking-wider text-gray-500">{t('slicer.settings.advanced.scene')}</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {smartSliceSceneOptions.map((option) => (
+                          <button
+                            key={option.id}
+                            type="button"
+                            onClick={() => setSelectedMode(option.id)}
+                            className={`rounded-lg border px-2 py-2 text-left transition-all ${
+                              selectedMode === option.id
+                                ? 'border-blue-500 bg-blue-600/20 text-blue-300'
+                                : 'border-[#222] bg-[#141414] text-gray-400 hover:border-[#333] hover:text-gray-200'
+                            }`}
+                            title={option.title}
+                          >
+                            <span className="block truncate text-[11px] font-bold">{option.label}</span>
+                            <span className="mt-0.5 block truncate text-[9px] font-semibold uppercase tracking-wider text-gray-500">{option.detail}</span>
+                          </button>
+                        ))}
                       </div>
                     </div>
-                  ))}
-                </div>
 
-                <div className="mt-4 grid grid-cols-2 gap-2">
-                  {engineReadinessItems.map((item) => (
-                    <div key={item.label} className="rounded border border-[#252525] bg-[#141414] px-2 py-2">
-                      <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{item.label}</div>
-                      <div className="mt-1 truncate text-[11px] font-semibold text-gray-200" title={item.value}>{item.value}</div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-
-              <section className="rounded-lg border border-[#262626] bg-[#101010] p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-[11px] font-bold uppercase tracking-wider text-blue-300">Commercial Readiness</div>
-                    <div className="mt-1 text-xs leading-5 text-gray-300">Launch gates before Smart Cut Engine execution</div>
-                  </div>
-                  <span className={`rounded border px-2 py-1 text-[10px] font-bold uppercase tracking-wider ${
-                    hasCommercialReadinessBlocker
-                      ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
-                      : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
-                  }`}>
-                    {hasCommercialReadinessBlocker ? 'Blocked' : 'Ready'}
-                  </span>
-                </div>
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  {commercialReadinessItems.map((item) => (
-                    <div key={item.label} className="rounded border border-[#252525] bg-[#141414] px-2 py-2">
-                      <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{item.label}</div>
-                      <div className={`mt-1 text-[11px] font-semibold ${item.blocked ? 'text-amber-200' : 'text-gray-200'}`} title={item.value}>{item.value}</div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-
-              {/* Mode Selection */}
-              <div>
-                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-wider">
-                  Smart-edit scene
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  {MODES.map((mode) => {
-                    const modeProfile = resolveSmartCutEngineProductProfile(mode);
-                    return (
-                      <button
-                        key={mode}
-                        data-smart-cut-strategy-status={modeProfile.executionSupport.status}
-                        onClick={() => setSelectedMode(mode)}
-                        className={`px-2 py-2 text-left rounded-lg transition-all border ${
-                          selectedMode === mode
-                            ? "bg-blue-600/20 border-blue-500 text-blue-300 shadow-[0_0_10px_rgba(59,130,246,0.15)]"
-                            : "bg-[#141414] border-[#222] text-gray-400 hover:bg-[#1A1A1A] hover:border-[#333] hover:text-gray-200"
-                        }`}
+                    <div>
+                      <label className="mb-1.5 block text-[11px] font-medium text-gray-300">{t('slicer.settings.advanced.sttMode')}</label>
+                      <select
+                        value={selectedSttWorkflowPreset?.id ?? sttPresetId}
+                        onChange={(event) => {
+                          const nextPreset = availableSttWorkflowPresets.find((preset) => preset.id === event.target.value);
+                          if (nextPreset && !nextPreset.selectable) {
+                            toast(nextPreset.uiDisabledReason ?? t('slicer.settings.advanced.gpuRuntimeRequired'), 'error');
+                            return;
+                          }
+                          if (nextPreset) {
+                            setSttPresetId(nextPreset.id);
+                          }
+                        }}
+                        className="w-full rounded-lg border border-[#222] bg-[#141414] px-3 py-2 text-xs text-gray-200 outline-none transition-all focus:border-blue-500"
                       >
-                        <span className="block truncate text-[11px] font-bold">{formatSmartCutEngineModeLabel(mode)}</span>
-                        <span className="mt-0.5 block truncate text-[9px] font-semibold uppercase tracking-wider text-gray-500">{modeProfile.primarySlicer}</span>
-                        <span
-                          className={`mt-1 inline-flex max-w-full rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${
-                            modeProfile.executionSupport.ready
-                              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
-                              : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
-                          }`}
-                          title={modeProfile.executionSupport.detail}
-                        >
-                          {modeProfile.executionSupport.ready ? 'Ready' : 'Blocked'}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="w-full h-px bg-[#222]"></div>
-
-              {/* Publishing Strategy */}
-              <div>
-                <label className="block text-[11px] font-bold text-gray-500 mb-3 uppercase tracking-wider">Publishing Strategy</label>
-                <div className="space-y-3">
-                  <div>
-                    <div className="flex justify-between items-end mb-1.5">
-                       <span className="text-[11px] font-medium text-gray-300">Target Platform</span>
-                    </div>
-                    <div className="relative">
-                      <select
-                         value={targetPlatform}
-                         onChange={e => setTargetPlatform(e.target.value as SliceTargetPlatform)}
-                         className="w-full bg-[#141414] border border-[#222] hover:border-[#333] rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500 appearance-none transition-all cursor-pointer shadow-sm">
-                        <option value="douyin">Douyin / TikTok CN</option>
-                        <option value="kuaishou">Kuaishou</option>
-                        <option value="shipinhao">WeChat Channels</option>
-                        <option value="xiaohongshu">Xiaohongshu</option>
-                        <option value="bilibili">Bilibili</option>
-                        <option value="generic">Generic</option>
-                      </select>
-                      <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500">
-                        <svg width="8" height="5" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
-                          <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div>
-                      <div className="flex justify-between items-end mb-1.5">
-                         <span className="text-[11px] font-medium text-gray-300">Continuity</span>
-                      </div>
-                      <select
-                         value={continuityLevel}
-                         onChange={e => setContinuityLevel(e.target.value as SliceContinuityLevel)}
-                         className="w-full bg-[#141414] border border-[#222] hover:border-[#333] rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500 appearance-none transition-all cursor-pointer shadow-sm">
-                        <option value="standard">Standard</option>
-                        <option value="strict">Strict</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div>
-                      <div className="flex justify-between items-end mb-1.5">
-                         <span className="text-[11px] font-medium text-gray-300">Segmentation mode</span>
-                      </div>
-                      <select
-                         value={segmentationDensity}
-                         onChange={e => setSegmentationDensity(e.target.value as SliceSegmentationDensity)}
-                         className="w-full bg-[#141414] border border-[#222] hover:border-[#333] rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500 appearance-none transition-all cursor-pointer shadow-sm">
-                        <option value="default">Default segmentation</option>
-                        <option value="maximize-continuity">Maximize continuous content</option>
-                      </select>
-                      <div className="mt-1 text-[10px] leading-4 text-gray-500">
-                        Merge continuous semantic units up to max duration.
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div>
-                      <div className="flex justify-between items-end mb-1.5">
-                         <span className="text-[11px] font-medium text-gray-300">Speech-to-text mode</span>
-                      </div>
-                      <select
-                         value={selectedSttWorkflowPreset?.id ?? sttPresetId}
-                         onChange={e => {
-                           const nextPreset = availableSttWorkflowPresets.find((preset) => preset.id === e.target.value);
-                           if (nextPreset && !nextPreset.selectable) {
-                             toast(nextPreset.uiDisabledReason ?? SMART_SLICE_GPU_STT_RUNTIME_REQUIRED_REASON, 'error');
-                             return;
-                           }
-                           setSttPresetId(e.target.value);
-                         }}
-                         className="w-full bg-[#141414] border border-[#222] hover:border-[#333] rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500 appearance-none transition-all cursor-pointer shadow-sm">
                         {availableSttWorkflowPresets.map((preset) => (
                           <option key={preset.id} value={preset.id} disabled={!preset.selectable}>{preset.uiLabel}</option>
                         ))}
                       </select>
                       {selectedSttWorkflowPreset ? (
                         <div className="mt-1 text-[10px] leading-4 text-gray-500">
-                          {selectedSttWorkflowPreset.executionProfile}
-                          {selectedSttWorkflowPreset.localWhisper
-                            ? ` / ${selectedSttWorkflowPreset.localWhisper.chunkSourceStrategy} / chunks ${selectedSttWorkflowPreset.localWhisper.chunkParallelism}x${selectedSttWorkflowPreset.localWhisper.chunkThreadCount}t`
-                            : ` / ${selectedSttWorkflowPreset.modelVendor ?? 'api'} / speaker diarization`}
+                          {selectedSttWorkflowPreset.uiDetail}
                         </div>
                       ) : null}
                       {selectedSttWorkflowPresetDisabledReason ? (
@@ -3139,347 +3338,132 @@ export function SlicerPage() {
                         </div>
                       ) : selectedSttWorkflowPreset?.executionProfile === 'gpu' && speechSetupStatus?.gpu.ready ? (
                         <div className="mt-1 text-[10px] leading-4 text-emerald-300">
-                          GPU runtime ready: {speechSetupStatus.gpu.backend ?? 'detected'}
+                          {t('slicer.settings.advanced.gpuReady', { backend: speechSetupStatus.gpu.backend ?? t('slicer.settings.advanced.detectedBackend') })}
                         </div>
                       ) : null}
                     </div>
-                  </div>
 
-                  <div>
-                    <div className="relative">
-                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-500 font-medium">Ideal</span>
-                      <input
-                        type="number"
-                        value={idealDuration}
-                        onChange={(event) =>
-                          setIdealDuration((currentValue) =>
-                            normalizeSlicerNumberInput(event.target.value, currentValue, minDuration, maxDuration),
-                          )
-                        }
-                        className="w-full bg-[#141414] border border-[#222] rounded-lg pl-11 pr-2 py-1.5 text-xs text-white focus:border-blue-500 focus:bg-[#1A1A1A] outline-none transition-all"
-                        min={5}
-                        max={600}
-                      />
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="mb-1.5 block text-[11px] font-medium text-gray-300">{t('slicer.settings.advanced.continuity')}</label>
+                        <select
+                          value={continuityLevel}
+                          onChange={(event) => handleSmartSliceContinuityChange(event.target.value)}
+                          className="w-full rounded-lg border border-[#222] bg-[#141414] px-3 py-2 text-xs text-gray-200 outline-none transition-all focus:border-blue-500"
+                        >
+                          {smartSliceContinuityOptions.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1.5 block text-[11px] font-medium text-gray-300">{t('slicer.settings.advanced.segmentation')}</label>
+                        <select
+                          value={segmentationDensity}
+                          onChange={(event) => handleSmartSliceSegmentationChange(event.target.value)}
+                          className="w-full rounded-lg border border-[#222] bg-[#141414] px-3 py-2 text-xs text-gray-200 outline-none transition-all focus:border-blue-500"
+                        >
+                          {smartSliceSegmentationOptions.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                      </div>
                     </div>
-                  </div>
 
-                  <input
-                    type="text"
-                    value={customKeywordsInput}
-                    onChange={e => setCustomKeywordsInput(e.target.value)}
-                    placeholder="Keywords: hook, result, pain point"
-                    className="w-full bg-[#141414] border border-[#222] rounded-lg px-3 py-2 text-xs text-gray-200 placeholder:text-gray-600 focus:border-blue-500 focus:bg-[#1A1A1A] outline-none transition-all"
-                  />
-                </div>
-              </div>
-
-              <div className="w-full h-px bg-[#222]"></div>
-
-              {/* Duration Config */}
-              <div>
-                <label className="block text-[11px] font-bold text-gray-500 mb-2.5 uppercase tracking-wider flex justify-between items-center">
-                  <span>Clip duration (seconds)</span>
-                  <span className="text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded text-[10px]">{minDuration}s - {maxDuration}s</span>
-                </label>
-                <div className="flex items-center gap-2">
-                  <div className="flex-1 relative">
-                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-500 font-medium">Min</span>
                     <input
-                      type="number"
-                      value={minDuration}
-                      onChange={(event) =>
-                        setMinDuration((currentValue) =>
-                          normalizeSlicerNumberInput(event.target.value, currentValue, 5, Math.min(180, maxDuration)),
-                        )
-                      }
-                      className="w-full bg-[#141414] border border-[#222] rounded-lg pl-8 pr-2 py-1.5 text-xs text-white focus:border-blue-500 focus:bg-[#1A1A1A] outline-none transition-all"
-                      min={5}
-                      max={180}
+                      type="text"
+                      value={customKeywordsInput}
+                      onChange={(event) => setCustomKeywordsInput(event.target.value)}
+                      placeholder={t('slicer.settings.advanced.keywordsPlaceholder')}
+                      className="w-full rounded-lg border border-[#222] bg-[#141414] px-3 py-2 text-xs text-gray-200 outline-none transition-all placeholder:text-gray-600 focus:border-blue-500"
                     />
-                  </div>
-                  <span className="text-gray-600 font-light">-</span>
-                  <div className="flex-1 relative">
-                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-500 font-medium">Max</span>
-                    <input
-                      type="number"
-                      value={maxDuration}
-                      onChange={(event) =>
-                        setMaxDuration((currentValue) =>
-                          normalizeSlicerNumberInput(event.target.value, currentValue, Math.max(10, minDuration), 600),
-                        )
-                      }
-                      className="w-full bg-[#141414] border border-[#222] rounded-lg pl-8 pr-2 py-1.5 text-xs text-white focus:border-blue-500 focus:bg-[#1A1A1A] outline-none transition-all"
-                      min={10}
-                      max={600}
-                    />
-                  </div>
-                </div>
-              </div>
 
-              {/* Subtitles Option */}
-              <div>
-                <div className="flex items-center justify-between group">
-                  <div>
-                    <div className="text-[11px] font-bold text-gray-400 group-hover:text-gray-200 transition-colors uppercase tracking-wider">Subtitles</div>
-                      <div className="text-[10px] text-gray-600 mt-1">Generate sentence-level captions from speech evidence.</div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleSubtitleToggle}
-                    className={`inline-flex min-w-[68px] items-center gap-1.5 rounded border px-2 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors shrink-0 ${
-                      enableSubtitles
-                        ? 'border-blue-500/40 bg-blue-500/15 text-blue-200'
-                        : 'border-[#333] bg-[#141414] text-gray-400 hover:border-[#444] hover:text-gray-200'
-                    }`}
-                    aria-pressed={enableSubtitles}
-                  >
-                    <Type size={12} />
-                    {enableSubtitles ? 'On' : 'Off'}
-                  </button>
-                </div>
-                {enableSubtitles ? (
-                  <div className="mt-3 bg-[#141414] border border-[#222] rounded-lg p-3 relative animate-in fade-in slide-in-from-top-2">
-                     <span className="text-[10px] font-bold text-gray-500 mb-2 block uppercase tracking-wider">Subtitle publishing</span>
-                     <div className="grid grid-cols-3 gap-1 mb-3">
-                       {[
-                         { value: 'srt', label: 'SRT' },
-                         { value: 'burned', label: 'Burned' },
-                         { value: 'both', label: 'Burn + SRT' },
-                       ].map((option) => (
-                         <button
-                           key={option.value}
-                           type="button"
-                           onClick={() => setSubtitleMode(option.value as SliceSubtitleMode)}
-                           className={`rounded border px-2 py-1.5 text-[10px] font-medium transition-colors ${
-                             subtitleMode === option.value
-                               ? 'border-blue-500/60 bg-blue-500/15 text-blue-200'
-                               : 'border-[#333] bg-[#0A0A0A] text-gray-400 hover:border-[#444] hover:text-gray-200'
-                           }`}
-                         >
-                           {option.label}
-                         </button>
-                       ))}
-                     </div>
-                     <span className="text-[10px] font-bold text-gray-500 mb-2 block uppercase tracking-wider">Caption style</span>
-                      <div className="relative">
-                       <select
-                          value={selectedSubtitleStyle}
-                          onChange={(e) => setSelectedSubtitleStyle(e.target.value)}
-                          className="w-full bg-[#0A0A0A] border border-[#333] hover:border-blue-500/50 rounded px-2.5 py-1.5 text-xs text-gray-200 outline-none focus:border-blue-500 appearance-none transition-all cursor-pointer shadow-sm">
-                         {TEXT_EFFECTS.map(eff => (
-                            <option key={eff.id} value={eff.id}>{eff.name} - {eff.text}</option>
-                         ))}
-                       </select>
-                       <div className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500">
-                         <svg width="8" height="5" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
-                           <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                         </svg>
-                       </div>
-                     </div>
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="w-full h-px bg-[#222]"></div>
-
-              {/* Algorithm Selection */}
-              <div>
-                <label className="block text-[11px] font-bold text-gray-500 mb-3 uppercase tracking-wider">Engine Review & Signals</label>
-                <div className="space-y-3">
-                  <div>
-                    <div className="flex justify-between items-end mb-1.5">
-                       <span className="text-[11px] font-medium text-gray-300">ID-only review model</span>
-                    </div>
-                    <div className="relative">
+                    <div>
+                      <label className="mb-1.5 block text-[11px] font-medium text-gray-300">{t('slicer.settings.advanced.reviewModel')}</label>
                       <select
-                         value={llmModel}
-                         onChange={(e) => setLlmModel(e.target.value as SliceLLM)}
-                         className="w-full bg-[#141414] border border-[#222] hover:border-[#333] rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500 appearance-none transition-all cursor-pointer shadow-sm">
+                        value={llmModel}
+                        onChange={(event) => {
+                          const selectedModel = visibleLlmModelOptions.find((model) => model.id === event.target.value);
+                          if (selectedModel && isSliceLlmModelId(selectedModel.id)) {
+                            setLlmModel(selectedModel.id);
+                          }
+                        }}
+                        className="w-full rounded-lg border border-[#222] bg-[#141414] px-3 py-2 text-xs text-gray-200 outline-none transition-all focus:border-blue-500"
+                      >
                         {visibleLlmModelOptions.map((model) => (
                           <option key={`${model.vendor}:${model.id}`} value={model.id}>{model.label}</option>
                         ))}
                       </select>
-                      <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500">
-                        <svg width="8" height="5" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
-                          <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      </div>
                     </div>
-                  </div>
-                  <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-[11px] font-semibold text-gray-300">Primary slicer</span>
-                      <span className="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-[10px] font-bold text-blue-200">{smartCutExperience.profile.primarySlicer}</span>
-                    </div>
-                    <div className="mt-2 text-[10px] leading-4 text-gray-500">
-                      Speech-to-text creates semantic content units; the model can only rank candidate ids and referenced unit ids.
-                    </div>
-                  </div>
-                  <div>
-                    <div className="flex justify-between items-end mb-1.5">
-                      <span className="text-[11px] font-medium text-gray-300">Segmentation agent</span>
-                    </div>
-                    <div className="relative">
+
+                    <div>
+                      <label className="mb-1.5 block text-[11px] font-medium text-gray-300">{t('slicer.settings.advanced.agent')}</label>
                       <select
                         value={segmentationAgentId}
-                        onChange={(event) => setSegmentationAgentId(event.target.value as AutoCutSmartSliceSegmentationAgentId)}
-                        className="w-full bg-[#141414] border border-[#222] hover:border-[#333] rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500 appearance-none transition-all cursor-pointer shadow-sm">
+                        onChange={(event) => {
+                          const selectedAgent = AUTOCUT_SMART_SLICE_SEGMENTATION_AGENTS.find((agent) => agent.id === event.target.value);
+                          if (selectedAgent) {
+                            setSegmentationAgentId(selectedAgent.id);
+                          }
+                        }}
+                        className="w-full rounded-lg border border-[#222] bg-[#141414] px-3 py-2 text-xs text-gray-200 outline-none transition-all focus:border-blue-500"
+                      >
                         {AUTOCUT_SMART_SLICE_SEGMENTATION_AGENTS.map((agent) => (
-                          <option key={agent.id} value={agent.id}>{agent.label}</option>
+                          <option key={agent.id} value={agent.id}>
+                            {formatSmartSliceAdvancedI18nText(
+                              t,
+                              'segmentationAgents',
+                              agent.id,
+                              'label',
+                              agent.label,
+                            )}
+                          </option>
                         ))}
                       </select>
-                      <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500">
-                        <svg width="8" height="5" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
-                          <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
+                    </div>
+
+                    <section className="rounded-lg border border-[#252525] bg-[#101010] p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-[11px] font-bold uppercase tracking-wider text-gray-400">{t('slicer.settings.advanced.dedup')}</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setEnableSmartDedup((enabled) => !enabled)}
+                          className={`inline-flex min-w-[58px] items-center justify-center rounded border px-2 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                            enableSmartDedup
+                              ? 'border-amber-500/40 bg-amber-500/15 text-amber-200'
+                              : 'border-[#333] bg-[#141414] text-gray-400 hover:border-[#444] hover:text-gray-200'
+                          }`}
+                          aria-pressed={enableSmartDedup}
+                        >
+                          {enableSmartDedup ? t('slicer.settings.common.on') : t('slicer.settings.common.off')}
+                        </button>
                       </div>
-                    </div>
-                    <div className="mt-2 rounded-lg border border-[#252525] bg-[#101010] p-3">
-                      <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{selectedSegmentationAgent.id}</div>
-                      <div className="mt-1 text-[11px] leading-4 text-gray-300">{selectedSegmentationAgent.description}</div>
-                      <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap rounded border border-[#222] bg-[#080808] p-2 font-mono text-[10px] leading-4 text-gray-500">{selectedSegmentationAgent.systemPrompt}</pre>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
-                      <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Boundary rule</div>
-                      <div className="mt-1 text-[11px] font-semibold text-gray-200">complete semantic unit</div>
-                    </div>
-                    <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
-                      <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Audit trail</div>
-                      <div className="mt-1 text-[11px] font-semibold text-gray-200">contentUnitIds + speakerRoles</div>
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-[#252525] bg-[#141414] p-3">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Cleanup policy</div>
-                    <div className="mt-1 text-[11px] leading-4 text-gray-200">{smartCutExperience.cleanupContract}</div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="w-full h-px bg-[#222]"></div>
-
-              {/* AI Filters */}
-              <div>
-                <label className="block text-[11px] font-bold text-gray-500 mb-1 uppercase tracking-wider">Post-boundary Filter Chain</label>
-                <div className="mb-2 text-[10px] leading-4 text-gray-500">
-                  Post-filter render keeps approved semantic content units intact.
-                </div>
-                <div className="space-y-0.5">
-
-                  <div className="flex items-center justify-between group p-1.5 -mx-1.5 hover:bg-[#111] rounded-lg transition-colors cursor-pointer" onClick={() => setNoiseReduction(!noiseReduction)}>
-                     <div className="flex items-center gap-2.5">
-                        <div className="w-6 h-6 rounded bg-[#1A1A1A] border border-[#222] flex items-center justify-center group-hover:border-[#333] transition-colors">
-                          <Waves size={12} className="text-gray-400 group-hover:text-blue-400 transition-colors" />
+                      {enableSmartDedup ? (
+                        <div className="mt-3">
+                          <VideoDedupWorkbench
+                            compact
+                            title={t('slicer.settings.advanced.dedupTitle')}
+                            sourceAssetIds={fileId ? [fileId] : []}
+                            analysisDisabledReason={fileId ? undefined : t('slicer.settings.advanced.dedupPendingSource')}
+                            initialParams={videoDedupParams}
+                            onParamsChange={setVideoDedupParams}
+                            onReportReady={setLatestVideoDedupReport}
+                          />
+                          {latestVideoDedupReport ? (
+                            <div className="mt-2 rounded border border-[#303030] bg-[#141414] px-3 py-2 text-[10px] leading-4 text-gray-400">
+                              {t('slicer.settings.advanced.dedupReport', {
+                                groups: latestVideoDedupReport.duplicateGroupCount,
+                                matches: latestVideoDedupReport.matchCount,
+                              })}
+                            </div>
+                          ) : null}
                         </div>
-                        <span className="text-xs text-gray-300 font-medium">Denoise after cut approval</span>
-                     </div>
-                     <button className={`w-7 h-4 rounded-full p-0.5 transition-colors relative focus:outline-none ${noiseReduction ? 'bg-blue-600' : 'bg-[#333]'}`} type="button" aria-pressed={noiseReduction}>
-                       <div className={`w-3 h-3 bg-white rounded-full transition-transform absolute top-0.5 shadow-sm ${noiseReduction ? 'translate-x-3' : 'translate-x-0'}`} />
-                     </button>
-                  </div>
-
-                  <div className="flex items-center justify-between group p-1.5 -mx-1.5 hover:bg-[#111] rounded-lg transition-colors cursor-pointer" onClick={() => setCoughFilter(!coughFilter)}>
-                     <div className="flex items-center gap-2.5">
-                        <div className="w-6 h-6 rounded bg-[#1A1A1A] border border-[#222] flex items-center justify-center group-hover:border-[#333] transition-colors">
-                          <MicOff size={12} className="text-gray-400 group-hover:text-orange-400 transition-colors" />
-                        </div>
-                        <span className="text-xs text-gray-300 font-medium">Silence and abnormal fragment removal</span>
-                     </div>
-                     <button className={`w-7 h-4 rounded-full p-0.5 transition-colors relative focus:outline-none ${coughFilter ? 'bg-blue-600' : 'bg-[#333]'}`}>
-                       <div className={`w-3 h-3 bg-white rounded-full transition-transform absolute top-0.5 shadow-sm ${coughFilter ? 'translate-x-3' : 'translate-x-0'}`} />
-                     </button>
-                  </div>
-
-                  <div className="flex items-center justify-between group p-1.5 -mx-1.5 hover:bg-[#111] rounded-lg transition-colors cursor-pointer" onClick={() => setRepeatFilter(!repeatFilter)}>
-                     <div className="flex items-center gap-2.5">
-                        <div className="w-6 h-6 rounded bg-[#1A1A1A] border border-[#222] flex items-center justify-center group-hover:border-[#333] transition-colors">
-                          <CheckCircle2 size={12} className="text-gray-400 group-hover:text-green-400 transition-colors" />
-                        </div>
-                        <span className="text-xs text-gray-300 font-medium">Repeat dedupe inside approved units</span>
-                     </div>
-                     <button className={`w-7 h-4 rounded-full p-0.5 transition-colors relative focus:outline-none ${repeatFilter ? 'bg-blue-600' : 'bg-[#333]'}`}>
-                       <div className={`w-3 h-3 bg-white rounded-full transition-transform absolute top-0.5 shadow-sm ${repeatFilter ? 'translate-x-3' : 'translate-x-0'}`} />
-                     </button>
-                  </div>
-
-                </div>
-              </div>
-
-              <section className="rounded-lg border border-[#252525] bg-[#101010] p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Intelligent dedup</div>
-                    <div className="mt-1 text-[10px] leading-4 text-gray-500">
-                      Call the shared video dedup component before final slice review.
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setEnableSmartDedup(!enableSmartDedup)}
-                    className={`inline-flex min-w-[58px] items-center justify-center rounded border px-2 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors ${
-                      enableSmartDedup
-                        ? 'border-amber-500/40 bg-amber-500/15 text-amber-200'
-                        : 'border-[#333] bg-[#141414] text-gray-400 hover:border-[#444] hover:text-gray-200'
-                    }`}
-                    aria-pressed={enableSmartDedup}
-                  >
-                    {enableSmartDedup ? 'On' : 'Off'}
-                  </button>
-                </div>
-                {enableSmartDedup ? (
-                  <div className="mt-3">
-                    <VideoDedupWorkbench
-                      compact
-                      title="Smart Slice dedup"
-                      sourceAssetIds={fileId ? [fileId] : []}
-                      analysisDisabledReason={fileId ? undefined : 'Smart Slice will analyze the current imported source after native preparation creates runtime source evidence. Configure methods here; duplicate matches appear in the review workbench.'}
-                      initialParams={videoDedupParams}
-                      onParamsChange={setVideoDedupParams}
-                      onReportReady={setLatestVideoDedupReport}
-                    />
-                    {latestVideoDedupReport ? (
-                      <div className="mt-2 rounded border border-[#303030] bg-[#141414] px-3 py-2 text-[10px] leading-4 text-gray-400">
-                        Latest dedup report: {latestVideoDedupReport.duplicateGroupCount} groups,
-                        {' '}{latestVideoDedupReport.matchCount} matches.
-                      </div>
-                    ) : null}
+                      ) : null}
+                    </section>
                   </div>
                 ) : null}
-              </section>
-
-              <div className="w-full h-px bg-[#222]"></div>
-
-              <section className="rounded-lg border border-[#252525] bg-[#101010] p-4">
-                <div className="text-[11px] font-bold uppercase tracking-wider text-gray-500">Output Package</div>
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <div className="rounded border border-[#252525] bg-[#151515] px-2 py-2">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Profile</div>
-                    <div className="mt-1 text-[11px] font-semibold text-gray-200">{smartCutExperience.publishProfile}</div>
-                  </div>
-                  <div className="rounded border border-[#252525] bg-[#151515] px-2 py-2">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Duration</div>
-                    <div className="mt-1 text-[11px] font-semibold text-gray-200">{smartCutExperience.durationTarget}</div>
-                  </div>
-                  <div className="rounded border border-[#252525] bg-[#151515] px-2 py-2">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Subtitle</div>
-                    <div className="mt-1 text-[11px] font-semibold text-gray-200">{smartCutExperience.subtitleOutput}</div>
-                  </div>
-                  <div className="rounded border border-[#252525] bg-[#151515] px-2 py-2">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Evidence</div>
-                    <div className="mt-1 text-[11px] font-semibold text-gray-200">audit-ready</div>
-                  </div>
-                </div>
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {smartCutExperience.outputPackage.map((item) => (
-                    <span key={item} className="rounded border border-[#303030] bg-[#151515] px-2 py-1 text-[10px] font-semibold text-gray-300">
-                      {item}
-                    </span>
-                  ))}
-                </div>
-                <div className="mt-3 text-[10px] leading-4 text-gray-500">
-                  Output packages retain transcript text, contentUnitIds, speakerRoles, filter decisions, and render artifacts for review.
-                </div>
               </section>
 
             </div>
@@ -3490,22 +3474,11 @@ export function SlicerPage() {
               size="lg"
               className="w-full flex items-center justify-center gap-2 font-bold tracking-wide bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/20 transition-all rounded-xl py-4 h-auto disabled:cursor-not-allowed disabled:bg-[#252525] disabled:text-gray-500 disabled:shadow-none"
               onClick={handleStart}
-              disabled={isProcessing || hasCommercialReadinessBlocker}
+              disabled={isProcessing || !smartSliceReadyForRun}
             >
               <Scissors size={20} />
-              <span className="text-sm">
-                {isProcessing
-                  ? "Smart Cut Engine running..."
-                  : hasVideoSource
-                    ? runMode === 'review-before-render'
-                      ? "Analyze for review"
-                      : "Run Smart Cut Engine"
-                    : "Select source video first"}
-              </span>
+              <span className="text-sm">{smartSlicePrimaryActionLabel}</span>
             </Button>
-            <p className="text-center text-[10px] text-gray-600 mt-3 leading-relaxed">
-              {hasVideoSource ? smartCutExperience.profile.title : 'Smart Cut requires a local or trusted source video before speech evidence analysis.'}
-            </p>
           </div>
           </>
           )}

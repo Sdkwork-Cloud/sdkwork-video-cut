@@ -6,6 +6,8 @@ import type {
   AutoCutLlmRuntimeConfig,
   AutoCutLlmSettings,
   AutoCutNotificationSettings,
+  AutoCutSpeechTranscriptionProviderOptionDefinition,
+  AutoCutSpeechTranscriptionProviderOptionValue,
   AutoCutSpeechTranscriptionProviderDefinition,
   AutoCutSpeechTranscriptionSettings,
   AutoCutWorkspaceSettings,
@@ -231,7 +233,7 @@ function createAutoCutSpeechTranscriptionProbeConfigKey(
   settings: Pick<
     AutoCutSpeechTranscriptionSettings,
     'providerId' | 'executablePath' | 'modelPath' | 'language'
-  > & Partial<Pick<AutoCutSpeechTranscriptionSettings, 'modelVendor' | 'baseUrl' | 'model' | 'apiKeyConfigured'>>,
+  > & Partial<Pick<AutoCutSpeechTranscriptionSettings, 'modelVendor' | 'baseUrl' | 'model' | 'providerOptions' | 'apiKeyConfigured'>>,
 ) {
   return JSON.stringify({
     providerId: settings.providerId,
@@ -241,6 +243,7 @@ function createAutoCutSpeechTranscriptionProbeConfigKey(
     modelVendor: settings.modelVendor ?? null,
     baseUrl: settings.baseUrl ?? null,
     model: settings.model ?? null,
+    providerOptions: settings.providerOptions ?? null,
     apiKeyConfigured: settings.apiKeyConfigured ?? null,
   });
 }
@@ -253,9 +256,8 @@ function sanitizeAutoCutSpeechTranscriptionApiSettings(
     return {};
   }
 
-  const modelVendor = isAutoCutModelVendor(settings.modelVendor)
-    ? settings.modelVendor
-    : provider.modelVendor ?? 'custom';
+  const modelVendor = provider.modelVendor ??
+    (isAutoCutModelVendor(settings.modelVendor) ? settings.modelVendor : 'custom');
   const preset = AUTOCUT_MODEL_VENDOR_PRESETS[modelVendor];
   const baseUrl = normalizeAutoCutBaseUrl(settings.baseUrl ?? preset.baseUrl);
   const model = normalizeAutoCutModel(settings.model ?? provider.defaultModel ?? preset.defaultModel);
@@ -264,8 +266,119 @@ function sanitizeAutoCutSpeechTranscriptionApiSettings(
     modelVendor,
     baseUrl,
     model,
+    providerOptions: sanitizeAutoCutSpeechTranscriptionProviderOptions(settings.providerOptions, provider),
     apiKeyConfigured: Boolean(settings.apiKeyConfigured),
   };
+}
+
+function sanitizeAutoCutSpeechTranscriptionProviderOptions(
+  providerOptions: AutoCutSpeechTranscriptionSettings['providerOptions'] | undefined,
+  provider: AutoCutSpeechTranscriptionProviderDefinition,
+) {
+  if (provider.kind !== 'api') {
+    return {};
+  }
+
+  const sanitizedOptions: NonNullable<AutoCutSpeechTranscriptionSettings['providerOptions']> = {};
+  for (const option of provider.optionSchema ?? []) {
+    const value = sanitizeAutoCutSpeechTranscriptionProviderOptionValue(
+      providerOptions?.[option.key],
+      option,
+    );
+    if (value !== undefined) {
+      sanitizedOptions[option.key] = value;
+    }
+  }
+
+  return sanitizedOptions;
+}
+
+function sanitizeAutoCutSpeechTranscriptionProviderOptionValue(
+  value: AutoCutSpeechTranscriptionProviderOptionValue | undefined,
+  option: AutoCutSpeechTranscriptionProviderOptionDefinition,
+): AutoCutSpeechTranscriptionProviderOptionValue | undefined {
+  if (option.locked) {
+    return option.defaultValue;
+  }
+
+  if (value === undefined) {
+    return option.defaultValue;
+  }
+
+  switch (option.kind) {
+    case 'boolean':
+      return typeof value === 'boolean' ? value : option.defaultValue;
+    case 'number':
+      return normalizeAutoCutSpeechTranscriptionProviderNumberOption(value, option);
+    case 'select':
+      return normalizeAutoCutSpeechTranscriptionProviderSelectOption(value, option);
+    case 'multi-select': {
+      const multiSelectValue = normalizeAutoCutSpeechTranscriptionProviderMultiSelectOption(value, option);
+      return Array.isArray(multiSelectValue) ? multiSelectValue.map(String) : option.defaultValue;
+    }
+    case 'text':
+      return normalizeOptionalText(String(value)) ?? option.defaultValue;
+    default:
+      return option.defaultValue;
+  }
+}
+
+function normalizeAutoCutSpeechTranscriptionProviderNumberOption(
+  value: AutoCutSpeechTranscriptionProviderOptionValue,
+  option: AutoCutSpeechTranscriptionProviderOptionDefinition,
+) {
+  const numericValue = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? Number(value.trim())
+      : Number.NaN;
+  const fallback = typeof option.defaultValue === 'number' ? option.defaultValue : 0;
+  if (!Number.isFinite(numericValue)) {
+    return fallback;
+  }
+
+  const min = option.min ?? Number.NEGATIVE_INFINITY;
+  const max = option.max ?? Number.POSITIVE_INFINITY;
+  const clamped = Math.min(max, Math.max(min, numericValue));
+  const step = option.step ?? 1;
+  return step >= 1 ? Math.round(clamped) : clamped;
+}
+
+function normalizeAutoCutSpeechTranscriptionProviderSelectOption(
+  value: AutoCutSpeechTranscriptionProviderOptionValue,
+  option: AutoCutSpeechTranscriptionProviderOptionDefinition,
+) {
+  const choices = option.choices ?? [];
+  if (choices.length === 0) {
+    return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+      ? value
+      : option.defaultValue;
+  }
+
+  return choices.some((choice) => choice.value === value)
+    ? value
+    : option.defaultValue;
+}
+
+function normalizeAutoCutSpeechTranscriptionProviderMultiSelectOption(
+  value: AutoCutSpeechTranscriptionProviderOptionValue,
+  option: AutoCutSpeechTranscriptionProviderOptionDefinition,
+) {
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(',').map((item) => item.trim()).filter(Boolean)
+      : [];
+  const choices = option.choices ?? [];
+  if (choices.length === 0) {
+    return values.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()));
+  }
+
+  const allowedValues = new Set(choices.map((choice) => choice.value));
+  const sanitizedValues = values.filter((item): item is string | number =>
+    (typeof item === 'string' || typeof item === 'number') && allowedValues.has(item)
+  );
+  return sanitizedValues.length > 0 ? sanitizedValues : option.defaultValue;
 }
 
 function sanitizeAutoCutLlmSettings(settings: Partial<AutoCutLlmSettings>): AutoCutLlmSettings {

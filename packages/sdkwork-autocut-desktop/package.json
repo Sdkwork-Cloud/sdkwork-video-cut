@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "node ../../scripts/run-autocut-vite.mjs --host 127.0.0.1 --port 3000 --strictPort",
-    "dev:tauri-web": "node ../../scripts/run-autocut-vite.mjs --host 127.0.0.1 --port 5173 --strictPort",
+    "dev:tauri-web": "node ../../scripts/run-autocut-vite.mjs --host 127.0.0.1 --port 1420 --strictPort",
     "build": "node ../../scripts/run-autocut-vite.mjs build",
     "preview": "node ../../scripts/run-autocut-vite.mjs preview",
     "typecheck": "tsc --noEmit",

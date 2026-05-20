@@ -69,6 +69,9 @@ const NATIVE_TASK_EVENT_TYPE_PROGRESS = 8;
 const NATIVE_TASK_PROGRESS_LOG_MILESTONE_PERCENT = 5;
 const NATIVE_TASK_PROGRESS_PROJECTION_STATE_LIMIT = 1_000;
 const NATIVE_TASK_PROGRESS_EVENT_UUID_STATE_LIMIT = 5_000;
+const MAX_RECOVERED_SMART_SLICE_SOURCE_SEGMENTS = 80;
+const RECOVERED_SMART_SLICE_SOURCE_SEGMENT_BOUNDARY_TOLERANCE_MS = 80;
+const MIN_RECOVERED_SMART_SLICE_TRUSTED_AUDIO_SOURCE_SEGMENT_RETAINED_RATIO = 0.35;
 
 const TASK_TYPE_BY_NATIVE_TYPE: Record<number, TaskType> = {
   [OPS_TASK_TYPE_VIDEO_SLICE]: AUTOCUT_TASK_TYPE.videoSlice,
@@ -2633,7 +2636,7 @@ function mergeNativeSliceWithRecoveryEvidence(
   recoveryEvidence: NativeVideoSliceRecoveryEvidence | undefined,
 ): TaskSliceResult {
   if (!recoveryEvidence) {
-    return nativeSlice;
+    return normalizeRecoveredNativeVideoSliceResultSourceSegments(nativeSlice);
   }
 
   const transcriptSegments = nativeSlice.transcriptSegments?.length
@@ -2660,7 +2663,7 @@ function mergeNativeSliceWithRecoveryEvidence(
   const removedSilenceMs = nativeSlice.removedSilenceMs ?? recoveryEvidence.removedSilenceMs;
   const internalSilenceTrimCount = nativeSlice.internalSilenceTrimCount ?? recoveryEvidence.internalSilenceTrimCount;
 
-  return {
+  return normalizeRecoveredNativeVideoSliceResultSourceSegments({
     ...nativeSlice,
     ...(sourceStartMs !== undefined ? { sourceStartMs } : {}),
     ...(sourceEndMs !== undefined ? { sourceEndMs } : {}),
@@ -2691,7 +2694,7 @@ function mergeNativeSliceWithRecoveryEvidence(
       : recoveryEvidence.risks?.length
         ? { risks: recoveryEvidence.risks }
         : {}),
-  };
+  });
 }
 
 function mergeAutoCutSliceAudioCleanupEvidence(
@@ -2784,7 +2787,7 @@ function isSameSliceRecoverySourceWindow(
 
 function mergeNativeTaskWithLocalSliceMetadata(nativeTask: AppTask, localTask: AppTask | undefined): AppTask {
   if (!nativeTask.sliceResults?.length || !localTask?.sliceResults?.length) {
-    return nativeTask;
+    return normalizeRecoveredNativeVideoSliceTaskSourceSegments(nativeTask);
   }
 
   const localSliceById = new Map(localTask.sliceResults.map((slice) => [slice.id, slice]));
@@ -2894,6 +2897,325 @@ function mergeNativeTaskWithLocalSliceMetadata(nativeTask: AppTask, localTask: A
   };
 }
 
+function normalizeRecoveredNativeVideoSliceTaskSourceSegments(task: AppTask): AppTask {
+  if (task.type !== AUTOCUT_TASK_TYPE.videoSlice || !task.sliceResults?.length) {
+    return task;
+  }
+
+  return {
+    ...task,
+    sliceResults: task.sliceResults.map((sliceResult) =>
+      normalizeRecoveredNativeVideoSliceResultSourceSegments(sliceResult)
+    ),
+  };
+}
+
+function normalizeRecoveredNativeVideoSliceResultSourceSegments(
+  sliceResult: TaskSliceResult,
+): TaskSliceResult {
+  const sourceStartMs = readRecoveredNativeVideoSliceEvidenceMilliseconds(sliceResult.sourceStartMs);
+  const sourceEndMs = readRecoveredNativeVideoSliceEvidenceMilliseconds(sliceResult.sourceEndMs);
+  const sourceSegments = normalizeRecoveredNativeVideoSliceRenderableSourceSegments(
+    sliceResult.sourceSegments,
+    sourceStartMs,
+    sourceEndMs,
+    sliceResult,
+    sliceResult.transcriptSegments,
+  );
+
+  if (!sourceSegments?.length || sourceStartMs === undefined || sourceEndMs === undefined) {
+    const {
+      sourceSegments: _staleSourceSegments,
+      removedSilenceMs: _staleRemovedSilenceMs,
+      internalSilenceTrimCount: _staleInternalSilenceTrimCount,
+      ...continuousSliceResult
+    } = sliceResult;
+    return continuousSliceResult;
+  }
+
+  const renderedDurationMs = sourceSegments.reduce(
+    (durationMs, segment) => durationMs + Math.max(0, segment.endMs - segment.startMs),
+    0,
+  );
+  return {
+    ...sliceResult,
+    sourceSegments,
+    renderedDurationMs,
+    removedSilenceMs: Math.max(0, sourceEndMs - sourceStartMs - renderedDurationMs),
+    internalSilenceTrimCount: sourceSegments.length - 1,
+  };
+}
+
+function normalizeRecoveredNativeVideoSliceRenderableSourceSegments(
+  sourceSegments: TaskSliceResult['sourceSegments'] | undefined,
+  sourceStartMs: number | undefined,
+  sourceEndMs: number | undefined,
+  sliceResult?: TaskSliceResult,
+  transcriptSegments: readonly AutoCutTranscriptSegment[] = [],
+): TaskSliceResult['sourceSegments'] | undefined {
+  if (
+    !Array.isArray(sourceSegments) ||
+    sourceSegments.length === 0 ||
+    sourceStartMs === undefined ||
+    sourceEndMs === undefined ||
+    sourceEndMs <= sourceStartMs
+  ) {
+    return undefined;
+  }
+
+  const trimmedSourceSegments = sourceSegments
+    .map((segment) => {
+      const segmentStartMs = readRecoveredNativeVideoSliceEvidenceMilliseconds(segment.startMs);
+      const segmentEndMs = readRecoveredNativeVideoSliceEvidenceMilliseconds(segment.endMs);
+      if (segmentStartMs === undefined || segmentEndMs === undefined || segmentEndMs <= segmentStartMs) {
+        return null;
+      }
+      return {
+        startMs: Math.max(sourceStartMs, segmentStartMs),
+        endMs: Math.min(sourceEndMs, segmentEndMs),
+      };
+    })
+    .filter((segment): segment is NonNullable<TaskSliceResult['sourceSegments']>[number] =>
+      Boolean(segment && segment.endMs > segment.startMs)
+    )
+    .sort((firstSegment, secondSegment) =>
+      firstSegment.startMs - secondSegment.startMs ||
+        firstSegment.endMs - secondSegment.endMs,
+    );
+
+  if (
+    trimmedSourceSegments.length <= 1 ||
+    trimmedSourceSegments.length > MAX_RECOVERED_SMART_SLICE_SOURCE_SEGMENTS ||
+    trimmedSourceSegments[0]?.startMs !== sourceStartMs ||
+    trimmedSourceSegments.at(-1)?.endMs !== sourceEndMs
+  ) {
+    return undefined;
+  }
+
+  let previousEndMs: number | undefined;
+  for (const segment of trimmedSourceSegments) {
+    if (
+      segment.startMs < sourceStartMs ||
+      segment.endMs > sourceEndMs ||
+      segment.endMs <= segment.startMs ||
+      (previousEndMs !== undefined && segment.startMs < previousEndMs)
+    ) {
+      return undefined;
+    }
+    previousEndMs = segment.endMs;
+  }
+
+  if (
+    transcriptSegments.length > 0 &&
+    sliceResult &&
+    !doRecoveredNativeVideoSliceSourceSegmentsCoverTranscriptEvidence(
+      sliceResult,
+      trimmedSourceSegments,
+      transcriptSegments,
+    )
+  ) {
+    return undefined;
+  }
+
+  return trimmedSourceSegments;
+}
+
+function readRecoveredNativeVideoSliceEvidenceMilliseconds(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.round(value)
+    : undefined;
+}
+
+function doRecoveredNativeVideoSliceSourceSegmentsCoverTranscriptEvidence(
+  sliceResult: TaskSliceResult,
+  sourceSegments: readonly { startMs: number; endMs: number }[],
+  transcriptSegments: readonly AutoCutTranscriptSegment[],
+) {
+  if (sourceSegments.length <= 1) {
+    return false;
+  }
+
+  return transcriptSegments.every((segment) => {
+    const text = normalizeRecoveredNativeVideoSliceTranscriptText(segment.text);
+    if (!text) {
+      return true;
+    }
+
+    const coverageRange = createRecoveredNativeVideoSliceTrustedAudioBoundedTranscriptCoverageRange(
+      sliceResult,
+      segment,
+    );
+    return isRecoveredNativeVideoSliceTimeRangeCoveredBySourceSegments(
+      coverageRange.startMs,
+      coverageRange.endMs,
+      sourceSegments,
+    ) ||
+      doRecoveredNativeVideoSliceTrustedAudioCompactedSourceSegmentsCoverTranscriptRange(
+        sliceResult,
+        sourceSegments,
+        segment,
+      );
+  });
+}
+
+function createRecoveredNativeVideoSliceTrustedAudioBoundedTranscriptCoverageRange(
+  sliceResult: TaskSliceResult,
+  transcriptSegment: Pick<AutoCutTranscriptSegment, 'startMs' | 'endMs'>,
+) {
+  const segmentStartMs = Math.round(transcriptSegment.startMs);
+  const segmentEndMs = Math.round(transcriptSegment.endMs);
+  if (!hasTrustedRecoveredNativeVideoSliceAudioActivityEvidence(sliceResult)) {
+    return { startMs: segmentStartMs, endMs: segmentEndMs };
+  }
+
+  const audioActivityStartMs = Math.round(sliceResult.audioActivityStartMs as number);
+  const audioActivityEndMs = Math.round(sliceResult.audioActivityEndMs as number);
+  const audioOverlapStartMs = Math.max(segmentStartMs, audioActivityStartMs);
+  const audioOverlapEndMs = Math.min(segmentEndMs, audioActivityEndMs);
+  const audioOverlapMs = Math.max(0, audioOverlapEndMs - audioOverlapStartMs);
+  const segmentDurationMs = segmentEndMs - segmentStartMs;
+  const safeAudioTrim =
+    segmentDurationMs > 0 &&
+    audioOverlapMs > 0 &&
+    audioOverlapMs / segmentDurationMs >= MIN_RECOVERED_SMART_SLICE_TRUSTED_AUDIO_SOURCE_SEGMENT_RETAINED_RATIO;
+
+  return safeAudioTrim
+    ? { startMs: audioOverlapStartMs, endMs: audioOverlapEndMs }
+    : { startMs: segmentStartMs, endMs: segmentEndMs };
+}
+
+function isRecoveredNativeVideoSliceTimeRangeCoveredBySourceSegments(
+  startMs: number,
+  endMs: number,
+  sourceSegments: readonly { startMs: number; endMs: number }[],
+) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    return false;
+  }
+
+  const normalizedStartMs = Math.round(startMs);
+  const normalizedEndMs = Math.round(endMs);
+  const coverageRanges = sourceSegments
+    .filter((sourceSegment) =>
+      Number.isFinite(sourceSegment.startMs) &&
+        Number.isFinite(sourceSegment.endMs) &&
+        sourceSegment.endMs > sourceSegment.startMs
+    )
+    .map((sourceSegment) => ({
+      startMs: Math.max(normalizedStartMs, Math.round(sourceSegment.startMs)),
+      endMs: Math.min(normalizedEndMs, Math.round(sourceSegment.endMs)),
+    }))
+    .filter((sourceSegment) => sourceSegment.endMs > sourceSegment.startMs)
+    .sort((firstSegment, secondSegment) =>
+      firstSegment.startMs - secondSegment.startMs ||
+        firstSegment.endMs - secondSegment.endMs,
+    );
+
+  let coveredUntilMs = normalizedStartMs;
+  for (const range of coverageRanges) {
+    if (range.endMs <= coveredUntilMs) {
+      continue;
+    }
+    if (range.startMs > coveredUntilMs + RECOVERED_SMART_SLICE_SOURCE_SEGMENT_BOUNDARY_TOLERANCE_MS) {
+      return false;
+    }
+    coveredUntilMs = Math.max(coveredUntilMs, range.endMs);
+    if (coveredUntilMs >= normalizedEndMs - RECOVERED_SMART_SLICE_SOURCE_SEGMENT_BOUNDARY_TOLERANCE_MS) {
+      return true;
+    }
+  }
+
+  return coveredUntilMs >= normalizedEndMs - RECOVERED_SMART_SLICE_SOURCE_SEGMENT_BOUNDARY_TOLERANCE_MS;
+}
+
+function doRecoveredNativeVideoSliceTrustedAudioCompactedSourceSegmentsCoverTranscriptRange(
+  sliceResult: TaskSliceResult,
+  sourceSegments: readonly { startMs: number; endMs: number }[],
+  transcriptSegment: Pick<AutoCutTranscriptSegment, 'startMs' | 'endMs'>,
+) {
+  if (sourceSegments.length <= 1 || !hasTrustedRecoveredNativeVideoSliceAudioActivityEvidence(sliceResult)) {
+    return false;
+  }
+
+  const coverageRange = createRecoveredNativeVideoSliceTrustedAudioBoundedTranscriptCoverageRange(
+    sliceResult,
+    transcriptSegment,
+  );
+  if (
+    !Number.isFinite(coverageRange.startMs) ||
+    !Number.isFinite(coverageRange.endMs) ||
+    coverageRange.endMs <= coverageRange.startMs
+  ) {
+    return false;
+  }
+
+  const retainedCoverageMs = sourceSegments.reduce(
+    (durationMs, sourceSegment) =>
+      durationMs + Math.max(
+        0,
+        Math.min(coverageRange.endMs, Math.round(sourceSegment.endMs)) -
+          Math.max(coverageRange.startMs, Math.round(sourceSegment.startMs)),
+      ),
+    0,
+  );
+  const coverageDurationMs = coverageRange.endMs - coverageRange.startMs;
+  if (
+    retainedCoverageMs / coverageDurationMs <
+      MIN_RECOVERED_SMART_SLICE_TRUSTED_AUDIO_SOURCE_SEGMENT_RETAINED_RATIO
+  ) {
+    return false;
+  }
+
+  const firstCoveringSegment = sourceSegments.find((sourceSegment) =>
+    sourceSegment.endMs > coverageRange.startMs
+  );
+  const lastCoveringSegment = sourceSegments
+    .slice()
+    .reverse()
+    .find((sourceSegment) => sourceSegment.startMs < coverageRange.endMs);
+
+  return firstCoveringSegment !== undefined &&
+    lastCoveringSegment !== undefined &&
+    firstCoveringSegment.startMs <=
+      coverageRange.startMs + RECOVERED_SMART_SLICE_SOURCE_SEGMENT_BOUNDARY_TOLERANCE_MS &&
+    lastCoveringSegment.endMs >=
+      coverageRange.endMs - RECOVERED_SMART_SLICE_SOURCE_SEGMENT_BOUNDARY_TOLERANCE_MS;
+}
+
+function hasTrustedRecoveredNativeVideoSliceAudioActivityEvidence(
+  sliceResult: Pick<
+    TaskSliceResult,
+    | 'audioActivityStartMs'
+    | 'audioActivityEndMs'
+    | 'audioActivityConfidence'
+    | 'audioActivityAnalysisFilter'
+    | 'noiseReductionApplied'
+  >,
+) {
+  const expectedAnalysisFilter = typeof sliceResult.noiseReductionApplied === 'boolean'
+    ? sliceResult.noiseReductionApplied
+      ? RECOVERED_SMART_SLICE_REQUIRED_AUDIO_ACTIVITY_ANALYSIS_FILTER
+      : RECOVERED_SMART_SLICE_RAW_AUDIO_ACTIVITY_ANALYSIS_FILTER
+    : undefined;
+  const audioActivityAnalysisFilter = typeof sliceResult.audioActivityAnalysisFilter === 'string'
+    ? sliceResult.audioActivityAnalysisFilter.trim()
+    : '';
+  const hasTrustedAnalysisFilter = expectedAnalysisFilter !== undefined
+    ? audioActivityAnalysisFilter === expectedAnalysisFilter
+    : audioActivityAnalysisFilter === RECOVERED_SMART_SLICE_REQUIRED_AUDIO_ACTIVITY_ANALYSIS_FILTER ||
+      audioActivityAnalysisFilter === RECOVERED_SMART_SLICE_RAW_AUDIO_ACTIVITY_ANALYSIS_FILTER;
+
+  return typeof sliceResult.audioActivityStartMs === 'number' &&
+    typeof sliceResult.audioActivityEndMs === 'number' &&
+    typeof sliceResult.audioActivityConfidence === 'number' &&
+    Number.isFinite(sliceResult.audioActivityStartMs) &&
+    Number.isFinite(sliceResult.audioActivityEndMs) &&
+    Number.isFinite(sliceResult.audioActivityConfidence) &&
+    sliceResult.audioActivityEndMs > sliceResult.audioActivityStartMs &&
+    sliceResult.audioActivityConfidence >= MIN_RECOVERED_SMART_SLICE_AUDIO_ACTIVITY_CONFIDENCE &&
+    hasTrustedAnalysisFilter;
+}
+
 function findLocalSliceMetadataForNativeTask(
   nativeTask: AppTask,
   snapshot: AutoCutNativeTaskSnapshot,
@@ -2976,12 +3298,52 @@ function enforceRecoveredNativeVideoSliceProfessionalTranscriptEvidence(
     return task;
   }
 
+  const normalizedTask = normalizeRecoveredNativeVideoSliceTaskSourceSegments(task);
   try {
-    assertRecoveredNativeVideoSliceProfessionalTranscriptEvidence(task.sliceResults);
-    return task;
+    assertRecoveredNativeVideoSliceRecoveryEvidence(normalizedTask.sliceResults);
+    return normalizedTask;
   } catch (error) {
-    return createInvalidRecoveredNativeVideoSliceTask(task, error, snapshot);
+    return createInvalidRecoveredNativeVideoSliceTask(normalizedTask, error, snapshot);
   }
+}
+
+function assertRecoveredNativeVideoSliceRecoveryEvidence(
+  sliceResults: readonly TaskSliceResult[] | undefined,
+) {
+  if (!sliceResults?.length) {
+    throw new Error('AutoCut recovered native video slicing output is missing generated slice results.');
+  }
+
+  sliceResults.forEach((sliceResult, index) => {
+    const sliceNumber = index + 1;
+    const hasTranscriptEvidence = Boolean(sliceResult.transcriptText?.trim() || sliceResult.transcriptSegments?.length);
+    const hasCompleteAudioCleanupEvidence =
+      typeof sliceResult.audioCleanupProfile === 'string' &&
+      sliceResult.audioCleanupProfile.trim() === 'smart-slice-speech-denoise-v1' &&
+      typeof sliceResult.noiseReductionApplied === 'boolean' &&
+      typeof sliceResult.boundaryDecisionSource === 'string' &&
+      (sliceResult.boundaryDecisionSource === 'transcript' ||
+        sliceResult.boundaryDecisionSource === 'audio' ||
+        sliceResult.boundaryDecisionSource === 'combined') &&
+      typeof sliceResult.audioActivityStartMs === 'number' &&
+      Number.isFinite(sliceResult.audioActivityStartMs) &&
+      typeof sliceResult.audioActivityEndMs === 'number' &&
+      Number.isFinite(sliceResult.audioActivityEndMs) &&
+      typeof sliceResult.audioActivityConfidence === 'number' &&
+      Number.isFinite(sliceResult.audioActivityConfidence) &&
+      typeof sliceResult.audioActivityAnalysisFilter === 'string' &&
+      sliceResult.audioActivityEndMs > sliceResult.audioActivityStartMs &&
+      typeof sliceResult.leadingSilenceMs === 'number' &&
+      Number.isFinite(sliceResult.leadingSilenceMs) &&
+      typeof sliceResult.trailingSilenceMs === 'number' &&
+      Number.isFinite(sliceResult.trailingSilenceMs);
+    if (hasTranscriptEvidence && hasCompleteAudioCleanupEvidence) {
+      assertRecoveredNativeVideoSliceProfessionalTranscriptEvidence([sliceResult]);
+      return;
+    }
+
+    assertRecoveredNativeVideoSliceBasicTimelineEvidence(sliceResult, sliceNumber);
+  });
 }
 
 function assertRecoveredNativeVideoSliceProfessionalTranscriptEvidence(
@@ -3110,6 +3472,121 @@ function assertRecoveredNativeVideoSliceProfessionalTranscriptEvidence(
       );
     }
   });
+}
+
+function assertRecoveredNativeVideoSliceBasicTimelineEvidence(
+  sliceResult: TaskSliceResult,
+  sliceNumber: number,
+) {
+  if (!sliceResult.artifactPath?.trim() || !sliceResult.taskOutputDir?.trim()) {
+    throw new Error(
+      `AutoCut recovered native video slicing slice artifact ${sliceNumber} is missing native artifact evidence.`,
+    );
+  }
+  if (!sliceResult.thumbnailUrl?.trim() || !sliceResult.url?.trim()) {
+    throw new Error(
+      `AutoCut recovered native video slicing slice artifact ${sliceNumber} is missing generated media URLs.`,
+    );
+  }
+  if (typeof sliceResult.size !== 'number' || !Number.isFinite(sliceResult.size) || sliceResult.size <= 0) {
+    throw new Error(
+      `AutoCut recovered native video slicing slice artifact ${sliceNumber} has invalid byte size evidence.`,
+    );
+  }
+  if (typeof sliceResult.duration !== 'number' || !Number.isFinite(sliceResult.duration) || sliceResult.duration <= 0) {
+    throw new Error(
+      `AutoCut recovered native video slicing slice artifact ${sliceNumber} has invalid duration evidence.`,
+    );
+  }
+
+  const sourceStartMs = assertRecoveredNativeVideoSliceMilliseconds(sliceResult.sourceStartMs, sliceNumber, 'sourceStartMs');
+  const sourceEndMs = assertRecoveredNativeVideoSliceMilliseconds(sliceResult.sourceEndMs, sliceNumber, 'sourceEndMs');
+  const speechStartMs = sliceResult.speechStartMs !== undefined
+    ? assertRecoveredNativeVideoSliceMilliseconds(sliceResult.speechStartMs, sliceNumber, 'speechStartMs')
+    : sourceStartMs;
+  const speechEndMs = sliceResult.speechEndMs !== undefined
+    ? assertRecoveredNativeVideoSliceMilliseconds(sliceResult.speechEndMs, sliceNumber, 'speechEndMs')
+    : sourceEndMs;
+
+  if (sourceEndMs <= sourceStartMs) {
+    throw new Error(
+      `AutoCut recovered native video slicing slice artifact ${sliceNumber} sourceEndMs is not after sourceStartMs.`,
+    );
+  }
+  if (speechEndMs < speechStartMs || speechStartMs < sourceStartMs || speechEndMs > sourceEndMs) {
+    throw new Error(
+      `AutoCut recovered native video slicing slice artifact ${sliceNumber} basic speech range is outside its rendered source range.`,
+    );
+  }
+
+  assertRecoveredNativeVideoSliceSourceSegmentsEvidence(
+    sliceResult,
+    sliceNumber,
+    sourceStartMs,
+    sourceEndMs,
+  );
+}
+
+function assertRecoveredNativeVideoSliceSourceSegmentsEvidence(
+  sliceResult: TaskSliceResult,
+  sliceNumber: number,
+  sourceStartMs: number,
+  sourceEndMs: number,
+) {
+  if (!sliceResult.sourceSegments?.length) {
+    return;
+  }
+
+  if (sliceResult.sourceSegments.length <= 1) {
+    throw new Error(
+      `AutoCut recovered native video slicing slice artifact ${sliceNumber} sourceSegments must contain at least two retained islands.`,
+    );
+  }
+  if (
+    sliceResult.sourceSegments[0]?.startMs !== sourceStartMs ||
+    sliceResult.sourceSegments.at(-1)?.endMs !== sourceEndMs
+  ) {
+    throw new Error(
+      `AutoCut recovered native video slicing slice artifact ${sliceNumber} sourceSegments must span the final source range.`,
+    );
+  }
+
+  let previousEndMs: number | undefined;
+  const renderedDurationMs = sliceResult.sourceSegments.reduce((durationMs, segment, segmentIndex) => {
+    const segmentStartMs = assertRecoveredNativeVideoSliceMilliseconds(
+      segment.startMs,
+      sliceNumber,
+      `sourceSegments[${segmentIndex}].startMs`,
+    );
+    const segmentEndMs = assertRecoveredNativeVideoSliceMilliseconds(
+      segment.endMs,
+      sliceNumber,
+      `sourceSegments[${segmentIndex}].endMs`,
+    );
+    if (
+      segmentEndMs <= segmentStartMs ||
+      segmentStartMs < sourceStartMs ||
+      segmentEndMs > sourceEndMs ||
+      (previousEndMs !== undefined && segmentStartMs < previousEndMs)
+    ) {
+      throw new Error(
+        `AutoCut recovered native video slicing slice artifact ${sliceNumber} sourceSegments are not ordered inside the source range.`,
+      );
+    }
+
+    previousEndMs = segmentEndMs;
+    return durationMs + segmentEndMs - segmentStartMs;
+  }, 0);
+  const removedSilenceMs = sourceEndMs - sourceStartMs - renderedDurationMs;
+  if (
+    sliceResult.renderedDurationMs !== renderedDurationMs ||
+    sliceResult.removedSilenceMs !== removedSilenceMs ||
+    sliceResult.internalSilenceTrimCount !== sliceResult.sourceSegments.length - 1
+  ) {
+    throw new Error(
+      `AutoCut recovered native video slicing slice artifact ${sliceNumber} silence compaction evidence does not match retained sourceSegments.`,
+    );
+  }
 }
 
 function assertRecoveredNativeVideoSliceMilliseconds(value: unknown, sliceNumber: number, fieldName: string) {

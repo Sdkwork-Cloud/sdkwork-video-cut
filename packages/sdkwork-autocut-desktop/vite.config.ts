@@ -42,6 +42,10 @@ export default defineConfig(() => {
           replacement: path.resolve(__dirname, 'node_modules/react/jsx-runtime.js'),
         },
         {
+          find: 'react/jsx-dev-runtime',
+          replacement: path.resolve(__dirname, 'node_modules/react/jsx-dev-runtime.js'),
+        },
+        {
           find: 'react',
           replacement: path.resolve(__dirname, 'node_modules/react/index.js'),
         },

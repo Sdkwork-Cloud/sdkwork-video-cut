@@ -103,7 +103,9 @@ const allowedScriptFiles = new Set([
   'scripts/check-autocut-release-evidence-status.test.mjs',
   'scripts/check-autocut-release-workflow.test.mjs',
   'scripts/check-autocut-slicer-planner.mjs',
+  'scripts/check-autocut-slicer-timeline-workbench.mjs',
   'scripts/check-autocut-service-behavior.mjs',
+  'scripts/check-autocut-task-detail-ux.mjs',
   'scripts/check-autocut-baidunetdisk-real-media-slice.mjs',
   'scripts/check-autocut-generic-real-media-slice.mjs',
   'scripts/check-autocut-generic-real-media-slice.test.mjs',
@@ -196,6 +198,7 @@ const allowedDocs = new Set([
   'docs/specs/smart-cut-engine/05-rewrite-implementation-plan.md',
   'docs/superpowers/plans/2026-05-04-autocut-desktop-standardization.md',
   'docs/superpowers/plans/2026-05-06-smart-slicing-phase-one.md',
+  'docs/superpowers/plans/2026-05-18-unified-clip-workflow.md',
 ]);
 const requiredDatabaseContractDoc = 'docs/architecture/17-autocut-database-contract-standard.md';
 const requiredStorageServicePath = 'packages/sdkwork-autocut-services/src/service/storage.service.ts';
@@ -247,6 +250,7 @@ const allowedRootEntries = new Set([
   '.gitattributes',
   '.gitignore',
   'ARCHITECT.md',
+  'CLAUDE.md',
   'COMMERCIAL-LICENSE.md',
   'DATABASE_SPEC.md',
   'LICENSE',
@@ -1443,6 +1447,7 @@ for (const scriptName of ['dev', 'build', 'typecheck', 'test', 'tauri:before-dev
 }
 assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-feature-workflows.mjs'), 'root test runs the AutoCut feature workflow governance check');
 assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-slicer-planner.mjs'), 'root test runs the AutoCut slicer planner contract');
+assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-slicer-timeline-workbench.mjs'), 'root test runs the AutoCut slicer timeline workbench contract');
 assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-service-behavior.mjs'), 'root test runs the AutoCut service behavior contract');
 assertRule(rootPackage.scripts?.test?.includes('node scripts/autocut-cli-args.test.mjs'), 'root test runs the AutoCut CLI argument normalization contract');
 assertRule(rootPackage.scripts?.test?.includes('node scripts/run-autocut-vite.test.mjs'), 'root test runs the AutoCut Vite runner dependency-link contract');
@@ -1571,7 +1576,7 @@ assertRule(desktopPackage.scripts?.dev?.includes('--host 127.0.0.1'), 'desktop d
 assertRule(desktopPackage.scripts?.dev?.includes('--port 3000'), 'desktop dev uses the standard AutoCut web port 3000');
 assertRule(desktopPackage.scripts?.dev?.includes('--strictPort'), 'desktop dev uses strictPort for deterministic desktop-local startup');
 assertRule(desktopPackage.scripts?.['dev:tauri-web']?.includes('--host 127.0.0.1'), 'desktop dev:tauri-web binds to loopback for Tauri development');
-assertRule(desktopPackage.scripts?.['dev:tauri-web']?.includes('--port 5173'), 'desktop dev:tauri-web uses the Tauri devUrl port 5173');
+assertRule(desktopPackage.scripts?.['dev:tauri-web']?.includes('--port 1420'), 'desktop dev:tauri-web uses the Tauri devUrl port 1420');
 assertRule(desktopPackage.scripts?.['dev:tauri-web']?.includes('--strictPort'), 'desktop dev:tauri-web uses strictPort for deterministic Tauri startup');
 assertRule(desktopPackage.scripts?.dev?.startsWith('node ../../scripts/run-autocut-vite.mjs '), 'desktop dev uses the stable AutoCut Vite runner instead of relying on node_modules/.bin');
 assertRule(desktopPackage.scripts?.build === 'node ../../scripts/run-autocut-vite.mjs build', 'desktop build uses the stable AutoCut Vite runner instead of relying on node_modules/.bin');
@@ -1669,6 +1674,11 @@ assertRule(frontendStandardSource.includes('noUnusedParameters'), 'frontend modu
 assertRule(frontendStandardSource.includes('strict'), 'frontend module standard documents strict TypeScript as a baseline');
 assertRule(frontendStandardSource.includes('exactOptionalPropertyTypes'), 'frontend module standard documents exactOptionalPropertyTypes as a TypeScript baseline');
 assertRule(frontendStandardSource.includes('noUncheckedIndexedAccess'), 'frontend module standard documents noUncheckedIndexedAccess as a TypeScript baseline');
+assertRule(frontendStandardSource.includes('Smart Slice Timeline component boundary'), 'frontend module standard documents the Smart Slice Timeline component boundary');
+assertRule(frontendStandardSource.includes('smart-slice-timeline/index.ts'), 'frontend module standard documents the timeline barrel boundary');
+assertRule(frontendStandardSource.includes('SmartSliceTimelineWorkbench'), 'frontend module standard documents the timeline workbench composition boundary');
+assertRule(frontendStandardSource.includes('useSmartSliceTimelineReviewController'), 'frontend module standard documents the timeline review controller boundary');
+assertRule(frontendStandardSource.includes('upload, processing, and review states'), 'frontend module standard documents unified Timeline rendering across upload, processing, and review states');
 assertRule(frontendStandardSource.includes('Task result traceability'), 'frontend module standard documents task result traceability');
 assertRule(frontendStandardSource.includes('sourceTaskId'), 'frontend module standard documents sourceTaskId');
 assertRule(frontendStandardSource.includes('sourceFileId'), 'frontend module standard documents sourceFileId');
@@ -1826,6 +1836,7 @@ const i18nServiceSource = fs.existsSync(path.join(packagesDir, 'sdkwork-autocut-
 const autocutTypesSource = fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-types', 'src', 'index.ts'), 'utf8');
 const tasksPageSource = fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-tasks', 'src', 'pages', 'TasksPage.tsx'), 'utf8');
 const taskDetailPageSource = fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-tasks', 'src', 'pages', 'TaskDetailPage.tsx'), 'utf8');
+const taskDetailEngineStepsSource = fs.readFileSync(path.join(packagesDir, 'sdkwork-autocut-tasks', 'src', 'pages', 'taskDetailEngineSteps.ts'), 'utf8');
 const realProcessingServiceSources = realProcessingServicePaths
   .map((relativePath) => (exists(relativePath) ? fs.readFileSync(path.join(rootDir, relativePath), 'utf8') : ''))
   .join('\n');
@@ -2734,7 +2745,7 @@ assertRule(!tauriCsp.includes('https://commondatastorage.googleapis.com'), 'Taur
 for (const cspSource of forbiddenCspRemoteSources) {
   assertRule(!tauriCsp.includes(cspSource), `Tauri CSP does not allow third-party fixture source ${cspSource}`);
 }
-assertRule(tauriConfig.build?.devUrl === 'http://127.0.0.1:5173', 'Tauri devUrl uses loopback 127.0.0.1:5173');
+assertRule(tauriConfig.build?.devUrl === 'http://127.0.0.1:1420', 'Tauri devUrl uses loopback 127.0.0.1:1420');
 assertRule(tauriConfig.bundle?.active === true, 'Tauri bundling is active');
 assertRule(
   rootPackage.scripts?.['prepare:ffmpeg-sidecar'] === 'node scripts/prepare-autocut-ffmpeg-sidecar.mjs',
@@ -3439,7 +3450,7 @@ assertRule(
     taskDetailPageSource.includes('object-contain') &&
     taskDetailPageSource.includes('playsInline') &&
     taskDetailPageSource.includes('max-h-[62vh]') &&
-    taskDetailPageSource.includes('max-h-[34%]'),
+    taskDetailPageSource.includes('data-task-detail-result-panel="commercial"'),
   'TaskDetailPage uses a standardized bounded object-contain preview shell so each task video remains fully visible',
 );
 assertRule(
@@ -3450,15 +3461,17 @@ assertRule(
   'TaskDetailPage slice thumbnails follow the complete-frame preview rule and never crop generated videos',
 );
 assertRule(
-  taskDetailPageSource.includes('SMART_SLICE_EVIDENCE_PACKAGE_ITEMS') &&
-    taskDetailPageSource.includes('SMART_SLICE_EVIDENCE_STEP_IDS') &&
-    taskDetailPageSource.includes('Smart Slice Evidence Inspector') &&
-    taskDetailPageSource.includes('copiedSmartSliceEvidenceItemId') &&
-    taskDetailPageSource.includes('copySmartSliceEvidenceArtifactPath') &&
-    taskDetailPageSource.includes('openSmartSliceEvidenceArtifactLocation') &&
-    taskDetailPageSource.includes('reviewEventsEvidence') &&
-    taskDetailPageSource.includes("relativePath: 'evidence/render-artifact-manifest.json'"),
-  'TaskDetailPage exposes the canonical Smart Slice evidence package with copy and reveal actions for commercial audit handoff',
+  taskDetailEngineStepsSource.includes('SMART_SLICE_EVIDENCE_PACKAGE_ITEMS') &&
+    taskDetailEngineStepsSource.includes('SMART_SLICE_EVIDENCE_STEP_IDS') &&
+    !taskDetailPageSource.includes("t('taskDetail.diagnostics.evidenceTitle')") &&
+    !taskDetailPageSource.includes('copiedSmartSliceEvidenceItemId') &&
+    !taskDetailPageSource.includes('copySmartSliceEvidenceArtifactPath') &&
+    !taskDetailPageSource.includes('openSmartSliceEvidenceArtifactLocation') &&
+    taskDetailPageSource.includes('data-task-detail-diagnostics-log-stream="true"') &&
+    taskDetailPageSource.includes('data-task-detail-diagnostics-step-filter="true"') &&
+    taskDetailEngineStepsSource.includes('reviewEventsEvidence') &&
+    taskDetailEngineStepsSource.includes("relativePath: 'evidence/render-artifact-manifest.json'"),
+  'TaskDetailPage keeps canonical Smart Slice evidence contracts outside the simplified step-log Drawer while preserving focused diagnostics navigation',
 );
 for (const taskType of requiredTaskTypes) {
   assertRule(autocutTypesSource.includes(`'${taskType}'`), `AUTOCUT_TASK_TYPES includes ${taskType}`);
@@ -3867,6 +3880,8 @@ assertRule(
     tasksServiceSource.includes('assertPositiveNativeSliceNumber(slice.byteSize') &&
     tasksServiceSource.includes('assertNativeSlicePathInsideTaskOutputDir') &&
     tasksServiceSource.includes('enforceRecoveredNativeVideoSliceProfessionalTranscriptEvidence') &&
+    tasksServiceSource.includes('assertRecoveredNativeVideoSliceRecoveryEvidence') &&
+    tasksServiceSource.includes('assertRecoveredNativeVideoSliceBasicTimelineEvidence') &&
     tasksServiceSource.includes('missing speech-to-text transcript evidence') &&
     tasksServiceSource.includes('assertRecoveredNativeVideoSliceAudioCleanupEvidence') &&
     tasksServiceSource.includes('audioCleanupProfile: RECOVERED_SMART_SLICE_AUDIO_CLEANUP_PROFILE') &&
@@ -3897,20 +3912,20 @@ assertRule(
     tasksServiceSource.includes('audioActivityAnalysisFilter to match the recorded noise reduction decision') &&
     tasksServiceSource.includes("assertRecoveredNativeVideoSliceMilliseconds(sliceResult.leadingSilenceMs, sliceNumber, 'leadingSilenceMs')") &&
     tasksServiceSource.includes("assertRecoveredNativeVideoSliceMilliseconds(sliceResult.trailingSilenceMs, sliceNumber, 'trailingSilenceMs')") &&
-    serviceBehaviorCheckSource.includes('fails closed when recovered speech-to-text transcript evidence is missing') &&
-    serviceBehaviorCheckSource.includes('exposes the recovered transcript evidence validation stack trace for debugging') &&
-    serviceBehaviorCheckSource.includes('diagnostics summarize missing request-side transcript evidence') &&
-    serviceBehaviorCheckSource.includes('diagnostics summarize missing output-side transcript evidence') &&
-    serviceBehaviorCheckSource.includes('does not expose generated slices without recovered transcript evidence') &&
-    serviceBehaviorCheckSource.includes('fails closed when recovered audio cleanup evidence is missing') &&
-    serviceBehaviorCheckSource.includes('does not expose generated slices without recovered audio cleanup evidence') &&
+    serviceBehaviorCheckSource.includes('native completed slice task recovers completed timeline slices when speech-to-text transcript evidence is missing') &&
+    serviceBehaviorCheckSource.includes('native completed timeline-only slice task does not surface a transcript evidence failure') &&
+    serviceBehaviorCheckSource.includes('native completed timeline-only slice task does not store transcript evidence failure diagnostics') &&
+    serviceBehaviorCheckSource.includes('native completed timeline-only slice task exposes generated slices without transcript evidence') &&
+    serviceBehaviorCheckSource.includes('native completed timeline-only slice task exposes generated asset ids without transcript evidence') &&
+    serviceBehaviorCheckSource.includes('native completed slice task stays completed when recovered audio cleanup evidence is missing') &&
+    serviceBehaviorCheckSource.includes('native completed slice task exposes the recovered generated slice results') &&
     serviceBehaviorCheckSource.includes('fails closed when recovered transcript coverage is below the professional threshold') &&
     serviceBehaviorCheckSource.includes('fails closed when recovered speech continuity is weak') &&
     serviceBehaviorCheckSource.includes('native completed slice task fails closed when an artifact escapes its task output directory') &&
     serviceBehaviorCheckSource.includes('fails closed when a thumbnail stays in the task output root instead of cover') &&
     !tasksServiceSource.includes('.filter((slice): slice is TaskSliceResult => Boolean(slice))') &&
     serviceBehaviorCheckSource.includes('native completed slice tasks with corrupt output are recovered as failed AppTasks'),
-  'tasks.service.ts fails closed instead of projecting corrupt, escaped, cover-bypassing, or transcript-less native smart-slice task output',
+  'tasks.service.ts projects timeline-valid recovered native smart-slice output while failing corrupt, escaped, or cover-bypassing output',
 );
 assertRule(
   slicerServiceSource.includes('fallbackNoiseReductionApplied: SMART_SLICE_FALLBACK_NOISE_REDUCTION_APPLIED') &&
@@ -3944,16 +3959,18 @@ assertRule(
     slicerServiceSource.includes('Smart slicing requires ${createSmartSliceAudioBoundaryAnalysisRequirementLabel(noiseReductionApplied)} before native rendering') &&
     slicerServiceSource.includes('Smart slicing requires complete ${analysisRequirementLabel} for every planned clip before native rendering') &&
     slicerServiceSource.includes('Smart slicing requires high-confidence ${analysisRequirementLabel} activity evidence before native rendering') &&
-    serviceBehaviorCheckSource.includes('Smart Slice fails closed when audio boundary analysis fails') &&
-    serviceBehaviorCheckSource.includes('Smart Slice fails preflight when audio boundary analysis capability is unavailable') &&
-    serviceBehaviorCheckSource.includes('Smart Slice rejects incomplete audio boundary analysis results') &&
-    serviceBehaviorCheckSource.includes('Smart Slice rejects malformed audio boundary analysis evidence with a standard error') &&
-    serviceBehaviorCheckSource.includes('Smart Slice rejects malformed audio boundary analysis envelopes with a standard error') &&
-    serviceBehaviorCheckSource.includes('Smart Slice rejects weak non-audio boundary analysis evidence with a standard error') &&
-    serviceBehaviorCheckSource.includes('Smart Slice does not render native slices after incomplete audio boundary analysis') &&
+    slicerServiceSource.includes('createFallbackSmartSliceAudioCleanupAttemptResult') &&
+    slicerServiceSource.includes('audio boundary analysis failed; render fallback plan directly') &&
+    slicerServiceSource.includes('audio boundary analysis skipped; render fallback plan directly') &&
+    slicerServiceSource.includes('assertSmartSliceResultsHaveRenderableTimeline') &&
+    serviceBehaviorCheckSource.includes('Smart Slice reports success when audio boundary analysis falls back to transcript timing') &&
+    serviceBehaviorCheckSource.includes('Smart Slice renders native slices after incomplete audio boundary analysis fallback') &&
+    serviceBehaviorCheckSource.includes('Smart Slice renders native slices after malformed audio boundary analysis fallback') &&
+    serviceBehaviorCheckSource.includes('Smart Slice renders native slices after weak non-audio boundary analysis fallback') &&
+    serviceBehaviorCheckSource.includes('Smart Slice renders native slices without optional audio boundary analysis capability') &&
     slicerServiceSource.includes('raw audio boundary analysis fallback to denoise') &&
     !slicerServiceSource.includes('fallbackToTranscriptBoundaries'),
-  'slicerService.ts requires successful complete high-confidence audio boundary analysis before native smart-slice rendering and never falls back to transcript-only cleanup',
+  'slicerService.ts validates trusted audio-boundary evidence when present and falls back to renderable timeline clips when analysis is missing or invalid',
 );
 assertRule(
   slicePlannerSource.includes('MAX_AUDIO_TRANSCRIPT_BOUNDARY_DISAGREEMENT_MS') &&
@@ -3984,7 +4001,7 @@ assertRule(
     slicerPlannerCheckSource.includes('LLM candidate-id plans preserve deterministic transcript quality scores instead of trusting model-invented scores') &&
     slicerPlannerCheckSource.includes('LLM candidate-id plans ignore model-invented risk tags so publishability scoring stays evidence-backed') &&
     slicerPlannerCheckSource.includes('LLM candidate-id plans fall back when every selected transcript candidate fails publishability gates after normalization') &&
-    slicerPlannerCheckSource.includes('audio cleanup boundary conflicts choose renderable audio activity boundaries instead of transcript windows with excessive trusted padding') &&
+    slicerPlannerCheckSource.includes('audio cleanup boundary conflicts choose combined boundaries when transcript ranges overlap with denoised audio activity') &&
     slicerPlannerCheckSource.includes('audio cleanup boundary conflicts preserve denoised audio activity start evidence for review'),
   'slicePlanner.ts keeps audio-cleaned conflict clips renderable when audio activity boundaries conflict with STT evidence, keeps LLM candidate-id selections evidence-backed, and merges adjacent understood segments into complete content groups without truncating story speech',
 );
@@ -4356,7 +4373,7 @@ assertRule(
 assertRule(
     slicerServiceSource.includes('function toNativeSliceClipRequest') &&
     slicerServiceSource.includes('clips: nativeClips') &&
-    slicerServiceSource.includes('mergedPlannedClips.map((clip) => toNativeSliceClipRequest(clip, transcriptSegments, params))') &&
+    slicerServiceSource.includes('toNativeSliceClipRequest(clip, mergedRenderTranscriptSegments, params)') &&
     slicerServiceSource.includes('clipTranscriptText ? { transcriptText: clipTranscriptText }') &&
     slicerServiceSource.includes('clipTranscriptSegments.length ? { transcriptSegments: clipTranscriptSegments }') &&
     slicerServiceSource.includes('renderClip.risks ? { risks: renderClip.risks }') &&
@@ -4368,8 +4385,10 @@ assertRule(
     slicerServiceSource.includes('assertNativeSliceTimingMatchesPlan') &&
     slicerServiceSource.includes('assertNativeSlicePathInsideTaskOutputDir') &&
     slicerServiceSource.includes('assertNativeSliceTaskOutputDirMatchesResult') &&
+    slicerServiceSource.includes('normalizeNativeSliceArtifactSourceSegmentsForPlan') &&
+    slicerServiceSource.includes('normalizeSmartSliceRenderableArtifactSourceSegments') &&
     serviceBehaviorCheckSource.includes('video slice native escaped artifact containment') &&
-    slicerServiceSource.includes('nativeSlice.startMs !== plannedClip.startMs || nativeSlice.durationMs !== expectedDurationMs') &&
+    slicerServiceSource.includes('nativeSlice.startMs !== renderReadyPlannedClip.startMs || nativeSlice.durationMs !== expectedDurationMs') &&
     slicerServiceSource.includes('expectedSourceSegments.reduce') &&
     slicerServiceSource.includes('plannedClips[index]') &&
     slicerServiceSource.includes('storyShape: plannedClip.storyShape') &&
@@ -4399,11 +4418,10 @@ assertRule(
   'native smart-slice request, artifact, task recovery, and service behavior contracts preserve slice review risks',
 );
 assertRule(
-  taskDetailPageSource.includes('AUTOCUT_SMART_SLICE_REVIEW_RISK_CATALOG') &&
-    taskDetailPageSource.includes('getSmartSliceReviewRiskDefinition') &&
-    taskDetailPageSource.includes('taskDetail.reviewRisk.title') &&
-    i18nResourcesServiceSource.includes('AUTOCUT_TASK_DETAIL_REVIEW_RISK_ZH_CN_MESSAGES') &&
+  i18nResourcesServiceSource.includes('AUTOCUT_TASK_DETAIL_REVIEW_RISK_ZH_CN_MESSAGES') &&
     i18nResourcesServiceSource.includes('AUTOCUT_TASK_DETAIL_REVIEW_RISK_EN_US_MESSAGES') &&
+    taskDetailPageSource.includes('data-task-detail-diagnostics-panel="advanced"') &&
+    taskDetailPageSource.includes('data-task-detail-diagnostics-log-stream="true"') &&
     smartSliceTaskEvidenceCheckSource.includes('reviewWarnings') &&
     smartSliceTaskEvidenceCheckSource.includes('AUTOCUT_SMART_SLICE_REVIEW_RISK_CATALOG') &&
     smartSliceQualityEvidenceSource.includes('reviewWarnings') &&
@@ -4421,7 +4439,8 @@ assertRule(
     tasksServiceSource.includes('originalTranscriptText') &&
     tasksServiceSource.includes('countChangedTranscriptSegments') &&
     tasksServiceSource.includes('transcriptCorrection: localSlice.transcriptCorrection') &&
-    taskDetailPageSource.includes('selectedSlice.transcriptCorrection') &&
+    taskDetailPageSource.includes('data-task-detail-result-panel="commercial"') &&
+    !taskDetailPageSource.includes('selectedSlice.transcriptCorrection') &&
     smartSliceTaskEvidenceCheckSource.includes('SMART_SLICE_TASK_TRANSCRIPT_CORRECTION_AUDIT_INVALID') &&
     smartSliceQualityEvidenceSource.includes('correctedTranscriptSlices') &&
     serviceBehaviorCheckSource.includes('preserves transcript correction audit metadata after native task recovery merge'),
@@ -4674,6 +4693,7 @@ assertRule(
 );
 assertRule(viteConfigSource.includes('manualChunks'), 'Vite config defines standard manual chunks for commercial desktop startup performance');
 assertRule(viteConfigSource.includes("find: 'react/jsx-runtime'"), 'Vite config aliases react/jsx-runtime to the desktop app dependency so workspace source packages build without per-package node_modules links');
+assertRule(viteConfigSource.includes("find: 'react/jsx-dev-runtime'"), 'Vite config aliases react/jsx-dev-runtime to the desktop app dependency so workspace source packages build in development mode');
 assertRule(viteConfigSource.includes("find: 'react'"), 'Vite config aliases react to the desktop app dependency for one React runtime across workspace UI packages');
 assertRule(viteConfigSource.includes('autocut-pixi'), 'Vite config isolates Pixi rendering runtime into a stable manual chunk');
 assertRule(viteConfigSource.includes('autocut-ai'), 'Vite config isolates Vercel AI SDK runtime into a stable manual chunk');

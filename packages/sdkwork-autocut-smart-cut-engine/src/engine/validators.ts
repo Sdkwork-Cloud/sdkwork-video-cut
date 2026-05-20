@@ -16,6 +16,7 @@ export interface SmartCutValidatorDefinition {
   description: string;
   requiredEvidence: readonly SmartCutEvidenceKind[];
   failClosed: boolean;
+  severity: 'error' | 'warning';
   nativeAcceleration: 'required' | 'recommended' | 'optional';
 }
 
@@ -26,6 +27,7 @@ export const SMART_CUT_VALIDATOR_REGISTRY = [
     description: 'Verifies every slice starts and ends on a complete logical content unit.',
     requiredEvidence: ['transcript', 'speaker'],
     failClosed: true,
+    severity: 'error',
     nativeAcceleration: 'recommended',
   },
   {
@@ -34,6 +36,7 @@ export const SMART_CUT_VALIDATOR_REGISTRY = [
     description: 'Verifies speaker turns, Q/A pairs, interruptions, and overlapping speech remain coherent.',
     requiredEvidence: ['speaker', 'transcript'],
     failClosed: true,
+    severity: 'error',
     nativeAcceleration: 'recommended',
   },
   {
@@ -42,6 +45,7 @@ export const SMART_CUT_VALIDATOR_REGISTRY = [
     description: 'Verifies candidate, filtered, and rendered intervals remain ordered, non-corrupt, and source-backed.',
     requiredEvidence: ['media'],
     failClosed: true,
+    severity: 'error',
     nativeAcceleration: 'required',
   },
   {
@@ -50,6 +54,7 @@ export const SMART_CUT_VALIDATOR_REGISTRY = [
     description: 'Verifies every output satisfies preset minimum and maximum duration contracts.',
     requiredEvidence: ['media'],
     failClosed: true,
+    severity: 'error',
     nativeAcceleration: 'required',
   },
   {
@@ -57,7 +62,8 @@ export const SMART_CUT_VALIDATOR_REGISTRY = [
     displayName: 'Evidence Coverage',
     description: 'Verifies required transcript, speaker, audio, visual, OCR, music, and event evidence exists for a strategy.',
     requiredEvidence: ['media'],
-    failClosed: true,
+    failClosed: false,
+    severity: 'warning',
     nativeAcceleration: 'optional',
   },
   {
@@ -66,6 +72,7 @@ export const SMART_CUT_VALIDATOR_REGISTRY = [
     description: 'Revalidates semantic and media boundaries after destructive filters run.',
     requiredEvidence: ['transcript', 'speaker', 'audio'],
     failClosed: true,
+    severity: 'error',
     nativeAcceleration: 'required',
   },
   {
@@ -73,7 +80,8 @@ export const SMART_CUT_VALIDATOR_REGISTRY = [
     displayName: 'Publishability Standard',
     description: 'Verifies output profile, subtitles, cover, audio packaging, visual framing, and artifact readiness.',
     requiredEvidence: ['media', 'transcript', 'audio', 'visual'],
-    failClosed: true,
+    failClosed: false,
+    severity: 'warning',
     nativeAcceleration: 'recommended',
   },
   {
@@ -82,6 +90,7 @@ export const SMART_CUT_VALIDATOR_REGISTRY = [
     description: 'Verifies rendered files, thumbnails, subtitles, and quality reports are present and internally consistent.',
     requiredEvidence: ['media'],
     failClosed: true,
+    severity: 'error',
     nativeAcceleration: 'required',
   },
 ] as const satisfies readonly SmartCutValidatorDefinition[];

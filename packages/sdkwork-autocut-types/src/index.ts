@@ -116,6 +116,11 @@ export const AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER = {
   localWhisperCli: 'local-whisper-cli',
   openAiTranscription: 'openai-transcription',
   qwenTranscription: 'qwen-transcription',
+  iflytekLongForm: 'iflytek-long-form',
+  volcengineAsr: 'volcengine-asr',
+  qwenParaformer: 'qwen-paraformer',
+  tencentCloudAsr: 'tencent-cloud-asr',
+  baiduCloudAsr: 'baidu-cloud-asr',
   geminiTranscription: 'gemini-transcription',
   customOpenAiCompatibleTranscription: 'custom-openai-compatible-transcription',
 } as const;
@@ -197,7 +202,44 @@ export interface AutoCutSpeechTranscriptionProviderCapabilities {
   supportsWords: boolean;
   supportsSpeakerDiarization: boolean;
   preferredForLongForm: boolean;
+  requiresLongAudio?: boolean;
+  requiresSegmentTimestamps?: boolean;
 }
+
+export type AutoCutSpeechTranscriptionProviderOptionValue = string | number | boolean | string[] | number[];
+
+export type AutoCutSpeechTranscriptionProviderOptions =
+  Record<string, AutoCutSpeechTranscriptionProviderOptionValue>;
+
+export interface AutoCutSpeechTranscriptionProviderOptionChoice {
+  value: string | number | boolean;
+  label: string;
+}
+
+export interface AutoCutSpeechTranscriptionProviderOptionDefinition {
+  key: string;
+  kind: 'boolean' | 'number' | 'text' | 'select' | 'multi-select';
+  label: string;
+  description: string;
+  officialParameterName?: string;
+  required?: boolean;
+  requiredForSmartSlice?: boolean;
+  locked?: boolean;
+  defaultValue: AutoCutSpeechTranscriptionProviderOptionValue;
+  choices?: readonly AutoCutSpeechTranscriptionProviderOptionChoice[];
+  min?: number;
+  max?: number;
+  step?: number;
+}
+
+export type AutoCutSpeechTranscriptionProviderIntegrationMode =
+  | 'local-long-audio-cli'
+  | 'openai-compatible-audio'
+  | 'dashscope-paraformer-task'
+  | 'iflytek-lfasr-task'
+  | 'volcengine-bigmodel-recorded-audio'
+  | 'tencent-cloud-recorded-task'
+  | 'baidu-cloud-audio-transcription-task';
 
 export interface AutoCutSpeechTranscriptionProviderDefinition {
   id: AutoCutSpeechTranscriptionProviderId;
@@ -209,6 +251,11 @@ export interface AutoCutSpeechTranscriptionProviderDefinition {
   defaultDescription: string;
   modelVendor?: ModelVendor;
   defaultModel?: string;
+  officialName?: string;
+  officialDocsUrl?: string;
+  integrationMode?: AutoCutSpeechTranscriptionProviderIntegrationMode;
+  optionSchema?: readonly AutoCutSpeechTranscriptionProviderOptionDefinition[];
+  defaultProviderOptions?: AutoCutSpeechTranscriptionProviderOptions;
   capabilities: AutoCutSpeechTranscriptionProviderCapabilities;
 }
 
@@ -222,6 +269,8 @@ const AUTOCUT_LOCAL_SPEECH_TRANSCRIPTION_CAPABILITIES = {
   supportsWords: true,
   supportsSpeakerDiarization: false,
   preferredForLongForm: false,
+  requiresLongAudio: false,
+  requiresSegmentTimestamps: true,
 } as const satisfies AutoCutSpeechTranscriptionProviderCapabilities;
 
 const AUTOCUT_API_SPEECH_TRANSCRIPTION_CAPABILITIES = {
@@ -234,7 +283,410 @@ const AUTOCUT_API_SPEECH_TRANSCRIPTION_CAPABILITIES = {
   supportsWords: true,
   supportsSpeakerDiarization: true,
   preferredForLongForm: true,
+  requiresLongAudio: true,
+  requiresSegmentTimestamps: true,
 } as const satisfies AutoCutSpeechTranscriptionProviderCapabilities;
+
+const AUTOCUT_API_SPEECH_TRANSCRIPTION_SEGMENT_TIMESTAMP_OPTION = {
+  key: 'enableSegmentTimestamps',
+  kind: 'boolean',
+  label: 'Segment timestamps',
+  description: 'Required by Smart Slice. Provider responses must include start/end time for every recognized sentence or utterance.',
+  required: true,
+  requiredForSmartSlice: true,
+  locked: true,
+  defaultValue: true,
+} as const satisfies AutoCutSpeechTranscriptionProviderOptionDefinition;
+
+const AUTOCUT_API_SPEECH_TRANSCRIPTION_WORD_TIMESTAMP_OPTION = {
+  key: 'enableWordTimestamps',
+  kind: 'boolean',
+  label: 'Word timestamps',
+  description: 'Request word-level timings when the provider supports detailed recognition results.',
+  defaultValue: true,
+} as const satisfies AutoCutSpeechTranscriptionProviderOptionDefinition;
+
+const AUTOCUT_API_SPEECH_TRANSCRIPTION_SPEAKER_OPTION = {
+  key: 'enableSpeakerDiarization',
+  kind: 'boolean',
+  label: 'Speaker diarization',
+  description: 'Request speaker labels so dialogue clips can preserve complete speaker turns.',
+  defaultValue: true,
+} as const satisfies AutoCutSpeechTranscriptionProviderOptionDefinition;
+
+const AUTOCUT_API_SPEECH_TRANSCRIPTION_HOTWORDS_OPTION = {
+  key: 'hotwords',
+  kind: 'text',
+  label: 'Hotwords',
+  description: 'Optional provider hotwords or glossary text for domain terms. Use the provider-native separator documented by the selected service.',
+  defaultValue: '',
+} as const satisfies AutoCutSpeechTranscriptionProviderOptionDefinition;
+
+const AUTOCUT_STANDARD_OPENAI_COMPATIBLE_STT_OPTIONS = [
+  AUTOCUT_API_SPEECH_TRANSCRIPTION_SEGMENT_TIMESTAMP_OPTION,
+  AUTOCUT_API_SPEECH_TRANSCRIPTION_WORD_TIMESTAMP_OPTION,
+  {
+    key: 'responseFormat',
+    kind: 'select',
+    label: 'Response format',
+    description: 'Bridge request format. Verbose JSON is required so timestamps can be normalized into Smart Slice transcript segments.',
+    officialParameterName: 'response_format',
+    required: true,
+    requiredForSmartSlice: true,
+    locked: true,
+    defaultValue: 'verbose_json',
+    choices: [
+      { value: 'verbose_json', label: 'Verbose JSON' },
+    ],
+  },
+] as const satisfies readonly AutoCutSpeechTranscriptionProviderOptionDefinition[];
+
+const AUTOCUT_QWEN_PARAFORMER_STT_OPTIONS = [
+  AUTOCUT_API_SPEECH_TRANSCRIPTION_SEGMENT_TIMESTAMP_OPTION,
+  AUTOCUT_API_SPEECH_TRANSCRIPTION_WORD_TIMESTAMP_OPTION,
+  AUTOCUT_API_SPEECH_TRANSCRIPTION_SPEAKER_OPTION,
+  {
+    key: 'audioFormat',
+    kind: 'select',
+    label: 'Audio format',
+    description: 'Audio/video input format hint for Paraformer file recognition.',
+    defaultValue: 'auto',
+    choices: [
+      { value: 'auto', label: 'Auto detect' },
+      { value: 'wav', label: 'WAV' },
+      { value: 'mp3', label: 'MP3' },
+      { value: 'mp4', label: 'MP4' },
+      { value: 'm4a', label: 'M4A' },
+      { value: 'flac', label: 'FLAC' },
+      { value: 'webm', label: 'WebM' },
+    ],
+  },
+  {
+    key: 'channelId',
+    kind: 'number',
+    label: 'Channel ID',
+    description: 'Default audio channel index. Paraformer also supports multi-channel arrays through the bridge.',
+    officialParameterName: 'channel_id',
+    defaultValue: 0,
+    min: 0,
+    max: 7,
+    step: 1,
+  },
+  {
+    key: 'disfluencyRemovalEnabled',
+    kind: 'boolean',
+    label: 'Remove disfluency',
+    description: 'Maps to disfluency_removal_enabled. Keep off by default so clip text matches spoken timeline evidence.',
+    officialParameterName: 'disfluency_removal_enabled',
+    defaultValue: false,
+  },
+  {
+    key: 'timestampAlignmentEnabled',
+    kind: 'boolean',
+    label: 'Timestamp alignment',
+    description: 'Maps to timestamp_alignment_enabled for Paraformer timestamp calibration.',
+    officialParameterName: 'timestamp_alignment_enabled',
+    defaultValue: true,
+  },
+  {
+    key: 'speakerCount',
+    kind: 'number',
+    label: 'Speaker count',
+    description: 'Optional reference speaker count. Use 0 when unknown and let the provider infer speakers.',
+    officialParameterName: 'speaker_count',
+    defaultValue: 0,
+    min: 0,
+    max: 20,
+    step: 1,
+  },
+  {
+    key: 'languageHints',
+    kind: 'multi-select',
+    label: 'Language hints',
+    description: 'Maps to language_hints for Paraformer v2.',
+    officialParameterName: 'language_hints',
+    defaultValue: ['zh', 'en'],
+    choices: [
+      { value: 'zh', label: 'Chinese' },
+      { value: 'en', label: 'English' },
+      { value: 'ja', label: 'Japanese' },
+      { value: 'ko', label: 'Korean' },
+    ],
+  },
+] as const satisfies readonly AutoCutSpeechTranscriptionProviderOptionDefinition[];
+
+const AUTOCUT_IFLYTEK_LONG_FORM_STT_OPTIONS = [
+  AUTOCUT_API_SPEECH_TRANSCRIPTION_SEGMENT_TIMESTAMP_OPTION,
+  AUTOCUT_API_SPEECH_TRANSCRIPTION_WORD_TIMESTAMP_OPTION,
+  AUTOCUT_API_SPEECH_TRANSCRIPTION_SPEAKER_OPTION,
+  {
+    key: 'language',
+    kind: 'select',
+    label: 'Language',
+    description: 'Maps to iFlytek lfasr language. cn is the official default for Chinese/English mixed recognition.',
+    officialParameterName: 'language',
+    defaultValue: 'cn',
+    choices: [
+      { value: 'cn', label: 'Chinese / Chinese-English' },
+      { value: 'en', label: 'English' },
+    ],
+  },
+  {
+    key: 'hasParticiple',
+    kind: 'boolean',
+    label: 'Participle result',
+    description: 'Maps to has_participle and requests word-like timing evidence when available.',
+    officialParameterName: 'has_participle',
+    defaultValue: true,
+  },
+  {
+    key: 'engVadMargin',
+    kind: 'select',
+    label: 'VAD margin',
+    description: 'Maps to eng_vad_margin. Keep silence margin visible so the bridge can normalize provider offsets safely.',
+    officialParameterName: 'eng_vad_margin',
+    defaultValue: 1,
+    choices: [
+      { value: 0, label: 'Hide silence margin' },
+      { value: 1, label: 'Show silence margin' },
+    ],
+  },
+  {
+    key: 'hasSeparate',
+    kind: 'boolean',
+    label: 'Speaker separation',
+    description: 'Maps to has_seperate in the iFlytek API.',
+    officialParameterName: 'has_seperate',
+    defaultValue: true,
+  },
+  {
+    key: 'speakerNumber',
+    kind: 'number',
+    label: 'Speaker number',
+    description: 'Maps to speaker_number. Use 0 for blind diarization.',
+    officialParameterName: 'speaker_number',
+    defaultValue: 0,
+    min: 0,
+    max: 10,
+    step: 1,
+  },
+  {
+    key: 'roleType',
+    kind: 'select',
+    label: 'Role type',
+    description: 'Maps to role_type when the iFlytek account has role separation enabled.',
+    officialParameterName: 'role_type',
+    defaultValue: '1',
+    choices: [
+      { value: '1', label: 'General role separation' },
+    ],
+  },
+  {
+    key: 'domain',
+    kind: 'select',
+    label: 'Domain',
+    description: 'Maps to pd for iFlytek vertical-domain recognition.',
+    officialParameterName: 'pd',
+    defaultValue: 'general',
+    choices: [
+      { value: 'general', label: 'General' },
+      { value: 'edu', label: 'Education' },
+      { value: 'finance', label: 'Finance' },
+      { value: 'tech', label: 'Technology' },
+      { value: 'ecom', label: 'E-commerce' },
+      { value: 'medical', label: 'Medical' },
+    ],
+  },
+  AUTOCUT_API_SPEECH_TRANSCRIPTION_HOTWORDS_OPTION,
+] as const satisfies readonly AutoCutSpeechTranscriptionProviderOptionDefinition[];
+
+const AUTOCUT_VOLCENGINE_ASR_OPTIONS = [
+  {
+    ...AUTOCUT_API_SPEECH_TRANSCRIPTION_SEGMENT_TIMESTAMP_OPTION,
+    key: 'showUtterances',
+    label: 'Utterance timestamps',
+    description: 'Required by Smart Slice. Volcengine result.utterances carries start_time/end_time and words.',
+  },
+  AUTOCUT_API_SPEECH_TRANSCRIPTION_WORD_TIMESTAMP_OPTION,
+  AUTOCUT_API_SPEECH_TRANSCRIPTION_SPEAKER_OPTION,
+  {
+    key: 'resourceId',
+    kind: 'select',
+    label: 'Resource ID',
+    description: 'Maps to X-Api-Resource-Id for recorded bigmodel ASR.',
+    officialParameterName: 'X-Api-Resource-Id',
+    required: true,
+    defaultValue: 'volc.bigasr.auc_turbo',
+    choices: [
+      { value: 'volc.bigasr.auc_turbo', label: 'Bigmodel flash' },
+      { value: 'volc.bigasr.auc', label: 'Bigmodel standard' },
+    ],
+  },
+  {
+    key: 'modelName',
+    kind: 'select',
+    label: 'Model name',
+    description: 'Maps to request.model_name.',
+    officialParameterName: 'model_name',
+    required: true,
+    defaultValue: 'bigmodel',
+    choices: [
+      { value: 'bigmodel', label: 'Bigmodel' },
+    ],
+  },
+  {
+    key: 'enablePunctuation',
+    kind: 'boolean',
+    label: 'Punctuation',
+    description: 'Maps to enable_punc when supported by the selected Volcengine endpoint.',
+    officialParameterName: 'enable_punc',
+    defaultValue: true,
+  },
+  {
+    key: 'enableItn',
+    kind: 'boolean',
+    label: 'ITN',
+    description: 'Maps to enable_itn when supported by the selected Volcengine endpoint.',
+    officialParameterName: 'enable_itn',
+    defaultValue: true,
+  },
+] as const satisfies readonly AutoCutSpeechTranscriptionProviderOptionDefinition[];
+
+const AUTOCUT_TENCENT_CLOUD_ASR_OPTIONS = [
+  {
+    ...AUTOCUT_API_SPEECH_TRANSCRIPTION_SEGMENT_TIMESTAMP_OPTION,
+    key: 'resTextFormatDetailed',
+    label: 'Detailed result',
+    description: 'Required by Smart Slice. Maps to ResTextFormat=3 so ResultDetail contains sentence and word timestamps for subtitles.',
+    officialParameterName: 'ResTextFormat',
+    defaultValue: true,
+  },
+  AUTOCUT_API_SPEECH_TRANSCRIPTION_WORD_TIMESTAMP_OPTION,
+  AUTOCUT_API_SPEECH_TRANSCRIPTION_SPEAKER_OPTION,
+  {
+    key: 'engineModelType',
+    kind: 'select',
+    label: 'Engine model',
+    description: 'Maps to EngineModelType. Use 16k_zh_en for Chinese/English/fangyan long video by default.',
+    officialParameterName: 'EngineModelType',
+    required: true,
+    defaultValue: '16k_zh_en',
+    choices: [
+      { value: '16k_zh_en', label: '16k Chinese-English large model' },
+      { value: '16k_zh_large', label: '16k Chinese large model' },
+      { value: '16k_zh', label: '16k Chinese' },
+      { value: '16k_en', label: '16k English' },
+      { value: '16k_multi_lang', label: '16k multilingual' },
+      { value: '8k_zh', label: '8k Chinese phone' },
+    ],
+  },
+  {
+    key: 'channelNum',
+    kind: 'select',
+    label: 'Channels',
+    description: 'Maps to ChannelNum. 16k engines require mono; 8k phone audio can use dual-channel speaker separation.',
+    officialParameterName: 'ChannelNum',
+    required: true,
+    defaultValue: 1,
+    choices: [
+      { value: 1, label: 'Mono' },
+      { value: 2, label: 'Dual channel' },
+    ],
+  },
+  {
+    key: 'sentenceMaxLength',
+    kind: 'number',
+    label: 'Subtitle max length',
+    description: 'Maps to SentenceMaxLength and controls max characters per subtitle sentence when ResTextFormat is 3.',
+    officialParameterName: 'SentenceMaxLength',
+    defaultValue: 22,
+    min: 6,
+    max: 40,
+    step: 1,
+  },
+  {
+    key: 'speakerNumber',
+    kind: 'number',
+    label: 'Speaker number',
+    description: 'Maps to SpeakerNumber. Use 0 for automatic diarization.',
+    officialParameterName: 'SpeakerNumber',
+    defaultValue: 0,
+    min: 0,
+    max: 10,
+    step: 1,
+  },
+  {
+    key: 'filterModal',
+    kind: 'select',
+    label: 'Modal word filter',
+    description: 'Maps to FilterModal. Keep disabled by default so transcript text remains aligned with speech.',
+    officialParameterName: 'FilterModal',
+    defaultValue: 0,
+    choices: [
+      { value: 0, label: 'Off' },
+      { value: 1, label: 'Partial' },
+      { value: 2, label: 'Strict' },
+    ],
+  },
+  AUTOCUT_API_SPEECH_TRANSCRIPTION_HOTWORDS_OPTION,
+] as const satisfies readonly AutoCutSpeechTranscriptionProviderOptionDefinition[];
+
+const AUTOCUT_BAIDU_CLOUD_ASR_OPTIONS = [
+  {
+    ...AUTOCUT_API_SPEECH_TRANSCRIPTION_SEGMENT_TIMESTAMP_OPTION,
+    key: 'enableTimestamps',
+    label: 'Timestamp output',
+    description: 'Required by Smart Slice. The Baidu bridge must request timestamp/cue output and normalize it into startMs/endMs segments.',
+    defaultValue: true,
+  },
+  AUTOCUT_API_SPEECH_TRANSCRIPTION_WORD_TIMESTAMP_OPTION,
+  {
+    key: 'product',
+    kind: 'select',
+    label: 'Product',
+    description: 'Baidu audio file transcription product route used by the provider bridge.',
+    defaultValue: 'audio-file-transcription',
+    choices: [
+      { value: 'audio-file-transcription', label: 'Audio file transcription' },
+      { value: 'long-speech-recognition', label: 'Long speech recognition' },
+    ],
+  },
+  {
+    key: 'pid',
+    kind: 'select',
+    label: 'Language model PID',
+    description: 'Baidu speech model identifier. 1537 is the common Mandarin input model in Baidu speech APIs.',
+    officialParameterName: 'pid',
+    defaultValue: 1537,
+    choices: [
+      { value: 1537, label: 'Mandarin Chinese' },
+      { value: 1737, label: 'English' },
+    ],
+  },
+  {
+    key: 'audioRate',
+    kind: 'select',
+    label: 'Sample rate',
+    description: 'Audio sample rate hint for Baidu speech recognition.',
+    officialParameterName: 'rate',
+    defaultValue: 16000,
+    choices: [
+      { value: 16000, label: '16 kHz' },
+      { value: 8000, label: '8 kHz' },
+    ],
+  },
+] as const satisfies readonly AutoCutSpeechTranscriptionProviderOptionDefinition[];
+
+export function createAutoCutSpeechTranscriptionProviderDefaultOptions(
+  provider: Pick<AutoCutSpeechTranscriptionProviderDefinition, 'optionSchema'>,
+): AutoCutSpeechTranscriptionProviderOptions {
+  const options: AutoCutSpeechTranscriptionProviderOptions = {};
+  for (const option of provider.optionSchema ?? []) {
+    options[option.key] = option.defaultValue;
+  }
+
+  return options;
+}
 
 export const AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER_DEFINITIONS = [
   {
@@ -257,6 +709,10 @@ export const AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER_DEFINITIONS = [
     defaultDescription: 'Use the configured OpenAI Model Vendor credentials through the STT provider bridge.',
     modelVendor: 'openai',
     defaultModel: 'gpt-4o-transcribe',
+    officialName: 'OpenAI Audio Transcriptions',
+    officialDocsUrl: 'https://platform.openai.com/docs/guides/speech-to-text',
+    integrationMode: 'openai-compatible-audio',
+    optionSchema: AUTOCUT_STANDARD_OPENAI_COMPATIBLE_STT_OPTIONS,
     capabilities: AUTOCUT_API_SPEECH_TRANSCRIPTION_CAPABILITIES,
   },
   {
@@ -269,6 +725,90 @@ export const AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER_DEFINITIONS = [
     defaultDescription: 'Use the configured Qwen Model Vendor credentials through the STT provider bridge.',
     modelVendor: 'qwen',
     defaultModel: 'qwen-audio-asr',
+    officialName: 'Qwen audio transcription',
+    officialDocsUrl: 'https://help.aliyun.com/zh/model-studio/paraformer-api/',
+    integrationMode: 'openai-compatible-audio',
+    optionSchema: AUTOCUT_STANDARD_OPENAI_COMPATIBLE_STT_OPTIONS,
+    capabilities: AUTOCUT_API_SPEECH_TRANSCRIPTION_CAPABILITIES,
+  },
+  {
+    id: AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER.iflytekLongForm,
+    kind: 'api',
+    engine: 'model-vendor-api',
+    nameKey: 'speechTranscription.provider.iflytekLongForm.name',
+    descriptionKey: 'speechTranscription.provider.iflytekLongForm.description',
+    defaultName: 'iFlytek long-form ASR',
+    defaultDescription: 'Use iFlytek long-form audio transcription through the standard STT provider bridge.',
+    modelVendor: 'custom',
+    defaultModel: 'iflytek-lfasr',
+    officialName: 'iFlytek Long Form ASR',
+    officialDocsUrl: 'https://www.xfyun.cn/doc/asr/lfasr/API.html',
+    integrationMode: 'iflytek-lfasr-task',
+    optionSchema: AUTOCUT_IFLYTEK_LONG_FORM_STT_OPTIONS,
+    capabilities: AUTOCUT_API_SPEECH_TRANSCRIPTION_CAPABILITIES,
+  },
+  {
+    id: AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER.volcengineAsr,
+    kind: 'api',
+    engine: 'model-vendor-api',
+    nameKey: 'speechTranscription.provider.volcengineAsr.name',
+    descriptionKey: 'speechTranscription.provider.volcengineAsr.description',
+    defaultName: 'Volcengine ASR',
+    defaultDescription: 'Use Volcengine recorded audio ASR through the standard STT provider bridge.',
+    modelVendor: 'doubao',
+    defaultModel: 'bigmodel',
+    officialName: 'Volcengine recorded audio ASR',
+    officialDocsUrl: 'https://www.volcengine.com/docs/6561/1631584',
+    integrationMode: 'volcengine-bigmodel-recorded-audio',
+    optionSchema: AUTOCUT_VOLCENGINE_ASR_OPTIONS,
+    capabilities: AUTOCUT_API_SPEECH_TRANSCRIPTION_CAPABILITIES,
+  },
+  {
+    id: AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER.qwenParaformer,
+    kind: 'api',
+    engine: 'model-vendor-api',
+    nameKey: 'speechTranscription.provider.qwenParaformer.name',
+    descriptionKey: 'speechTranscription.provider.qwenParaformer.description',
+    defaultName: 'Alibaba Qwen Paraformer',
+    defaultDescription: 'Use DashScope Paraformer recorded file recognition through the standard STT provider bridge.',
+    modelVendor: 'qwen',
+    defaultModel: 'paraformer-v2',
+    officialName: 'DashScope Paraformer recorded speech recognition',
+    officialDocsUrl: 'https://www.alibabacloud.com/help/doc-detail/2869541.html',
+    integrationMode: 'dashscope-paraformer-task',
+    optionSchema: AUTOCUT_QWEN_PARAFORMER_STT_OPTIONS,
+    capabilities: AUTOCUT_API_SPEECH_TRANSCRIPTION_CAPABILITIES,
+  },
+  {
+    id: AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER.tencentCloudAsr,
+    kind: 'api',
+    engine: 'model-vendor-api',
+    nameKey: 'speechTranscription.provider.tencentCloudAsr.name',
+    descriptionKey: 'speechTranscription.provider.tencentCloudAsr.description',
+    defaultName: 'Tencent Cloud ASR',
+    defaultDescription: 'Use Tencent Cloud recorded file recognition through the standard STT provider bridge.',
+    modelVendor: 'hunyuan',
+    defaultModel: '16k_zh_en',
+    officialName: 'Tencent Cloud CreateRecTask',
+    officialDocsUrl: 'https://cloud.tencent.com/document/api/1093/37822',
+    integrationMode: 'tencent-cloud-recorded-task',
+    optionSchema: AUTOCUT_TENCENT_CLOUD_ASR_OPTIONS,
+    capabilities: AUTOCUT_API_SPEECH_TRANSCRIPTION_CAPABILITIES,
+  },
+  {
+    id: AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER.baiduCloudAsr,
+    kind: 'api',
+    engine: 'model-vendor-api',
+    nameKey: 'speechTranscription.provider.baiduCloudAsr.name',
+    descriptionKey: 'speechTranscription.provider.baiduCloudAsr.description',
+    defaultName: 'Baidu Cloud ASR',
+    defaultDescription: 'Use Baidu Cloud long audio transcription through the standard STT provider bridge.',
+    modelVendor: 'baidu',
+    defaultModel: 'audio-file-transcription',
+    officialName: 'Baidu Cloud audio file transcription',
+    officialDocsUrl: 'https://ai.baidu.com/ai-doc/SPEECH/Clhohwkbv',
+    integrationMode: 'baidu-cloud-audio-transcription-task',
+    optionSchema: AUTOCUT_BAIDU_CLOUD_ASR_OPTIONS,
     capabilities: AUTOCUT_API_SPEECH_TRANSCRIPTION_CAPABILITIES,
   },
   {
@@ -281,6 +821,10 @@ export const AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER_DEFINITIONS = [
     defaultDescription: 'Use the configured Gemini Model Vendor credentials through the STT provider bridge.',
     modelVendor: 'gemini',
     defaultModel: 'gemini-3-flash-preview',
+    officialName: 'Gemini audio understanding',
+    officialDocsUrl: 'https://ai.google.dev/gemini-api/docs/audio',
+    integrationMode: 'openai-compatible-audio',
+    optionSchema: AUTOCUT_STANDARD_OPENAI_COMPATIBLE_STT_OPTIONS,
     capabilities: AUTOCUT_API_SPEECH_TRANSCRIPTION_CAPABILITIES,
   },
   {
@@ -292,9 +836,21 @@ export const AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER_DEFINITIONS = [
     defaultName: 'Custom OpenAI-compatible transcription API',
     defaultDescription: 'Use a custom OpenAI-compatible transcription endpoint through the STT provider bridge.',
     modelVendor: 'custom',
+    officialName: 'Custom OpenAI-compatible transcription API',
+    officialDocsUrl: 'https://platform.openai.com/docs/guides/speech-to-text',
+    integrationMode: 'openai-compatible-audio',
+    optionSchema: AUTOCUT_STANDARD_OPENAI_COMPATIBLE_STT_OPTIONS,
     capabilities: AUTOCUT_API_SPEECH_TRANSCRIPTION_CAPABILITIES,
   },
 ] as const satisfies readonly AutoCutSpeechTranscriptionProviderDefinition[];
+
+export const AUTOCUT_SMART_SLICE_CLOUD_STT_PROVIDER_IDS = [
+  AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER.iflytekLongForm,
+  AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER.volcengineAsr,
+  AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER.qwenParaformer,
+  AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER.tencentCloudAsr,
+  AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER.baiduCloudAsr,
+] as const satisfies readonly AutoCutSpeechTranscriptionProviderId[];
 
 export const AUTOCUT_DEFAULT_SPEECH_TRANSCRIPTION_PROVIDER_ID: AutoCutSpeechTranscriptionProviderId =
   AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER.openAiTranscription;
@@ -388,10 +944,10 @@ export const AUTOCUT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESETS = [
     id: 'smart-slice-cloud-stt',
     label: 'Smart cloud',
     description: 'Commercial default for long videos: cloud STT with structured timestamps and speaker diarization when the provider supports it.',
-    providerId: AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER.openAiTranscription,
+    providerId: AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER.qwenParaformer,
     executionProfile: 'cloud',
-    modelVendor: 'openai',
-    model: 'gpt-4o-transcribe',
+    modelVendor: 'qwen',
+    model: 'paraformer-v2',
     recommended: true,
     available: true,
   },
@@ -437,6 +993,7 @@ export interface AutoCutSpeechTranscriptionSettings {
   modelVendor?: ModelVendor;
   baseUrl?: string;
   model?: string;
+  providerOptions?: AutoCutSpeechTranscriptionProviderOptions;
   apiKeyConfigured?: boolean;
   configured: boolean;
   lastTestedAt?: string;
@@ -1717,6 +2274,7 @@ export interface AutoCutSliceReviewSegment {
   startMs: number;
   endMs: number;
   durationMs: number;
+  boundaryVersion?: number;
   speechStartMs?: number;
   speechEndMs?: number;
   contentUnitIds: string[];
@@ -1763,6 +2321,7 @@ export interface AutoCutSliceManualEdit {
     | 'endMs'
     | 'speechStartMs'
     | 'speechEndMs'
+    | 'boundaryVersion'
     | 'speakerIds'
     | 'speakerRoles'
     | 'transcriptText'
@@ -1773,7 +2332,7 @@ export interface AutoCutSliceManualEdit {
 export interface AutoCutSliceReviewSession {
   id: string;
   schema: 'slice.review.v1';
-  status: 'ready_for_review' | 'rendering' | 'rendered';
+  status: 'ready_for_review' | 'ready_for_render' | 'rendering' | 'rendered';
   taskId: string;
   createdAt: string;
   updatedAt: string;
@@ -1929,6 +2488,318 @@ export interface AutoCutTaskExecutionCheckpoint {
   params?: Record<string, unknown>;
 }
 
+export type AutoCutSlicingEngineId =
+  | 'transcript-semantic-v2'
+  | 'dialogue-speaker-v1'
+  | 'commerce-live-v1'
+  | 'visual-scene-v1'
+  | 'pause-keyword-v1'
+  | 'manual-timeline-v1';
+
+export type AutoCutClipWorkflowStepKey =
+  | 'prepare-source'
+  | 'probe-media'
+  | 'engine-analysis'
+  | 'speech-to-text'
+  | 'build-transcript-index'
+  | 'content-understanding-segmentation'
+  | 'speaker-diarization'
+  | 'dialogue-unit-segmentation'
+  | 'product-entity-extraction'
+  | 'scene-detection'
+  | 'motion-audio-analysis'
+  | 'generate-clips'
+  | 'timeline-preview-edit'
+  | 'refine-clips'
+  | 'process-clips'
+  | 'render-clips'
+  | 'verify-clips'
+  | 'persist-results';
+
+export type AutoCutClipWorkflowStepPhase =
+  | 'source'
+  | 'analysis'
+  | 'clip-generation'
+  | 'human-review'
+  | 'processing'
+  | 'rendering'
+  | 'verification'
+  | 'persistence';
+
+export interface AutoCutClipWorkflowStepTemplate {
+  key: AutoCutClipWorkflowStepKey;
+  phase: AutoCutClipWorkflowStepPhase;
+  label: string;
+  order: number;
+  progressWeight: number;
+  canResumeFromHere: boolean;
+  runsPerClip?: boolean;
+  clipProcessingOperationKeys?: ClipProcessingOperationKey[];
+  reviewUiContract?: 'source-timeline' | 'clip-list' | 'none';
+  producedOutputs: string[];
+  requiredInputs: string[];
+}
+
+export interface AutoCutClipWorkflowTemplate {
+  id: AutoCutSlicingEngineId;
+  label: string;
+  version: number;
+  clipType: StudioClipType;
+  steps: AutoCutClipWorkflowStepTemplate[];
+  sharedConvergenceStepKeys: AutoCutClipWorkflowStepKey[];
+}
+
+export type StudioClipType =
+  | 'speech'
+  | 'dialogue'
+  | 'scene'
+  | 'product'
+  | 'meeting'
+  | 'performance'
+  | 'manual';
+
+export type StudioTimelineStatus = 'draft' | 'ready_for_render' | 'rendering' | 'rendered';
+export type StudioClipStatus =
+  | 'candidate'
+  | 'selected'
+  | 'excluded'
+  | 'duplicate'
+  | 'processing'
+  | 'processed'
+  | 'rendering'
+  | 'rendered'
+  | 'failed';
+export type StudioClipSourceRefType =
+  | 'text_segment'
+  | 'content_unit'
+  | 'speaker_turn'
+  | 'scene_segment'
+  | 'motion_event'
+  | 'audio_event'
+  | 'product_entity'
+  | 'manual_marker';
+
+export type ClipProcessingOperationKey =
+  | 'denoise-audio'
+  | 'normalize-loudness'
+  | 'remove-cough-and-breath-noise'
+  | 'trim-silence'
+  | 'filter-repeated-content'
+  | 'check-duplicate-content'
+  | 'refine-subtitle-cues'
+  | 'select-cover-frame';
+
+export type ClipProcessingOperationExecutionStage =
+  | 'audio-foundation'
+  | 'speech-cleanup'
+  | 'content-cleanup'
+  | 'publishing-assets';
+
+export type ClipProcessingOperationStatus =
+  | 'blocked'
+  | 'pending'
+  | 'running'
+  | 'succeeded'
+  | 'skipped'
+  | 'failed'
+  | 'invalidated';
+
+export type ClipProcessingOperationBlockingReason =
+  | 'waiting-for-dependencies'
+  | 'timeline-not-ready'
+  | 'clip-not-selected';
+
+export const CLIP_PROCESSING_OPERATION_STATUS_CODE = {
+  blocked: 10,
+  pending: 20,
+  running: 30,
+  succeeded: 40,
+  skipped: 50,
+  failed: 60,
+  invalidated: 70,
+} as const satisfies Record<ClipProcessingOperationStatus, number>;
+
+export type ClipProcessingOperationStatusCode =
+  typeof CLIP_PROCESSING_OPERATION_STATUS_CODE[ClipProcessingOperationStatus];
+
+export const CLIP_PROCESSING_OPERATION_STATUS_KEY_BY_CODE = {
+  10: 'blocked',
+  20: 'pending',
+  30: 'running',
+  40: 'succeeded',
+  50: 'skipped',
+  60: 'failed',
+  70: 'invalidated',
+} as const satisfies Record<ClipProcessingOperationStatusCode, ClipProcessingOperationStatus>;
+
+export interface ClipProcessingOperationPlanItem {
+  key: ClipProcessingOperationKey;
+  order: number;
+  label: string;
+  enabled: boolean;
+  executionStage: ClipProcessingOperationExecutionStage;
+  dependencyOperationKeys: ClipProcessingOperationKey[];
+  parallelGroup: 'audio-cleanup' | 'content-cleanup' | 'subtitle' | 'cover';
+  requiredInputs: string[];
+  producedOutputs: string[];
+  invalidatedByBoundaryEdit: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ClipProcessingPlan {
+  schema: 'clip.processing.plan.v1';
+  mode: 'per-clip-after-boundary-lock';
+  operations: ClipProcessingOperationPlanItem[];
+  operationKeys: ClipProcessingOperationKey[];
+}
+
+export interface StudioClipQuality {
+  qualityScore?: number;
+  continuityScore?: number;
+  publishabilityScore?: number;
+  publishabilityGrade?: 'excellent' | 'good' | 'review' | 'reject';
+  transcriptCoverageScore?: number;
+  speechContinuityGrade?: 'strong' | 'repaired' | 'weak';
+}
+
+export interface StudioClipRisk {
+  code: string;
+  severity: 'info' | 'warning' | 'error';
+  message?: string;
+}
+
+export interface StudioTimeline {
+  id: string;
+  schema: 'studio.timeline.v1';
+  taskId: string;
+  workflowRunId?: string;
+  sourceAssetUuid?: string;
+  status: StudioTimelineStatus;
+  timelineType: 'slice_review';
+  durationMs: number;
+  createdAt: string;
+  updatedAt: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface StudioClipSourceRef {
+  id: string;
+  clipId: string;
+  sourceType: StudioClipSourceRefType;
+  sourceId: string;
+  sourceIndex?: number;
+  startMs?: number;
+  endMs?: number;
+  coverageRatio?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface StudioClipProcessingOperation {
+  id: string;
+  timelineId: string;
+  clipId: string;
+  taskId: string;
+  workflowRunId?: string;
+  stepRunId?: string;
+  operationKey: ClipProcessingOperationKey;
+  operationOrder: number;
+  executionStage: ClipProcessingOperationExecutionStage;
+  dependencyOperationKeys: ClipProcessingOperationKey[];
+  blockedByOperationKeys: ClipProcessingOperationKey[];
+  blockingReason?: ClipProcessingOperationBlockingReason;
+  status: ClipProcessingOperationStatus;
+  statusKey: ClipProcessingOperationStatus;
+  statusCode: ClipProcessingOperationStatusCode;
+  enabled: boolean;
+  attemptNo: number;
+  maxAttempts: number;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  workerId?: string;
+  clipBoundaryVersion: number;
+  sourceStartMs: number;
+  sourceEndMs: number;
+  sourceDurationMs: number;
+  input: Record<string, unknown>;
+  output?: Record<string, unknown>;
+  evidenceArtifactUuid?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  invalidatedByEventId?: string;
+  invalidatedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface StudioClip {
+  id: string;
+  timelineId: string;
+  taskId: string;
+  workflowRunId?: string;
+  sourceAssetUuid?: string;
+  engineId: AutoCutSlicingEngineId;
+  clipType: StudioClipType;
+  status: StudioClipStatus;
+  selected: boolean;
+  order: number;
+  title?: string;
+  summary?: string;
+  startMs: number;
+  endMs: number;
+  durationMs: number;
+  boundaryVersion: number;
+  speechStartMs?: number;
+  speechEndMs?: number;
+  transcriptTextSnapshot?: string;
+  sourceRefs: StudioClipSourceRef[];
+  contentUnitIds: string[];
+  speakerIds: string[];
+  speakerRoles: string[];
+  processingPlan: ClipProcessingPlan;
+  quality: StudioClipQuality;
+  risks: StudioClipRisk[];
+  preview: {
+    sourceStartMs: number;
+    sourceEndMs: number;
+    loop: boolean;
+  };
+  renderArtifactUuid?: string;
+  thumbnailArtifactUuid?: string;
+  subtitleArtifactUuid?: string;
+  createdAt: string;
+  updatedAt: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface StudioClipEvent {
+  id: string;
+  timelineId: string;
+  clipId?: string;
+  taskId: string;
+  eventType:
+    | 'clip-boundary-adjusted'
+    | 'clip-selected'
+    | 'clip-excluded'
+    | 'clip-split'
+    | 'clip-merged'
+    | 'clip-restored'
+    | 'duplicate-deleted'
+    | 'clip-rendered';
+  payload: Record<string, unknown>;
+  invalidatedStepKeys: AutoCutClipWorkflowStepKey[];
+  invalidatedOperationKeys?: ClipProcessingOperationKey[];
+  createdAt: string;
+  createdBy: 'local-user' | 'engine' | 'system';
+}
+
+export interface AutoCutStudioClipTimelineSnapshot {
+  timeline: StudioTimeline;
+  clips: StudioClip[];
+  processingOperations: StudioClipProcessingOperation[];
+}
+
 export interface AutoCutNativeTaskProgressEvent {
   taskUuid: string;
   workflowTaskId?: string;
@@ -1957,6 +2828,7 @@ export interface AppTask {
   executionSteps?: AutoCutTaskExecutionStep[];
   executionLogs?: AutoCutTaskExecutionLog[];
   executionCheckpoint?: AutoCutTaskExecutionCheckpoint;
+  studioClipTimeline?: AutoCutStudioClipTimelineSnapshot;
   createdAt: string;
   completedAt?: string;
   errorMessage?: string;

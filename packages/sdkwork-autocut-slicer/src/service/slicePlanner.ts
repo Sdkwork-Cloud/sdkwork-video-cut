@@ -8013,4 +8013,35 @@ function resolveTranscriptSliceCandidates(
   }
 
   return buildTranscriptSliceCandidates(params, candidatesOrSegments as readonly AutoCutSpeechTranscriptionSegment[]);
+}/**
+ * Repairs a slice clip timing for native render compatibility.
+ * Normalizes start/end/duration consistency and ensures timing fields
+ * satisfy the planning policy constraints.
+ */
+export function repairSmartSliceClipTimingForNativeRender(
+  clip: NormalizedSlicePlanClip,
+  policy: VideoSlicePlanningPolicy,
+): NormalizedSlicePlanClip {
+  const safeStartMs = Math.max(0, Math.round(clip.startMs));
+  const safeDurationMs = Math.max(1, Math.round(clip.durationMs));
+  const safeEndMs = Math.min(safeStartMs + safeDurationMs, policy.maxDurationMs);
+
+  const sourceStartMs = clip.sourceStartMs !== undefined ? Math.round(clip.sourceStartMs) : safeStartMs;
+  const sourceEndMs = clip.sourceEndMs !== undefined ? Math.round(clip.sourceEndMs) : safeEndMs;
+
+  const speechStartMs = clip.speechStartMs !== undefined ? Math.round(clip.speechStartMs) : undefined;
+  const speechEndMs = clip.speechEndMs !== undefined ? Math.round(clip.speechEndMs) : undefined;
+
+  const renderedDurationMs = sourceEndMs - sourceStartMs;
+
+  return {
+    ...clip,
+    startMs: safeStartMs,
+    durationMs: Math.max(renderedDurationMs, safeDurationMs),
+    sourceStartMs,
+    sourceEndMs,
+    renderedDurationMs: Math.max(1, renderedDurationMs),
+    ...(speechStartMs !== undefined ? { speechStartMs: Math.max(sourceStartMs, speechStartMs) } : {}),
+    ...(speechEndMs !== undefined ? { speechEndMs: Math.min(sourceEndMs, speechEndMs) } : {}),
+  };
 }

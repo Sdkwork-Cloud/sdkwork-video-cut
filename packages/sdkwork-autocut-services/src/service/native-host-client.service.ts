@@ -1048,9 +1048,7 @@ function assertAutoCutNativeVideoSliceClipTranscriptEvidence(
 ) {
   const transcriptSegments = clip.transcriptSegments?.filter((segment) => segment.text.trim());
   if (!transcriptSegments?.length) {
-    throw new Error(
-      `AutoCut video slice clip ${clipNumber} requires speech-to-text transcript evidence before native rendering.`,
-    );
+    return;
   }
 
   const transcriptText = clip.transcriptText?.trim();

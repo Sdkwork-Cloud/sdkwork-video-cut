@@ -11524,6 +11524,7 @@ fn build_ffmpeg_video_slice_stream_copy_command(
     ))
 }
 
+#[cfg(test)]
 fn build_ffmpeg_video_slice_audio_cleanup_postprocess_command(
     toolchain: &AutoCutFfmpegToolchain,
     input_path: &Path,

@@ -1,4 +1,7 @@
-import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import ts from 'typescript';
 import {
   buildTranscriptSliceCandidates,
   createSmartSliceAudioActivitySourceSegments,
@@ -11,6 +14,7 @@ import {
   normalizeCandidateSlicePlan,
   parseLlmSlicePlan,
   refineSmartSlicePlanWithAudioActivityBoundaries,
+  repairSmartSliceClipTimingForNativeRender,
   normalizeSmartSliceTranscriptSegmentsForPlanning,
   validateVideoSliceParams,
 } from '../packages/sdkwork-autocut-slicer/src/service/slicePlanner.ts';
@@ -25,11 +29,184 @@ import {
   getAutoCutSmartSliceSegmentationAgentDefinition,
 } from '../packages/sdkwork-autocut-types/src/index.ts';
 
+const clipWorkflowSourcePath = 'packages/sdkwork-autocut-slicer/src/service/clipWorkflow.ts';
+const clipWorkflowModule = await loadClipWorkflowModule();
+const {
+  adjustStudioClipBoundary,
+  adjustSliceReviewSegmentBoundaryOnStudioTimeline,
+  correctSliceReviewSegmentOnStudioTimeline,
+  createSliceReviewManualEdit,
+  createSliceReviewSessionFromSegments,
+  AUTOCUT_INTELLIGENT_SLICING_ENGINE_TEMPLATES,
+  createStudioClipPreviewRange,
+  createStudioClipTimelineFromReviewSession,
+  createStudioClipTimelineSnapshotForReviewSession,
+  invalidateStudioClipProcessingOperationsForBoundaryEdit,
+  mergeSliceReviewSegmentsOnStudioTimeline,
+  mergeStudioClipTimelineSnapshotProcessingOperationHistory,
+  previewStudioClipBoundaryAdjustment,
+  reconcileStudioClipProcessingOperationReadiness,
+  restoreSliceReviewSegmentOnStudioTimeline,
+  selectAllSliceReviewSegmentsForRender,
+  setSliceReviewSegmentRenderSelectionOnStudioTimeline,
+  setSliceReviewSegmentsRenderSelectionForRender,
+  splitSliceReviewSegmentAtTimelinePlayhead,
+  markSliceReviewSegmentAsDuplicateOnStudioTimeline,
+} = clipWorkflowModule;
+
 const failures = [];
 const pass = [];
 const plannerSource = readFileSync('packages/sdkwork-autocut-slicer/src/service/slicePlanner.ts', 'utf8');
 const slicerServiceSource = readFileSync('packages/sdkwork-autocut-slicer/src/service/slicerService.ts', 'utf8');
+const slicerPageSource = readFileSync('packages/sdkwork-autocut-slicer/src/pages/SlicerPage.tsx', 'utf8');
+const smartSliceTimelineWorkbenchSource = readFileSync('packages/sdkwork-autocut-slicer/src/components/smart-slice-timeline/SmartSliceTimelineWorkbench.tsx', 'utf8');
+const smartSliceTimelineTrackSource = readFileSync('packages/sdkwork-autocut-slicer/src/components/smart-slice-timeline/SmartSliceTimelineTrack.tsx', 'utf8');
+const smartSliceTimelineClipSource = readFileSync('packages/sdkwork-autocut-slicer/src/components/smart-slice-timeline/SmartSliceTimelineClip.tsx', 'utf8');
+const smartSliceTimelineInteractionsSource = readFileSync('packages/sdkwork-autocut-slicer/src/components/smart-slice-timeline/useSmartSliceTimelineInteractions.ts', 'utf8');
+const smartSliceTimelineControllerSource = readFileSync('packages/sdkwork-autocut-slicer/src/components/smart-slice-timeline/useSmartSliceTimelineReviewController.ts', 'utf8');
 const smartCutEnginePlannerSource = readFileSync('packages/sdkwork-autocut-slicer/src/service/smartCutEnginePlanner.ts', 'utf8');
+const autocutTypesSource = readFileSync('packages/sdkwork-autocut-types/src/index.ts', 'utf8');
+let clipWorkflowSource = '';
+try {
+  clipWorkflowSource = readFileSync(clipWorkflowSourcePath, 'utf8');
+} catch {
+  clipWorkflowSource = '';
+}
+const sqliteBaselineSource = readFileSync('packages/sdkwork-autocut-desktop/src-tauri/database/schema/sqlite/001_baseline.sql', 'utf8');
+const schemaRegistrySource = readFileSync('packages/sdkwork-autocut-desktop/src-tauri/database/schema-registry/autocut_host_baseline.yaml', 'utf8');
+const databaseContractRsSource = readFileSync('packages/sdkwork-autocut-desktop/src-tauri/src/database_contract.rs', 'utf8');
+const databaseRuntimeRsSource = readFileSync('packages/sdkwork-autocut-desktop/src-tauri/src/database_runtime.rs', 'utf8');
+
+function toPosixPath(value) {
+  return value.replaceAll(path.sep, '/');
+}
+
+function resolveClipWorkflowModuleSourcePath(sourcePath, specifier) {
+  if (specifier === '@sdkwork/autocut-types') {
+    return path.join(process.cwd(), 'packages/sdkwork-autocut-types/src/index.ts');
+  }
+  if (specifier.startsWith('.')) {
+    const basePath = path.resolve(path.dirname(sourcePath), specifier);
+    const candidates = [
+      basePath,
+      `${basePath}.ts`,
+      `${basePath}.tsx`,
+      path.join(basePath, 'index.ts'),
+      path.join(basePath, 'index.tsx'),
+    ];
+    return candidates.find((candidate) => {
+      try {
+        readFileSync(candidate);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  }
+  return undefined;
+}
+
+function rewriteClipWorkflowModuleSpecifiers(sourcePath, jsSource, moduleOutputDir, servicesStubPath) {
+  return jsSource.replace(
+    /((?:from\s*|import\s*\()\s*['"])([^'"]+)(['"])/gu,
+    (match, prefix, specifier, suffix) => {
+      const resolvedPath = specifier === '@sdkwork/autocut-services'
+        ? servicesStubPath
+        : resolveClipWorkflowModuleSourcePath(sourcePath, specifier);
+      if (!resolvedPath) {
+        return match;
+      }
+      let relativeSpecifier = toPosixPath(path.relative(
+        path.dirname(resolveClipWorkflowOutputPath(moduleOutputDir, sourcePath)),
+        specifier === '@sdkwork/autocut-services'
+          ? resolvedPath
+          : resolveClipWorkflowOutputPath(moduleOutputDir, resolvedPath),
+      ));
+      if (!relativeSpecifier.startsWith('.')) {
+        relativeSpecifier = `./${relativeSpecifier}`;
+      }
+      return `${prefix}${relativeSpecifier}${suffix}`;
+    },
+  );
+}
+
+function resolveClipWorkflowOutputPath(moduleOutputDir, sourcePath) {
+  return path.join(moduleOutputDir, path.relative(process.cwd(), sourcePath)).replace(/\.(tsx?|jsx?)$/u, '.mjs');
+}
+
+function collectClipWorkflowModuleGraph(entryPath, seen = new Set()) {
+  if (seen.has(entryPath)) {
+    return seen;
+  }
+  seen.add(entryPath);
+  const source = readFileSync(entryPath, 'utf8');
+  const importPattern = /(?:from\s*|import\s*\(\s*)['"]([^'"]+)['"]/gu;
+  for (const match of source.matchAll(importPattern)) {
+    const specifier = match[1];
+    if (!specifier || specifier === '@sdkwork/autocut-services') {
+      continue;
+    }
+    const resolvedPath = resolveClipWorkflowModuleSourcePath(entryPath, specifier);
+    if (resolvedPath) {
+      collectClipWorkflowModuleGraph(resolvedPath, seen);
+    }
+  }
+  return seen;
+}
+
+function transpileClipWorkflowModule(sourcePath, moduleOutputDir, servicesStubPath) {
+  const transpiled = ts.transpileModule(readFileSync(sourcePath, 'utf8'), {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      jsx: ts.JsxEmit.ReactJSX,
+      useDefineForClassFields: false,
+      experimentalDecorators: true,
+      isolatedModules: true,
+      moduleDetection: ts.ModuleDetectionKind.Force,
+    },
+    fileName: sourcePath,
+  });
+  const outPath = resolveClipWorkflowOutputPath(moduleOutputDir, sourcePath);
+  mkdirSync(path.dirname(outPath), { recursive: true });
+  writeFileSync(outPath, rewriteClipWorkflowModuleSpecifiers(sourcePath, transpiled.outputText, moduleOutputDir, servicesStubPath));
+}
+
+async function loadClipWorkflowModule() {
+  const moduleOutputDir = path.join(process.cwd(), 'artifacts', 'slicer-planner-modules', `${process.pid}-${Date.now().toString(36)}`);
+  rmSync(moduleOutputDir, { recursive: true, force: true });
+  mkdirSync(moduleOutputDir, { recursive: true });
+  const servicesStubPath = path.join(moduleOutputDir, 'sdkwork-autocut-services-stub.mjs');
+  writeFileSync(servicesStubPath, `
+let autoCutIdSequence = 0;
+export function createAutoCutTimestamp() {
+  return new Date().toISOString();
+}
+export function createAutoCutId(prefix) {
+  autoCutIdSequence = (autoCutIdSequence + 1) % 100000;
+  return \`\${prefix}-\${Date.now()}-\${autoCutIdSequence.toString().padStart(5, '0')}\`;
+}
+export function resolveAutoCutTimestampMs(timestamp) {
+  if (timestamp instanceof Date) {
+    const value = timestamp.getTime();
+    return Number.isNaN(value) ? 0 : value;
+  }
+  if (typeof timestamp === 'number') {
+    return Number.isFinite(timestamp) ? timestamp : 0;
+  }
+  if (typeof timestamp === 'string' && timestamp.trim()) {
+    const value = Date.parse(timestamp);
+    return Number.isNaN(value) ? 0 : value;
+  }
+  return 0;
+}
+`);
+  const entryPath = path.join(process.cwd(), clipWorkflowSourcePath);
+  for (const sourcePath of collectClipWorkflowModuleGraph(entryPath)) {
+    transpileClipWorkflowModule(sourcePath, moduleOutputDir, servicesStubPath);
+  }
+  return import(pathToFileURL(resolveClipWorkflowOutputPath(moduleOutputDir, entryPath)).href);
+}
 
 function assertRule(condition, message) {
   if (condition) {
@@ -317,6 +494,1356 @@ assertRejects(
   'source media duration',
   'planner rejects source media duration metadata below the minimum renderable slice',
 );
+
+const requiredUnifiedClipTypeMarkers = [
+  'export type AutoCutSlicingEngineId',
+  'export type StudioClipType',
+  'export type ClipProcessingOperationKey',
+  'export type ClipProcessingOperationExecutionStage',
+  'export const CLIP_PROCESSING_OPERATION_STATUS_CODE',
+  'export const CLIP_PROCESSING_OPERATION_STATUS_KEY_BY_CODE',
+  'export interface ClipProcessingOperationPlanItem',
+  'export interface ClipProcessingPlan',
+  'export interface StudioClipProcessingOperation',
+  'executionStage: ClipProcessingOperationExecutionStage',
+  'dependencyOperationKeys: ClipProcessingOperationKey[]',
+  'statusKey: ClipProcessingOperationStatus',
+  'statusCode: ClipProcessingOperationStatusCode',
+  'attemptNo: number',
+  'maxAttempts: number',
+  'startedAt?: string',
+  'completedAt?: string',
+  'durationMs?: number',
+  'workerId?: string',
+  'clipBoundaryVersion: number',
+  'sourceStartMs: number',
+  'sourceEndMs: number',
+  'sourceDurationMs: number',
+  'export interface StudioTimeline',
+  'export interface StudioClip',
+  'export interface StudioClipSourceRef',
+  'export interface StudioClipEvent',
+  'export interface AutoCutClipWorkflowTemplate',
+  'generate-clips',
+  'timeline-preview-edit',
+  'process-clips',
+  'render-clips',
+];
+for (const marker of requiredUnifiedClipTypeMarkers) {
+  assertRule(
+    autocutTypesSource.includes(marker),
+    `@sdkwork/autocut-types defines the unified Clip workflow contract marker ${marker}`,
+  );
+}
+
+const requiredClipWorkflowMarkers = [
+  'AUTOCUT_INTELLIGENT_SLICING_ENGINE_TEMPLATES',
+  'AUTOCUT_CLIP_PROCESSING_OPERATION_SEQUENCE',
+  'transcript-semantic-v2',
+  'dialogue-speaker-v1',
+  'commerce-live-v1',
+  'visual-scene-v1',
+  'pause-keyword-v1',
+  'generate-clips',
+  'timeline-preview-edit',
+  'refine-clips',
+  'process-clips',
+  'render-clips',
+  'clipProcessingOperationKeys',
+  'studio_clip_processing_operation',
+  'createStudioClipTimelineFromReviewSession',
+  'createStudioClipTimelineSnapshotForReviewSession',
+  'adjustStudioClipBoundary',
+  'adjustSliceReviewSegmentBoundaryOnStudioTimeline',
+  'correctSliceReviewSegmentOnStudioTimeline',
+  'createSliceReviewManualEdit',
+  'createSliceReviewSessionFromSegments',
+  'previewStudioClipBoundaryAdjustment',
+  'createStudioClipPreviewRange',
+  'splitSliceReviewSegmentAtTimelinePlayhead',
+  'invalidateStudioClipProcessingOperationsForBoundaryEdit',
+  'invalidatedStepKeys',
+  'invalidatedOperationKeys',
+  'boundaryVersion',
+  'clipBoundaryVersion',
+  'oldBoundaryVersion',
+  'newBoundaryVersion',
+];
+for (const marker of requiredClipWorkflowMarkers) {
+  assertRule(
+    clipWorkflowSource.includes(marker),
+    `${clipWorkflowSourcePath} implements the unified Clip workflow marker ${marker}`,
+  );
+}
+
+const requiredStudioClipTimelineWorkbenchMarkers = [
+  'studioClipTimeline',
+  'activeStudioClipTimelineSnapshot',
+  'createStudioClipPreviewRange',
+  'adjustSliceReviewSegmentBoundaryOnStudioTimeline',
+  'correctSliceReviewSegmentOnStudioTimeline',
+  'createSliceReviewSessionFromSegments',
+  'previewStudioClipBoundaryAdjustment',
+  'invalidateStudioClipProcessingOperationsForBoundaryEdit',
+  'createStudioClipTimelineSnapshotForReviewSession',
+  'buildSmartSliceTimelineBoundaryPreview',
+  'previewClipBoundaryDrag',
+  'commitClipBoundary',
+  'splitSliceReviewSegmentAtTimelinePlayhead',
+  'correctSliceReviewSegmentOnStudioTimeline',
+  'SmartSliceTimelineWorkbench',
+  'onPreviewClipBoundaryDrag={timelineController.previewClipBoundaryDrag}',
+  'onCommitClipBoundary={timelineController.commitClipBoundary}',
+  'onSplitClipAtTime={timelineController.splitClipAtTime}',
+];
+for (const marker of requiredStudioClipTimelineWorkbenchMarkers) {
+  const inSlicerPage = slicerPageSource.includes(marker);
+  const inController = smartSliceTimelineControllerSource.includes(marker);
+  assertRule(
+    inSlicerPage || inController,
+    `SlicerPage review workbench wires componentized StudioClip timeline marker ${marker}`,
+  );
+}
+
+const requiredSmartSliceTimelineComponentMarkers = [
+  [smartSliceTimelineWorkbenchSource, 'SmartSliceTimelineRuler', 'SmartSliceTimelineWorkbench composes the professional timeline ruler'],
+  [smartSliceTimelineWorkbenchSource, 'SmartSliceTimelineTrack', 'SmartSliceTimelineWorkbench composes the editable clip track'],
+  [smartSliceTimelineWorkbenchSource, 'useSmartSliceTimelineViewport', 'SmartSliceTimelineWorkbench owns viewport density through a timeline hook'],
+  [smartSliceTimelineWorkbenchSource, 'useSmartSliceTimelineInteractions', 'SmartSliceTimelineWorkbench owns pointer interactions through a timeline hook'],
+  [smartSliceTimelineWorkbenchSource, 'data-testid="smart-slice-timeline-scroll-viewport"', 'SmartSliceTimelineWorkbench keeps ruler, playhead, split point, and clips in one scroll-synchronized coordinate space'],
+  [smartSliceTimelineWorkbenchSource, 'data-testid="smart-slice-timeline-timecode-input"', 'SmartSliceTimelineWorkbench supports precision timecode seeking'],
+  [smartSliceTimelineWorkbenchSource, 'canSplitSmartSliceTimelineClipAtTime', 'SmartSliceTimelineWorkbench validates split-at-playhead before dispatching clip edits'],
+  [smartSliceTimelineTrackSource, 'data-testid="smart-slice-timeline-track"', 'SmartSliceTimelineTrack exposes the canonical track test id'],
+  [smartSliceTimelineTrackSource, 'data-testid="smart-slice-timeline-boundary-preview"', 'SmartSliceTimelineTrack renders live boundary previews'],
+  [smartSliceTimelineTrackSource, 'SmartSliceTimelinePlayhead', 'SmartSliceTimelineTrack renders the WYSIWYG playhead'],
+  [smartSliceTimelineTrackSource, 'SmartSliceTimelineSplitHandle', 'SmartSliceTimelineTrack renders split-at-playhead controls'],
+  [smartSliceTimelineTrackSource, 'canSplitSmartSliceTimelineClipAtTime', 'SmartSliceTimelineTrack only exposes split controls at valid interior clip positions'],
+  [readFileSync('packages/sdkwork-autocut-slicer/src/components/smart-slice-timeline/SmartSliceTimelinePlayhead.tsx', 'utf8'), 'data-testid="smart-slice-timeline-playhead-handle"', 'SmartSliceTimelinePlayhead exposes a professional draggable handle hit area'],
+  [smartSliceTimelineWorkbenchSource, 'isEditingTimecode', 'SmartSliceTimelineWorkbench keeps manual timecode entry stable while playback updates current time'],
+  [smartSliceTimelineClipSource, "onPointerDown={(event) => onBoundaryDragStart(item, 'left', event)}", 'SmartSliceTimelineClip exposes left boundary drag editing'],
+  [smartSliceTimelineClipSource, "onPointerDown={(event) => onBoundaryDragStart(item, 'right', event)}", 'SmartSliceTimelineClip exposes right boundary drag editing'],
+  [smartSliceTimelineInteractionsSource, "window.addEventListener('pointermove'", 'timeline interaction hook owns pointermove drag tracking'],
+  [smartSliceTimelineInteractionsSource, 'onSplitClipAtTime', 'timeline interaction hook exposes split-at-time editing'],
+  [smartSliceTimelineInteractionsSource, 'canSplitSmartSliceTimelineClipAtTime', 'timeline interaction hook blocks invalid split-at-time edits before dispatch'],
+];
+for (const [source, marker, message] of requiredSmartSliceTimelineComponentMarkers) {
+  assertRule(
+    source.includes(marker),
+    message,
+  );
+}
+assertRule(
+  (slicerPageSource.includes('const boundaryAdjustment = adjustSliceReviewSegmentBoundaryOnStudioTimeline({') ||
+    smartSliceTimelineControllerSource.includes('const boundaryAdjustment = adjustSliceReviewSegmentBoundaryOnStudioTimeline({')) &&
+  (slicerPageSource.includes('invalidateStudioClipProcessingOperationsForBoundaryEdit({') ||
+    smartSliceTimelineControllerSource.includes('invalidateStudioClipProcessingOperationsForBoundaryEdit({')) &&
+  (slicerPageSource.includes('event: boundaryAdjustment.event') ||
+    smartSliceTimelineControllerSource.includes('event: boundaryAdjustment.event')) &&
+  slicerPageSource.includes('createStudioClipTimelineSnapshotForReviewSession(') &&
+  (slicerPageSource.includes('invalidatedProcessingOperations') ||
+    smartSliceTimelineControllerSource.includes('invalidatedProcessingOperations')) &&
+  (slicerPageSource.includes('nextStudioClipTimeline.processingOperations')),
+  'SlicerPage commits WYSIWYG boundary edits through the canonical Clip workflow and invalidates stale per-clip operation rows in the active StudioClip timeline snapshot',
+);
+assertRule(
+  slicerPageSource.includes('return createStudioClipTimelineSnapshotForReviewSession(') &&
+    slicerPageSource.includes('activeReviewTask?.studioClipTimeline?.processingOperations ?? []') &&
+    slicerPageSource.includes('[activeReviewTask?.studioClipTimeline?.processingOperations, activeReviewTask?.studioClipTimeline, effectiveReviewSession]'),
+  'SlicerPage derives active StudioClip timeline snapshots through the shared snapshot merge helper while preserving operation history from the current task snapshot',
+);
+assertRule(
+  slicerPageSource.includes('createStudioClipTimelineSnapshotForReviewSession(') &&
+    slicerPageSource.includes('saveVideoSliceReviewDraft(taskId, {') &&
+    slicerPageSource.includes('nextStudioClipTimeline.processingOperations') &&
+    !slicerPageSource.includes('function createNextStudioClipTimelineSnapshotForReviewSession(') &&
+    !slicerPageSource.includes('AutoCutStudioClipTimelineSnapshot'),
+  'SlicerPage uses the shared Clip workflow snapshot helper instead of owning a local StudioClip timeline regeneration helper',
+);
+assertRule(
+  !slicerPageSource.includes('const nextStudioClipTimeline = mergeStudioClipTimelineSnapshotProcessingOperationHistory({') &&
+    !slicerPageSource.includes('const regeneratedStudioClipTimelineSnapshot = createStudioClipTimelineFromReviewSession(splitResult.reviewSession);') &&
+    !slicerPageSource.includes('createNextStudioClipTimelineSnapshotForReviewSession({'),
+  'SlicerPage keeps StudioClip timeline snapshot regeneration centralized instead of duplicating task write-back logic inside individual review handlers',
+);
+assertRule(
+  slicerServiceSource.includes('createStudioClipTimelineSnapshotForReviewSession(') &&
+    slicerServiceSource.includes('processingOperations: readonly StudioClipProcessingOperation[] = []') &&
+    slicerServiceSource.includes('processingOperations.length > 0 ? processingOperations : task.studioClipTimeline?.processingOperations ?? []'),
+  'Slicer service uses the shared Clip workflow snapshot helper together with caller-provided processing history when persisting review-stage timeline updates',
+);
+assertRule(
+  !slicerServiceSource.includes('studioClipTimeline: createStudioClipTimelineFromReviewSession(draftReviewSession)') &&
+    !slicerServiceSource.includes('studioClipTimeline: createStudioClipTimelineFromReviewSession(readyForRenderReviewSession)') &&
+    !slicerServiceSource.includes('studioClipTimeline: createStudioClipTimelineFromReviewSession(reviewReadySession)') &&
+    !slicerServiceSource.includes('studioClipTimeline: createStudioClipTimelineFromReviewSession(renderedReviewSession)'),
+  'Slicer service no longer rewrites review-stage StudioClip timelines with raw regenerated snapshots',
+);
+assertRule(
+  !slicerPageSource.includes("id: `${segment.id}-a`") &&
+    !slicerPageSource.includes("id: `${segment.id}-b`") &&
+    !slicerPageSource.includes("title: `${segment.title} A`") &&
+    !slicerPageSource.includes("title: `${segment.title} B`"),
+  'SlicerPage delegates review clip splitting to the canonical Clip workflow instead of constructing split review segments inline',
+);
+assertRule(
+  !slicerPageSource.includes('function createSliceReviewSegmentFromStudioClipBoundaryAdjustment') &&
+    !slicerPageSource.includes('function createSliceReviewManualEdit(') &&
+    !slicerPageSource.includes('function createSliceReviewSessionFromSegments(') &&
+    !slicerPageSource.includes('const { clip, event } = adjustStudioClipBoundary'),
+  'SlicerPage delegates StudioClip boundary review segment and manual edit creation to the canonical Clip workflow',
+);
+assertRule(
+  !slicerPageSource.includes("reason: 'manual real-time segment correction'") &&
+    !slicerPageSource.includes('const correctedSegment: AutoCutSliceReviewSegment = {'),
+  'SlicerPage delegates live review correction to the canonical Clip workflow instead of reconstructing corrected segments inline',
+);
+assertRule(
+  [
+    'selectAllSliceReviewSegmentsForRender',
+    'setSliceReviewSegmentsRenderSelectionForRender',
+    'setSliceReviewSegmentRenderSelectionOnStudioTimeline',
+    'mergeSliceReviewSegmentsOnStudioTimeline',
+    'markSliceReviewSegmentAsDuplicateOnStudioTimeline',
+    'restoreSliceReviewSegmentOnStudioTimeline',
+  ].every((marker) => clipWorkflowSource.includes(`export function ${marker}`)),
+  'Clip workflow exports canonical helpers for every review mutation that changes render selection or StudioClip timeline output',
+);
+assertRule(
+  !slicerPageSource.includes('createSliceReviewManualEdit(') &&
+    !slicerPageSource.includes('resolveSmartSliceDuplicateKeepSegmentId('),
+  'SlicerPage no longer owns manual edit construction or duplicate keep-segment resolution after canonical review workflow extraction',
+);
+assertRule(
+  !slicerPageSource.includes("reason: 'manual bulk select all publishable review segments'") &&
+    !slicerPageSource.includes("reason: 'manual clear selected review segments'") &&
+    !slicerPageSource.includes("reason: shouldSelect ? 'manual segment selected for render'") &&
+    !slicerPageSource.includes("reason: 'manual merge to preserve continuous context'") &&
+    !slicerPageSource.includes("reason: 'manual duplicate content deletion'") &&
+    !slicerPageSource.includes("reason: 'manual restore before render'") &&
+    !slicerPageSource.includes('const mergedSegment: AutoCutSliceReviewSegment = {') &&
+    !slicerPageSource.includes('function resolveSmartSliceDuplicateKeepSegmentId('),
+  'SlicerPage delegates select/exclude/merge/delete-duplicate/restore review mutations to the canonical Clip workflow',
+);
+
+const requiredClipConvergenceStepKeys = [
+  'generate-clips',
+  'timeline-preview-edit',
+  'refine-clips',
+  'process-clips',
+  'render-clips',
+  'verify-clips',
+  'persist-results',
+];
+const requiredClipProcessingOperationKeys = [
+  'denoise-audio',
+  'normalize-loudness',
+  'remove-cough-and-breath-noise',
+  'trim-silence',
+  'filter-repeated-content',
+  'check-duplicate-content',
+  'refine-subtitle-cues',
+  'select-cover-frame',
+];
+const expectedClipProcessingOperationExecutionPlan = [
+  { key: 'denoise-audio', stage: 'audio-foundation', dependencies: [] },
+  { key: 'normalize-loudness', stage: 'audio-foundation', dependencies: ['denoise-audio'] },
+  { key: 'remove-cough-and-breath-noise', stage: 'speech-cleanup', dependencies: ['denoise-audio'] },
+  { key: 'trim-silence', stage: 'speech-cleanup', dependencies: ['remove-cough-and-breath-noise'] },
+  { key: 'filter-repeated-content', stage: 'content-cleanup', dependencies: ['trim-silence'] },
+  { key: 'check-duplicate-content', stage: 'content-cleanup', dependencies: ['filter-repeated-content'] },
+  { key: 'refine-subtitle-cues', stage: 'publishing-assets', dependencies: ['trim-silence', 'filter-repeated-content'] },
+  { key: 'select-cover-frame', stage: 'publishing-assets', dependencies: ['check-duplicate-content'] },
+];
+const expectedClipProcessingOperationStatusCodes = {
+  blocked: 10,
+  pending: 20,
+  running: 30,
+  succeeded: 40,
+  skipped: 50,
+  failed: 60,
+  invalidated: 70,
+};
+assertRule(
+  autocutTypesSource.includes('export type ClipProcessingOperationStatusCode') &&
+    autocutTypesSource.includes('blocked: 10') &&
+    autocutTypesSource.includes('pending: 20') &&
+    autocutTypesSource.includes('running: 30') &&
+    autocutTypesSource.includes('succeeded: 40') &&
+    autocutTypesSource.includes('skipped: 50') &&
+    autocutTypesSource.includes('failed: 60') &&
+    autocutTypesSource.includes('invalidated: 70'),
+  '@sdkwork/autocut-types defines the canonical Clip processing operation numeric status code map',
+);
+
+const expectedInitialReadyForRenderOperationStatuses = [
+  { key: 'denoise-audio', status: 'pending', blockedBy: [] },
+  { key: 'normalize-loudness', status: 'blocked', blockedBy: ['denoise-audio'] },
+  { key: 'remove-cough-and-breath-noise', status: 'blocked', blockedBy: ['denoise-audio'] },
+  { key: 'trim-silence', status: 'blocked', blockedBy: ['remove-cough-and-breath-noise'] },
+  { key: 'filter-repeated-content', status: 'blocked', blockedBy: ['trim-silence'] },
+  { key: 'check-duplicate-content', status: 'blocked', blockedBy: ['filter-repeated-content'] },
+  { key: 'refine-subtitle-cues', status: 'blocked', blockedBy: ['trim-silence', 'filter-repeated-content'] },
+  { key: 'select-cover-frame', status: 'blocked', blockedBy: ['check-duplicate-content'] },
+];
+const expectedOperationStatusesAfterAudioFoundation = [
+  { key: 'denoise-audio', status: 'succeeded', blockedBy: [] },
+  { key: 'normalize-loudness', status: 'pending', blockedBy: [] },
+  { key: 'remove-cough-and-breath-noise', status: 'pending', blockedBy: [] },
+  { key: 'trim-silence', status: 'blocked', blockedBy: ['remove-cough-and-breath-noise'] },
+  { key: 'filter-repeated-content', status: 'blocked', blockedBy: ['trim-silence'] },
+  { key: 'check-duplicate-content', status: 'blocked', blockedBy: ['filter-repeated-content'] },
+  { key: 'refine-subtitle-cues', status: 'blocked', blockedBy: ['trim-silence', 'filter-repeated-content'] },
+  { key: 'select-cover-frame', status: 'blocked', blockedBy: ['check-duplicate-content'] },
+];
+function findExpectedInitialReadyForRenderOperationStatus(operationKey) {
+  return expectedInitialReadyForRenderOperationStatuses.find((expected) => expected.key === operationKey);
+}
+
+function expectedBlockingReasonForStatus(status) {
+  return status === 'blocked' ? 'waiting-for-dependencies' : undefined;
+}
+
+function operationMatchesExpectedDependencyReadiness(operation, expected) {
+  const expectedBlockingReason = expectedBlockingReasonForStatus(expected.status);
+  return operation.status === expected.status &&
+    operation.statusKey === expected.status &&
+    operation.statusCode === expectedClipProcessingOperationStatusCodes[expected.status] &&
+    operation.enabled === (expected.status === 'pending') &&
+    JSON.stringify(operation.blockedByOperationKeys ?? []) === JSON.stringify(expected.blockedBy) &&
+    operation.blockingReason === expectedBlockingReason &&
+    JSON.stringify(operation.input?.blockedByOperationKeys ?? []) === JSON.stringify(expected.blockedBy) &&
+    operation.input?.blockingReason === expectedBlockingReason &&
+    JSON.stringify(operation.metadata?.blockedByOperationKeys ?? []) === JSON.stringify(expected.blockedBy) &&
+    operation.metadata?.blockingReason === expectedBlockingReason;
+}
+for (const workflowTemplate of AUTOCUT_INTELLIGENT_SLICING_ENGINE_TEMPLATES) {
+  const stepKeys = workflowTemplate.steps.map((step) => step.key);
+  const convergenceStartIndex = stepKeys.indexOf('generate-clips');
+  assertRule(
+    convergenceStartIndex >= 0,
+    `${workflowTemplate.id} reaches the shared generate-clips convergence step`,
+  );
+  assertEqual(
+    JSON.stringify(stepKeys.slice(convergenceStartIndex)),
+    JSON.stringify(requiredClipConvergenceStepKeys),
+    `${workflowTemplate.id} uses the exact shared Clip convergence sequence`,
+  );
+  for (const perClipStepKey of ['refine-clips', 'process-clips', 'render-clips', 'verify-clips']) {
+    assertRule(
+      workflowTemplate.steps.find((step) => step.key === perClipStepKey)?.runsPerClip === true,
+      `${workflowTemplate.id} marks ${perClipStepKey} as per-clip parallel work`,
+    );
+  }
+  const processClipsStep = workflowTemplate.steps.find((step) => step.key === 'process-clips');
+  assertEqual(
+    JSON.stringify(processClipsStep?.clipProcessingOperationKeys ?? []),
+    JSON.stringify(requiredClipProcessingOperationKeys),
+    `${workflowTemplate.id} process-clips declares the exact auditable per-clip processing operation sequence`,
+  );
+}
+
+const workflowBehaviorReviewSession = {
+  id: 'review-session-check',
+  schema: 'slice.review.v1',
+  status: 'ready_for_review',
+  taskId: 'task-check',
+  createdAt: '2026-05-18T00:00:00.000Z',
+  updatedAt: '2026-05-18T00:00:00.000Z',
+  sourceAssetUuid: 'source-asset-check',
+  sourceDurationMs: 12_000,
+  segments: [
+    {
+      id: 'segment-1',
+      sourceClipIndex: 0,
+      status: 'selected',
+      selected: true,
+      title: 'Opening claim',
+      startMs: 1_000,
+      endMs: 5_000,
+      durationMs: 4_000,
+      contentUnitIds: ['content-unit-1'],
+      speakerIds: ['speaker-1'],
+      speakerRoles: ['host'],
+      transcriptText: 'Opening claim with complete context.',
+      transcriptSegments: [
+        { startMs: 1_100, endMs: 2_000, text: 'Opening claim', speaker: 'host' },
+        { startMs: 2_100, endMs: 4_800, text: 'with complete context.', speaker: 'host' },
+      ],
+      risks: [],
+    },
+  ],
+  duplicateGroups: [],
+  manualEdits: [],
+  selectedSegmentIds: ['segment-1'],
+};
+const workflowBehaviorTimeline = createStudioClipTimelineFromReviewSession(workflowBehaviorReviewSession);
+const repeatedWorkflowBehaviorTimeline = createStudioClipTimelineFromReviewSession(workflowBehaviorReviewSession);
+const workflowBehaviorClip = workflowBehaviorTimeline.clips[0];
+const actualClipProcessingOperationExecutionPlan = (workflowBehaviorClip?.processingPlan.operations ?? []).map((operation) => ({
+  key: operation.key,
+  stage: operation.executionStage,
+  dependencies: operation.dependencyOperationKeys,
+}));
+assertEqual(
+  JSON.stringify(actualClipProcessingOperationExecutionPlan),
+  JSON.stringify(expectedClipProcessingOperationExecutionPlan),
+  'Clip processing operation plan declares the exact dependency DAG so parallelism never violates cleanup prerequisites',
+);
+assertRule(
+  workflowBehaviorTimeline.timeline.durationMs === 12_000 &&
+    workflowBehaviorTimeline.clips.length === 1 &&
+    workflowBehaviorClip?.sourceRefs.some((sourceRef) => sourceRef.sourceType === 'content_unit') &&
+    workflowBehaviorClip?.sourceRefs.some((sourceRef) => sourceRef.sourceType === 'text_segment') &&
+    workflowBehaviorClip?.boundaryVersion === 1 &&
+    workflowBehaviorClip?.processingPlan.schema === 'clip.processing.plan.v1' &&
+    JSON.stringify(workflowBehaviorClip?.processingPlan.operations.map((operation) => operation.key) ?? []) ===
+      JSON.stringify(requiredClipProcessingOperationKeys) &&
+    JSON.stringify(actualClipProcessingOperationExecutionPlan) === JSON.stringify(expectedClipProcessingOperationExecutionPlan),
+  'StudioClip timeline snapshots preserve source duration, evidence refs, boundary version, and the canonical dependency-aware per-clip processing operation plan',
+);
+assertRule(
+  workflowBehaviorTimeline.timeline.status === 'draft' &&
+    workflowBehaviorTimeline.processingOperations.length === requiredClipProcessingOperationKeys.length &&
+    workflowBehaviorTimeline.processingOperations.every((operation) =>
+      operation.status === 'blocked' &&
+        operation.attemptNo === 0 &&
+        operation.maxAttempts === 3 &&
+        operation.startedAt === undefined &&
+        operation.completedAt === undefined &&
+        operation.durationMs === undefined &&
+        operation.executionStage === workflowBehaviorClip?.processingPlan.operations.find((planOperation) =>
+          planOperation.key === operation.operationKey
+        )?.executionStage &&
+        JSON.stringify(operation.dependencyOperationKeys) === JSON.stringify(
+          workflowBehaviorClip?.processingPlan.operations.find((planOperation) =>
+            planOperation.key === operation.operationKey
+          )?.dependencyOperationKeys ?? []
+        ) &&
+        Array.isArray(operation.input.dependencyOperationKeys) &&
+        operation.clipBoundaryVersion === workflowBehaviorClip?.boundaryVersion
+    ),
+  'ready_for_review StudioClip timeline snapshots keep dependency-aware boundary-versioned per-clip processing operations blocked without fake execution lifecycle timestamps',
+);
+assertRule(
+  workflowBehaviorTimeline.timeline.id === repeatedWorkflowBehaviorTimeline.timeline.id &&
+    workflowBehaviorTimeline.clips[0]?.id === repeatedWorkflowBehaviorTimeline.clips[0]?.id &&
+    workflowBehaviorTimeline.clips[0]?.sourceRefs[0]?.id === repeatedWorkflowBehaviorTimeline.clips[0]?.sourceRefs[0]?.id &&
+    workflowBehaviorTimeline.processingOperations[0]?.id === repeatedWorkflowBehaviorTimeline.processingOperations[0]?.id,
+  'StudioClip timeline snapshots use stable timeline, clip, source-ref, and operation ids derived from review evidence',
+);
+if (workflowBehaviorClip) {
+  const previewRange = createStudioClipPreviewRange(workflowBehaviorClip);
+  assertRule(
+    previewRange.startMs === workflowBehaviorClip.startMs &&
+      previewRange.endMs === workflowBehaviorClip.endMs &&
+      previewRange.loop === true,
+    'StudioClip preview range loops over the source-video clip boundaries',
+  );
+  assertRule(
+    typeof previewStudioClipBoundaryAdjustment === 'function',
+    'StudioClip workflow exports a boundary adjustment preview helper that does not create edit events during pointermove',
+  );
+  if (typeof previewStudioClipBoundaryAdjustment === 'function') {
+    const previewClip = previewStudioClipBoundaryAdjustment({
+      clip: workflowBehaviorClip,
+      timeline: workflowBehaviorTimeline.timeline,
+      side: 'right',
+      nextMs: 5_900,
+      minDurationMs: 1_000,
+    });
+    assertRule(
+      previewClip.endMs === 5_900 &&
+        previewClip.preview.sourceEndMs === 5_900 &&
+        previewClip.id === workflowBehaviorClip.id &&
+        previewClip.boundaryVersion === workflowBehaviorClip.boundaryVersion,
+      'StudioClip boundary preview returns a WYSIWYG clip range without changing clip identity or committed boundary version',
+    );
+  }
+  const boundaryAdjustment = adjustStudioClipBoundary({
+    clip: workflowBehaviorClip,
+    timeline: workflowBehaviorTimeline.timeline,
+    side: 'left',
+    nextMs: 4_900,
+    minDurationMs: 1_000,
+  });
+  assertRule(
+    boundaryAdjustment.clip.startMs === 4_000 &&
+      boundaryAdjustment.clip.durationMs === 1_000 &&
+      boundaryAdjustment.clip.boundaryVersion === workflowBehaviorClip.boundaryVersion + 1 &&
+      boundaryAdjustment.event.eventType === 'clip-boundary-adjusted' &&
+      boundaryAdjustment.event.payload.oldBoundaryVersion === workflowBehaviorClip.boundaryVersion &&
+      boundaryAdjustment.event.payload.newBoundaryVersion === boundaryAdjustment.clip.boundaryVersion,
+    'StudioClip left boundary adjustment clamps to the minimum duration, increments boundary version, and emits a boundary-adjusted event',
+  );
+  assertEqual(
+    JSON.stringify(boundaryAdjustment.event.payload.invalidatedOperationKeys ?? []),
+    JSON.stringify(requiredClipProcessingOperationKeys),
+    'StudioClip boundary edits invalidate every downstream per-clip processing operation',
+  );
+  assertEqual(
+    JSON.stringify(boundaryAdjustment.event.invalidatedStepKeys),
+    JSON.stringify(['refine-clips', 'process-clips', 'render-clips', 'verify-clips', 'persist-results']),
+    'StudioClip boundary edits invalidate every downstream per-clip processing and persistence step',
+  );
+  assertRule(
+    typeof invalidateStudioClipProcessingOperationsForBoundaryEdit === 'function',
+    'StudioClip workflow exports a standard helper for marking stale per-clip processing operation rows invalidated after boundary edits',
+  );
+  assertRule(
+    typeof adjustSliceReviewSegmentBoundaryOnStudioTimeline === 'function',
+    'StudioClip workflow exports a canonical review boundary adjustment helper for WYSIWYG timeline commits',
+  );
+  assertRule(
+    typeof correctSliceReviewSegmentOnStudioTimeline === 'function',
+    'StudioClip workflow exports a canonical review correction helper for live review edits',
+  );
+  if (typeof adjustSliceReviewSegmentBoundaryOnStudioTimeline === 'function') {
+    const reviewBoundaryAdjustment = adjustSliceReviewSegmentBoundaryOnStudioTimeline({
+      reviewSession: workflowBehaviorReviewSession,
+      segmentId: 'segment-1',
+      clip: workflowBehaviorClip,
+      timeline: workflowBehaviorTimeline.timeline,
+      side: 'right',
+      nextMs: 3_400,
+    });
+    const correctedSegment = reviewBoundaryAdjustment?.segment;
+    assertRule(
+      reviewBoundaryAdjustment !== null &&
+        correctedSegment?.id === 'segment-1' &&
+        correctedSegment?.startMs === 1_000 &&
+        correctedSegment?.endMs === 3_400 &&
+        correctedSegment?.durationMs === 2_400 &&
+        correctedSegment?.boundaryVersion === workflowBehaviorClip.boundaryVersion + 1 &&
+        correctedSegment?.transcriptText === 'Opening claim with complete context.' &&
+        correctedSegment?.transcriptSegments?.[1]?.endMs === 3_400 &&
+        correctedSegment?.speechStartMs === 1_100 &&
+        correctedSegment?.speechEndMs === 3_400,
+      'canonical review boundary adjustment returns a corrected review segment clipped to the committed StudioClip boundary',
+    );
+    assertRule(
+      reviewBoundaryAdjustment?.manualEdit.kind === 'correctSegment' &&
+        JSON.stringify(reviewBoundaryAdjustment.manualEdit.segmentIds) === JSON.stringify(['segment-1']) &&
+        reviewBoundaryAdjustment.manualEdit.reason === 'manual right boundary adjusted on studio_clip timeline' &&
+        reviewBoundaryAdjustment.manualEdit.patch?.startMs === 1_000 &&
+        reviewBoundaryAdjustment.manualEdit.patch?.endMs === 3_400 &&
+        reviewBoundaryAdjustment.manualEdit.patch?.boundaryVersion === workflowBehaviorClip.boundaryVersion + 1 &&
+        reviewBoundaryAdjustment.manualEdit.patch?.speechStartMs === 1_100 &&
+        reviewBoundaryAdjustment.manualEdit.patch?.speechEndMs === 3_400 &&
+        reviewBoundaryAdjustment.manualEdit.patch?.transcriptText === 'Opening claim with complete context.',
+      'canonical review boundary adjustment emits auditable correctSegment manual edit patch evidence',
+    );
+    assertRule(
+      reviewBoundaryAdjustment?.event.eventType === 'clip-boundary-adjusted' &&
+        reviewBoundaryAdjustment.event.invalidatedOperationKeys?.length === requiredClipProcessingOperationKeys.length &&
+        reviewBoundaryAdjustment.reviewSession.segments[0]?.endMs === 3_400 &&
+        reviewBoundaryAdjustment.reviewSession.manualEdits.at(-1)?.id === reviewBoundaryAdjustment.manualEdit.id,
+      'canonical review boundary adjustment returns the StudioClip event and an updated review session ready for timeline regeneration',
+    );
+    assertRule(
+      adjustSliceReviewSegmentBoundaryOnStudioTimeline({
+        reviewSession: workflowBehaviorReviewSession,
+        segmentId: 'missing-segment',
+        clip: workflowBehaviorClip,
+        timeline: workflowBehaviorTimeline.timeline,
+        side: 'right',
+        nextMs: 3_400,
+      }) === null,
+      'canonical review boundary adjustment returns null when the target review segment is missing',
+    );
+  }
+
+  assertRule(
+    typeof createSliceReviewManualEdit === 'function' &&
+      typeof createSliceReviewSessionFromSegments === 'function',
+    'StudioClip workflow exports canonical review session and manual edit builders for all review mutations',
+  );
+  if (typeof createSliceReviewManualEdit === 'function' && typeof createSliceReviewSessionFromSegments === 'function') {
+    const reviewManualEdit = createSliceReviewManualEdit('select', ['segment-1'], {
+      reason: 'canonical review session builder test',
+    });
+    const reviewSessionFromSegments = createSliceReviewSessionFromSegments(
+      workflowBehaviorReviewSession,
+      workflowBehaviorReviewSession.segments,
+      [reviewManualEdit],
+    );
+    assertRule(
+      reviewManualEdit.kind === 'select' &&
+        JSON.stringify(reviewManualEdit.segmentIds) === JSON.stringify(['segment-1']) &&
+        reviewManualEdit.reason === 'canonical review session builder test' &&
+        typeof reviewManualEdit.createdAt === 'string',
+      'canonical review manual edit builder creates stable auditable edit records',
+    );
+    assertRule(
+      reviewSessionFromSegments.updatedAt !== workflowBehaviorReviewSession.updatedAt &&
+        reviewSessionFromSegments.manualEdits.at(-1)?.id === reviewManualEdit.id &&
+        JSON.stringify(reviewSessionFromSegments.selectedSegmentIds) === JSON.stringify(['segment-1']) &&
+        reviewSessionFromSegments.segments.length === workflowBehaviorReviewSession.segments.length,
+      'canonical review session builder rebuilds selected segment ids and appends the new manual edit',
+    );
+  }
+}
+
+const workflowApprovedReviewSession = {
+  ...workflowBehaviorReviewSession,
+  status: 'ready_for_render',
+};
+const workflowApprovedTimeline = createStudioClipTimelineFromReviewSession(workflowApprovedReviewSession);
+assertRule(
+    workflowApprovedTimeline.timeline.status === 'ready_for_render' &&
+    workflowApprovedTimeline.clips.every((clip) => clip.status === 'selected') &&
+    JSON.stringify(workflowApprovedTimeline.processingOperations.map((operation) => ({
+      key: operation.operationKey,
+      status: operation.status,
+      blockedBy: operation.blockedByOperationKeys ?? [],
+    }))) === JSON.stringify(expectedInitialReadyForRenderOperationStatuses) &&
+    workflowApprovedTimeline.processingOperations.every((operation) =>
+      operation.statusKey === operation.status &&
+        operation.attemptNo === 0 &&
+        operation.maxAttempts === 3 &&
+        operation.startedAt === undefined &&
+        operation.completedAt === undefined &&
+        operation.durationMs === undefined &&
+        operation.clipBoundaryVersion === workflowApprovedTimeline.clips[0]?.boundaryVersion &&
+        operationMatchesExpectedDependencyReadiness(
+          operation,
+          findExpectedInitialReadyForRenderOperationStatus(operation.operationKey),
+        ) &&
+        operation.input.dependencyReadinessMode === 'canonical-operation-dag' &&
+        Array.isArray(operation.input.blockedByOperationKeys) &&
+        JSON.stringify(operation.input.blockedByOperationKeys) === JSON.stringify(operation.blockedByOperationKeys ?? [])
+    ),
+  'ready_for_render StudioClip timeline snapshots unlock only dependency-ready selected clip operations and keep downstream operations blocked without claiming an attempt has started',
+);
+assertRule(
+  typeof reconcileStudioClipProcessingOperationReadiness === 'function',
+  'StudioClip workflow exports a standard helper for dependency-aware process-clips operation readiness reconciliation',
+);
+if (typeof reconcileStudioClipProcessingOperationReadiness === 'function') {
+  const denoiseSucceededOperation = {
+    ...workflowApprovedTimeline.processingOperations.find((operation) => operation.operationKey === 'denoise-audio'),
+    status: 'succeeded',
+    statusKey: 'succeeded',
+    statusCode: expectedClipProcessingOperationStatusCodes.succeeded,
+    enabled: false,
+    completedAt: workflowApprovedTimeline.timeline.updatedAt,
+    durationMs: 0,
+  };
+  const reconciledAfterAudioFoundation = reconcileStudioClipProcessingOperationReadiness({
+    timeline: workflowApprovedTimeline.timeline,
+    clip: workflowApprovedTimeline.clips[0],
+    processingOperations: workflowApprovedTimeline.processingOperations.map((operation) =>
+      operation.operationKey === 'denoise-audio' ? denoiseSucceededOperation : operation
+    ),
+  });
+  assertEqual(
+    JSON.stringify(reconciledAfterAudioFoundation.map((operation) => ({
+      key: operation.operationKey,
+      status: operation.status,
+      blockedBy: operation.blockedByOperationKeys ?? [],
+    }))),
+    JSON.stringify(expectedOperationStatusesAfterAudioFoundation),
+    'process-clips readiness reconciliation unlocks only operations whose canonical dependency operation keys have succeeded',
+  );
+  assertRule(
+    reconciledAfterAudioFoundation.every((operation) =>
+      operation.metadata?.dependencyReadinessMode === 'canonical-operation-dag' &&
+        JSON.stringify(operation.metadata?.blockedByOperationKeys ?? []) === JSON.stringify(operation.blockedByOperationKeys ?? []) &&
+        operationMatchesExpectedDependencyReadiness(
+          operation,
+          expectedOperationStatusesAfterAudioFoundation.find((expected) => expected.key === operation.operationKey),
+        )
+    ),
+    'process-clips readiness reconciliation writes dependency readiness audit metadata and clears stale blockers from newly schedulable operations',
+  );
+}
+assertRule(
+  autocutTypesSource.includes('blockedByOperationKeys: ClipProcessingOperationKey[]') &&
+    autocutTypesSource.includes('blockingReason?: ClipProcessingOperationBlockingReason') &&
+    autocutTypesSource.includes("export type ClipProcessingOperationBlockingReason"),
+  '@sdkwork/autocut-types exposes dependency-aware operation blocked-by metadata for process-clips scheduling',
+);
+if (workflowBehaviorClip && typeof invalidateStudioClipProcessingOperationsForBoundaryEdit === 'function') {
+  const boundaryAdjustment = adjustStudioClipBoundary({
+    clip: workflowApprovedTimeline.clips[0],
+    timeline: workflowApprovedTimeline.timeline,
+    side: 'right',
+    nextMs: 4_400,
+    minDurationMs: 1_000,
+  });
+  const untouchedOperation = {
+    ...workflowApprovedTimeline.processingOperations[0],
+    id: 'studio-clip-processing-operation-other-clip',
+    clipId: 'other-clip',
+    status: 'succeeded',
+    statusKey: 'succeeded',
+    enabled: true,
+    input: {
+      sourceStartMs: 7_000,
+      sourceEndMs: 9_000,
+    },
+  };
+  const operationsAfterBoundaryEdit = invalidateStudioClipProcessingOperationsForBoundaryEdit({
+    processingOperations: [
+      ...workflowApprovedTimeline.processingOperations,
+      untouchedOperation,
+    ],
+    event: boundaryAdjustment.event,
+  });
+  const invalidatedOperations = operationsAfterBoundaryEdit.filter((operation) =>
+    operation.clipId === boundaryAdjustment.clip.id
+  );
+  const untouchedOperationAfterInvalidation = operationsAfterBoundaryEdit.find((operation) =>
+    operation.id === untouchedOperation.id
+  );
+  assertRule(
+    invalidatedOperations.length === requiredClipProcessingOperationKeys.length &&
+      invalidatedOperations.every((operation) => {
+        const previousOperation = workflowApprovedTimeline.processingOperations.find((before) =>
+          before.operationKey === operation.operationKey
+        );
+        return previousOperation !== undefined &&
+          operation.id === previousOperation.id &&
+          operation.status === 'invalidated' &&
+          operation.statusKey === 'invalidated' &&
+          operation.statusCode === expectedClipProcessingOperationStatusCodes.invalidated &&
+          operation.enabled === false &&
+          JSON.stringify(operation.blockedByOperationKeys ?? []) === JSON.stringify([]) &&
+          operation.blockingReason === undefined &&
+          JSON.stringify(operation.input?.blockedByOperationKeys ?? []) === JSON.stringify([]) &&
+          operation.input?.blockingReason === undefined &&
+          operation.sourceStartMs === previousOperation.sourceStartMs &&
+          operation.clipBoundaryVersion === previousOperation.clipBoundaryVersion &&
+          operation.sourceEndMs === previousOperation.sourceEndMs &&
+          operation.sourceDurationMs === previousOperation.sourceDurationMs &&
+          operation.invalidatedByEventId === boundaryAdjustment.event.id &&
+          operation.invalidatedAt === boundaryAdjustment.event.createdAt &&
+          operation.completedAt === boundaryAdjustment.event.createdAt &&
+          operation.durationMs === 0 &&
+          operation.attemptNo === 0 &&
+          operation.maxAttempts === 3 &&
+          operation.metadata?.previousStatus === previousOperation.status &&
+          operation.metadata?.previousStatusCode === previousOperation.statusCode &&
+          JSON.stringify(operation.metadata?.previousBlockedByOperationKeys ?? []) ===
+            JSON.stringify(previousOperation.blockedByOperationKeys ?? []) &&
+          operation.metadata?.previousBlockingReason === previousOperation.blockingReason &&
+          JSON.stringify(operation.metadata?.blockedByOperationKeys ?? []) === JSON.stringify([]) &&
+          operation.metadata?.blockingReason === undefined &&
+          operation.metadata?.previousAttemptNo === 0 &&
+          operation.metadata?.previousMaxAttempts === 3 &&
+          operation.metadata?.invalidatedByBoundaryEdit === true &&
+          operation.metadata?.previousSourceRange?.startMs === operation.sourceStartMs &&
+          operation.metadata?.previousSourceRange?.endMs === operation.sourceEndMs &&
+          operation.metadata?.previousBoundaryVersion === workflowApprovedTimeline.clips[0]?.boundaryVersion &&
+          operation.metadata?.newBoundaryVersion === boundaryAdjustment.clip.boundaryVersion &&
+          operation.metadata?.newSourceRange?.endMs === boundaryAdjustment.clip.endMs;
+      }),
+    'StudioClip boundary edits deterministically mark existing boundary-versioned per-clip operation rows invalidated while preserving row identity and audit metadata',
+  );
+  assertRule(
+      untouchedOperationAfterInvalidation?.status === untouchedOperation.status &&
+      untouchedOperationAfterInvalidation?.statusCode === untouchedOperation.statusCode &&
+      untouchedOperationAfterInvalidation?.enabled === untouchedOperation.enabled &&
+      untouchedOperationAfterInvalidation?.invalidatedByEventId === undefined,
+    'StudioClip boundary operation invalidation leaves other clips untouched',
+  );
+  const adjustedApprovedReviewSession = {
+    ...workflowApprovedReviewSession,
+    segments: [
+      {
+        ...workflowApprovedReviewSession.segments[0],
+        startMs: boundaryAdjustment.clip.startMs,
+        endMs: boundaryAdjustment.clip.endMs,
+        durationMs: boundaryAdjustment.clip.durationMs,
+        boundaryVersion: boundaryAdjustment.clip.boundaryVersion,
+      },
+    ],
+  };
+  const adjustedApprovedTimeline = createStudioClipTimelineFromReviewSession(adjustedApprovedReviewSession);
+  assertRule(
+    adjustedApprovedTimeline.clips[0]?.id === workflowApprovedTimeline.clips[0]?.id &&
+      adjustedApprovedTimeline.processingOperations.every((operation) => {
+        const expected = findExpectedInitialReadyForRenderOperationStatus(operation.operationKey);
+        return expected !== undefined &&
+          operation.clipId === boundaryAdjustment.clip.id &&
+          operationMatchesExpectedDependencyReadiness(operation, expected) &&
+          operation.clipBoundaryVersion === boundaryAdjustment.clip.boundaryVersion &&
+          operation.sourceStartMs === boundaryAdjustment.clip.startMs &&
+          operation.sourceEndMs === boundaryAdjustment.clip.endMs &&
+          operation.sourceDurationMs === boundaryAdjustment.clip.durationMs &&
+          operation.input.sourceEndMs === boundaryAdjustment.clip.endMs &&
+          !workflowApprovedTimeline.processingOperations.some((previousOperation) =>
+            previousOperation.id === operation.id
+          );
+      }),
+    'StudioClip regenerated operation rows use a new boundary-version-and-source-range-specific identity after boundary edits while keeping the canonical clip identity stable',
+  );
+  const returnedBoundaryAdjustment = adjustStudioClipBoundary({
+    clip: adjustedApprovedTimeline.clips[0],
+    timeline: adjustedApprovedTimeline.timeline,
+    side: 'right',
+    nextMs: workflowApprovedTimeline.clips[0].endMs,
+    minDurationMs: 1_000,
+  });
+  const returnedApprovedTimeline = createStudioClipTimelineFromReviewSession({
+    ...workflowApprovedReviewSession,
+    segments: [
+      {
+        ...workflowApprovedReviewSession.segments[0],
+        startMs: returnedBoundaryAdjustment.clip.startMs,
+        endMs: returnedBoundaryAdjustment.clip.endMs,
+        durationMs: returnedBoundaryAdjustment.clip.durationMs,
+        boundaryVersion: returnedBoundaryAdjustment.clip.boundaryVersion,
+      },
+    ],
+  });
+  assertRule(
+    returnedApprovedTimeline.clips[0]?.boundaryVersion === returnedBoundaryAdjustment.clip.boundaryVersion &&
+      returnedApprovedTimeline.processingOperations.every((operation) =>
+        operation.clipBoundaryVersion === returnedBoundaryAdjustment.clip.boundaryVersion &&
+          operation.sourceStartMs === workflowApprovedTimeline.processingOperations[0]?.sourceStartMs &&
+          operation.sourceEndMs === workflowApprovedTimeline.processingOperations[0]?.sourceEndMs &&
+          !workflowApprovedTimeline.processingOperations.some((previousOperation) =>
+            previousOperation.id === operation.id
+          )
+      ),
+    'StudioClip regenerated operation rows stay unique when a boundary edit returns to a previous source range because clip boundary version is part of operation identity',
+  );
+  const mergedTimelineAfterFirstBoundaryEdit = mergeStudioClipTimelineSnapshotProcessingOperationHistory({
+    snapshot: adjustedApprovedTimeline,
+    processingOperations: invalidatedOperations,
+  });
+  const repeatedBoundaryAdjustment = adjustStudioClipBoundary({
+    clip: adjustedApprovedTimeline.clips[0],
+    timeline: adjustedApprovedTimeline.timeline,
+    side: 'left',
+    nextMs: 1_500,
+    minDurationMs: 1_000,
+  });
+  const operationsAfterRepeatedBoundaryEdit = invalidateStudioClipProcessingOperationsForBoundaryEdit({
+    processingOperations: mergedTimelineAfterFirstBoundaryEdit.processingOperations,
+    event: repeatedBoundaryAdjustment.event,
+  });
+  const firstInvalidatedOperationAfterRepeat = operationsAfterRepeatedBoundaryEdit.find((operation) =>
+    operation.id === invalidatedOperations[0]?.id
+  );
+  const repeatedInvalidatedOperations = operationsAfterRepeatedBoundaryEdit.filter((operation) =>
+    operation.clipId === repeatedBoundaryAdjustment.clip.id &&
+      operation.invalidatedByEventId === repeatedBoundaryAdjustment.event.id
+  );
+  assertRule(
+    firstInvalidatedOperationAfterRepeat?.invalidatedByEventId === boundaryAdjustment.event.id &&
+      firstInvalidatedOperationAfterRepeat?.statusCode === expectedClipProcessingOperationStatusCodes.invalidated &&
+      firstInvalidatedOperationAfterRepeat?.metadata?.previousStatus === 'pending' &&
+      firstInvalidatedOperationAfterRepeat?.metadata?.previousStatusCode === expectedClipProcessingOperationStatusCodes.pending &&
+      repeatedInvalidatedOperations.length === requiredClipProcessingOperationKeys.length,
+    'StudioClip repeated boundary edits preserve prior invalidation audit rows and only invalidate the latest pending operation range',
+  );
+}
+
+assertRule(
+  typeof splitSliceReviewSegmentAtTimelinePlayhead === 'function',
+  'StudioClip workflow exports a canonical review segment split helper for WYSIWYG timeline editing',
+);
+if (typeof splitSliceReviewSegmentAtTimelinePlayhead === 'function') {
+  const splitReviewResult = splitSliceReviewSegmentAtTimelinePlayhead({
+    reviewSession: workflowBehaviorReviewSession,
+    segmentId: 'segment-1',
+    splitAtMs: 2_600,
+  });
+  const splitSegments = splitReviewResult?.segments ?? [];
+  const splitEdit = splitReviewResult?.manualEdit;
+  assertRule(
+    splitReviewResult !== null &&
+      splitSegments.length === 2 &&
+      splitSegments[0]?.id === 'segment-1-split-2600-a' &&
+      splitSegments[1]?.id === 'segment-1-split-2600-b' &&
+      splitSegments[0]?.title === 'Opening claim A' &&
+      splitSegments[1]?.title === 'Opening claim B' &&
+      splitSegments[0]?.startMs === 1_000 &&
+      splitSegments[0]?.endMs === 2_600 &&
+      splitSegments[1]?.startMs === 2_600 &&
+      splitSegments[1]?.endMs === 5_000 &&
+      splitSegments[0]?.durationMs === 1_600 &&
+      splitSegments[1]?.durationMs === 2_400 &&
+      splitSegments[0]?.selected === true &&
+      splitSegments[1]?.selected === true &&
+      splitSegments[0]?.status === 'selected' &&
+      splitSegments[1]?.status === 'selected',
+    'canonical review split replaces one clip with two stable WYSIWYG review segments that exactly cover the original source range',
+  );
+  assertRule(
+    splitSegments[0]?.transcriptText === 'Opening claim with complete context.' &&
+      splitSegments[1]?.transcriptText === 'with complete context.' &&
+      splitSegments[0]?.transcriptSegments?.[1]?.endMs === 2_600 &&
+      splitSegments[1]?.transcriptSegments?.[0]?.startMs === 2_600 &&
+      splitSegments[0]?.speechStartMs === 1_100 &&
+      splitSegments[0]?.speechEndMs === 2_600 &&
+      splitSegments[1]?.speechStartMs === 2_600 &&
+      splitSegments[1]?.speechEndMs === 4_800,
+    'canonical review split clips transcript and speech evidence to the exact timeline playhead boundary',
+  );
+  assertRule(
+    splitEdit?.kind === 'split' &&
+      JSON.stringify(splitEdit.segmentIds) === JSON.stringify(['segment-1']) &&
+      splitEdit.splitAtMs === 2_600 &&
+      JSON.stringify(splitEdit.createdSegmentIds) === JSON.stringify(['segment-1-split-2600-a', 'segment-1-split-2600-b']) &&
+      splitEdit.reason === 'manual split at timeline playhead',
+    'canonical review split emits auditable manual edit evidence with splitAtMs and created segment ids',
+  );
+  const implicitSplitResult = splitSliceReviewSegmentAtTimelinePlayhead({
+    reviewSession: workflowBehaviorReviewSession,
+    segmentId: 'segment-1',
+  });
+  assertRule(
+    implicitSplitResult?.splitAtMs === 2_000 &&
+      implicitSplitResult?.manualEdit.reason === 'manual split at reviewed transcript boundary',
+    'canonical review split falls back to a reviewed transcript boundary when no playhead time is supplied',
+  );
+  assertRule(
+    splitSliceReviewSegmentAtTimelinePlayhead({
+      reviewSession: workflowBehaviorReviewSession,
+      segmentId: 'segment-1',
+      splitAtMs: 1_100,
+    }) === null &&
+      splitSliceReviewSegmentAtTimelinePlayhead({
+        reviewSession: workflowBehaviorReviewSession,
+        segmentId: 'missing-segment',
+        splitAtMs: 2_600,
+      }) === null,
+    'canonical review split returns null for invalid timeline positions or missing segments instead of mutating review state',
+  );
+  const splitTimeline = createStudioClipTimelineFromReviewSession({
+    ...workflowBehaviorReviewSession,
+    updatedAt: splitReviewResult?.reviewSession.updatedAt ?? workflowBehaviorReviewSession.updatedAt,
+    segments: splitSegments,
+    manualEdits: splitEdit ? [splitEdit] : [],
+    selectedSegmentIds: splitSegments.filter((segment) => segment.selected && segment.status === 'selected').map((segment) => segment.id),
+  });
+  assertRule(
+    splitTimeline.clips.length === 2 &&
+      splitTimeline.clips[0]?.metadata?.reviewSegmentId === 'segment-1-split-2600-a' &&
+      splitTimeline.clips[1]?.metadata?.reviewSegmentId === 'segment-1-split-2600-b' &&
+      splitTimeline.processingOperations.length === requiredClipProcessingOperationKeys.length * 2,
+    'StudioClip timeline regeneration turns canonical review splits into two independently processable clips',
+  );
+}
+
+const canonicalReviewMutationHelpersAvailable = [
+  selectAllSliceReviewSegmentsForRender,
+  setSliceReviewSegmentsRenderSelectionForRender,
+  setSliceReviewSegmentRenderSelectionOnStudioTimeline,
+  mergeSliceReviewSegmentsOnStudioTimeline,
+  markSliceReviewSegmentAsDuplicateOnStudioTimeline,
+  restoreSliceReviewSegmentOnStudioTimeline,
+].every((helper) => typeof helper === 'function');
+assertRule(
+  canonicalReviewMutationHelpersAvailable,
+  'Clip workflow exports executable canonical helpers for select/exclude/merge/delete-duplicate/restore review mutations',
+);
+if (canonicalReviewMutationHelpersAvailable) {
+  const workflowMutationReviewSession = {
+    ...workflowBehaviorReviewSession,
+    segments: [
+      workflowBehaviorReviewSession.segments[0],
+      {
+        ...workflowBehaviorReviewSession.segments[0],
+        id: 'segment-2',
+        sourceClipIndex: 1,
+        status: 'excluded',
+        selected: false,
+        title: 'Follow up proof',
+        startMs: 5_000,
+        endMs: 7_200,
+        durationMs: 2_200,
+        contentUnitIds: ['content-unit-2'],
+        speakerIds: ['speaker-2'],
+        speakerRoles: ['guest'],
+        transcriptText: 'Follow up proof.',
+        transcriptSegments: [
+          { startMs: 5_100, endMs: 7_000, text: 'Follow up proof.', speaker: 'guest' },
+        ],
+        duplicateGroupId: 'duplicate-group-1',
+      },
+      {
+        ...workflowBehaviorReviewSession.segments[0],
+        id: 'segment-3',
+        sourceClipIndex: 2,
+        status: 'duplicate',
+        selected: false,
+        title: 'Repeated proof',
+        startMs: 7_200,
+        endMs: 8_400,
+        durationMs: 1_200,
+        contentUnitIds: ['content-unit-3'],
+        speakerIds: ['speaker-2'],
+        speakerRoles: ['guest'],
+        transcriptText: 'Repeated proof.',
+        transcriptSegments: [
+          { startMs: 7_300, endMs: 8_300, text: 'Repeated proof.', speaker: 'guest' },
+        ],
+        duplicateGroupId: 'duplicate-group-1',
+        duplicateOfSegmentId: 'segment-1',
+      },
+    ],
+    duplicateGroups: [
+      {
+        id: 'duplicate-group-1',
+        segmentIds: ['segment-1', 'segment-2', 'segment-3'],
+        keptSegmentId: 'segment-1',
+        reason: 'smart-dedup',
+      },
+    ],
+    selectedSegmentIds: ['segment-1'],
+  };
+  const selectAllReviewResult = selectAllSliceReviewSegmentsForRender({
+    reviewSession: workflowMutationReviewSession,
+  });
+  assertRule(
+    selectAllReviewResult?.segments[0]?.status === 'selected' &&
+      selectAllReviewResult?.segments[1]?.status === 'selected' &&
+      selectAllReviewResult?.segments[2]?.status === 'duplicate' &&
+      selectAllReviewResult?.reviewSession.selectedSegmentIds.join(',') === 'segment-1,segment-2' &&
+      selectAllReviewResult?.manualEdit.kind === 'select' &&
+      selectAllReviewResult.manualEdit.segmentIds.join(',') === 'segment-2' &&
+      selectAllReviewResult.manualEdit.reason === 'manual bulk select all publishable review segments',
+    'canonical bulk select selects only changed publishable review segments and never re-enables duplicates',
+  );
+  const clearSelectionResult = setSliceReviewSegmentsRenderSelectionForRender({
+    reviewSession: workflowMutationReviewSession,
+    selected: false,
+  });
+  assertRule(
+    clearSelectionResult?.segments[0]?.status === 'excluded' &&
+      clearSelectionResult?.segments[1]?.status === 'excluded' &&
+      clearSelectionResult?.segments[2]?.status === 'duplicate' &&
+      clearSelectionResult?.reviewSession.selectedSegmentIds.length === 0 &&
+      clearSelectionResult?.manualEdit.kind === 'exclude' &&
+      clearSelectionResult.manualEdit.segmentIds.join(',') === 'segment-1' &&
+      clearSelectionResult.manualEdit.reason === 'manual clear selected review segments',
+    'canonical clear selection excludes only currently selected review segments and leaves duplicate state untouched',
+  );
+  const singleSelectResult = setSliceReviewSegmentRenderSelectionOnStudioTimeline({
+    reviewSession: workflowMutationReviewSession,
+    segmentId: 'segment-2',
+    selected: true,
+  });
+  assertRule(
+    singleSelectResult?.segment.id === 'segment-2' &&
+      singleSelectResult.segment.status === 'selected' &&
+      singleSelectResult.segment.selected === true &&
+      singleSelectResult.manualEdit.kind === 'select' &&
+      singleSelectResult.manualEdit.segmentIds.join(',') === 'segment-2' &&
+      setSliceReviewSegmentRenderSelectionOnStudioTimeline({
+        reviewSession: workflowMutationReviewSession,
+        segmentId: 'segment-3',
+        selected: true,
+      }) === null,
+    'canonical single-segment selection updates one publishable review segment and rejects duplicate selection',
+  );
+  const duplicateResult = markSliceReviewSegmentAsDuplicateOnStudioTimeline({
+    reviewSession: workflowMutationReviewSession,
+    segmentId: 'segment-2',
+  });
+  assertRule(
+    duplicateResult?.segment.id === 'segment-2' &&
+      duplicateResult.segment.status === 'duplicate' &&
+      duplicateResult.segment.selected === false &&
+      duplicateResult.segment.duplicateOfSegmentId === 'segment-1' &&
+      duplicateResult.manualEdit.kind === 'deleteDuplicate' &&
+      duplicateResult.manualEdit.keepSegmentId === 'segment-1' &&
+      duplicateResult.manualEdit.segmentIds.join(',') === 'segment-1,segment-2',
+    'canonical duplicate deletion resolves the kept segment, marks the target duplicate, and records auditable keep-segment evidence',
+  );
+  const restoreResult = restoreSliceReviewSegmentOnStudioTimeline({
+    reviewSession: workflowMutationReviewSession,
+    segmentId: 'segment-3',
+  });
+  assertRule(
+    restoreResult?.segment.id === 'segment-3' &&
+      restoreResult.segment.status === 'selected' &&
+      restoreResult.segment.selected === true &&
+      restoreResult.segment.duplicateGroupId === undefined &&
+      restoreResult.segment.duplicateOfSegmentId === undefined &&
+      restoreResult.manualEdit.kind === 'restore' &&
+      restoreResult.manualEdit.segmentIds.join(',') === 'segment-3',
+    'canonical restore turns a duplicate review segment back into a selected renderable clip and clears duplicate metadata',
+  );
+  const mergeResult = mergeSliceReviewSegmentsOnStudioTimeline({
+    reviewSession: workflowMutationReviewSession,
+    segmentId: 'segment-2',
+    direction: 'previous',
+  });
+  assertRule(
+    mergeResult?.segment.id === 'segment-1-segment-2' &&
+      mergeResult.segment.title === 'Opening claim + Follow up proof' &&
+      mergeResult.segment.startMs === 1_000 &&
+      mergeResult.segment.endMs === 7_200 &&
+      mergeResult.segment.durationMs === 6_200 &&
+      mergeResult.segment.status === 'selected' &&
+      mergeResult.segment.selected === true &&
+      mergeResult.segment.contentUnitIds.join(',') === 'content-unit-1,content-unit-2' &&
+      mergeResult.segment.speakerIds.join(',') === 'speaker-1,speaker-2' &&
+      mergeResult.segment.transcriptText === 'Opening claim with complete context. Follow up proof.' &&
+      mergeResult.manualEdit.kind === 'merge' &&
+      mergeResult.manualEdit.segmentIds.join(',') === 'segment-1,segment-2' &&
+      mergeResult.manualEdit.createdSegmentIds?.join(',') === 'segment-1-segment-2' &&
+      mergeResult.reviewSession.segments.map((segment) => segment.id).join(',') === 'segment-1-segment-2,segment-3',
+    'canonical merge replaces adjacent publishable review segments with one continuous WYSIWYG clip while preserving evidence',
+  );
+  assertRule(
+    mergeSliceReviewSegmentsOnStudioTimeline({
+      reviewSession: workflowMutationReviewSession,
+      segmentId: 'segment-3',
+      direction: 'previous',
+    }) === null &&
+      markSliceReviewSegmentAsDuplicateOnStudioTimeline({
+        reviewSession: workflowMutationReviewSession,
+        segmentId: 'missing-segment',
+      }) === null &&
+      restoreSliceReviewSegmentOnStudioTimeline({
+        reviewSession: workflowMutationReviewSession,
+        segmentId: 'missing-segment',
+      }) === null,
+    'canonical review mutation helpers return null for missing or non-publishable mutation targets instead of mutating review state',
+  );
+
+  const selectedForRenderTimeline = createStudioClipTimelineFromReviewSession({
+    ...workflowBehaviorReviewSession,
+    status: 'ready_for_render',
+  });
+  const excludedForRenderResult = setSliceReviewSegmentRenderSelectionOnStudioTimeline({
+    reviewSession: {
+      ...workflowBehaviorReviewSession,
+      status: 'ready_for_render',
+    },
+    segmentId: 'segment-1',
+    selected: false,
+  });
+  const excludedForRenderTimeline = createStudioClipTimelineFromReviewSession(excludedForRenderResult.reviewSession);
+  const mergedExcludedForRenderTimeline = mergeStudioClipTimelineSnapshotProcessingOperationHistory({
+    snapshot: excludedForRenderTimeline,
+    processingOperations: selectedForRenderTimeline.processingOperations,
+  });
+  assertRule(
+    mergedExcludedForRenderTimeline.processingOperations.every((operation) =>
+      operation.status === 'skipped' &&
+        operation.statusCode === expectedClipProcessingOperationStatusCodes.skipped &&
+        operation.enabled === false
+    ),
+    'StudioClip operation history merge lets current review selection state override stale selected-clip operation rows after a clip is excluded',
+  );
+  const reselectedForRenderResult = setSliceReviewSegmentRenderSelectionOnStudioTimeline({
+    reviewSession: excludedForRenderResult.reviewSession,
+    segmentId: 'segment-1',
+    selected: true,
+  });
+  const reselectedForRenderTimeline = createStudioClipTimelineFromReviewSession(reselectedForRenderResult.reviewSession);
+  const mergedReselectedForRenderTimeline = mergeStudioClipTimelineSnapshotProcessingOperationHistory({
+    snapshot: reselectedForRenderTimeline,
+    processingOperations: mergedExcludedForRenderTimeline.processingOperations,
+  });
+  assertRule(
+    JSON.stringify(mergedReselectedForRenderTimeline.processingOperations.map((operation) => ({
+      key: operation.operationKey,
+      status: operation.status,
+      blockedBy: operation.blockedByOperationKeys ?? [],
+    }))) === JSON.stringify(expectedInitialReadyForRenderOperationStatuses),
+    'StudioClip operation history merge lets current review selection state restore schedulable operation readiness after a clip is reselected',
+  );
+}
+
+const workflowRenderedReviewSession = {
+  ...workflowBehaviorReviewSession,
+  status: 'rendered',
+};
+const workflowRenderedTimeline = createStudioClipTimelineFromReviewSession(workflowRenderedReviewSession);
+assertRule(
+  workflowRenderedTimeline.timeline.status === 'rendered' &&
+    workflowRenderedTimeline.processingOperations.every((operation) =>
+      operation.status === 'succeeded' &&
+        operation.statusCode === expectedClipProcessingOperationStatusCodes.succeeded &&
+        operation.attemptNo === 1 &&
+        operation.maxAttempts === 3 &&
+        typeof operation.startedAt === 'string' &&
+        typeof operation.completedAt === 'string' &&
+        typeof operation.durationMs === 'number' &&
+        operation.durationMs >= 0 &&
+        operation.clipBoundaryVersion === workflowRenderedTimeline.clips[0]?.boundaryVersion
+    ),
+  'rendered StudioClip timeline snapshots preserve completed boundary-versioned per-clip processing operation lifecycle state',
+);
+
+const workflowMixedReviewSession = {
+  ...workflowApprovedReviewSession,
+  segments: [
+    workflowBehaviorReviewSession.segments[0],
+    {
+      ...workflowBehaviorReviewSession.segments[0],
+      id: 'segment-excluded',
+      sourceClipIndex: 1,
+      status: 'excluded',
+      selected: false,
+      title: 'Excluded claim',
+      startMs: 5_200,
+      endMs: 8_000,
+      durationMs: 2_800,
+      contentUnitIds: ['content-unit-excluded'],
+    },
+    {
+      ...workflowBehaviorReviewSession.segments[0],
+      id: 'segment-duplicate',
+      sourceClipIndex: 2,
+      status: 'duplicate',
+      selected: false,
+      title: 'Duplicate claim',
+      startMs: 8_200,
+      endMs: 11_000,
+      durationMs: 2_800,
+      contentUnitIds: ['content-unit-duplicate'],
+    },
+  ],
+  selectedSegmentIds: ['segment-1'],
+};
+const workflowMixedTimeline = createStudioClipTimelineFromReviewSession(workflowMixedReviewSession);
+assertRule(
+  workflowMixedTimeline.processingOperations
+    .filter((operation) => operation.clipId !== workflowMixedTimeline.clips[0]?.id)
+    .every((operation) =>
+      operation.status === 'skipped' &&
+        operation.enabled === false &&
+        operation.attemptNo === 0 &&
+        operation.completedAt === workflowMixedTimeline.clips.find((clip) => clip.id === operation.clipId)?.updatedAt &&
+        operation.durationMs === 0
+    ),
+  'ready_for_render StudioClip timeline snapshots skip operations for excluded or duplicate clips with terminal lifecycle audit instead of processing non-output ranges',
+);
+
+const requiredUnifiedClipTables = [
+  'ops_workflow_run',
+  'ops_step_run',
+  'ops_step_item_run',
+  'media_text_track',
+  'media_text_segment',
+  'media_content_unit',
+  'studio_timeline',
+  'studio_clip',
+  'studio_clip_source_ref',
+  'studio_clip_processing_operation',
+  'studio_clip_event',
+];
+for (const tableName of requiredUnifiedClipTables) {
+  assertRule(
+    sqliteBaselineSource.includes(`CREATE TABLE IF NOT EXISTS ${tableName}`),
+    `SQLite baseline creates ${tableName} for unified Clip workflow persistence`,
+  );
+  assertRule(
+    schemaRegistrySource.includes(`table_name: ${tableName}`),
+    `schema registry declares ${tableName} for unified Clip workflow persistence`,
+  );
+  assertRule(
+    databaseContractRsSource.includes(`name: "${tableName}"`),
+    `Rust database contract verifies ${tableName} for unified Clip workflow persistence`,
+  );
+}
+
+assertRule(
+  sqliteBaselineSource.includes('invalidated_step_keys_json TEXT NOT NULL DEFAULT') &&
+    sqliteBaselineSource.includes('invalidated_operation_keys_json TEXT NOT NULL DEFAULT') &&
+    sqliteBaselineSource.includes('boundary_version INTEGER NOT NULL DEFAULT 1') &&
+    schemaRegistrySource.includes('invalidated_step_keys_json: { type: json') &&
+    schemaRegistrySource.includes('invalidated_operation_keys_json: { type: json'),
+  'studio_clip and studio_clip_event persist boundary version and downstream invalidation as explicit queryable columns',
+);
+assertRule(
+  /table_name:\s*studio_clip_event[\s\S]*?clip_uuid:\s*\{\s*type:\s*string,\s*length:\s*64,\s*required:\s*false\s*\}/u
+    .test(schemaRegistrySource),
+  'studio_clip_event schema registry declares the optional clip_uuid event target column used by boundary invalidation',
+);
+assertRule(
+    sqliteBaselineSource.includes('status_key TEXT NOT NULL') &&
+    sqliteBaselineSource.includes('execution_stage TEXT NOT NULL') &&
+    sqliteBaselineSource.includes('dependency_operation_keys_json TEXT NOT NULL DEFAULT') &&
+    sqliteBaselineSource.includes('blocked_by_operation_keys_json TEXT NOT NULL DEFAULT') &&
+    sqliteBaselineSource.includes('blocking_reason TEXT') &&
+    sqliteBaselineSource.includes('attempt_no INTEGER NOT NULL DEFAULT 0') &&
+    sqliteBaselineSource.includes('max_attempts INTEGER NOT NULL DEFAULT 3') &&
+    sqliteBaselineSource.includes('started_at TEXT') &&
+    sqliteBaselineSource.includes('completed_at TEXT') &&
+    sqliteBaselineSource.includes('duration_ms INTEGER') &&
+    sqliteBaselineSource.includes('worker_id TEXT') &&
+    sqliteBaselineSource.includes('clip_boundary_version INTEGER NOT NULL DEFAULT 1') &&
+    sqliteBaselineSource.includes("CHECK (operation_key IN ('denoise-audio', 'normalize-loudness', 'remove-cough-and-breath-noise', 'trim-silence', 'filter-repeated-content', 'check-duplicate-content', 'refine-subtitle-cues', 'select-cover-frame'))") &&
+    sqliteBaselineSource.includes("CHECK ((operation_order = 1 AND operation_key = 'denoise-audio')") &&
+    sqliteBaselineSource.includes("OR (operation_order = 8 AND operation_key = 'select-cover-frame'))") &&
+    sqliteBaselineSource.includes('source_start_ms INTEGER NOT NULL') &&
+    sqliteBaselineSource.includes('source_end_ms INTEGER NOT NULL') &&
+    sqliteBaselineSource.includes('source_duration_ms INTEGER NOT NULL') &&
+    sqliteBaselineSource.includes('CHECK (status IN (10, 20, 30, 40, 50, 60, 70))') &&
+    sqliteBaselineSource.includes("CHECK (execution_stage IN ('audio-foundation', 'speech-cleanup', 'content-cleanup', 'publishing-assets'))") &&
+    sqliteBaselineSource.includes("CHECK ((operation_key = 'denoise-audio' AND dependency_operation_keys_json = '[]')") &&
+    sqliteBaselineSource.includes("OR (operation_key = 'normalize-loudness' AND dependency_operation_keys_json = '[\"denoise-audio\"]')") &&
+    sqliteBaselineSource.includes("OR (operation_key = 'select-cover-frame' AND dependency_operation_keys_json = '[\"check-duplicate-content\"]'))") &&
+    sqliteBaselineSource.includes("CHECK (blocking_reason IS NULL OR blocking_reason IN ('waiting-for-dependencies', 'timeline-not-ready', 'clip-not-selected'))") &&
+    sqliteBaselineSource.includes("CHECK (status <> 10 OR (blocking_reason IS NOT NULL AND blocked_by_operation_keys_json IS NOT NULL))") &&
+    sqliteBaselineSource.includes("CHECK (status = 10 OR blocked_by_operation_keys_json = '[]')") &&
+    sqliteBaselineSource.includes('CHECK (status = 10 OR blocking_reason IS NULL)') &&
+    sqliteBaselineSource.includes("CHECK ((status = 10 AND status_key = 'blocked')") &&
+    sqliteBaselineSource.includes("OR (status = 70 AND status_key = 'invalidated'))") &&
+    sqliteBaselineSource.includes('CHECK (source_end_ms > source_start_ms)') &&
+    sqliteBaselineSource.includes('CHECK (source_duration_ms = source_end_ms - source_start_ms)') &&
+    sqliteBaselineSource.includes('CHECK (attempt_no >= 0 AND max_attempts >= 1 AND attempt_no <= max_attempts)') &&
+    sqliteBaselineSource.includes('CHECK (status <> 30 OR (attempt_no >= 1 AND started_at IS NOT NULL AND completed_at IS NULL))') &&
+    sqliteBaselineSource.includes('CHECK (status NOT IN (40, 50, 60, 70) OR completed_at IS NOT NULL)') &&
+    sqliteBaselineSource.includes('CHECK (status NOT IN (10, 20) OR (attempt_no = 0 AND started_at IS NULL AND completed_at IS NULL AND duration_ms IS NULL))') &&
+    sqliteBaselineSource.includes('CHECK (duration_ms IS NULL OR duration_ms >= 0)') &&
+    sqliteBaselineSource.includes('CHECK (boundary_version >= 1)') &&
+    sqliteBaselineSource.includes('CHECK (clip_boundary_version >= 1)') &&
+    sqliteBaselineSource.includes('invalidated_by_event_uuid TEXT') &&
+    sqliteBaselineSource.includes('invalidated_at TEXT') &&
+    schemaRegistrySource.includes('boundary_version: { type: int64, required: true, default: 1 }') &&
+    schemaRegistrySource.includes('execution_stage: { type: string, length: 64, required: true, allowed: "audio-foundation|speech-cleanup|content-cleanup|publishing-assets" }') &&
+    schemaRegistrySource.includes('dependency_operation_keys_json: { type: json, required: true, default: "[]" }') &&
+    schemaRegistrySource.includes('blocked_by_operation_keys_json: { type: json, required: true, default: "[]" }') &&
+    schemaRegistrySource.includes('blocking_reason: { type: string, length: 64, required: false, allowed: "waiting-for-dependencies|timeline-not-ready|clip-not-selected" }') &&
+    schemaRegistrySource.includes('attempt_no: { type: int64, required: true, default: 0 }') &&
+    schemaRegistrySource.includes('max_attempts: { type: int64, required: true, default: 3 }') &&
+    schemaRegistrySource.includes('started_at: { type: instant, required: false }') &&
+    schemaRegistrySource.includes('completed_at: { type: instant, required: false }') &&
+    schemaRegistrySource.includes('duration_ms: { type: int64, required: false }') &&
+    schemaRegistrySource.includes('worker_id: { type: string, length: 128, required: false }') &&
+    schemaRegistrySource.includes('clip_boundary_version: { type: int64, required: true, default: 1 }') &&
+    schemaRegistrySource.includes('operation_key: { type: string, length: 96, required: true, allowed: "denoise-audio|normalize-loudness|remove-cough-and-breath-noise|trim-silence|filter-repeated-content|check-duplicate-content|refine-subtitle-cues|select-cover-frame" }') &&
+    schemaRegistrySource.includes('status_key: { type: string') &&
+    schemaRegistrySource.includes('status: { type: enum_int32, required: true, allowed: "10|20|30|40|50|60|70" }') &&
+    schemaRegistrySource.includes('source_start_ms: { type: int64') &&
+    schemaRegistrySource.includes('source_end_ms: { type: int64') &&
+    schemaRegistrySource.includes('source_duration_ms: { type: int64') &&
+    schemaRegistrySource.includes('invalidated_by_event_uuid: { type: string') &&
+    schemaRegistrySource.includes('invalidated_at: { type: instant') &&
+    databaseContractRsSource.includes('source_start_ms') &&
+    databaseContractRsSource.includes('source_end_ms') &&
+    databaseContractRsSource.includes('source_duration_ms') &&
+    databaseContractRsSource.includes('execution_stage') &&
+    databaseContractRsSource.includes('dependency_operation_keys_json') &&
+    databaseContractRsSource.includes('blocked_by_operation_keys_json') &&
+    databaseContractRsSource.includes('blocking_reason') &&
+    databaseContractRsSource.includes('attempt_no') &&
+    databaseContractRsSource.includes('max_attempts') &&
+    databaseContractRsSource.includes('started_at') &&
+    databaseContractRsSource.includes('completed_at') &&
+    databaseContractRsSource.includes('duration_ms') &&
+    databaseContractRsSource.includes('worker_id') &&
+    databaseContractRsSource.includes('boundary_version') &&
+    databaseContractRsSource.includes('clip_boundary_version') &&
+    databaseContractRsSource.includes('invalidated_by_event_uuid') &&
+    databaseContractRsSource.includes('invalidated_at') &&
+    schemaRegistrySource.includes('blocked|pending|running|succeeded|skipped|failed|invalidated') &&
+    databaseRuntimeRsSource.includes('test-operation-blocked-without-reason') &&
+    databaseRuntimeRsSource.includes('test-operation-pending-with-blocked-by') &&
+    databaseRuntimeRsSource.includes('test-operation-pending-with-blocking-reason'),
+  'studio_clip_processing_operation persists and enforces canonical operation sequence, dependency DAG, dependency readiness, status code, status key, retry lifecycle, clip boundary version, source range, and invalidation audit columns across SQL, registry, and Rust contract',
+);
+
 assertRule(
   !plannerSource.includes('const insertIndex = sorted.findIndex') &&
     !plannerSource.includes('sorted.splice(insertIndex, 0'),
@@ -1955,11 +3482,22 @@ const deterministicPlan = createDeterministicSlicePlan({
   ...baseParams,
   minDuration: 15,
   maxDuration: 60,
+  sourceDurationMs: 90_000,
 });
 assertEqual(
-  deterministicPlan.length,
-  0,
-  'deterministic fallback refuses to fabricate review clips without transcript content evidence',
+  deterministicPlan.length > 0,
+  true,
+  'deterministic fallback produces source-duration bounded clips when transcript content evidence is unavailable',
+);
+assertRule(
+  deterministicPlan.every((clip, index, clips) =>
+    clip.startMs >= 0 &&
+      clip.durationMs > 0 &&
+      clip.startMs + clip.durationMs <= 90_000 &&
+      (index === 0 || clip.startMs >= clips[index - 1].startMs + clips[index - 1].durationMs) &&
+      clip.risks?.includes('deterministic-no-transcript-fallback')
+  ),
+  'deterministic fallback clips stay ordered, bounded, and marked as no-transcript fallback clips',
 );
 
 const autoDeterministicPlan = createDeterministicSlicePlan({
@@ -2014,9 +3552,9 @@ const sourceBoundedDeterministicPlan = createDeterministicSlicePlan({
   sourceDurationMs: 35000,
 });
 assertEqual(
-  sourceBoundedDeterministicPlan.length,
-  0,
-  'source-duration-aware Smart Slice fallback refuses fabricated count windows even when bounded by media duration',
+  sourceBoundedDeterministicPlan.length > 0,
+  true,
+  'source-duration-aware Smart Slice fallback creates at least one bounded clip without transcript content evidence',
 );
 assertRule(
   sourceBoundedDeterministicPlan.every((clip) => clip.startMs + clip.durationMs <= 35000),
@@ -2677,6 +4215,66 @@ assertRule(
   'audio cleanup transcript-protected slices keep trusted audio activity range inside the final rendered source range',
 );
 
+const shortRepairableSilentTailClip = repairSmartSliceClipTimingForNativeRender(
+  {
+    index: 0,
+    startMs: 10_000,
+    durationMs: 5_000,
+    label: 'Short repairable silent-tail clip',
+    sourceStartMs: 10_000,
+    sourceEndMs: 15_000,
+    speechStartMs: 10_200,
+    speechEndMs: 14_720,
+    boundaryPaddingBeforeMs: 200,
+    boundaryPaddingAfterMs: 280,
+    transcriptText: 'The short clip keeps only a small amount of silence around the speech.',
+    transcriptCoverageScore: 0.91,
+    transcriptSegmentCount: 1,
+    speechContinuityGrade: 'strong',
+  },
+  getVideoSlicePlanningPolicy({
+    ...baseParams,
+    minDuration: 15,
+    maxDuration: 60,
+    sourceDurationMs: 60_000,
+  }),
+);
+assertEqual(
+  shortRepairableSilentTailClip.startMs,
+  10_000,
+  'native render repair keeps the original start when the speech boundary is already inside the professional range',
+);
+assertEqual(
+  shortRepairableSilentTailClip.durationMs,
+  4_970,
+  'native render repair trims excessive silence even when the repaired clip drops below the planning slice floor',
+);
+assertEqual(
+  shortRepairableSilentTailClip.sourceStartMs,
+  10_000,
+  'native render repair keeps the repaired source start aligned to the original render start',
+);
+assertEqual(
+  shortRepairableSilentTailClip.sourceEndMs,
+  14_970,
+  'native render repair trims the repaired source end to the professional trailing silence limit',
+);
+assertEqual(
+  shortRepairableSilentTailClip.speechStartMs,
+  10_200,
+  'native render repair preserves the speech start inside the repaired native clip',
+);
+assertEqual(
+  shortRepairableSilentTailClip.speechEndMs,
+  14_720,
+  'native render repair preserves the speech end inside the repaired native clip',
+);
+assertArrayIncludes(
+  shortRepairableSilentTailClip.risks,
+  'excess-trailing-silence-trimmed',
+  'native render repair records the tightened trailing silence even when the clip remains at the minimum duration',
+);
+
 const audioBoundaryConflictProtectedPlan = refineSmartSlicePlanWithAudioActivityBoundaries([
   {
     index: 0,
@@ -2756,8 +4354,8 @@ assertNumberBetween(
 );
 assertEqual(
   audioBoundaryConflictProtectedPlan[0]?.boundaryDecisionSource,
-  'audio',
-  'audio cleanup boundary conflicts choose renderable audio activity boundaries instead of transcript windows with excessive trusted padding',
+  'combined',
+  'audio cleanup boundary conflicts choose combined boundaries when transcript ranges overlap with denoised audio activity',
 );
 assertEqual(
   audioBoundaryConflictProtectedPlan[0]?.leadingSilenceTrimMs,
@@ -2817,8 +4415,8 @@ assertEqual(
 );
 assertEqual(
   audioBoundaryMicroTrimProtectedPlan[0]?.boundaryDecisionSource,
-  'audio',
-  'audio cleanup micro boundary conflicts choose audio boundaries when transcript padding cannot satisfy native render evidence',
+  'combined',
+  'audio cleanup micro boundary conflicts choose combined boundaries when transcript padding cannot satisfy native render evidence',
 );
 assertNumberBetween(
   audioBoundaryMicroTrimProtectedPlan[0]?.leadingSilenceMs,
@@ -2839,8 +4437,8 @@ assertArrayIncludes(
 );
 assertArrayIncludes(
   audioBoundaryMicroTrimProtectedPlan[0]?.risks,
-  'audio-only-boundary-too-short',
-  'audio cleanup micro boundary conflicts remain visible when trusted activity cannot meet the speech-aligned duration target',
+  'combined-boundary-on-conflict',
+  'audio cleanup micro boundary conflicts remain visible as combined-boundary-on-conflict when trusted activity cannot meet the speech-aligned duration target',
 );
 
 const audioOnlyBoundaryRefinedPlan = refineSmartSlicePlanWithAudioActivityBoundaries([

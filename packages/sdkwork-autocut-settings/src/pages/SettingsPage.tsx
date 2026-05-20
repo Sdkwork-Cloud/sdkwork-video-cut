@@ -58,6 +58,7 @@ import {
   AUTOCUT_SPEECH_TRANSCRIPTION_MODEL_EXTENSIONS,
   AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER_DEFINITIONS,
   AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS,
+  createAutoCutSpeechTranscriptionProviderDefaultOptions,
   getAutoCutModelPreset,
   getAutoCutSmartSliceSegmentationAgentDefinition,
   getAutoCutSpeechTranscriptionProviderDefinition,
@@ -71,6 +72,8 @@ import type {
   AutoCutLlmSettings,
   AutoCutSmartSliceSegmentationAgentId,
   AutoCutSpeechTranscriptionModelDownloadProgressEvent,
+  AutoCutSpeechTranscriptionProviderOptionDefinition,
+  AutoCutSpeechTranscriptionProviderOptionValue,
   AutoCutSpeechTranscriptionProviderId,
   ModelVendor,
 } from '@sdkwork/autocut-types';
@@ -145,6 +148,10 @@ function formatAutoCutSpeechSetupPath(path: string | undefined) {
 
 function normalizeSettingsLocalPath(path: string | undefined) {
   return (path ?? '').trim().replace(/\\/gu, '/').replace(/\/+/gu, '/').replace(/\/$/u, '').toLowerCase();
+}
+
+function formatSpeechProviderOptionValue(value: AutoCutSpeechTranscriptionProviderOptionValue | undefined) {
+  return Array.isArray(value) ? value.join(',') : String(value ?? '');
 }
 
 function createSettingsSpeechSetupFriendlyError(
@@ -476,6 +483,7 @@ export function SettingsPage() {
               ? AUTOCUT_MODEL_VENDOR_PRESETS[provider.modelVendor].baseUrl
               : settings.speechTranscription.baseUrl,
             model: provider.defaultModel ?? settings.speechTranscription.model,
+            providerOptions: createAutoCutSpeechTranscriptionProviderDefaultOptions(provider),
           }
         : {}),
     });
@@ -487,6 +495,21 @@ export function SettingsPage() {
           void handleSetupSpeechTranscriptionModelPreset();
         }
       });
+  };
+
+  const handleSpeechTranscriptionProviderOptionChange = (
+    option: AutoCutSpeechTranscriptionProviderOptionDefinition,
+    value: AutoCutSpeechTranscriptionProviderOptionValue,
+  ) => {
+    if (!settings || option.locked) return;
+    handleSpeechTranscriptionSettingsChange({
+      ...settings.speechTranscription,
+      providerOptions: {
+        ...createAutoCutSpeechTranscriptionProviderDefaultOptions(activeSpeechTranscriptionProvider),
+        ...settings.speechTranscription.providerOptions,
+        [option.key]: value,
+      },
+    });
   };
 
   const handleSaveSpeechTranscriptionSettings = async () => {
@@ -1266,6 +1289,119 @@ export function SettingsPage() {
                             {t('settings.speech.api.runtimeHelp')}
                           </div>
                         </div>
+                        {activeSpeechTranscriptionProvider.officialDocsUrl ? (
+                          <div className="space-y-2 md:col-span-2">
+                            <FieldLabel>Official configuration</FieldLabel>
+                            <a
+                              href={activeSpeechTranscriptionProvider.officialDocsUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="flex min-h-10 items-center rounded-md border border-[#333] bg-[#111] px-3 py-2 text-xs leading-relaxed text-blue-300 hover:border-blue-500"
+                            >
+                              {activeSpeechTranscriptionProvider.officialName ?? activeSpeechTranscriptionProvider.defaultName}
+                            </a>
+                          </div>
+                        ) : null}
+                        {activeSpeechTranscriptionProvider.optionSchema?.length ? (
+                          <div className="space-y-3 md:col-span-2">
+                            <div>
+                              <FieldLabel>Provider parameters</FieldLabel>
+                              <FieldHelp>Long-audio and timestamp options are locked where Smart Slice requires them.</FieldHelp>
+                            </div>
+                            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                              {activeSpeechTranscriptionProvider.optionSchema.map((option) => {
+                                const providerOptions = {
+                                  ...createAutoCutSpeechTranscriptionProviderDefaultOptions(activeSpeechTranscriptionProvider),
+                                  ...settings.speechTranscription.providerOptions,
+                                };
+                                const optionValue = providerOptions[option.key];
+                                return (
+                                  <div key={option.key} className="rounded-md border border-[#222] bg-[#111] p-3">
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <FieldLabel>{option.label}</FieldLabel>
+                                        <FieldHelp>{option.description}</FieldHelp>
+                                        {option.officialParameterName ? (
+                                          <div className="mt-1 font-mono text-[11px] text-gray-600">{option.officialParameterName}</div>
+                                        ) : null}
+                                      </div>
+                                      {option.requiredForSmartSlice ? (
+                                        <StatusBadge tone="green">Smart Slice</StatusBadge>
+                                      ) : null}
+                                    </div>
+                                    <div className="mt-3">
+                                      {option.kind === 'boolean' ? (
+                                        <label className="flex h-10 items-center justify-between gap-3 rounded-md border border-[#333] bg-[#0b0b0b] px-3 text-sm text-gray-300">
+                                          <span>{option.locked ? 'Required' : 'Enabled'}</span>
+                                          <input
+                                            type="checkbox"
+                                            checked={optionValue === true}
+                                            disabled={option.locked}
+                                            onChange={(event) => handleSpeechTranscriptionProviderOptionChange(option, event.target.checked)}
+                                            onBlur={handleSaveSpeechTranscriptionSettings}
+                                          />
+                                        </label>
+                                      ) : option.kind === 'select' ? (
+                                        <select
+                                          value={formatSpeechProviderOptionValue(optionValue)}
+                                          disabled={option.locked}
+                                          onChange={(event) => {
+                                            const choice = option.choices?.find((item) => String(item.value) === event.target.value);
+                                            handleSpeechTranscriptionProviderOptionChange(option, choice?.value ?? event.target.value);
+                                          }}
+                                          onBlur={handleSaveSpeechTranscriptionSettings}
+                                          className="h-10 w-full rounded-md border border-[#333] bg-[#0b0b0b] px-3 text-sm text-gray-200 outline-none transition-colors focus:border-blue-500 disabled:text-gray-500"
+                                        >
+                                          {(option.choices ?? []).map((choice) => (
+                                            <option key={String(choice.value)} value={String(choice.value)}>
+                                              {choice.label}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      ) : option.kind === 'multi-select' ? (
+                                        <select
+                                          multiple
+                                          value={Array.isArray(optionValue) ? optionValue.map(String) : []}
+                                          disabled={option.locked}
+                                          onChange={(event) => {
+                                            const selectedValues = Array.from(event.target.selectedOptions).map((selectedOption) => {
+                                              const choice = option.choices?.find((item) => String(item.value) === selectedOption.value);
+                                              return choice?.value ?? selectedOption.value;
+                                            });
+                                            handleSpeechTranscriptionProviderOptionChange(option, selectedValues as string[]);
+                                          }}
+                                          onBlur={handleSaveSpeechTranscriptionSettings}
+                                          className="min-h-24 w-full rounded-md border border-[#333] bg-[#0b0b0b] px-3 py-2 text-sm text-gray-200 outline-none transition-colors focus:border-blue-500 disabled:text-gray-500"
+                                        >
+                                          {(option.choices ?? []).map((choice) => (
+                                            <option key={String(choice.value)} value={String(choice.value)}>
+                                              {choice.label}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      ) : (
+                                        <input
+                                          type={option.kind === 'number' ? 'number' : 'text'}
+                                          value={formatSpeechProviderOptionValue(optionValue)}
+                                          min={option.min}
+                                          max={option.max}
+                                          step={option.step}
+                                          disabled={option.locked}
+                                          onChange={(event) => handleSpeechTranscriptionProviderOptionChange(
+                                            option,
+                                            option.kind === 'number' ? Number(event.target.value) : event.target.value,
+                                          )}
+                                          onBlur={handleSaveSpeechTranscriptionSettings}
+                                          className="h-10 w-full rounded-md border border-[#333] bg-[#0b0b0b] px-3 text-sm text-gray-200 outline-none transition-colors focus:border-blue-500 disabled:text-gray-500"
+                                        />
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ) : null}
                       </>
                     )}
 

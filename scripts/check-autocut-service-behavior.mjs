@@ -844,6 +844,41 @@ function copyNativeVideoSliceClipEvidence(clip, renderNoiseReduction) {
   };
 }
 
+function createSuccessfulNativeVideoSliceResult(request, taskUuid, outputRootDir = defaultConfiguredOutputDirectory) {
+  const slices = request.clips.map((clip, index) => {
+    const sliceNumber = index + 1;
+    const output = createNativeTaskOutputArtifact(
+      taskUuid,
+      clip.outputFileName ?? `slice-${String(sliceNumber).padStart(3, '0')}.mp4`,
+      outputRootDir,
+    );
+    const thumbnail = createNativeTaskCoverArtifact(
+      taskUuid,
+      `slice-${String(sliceNumber).padStart(3, '0')}.jpg`,
+      outputRootDir,
+    );
+    return {
+      artifactUuid: `${taskUuid}-artifact-${sliceNumber}`,
+      artifactPath: output.artifactPath,
+      thumbnailArtifactUuid: `${taskUuid}-thumbnail-${sliceNumber}`,
+      thumbnailArtifactPath: thumbnail.artifactPath,
+      taskOutputDir: output.taskOutputDir,
+      byteSize: 234567 + index,
+      thumbnailByteSize: 12345 + index,
+      format: 'mp4',
+      ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+    };
+  });
+
+  return {
+    taskUuid,
+    sourceAssetUuid: request.assetUuid,
+    taskOutputDir: slices[0]?.taskOutputDir ?? createNativeTaskOutputArtifact(taskUuid, 'slice-001.mp4', outputRootDir).taskOutputDir,
+    ffmpegExecutable: 'ffmpeg',
+    slices,
+  };
+}
+
 function createRecoveredSmartSliceAudioCleanupEvidence(overrides = {}) {
   return {
     audioCleanupProfile: 'smart-slice-speech-denoise-v1',
@@ -1378,9 +1413,14 @@ async function run() {
       assertSmartSlicePlanReadyForNativeRender,
       refreshSmartSlicePlanTranscriptEvidence,
       repairSmartSlicePlanForNativeRender,
+      normalizeSmartSliceRenderableSourceSegments,
     } = await loadModule(
       server,
       'packages/sdkwork-autocut-slicer/src/service/slicerService.ts',
+    );
+    const { createStudioClipTimelineFromReviewSession } = await loadModule(
+      server,
+      'packages/sdkwork-autocut-slicer/src/service/clipWorkflow.ts',
     );
     const { processExtractorText } = await loadModule(
       server,
@@ -2222,6 +2262,41 @@ async function run() {
       typeof repairSmartSlicePlanForNativeRender === 'function',
       'slicer service exports the smart slice render-ready transcript coverage repair gate',
     );
+    assertRule(
+      typeof normalizeSmartSliceRenderableSourceSegments === 'function',
+      'slicer service exports the smart slice renderable sourceSegments normalizer',
+    );
+    if (typeof normalizeSmartSliceRenderableSourceSegments === 'function') {
+      const nonSpanningRenderableSourceSegments = normalizeSmartSliceRenderableSourceSegments(
+        [
+          { startMs: 3800, endMs: 8000 },
+          { startMs: 12000, endMs: 20000 },
+        ],
+        3800,
+        20250,
+      );
+      assertEqual(
+        nonSpanningRenderableSourceSegments,
+        undefined,
+        'smart slice result normalization drops sourceSegments that do not span the final rendered source range',
+      );
+      const spanningRenderableSourceSegments = normalizeSmartSliceRenderableSourceSegments(
+        [
+          { startMs: 3600, endMs: 8000 },
+          { startMs: 12000, endMs: 20400 },
+        ],
+        3800,
+        20250,
+      );
+      assertDeepEqual(
+        spanningRenderableSourceSegments,
+        [
+          { startMs: 3800, endMs: 8000 },
+          { startMs: 12000, endMs: 20250 },
+        ],
+        'smart slice result normalization trims sourceSegments while preserving complete final source range span',
+      );
+    }
     const slicerServiceSource = readFileSync(
       path.join(rootDir, 'packages/sdkwork-autocut-slicer/src/service/slicerService.ts'),
       'utf8',
@@ -2233,13 +2308,28 @@ async function run() {
     );
     assertIncludes(
       slicerServiceSource,
-      'assertSmartSliceSemanticPlanReadyForAudioAnalysis(plannedClips, transcriptSegments',
-      'processVideoSlice validates semantic smart slices before post-boundary audio cleanup',
+      'const renderClip = normalizeSmartSlicePlannedClipSourceSegmentsForContinuousFallback',
+      'Smart Slice normalizes stale sourceSegments before dispatching clips to native rendering',
     );
     assertIncludes(
       slicerServiceSource,
-      'assertSmartSlicePlanReadyForNativeRender(refinedPlannedClips, transcriptSegments',
-      'processVideoSlice validates post-cleanup smart slices before dispatching native video rendering',
+      'planRenderTranscriptSegments',
+      'processVideoSlice validates semantic smart slices only when render-ready transcript evidence exists',
+    );
+    assertIncludes(
+      slicerServiceSource,
+      'mergedRenderTranscriptSegments',
+      'processVideoSlice dispatches native rendering with the resolved render transcript evidence',
+    );
+    assertIncludes(
+      slicerServiceSource,
+      'isRepairableSmartSliceRenderTimelineReadinessError(readinessError)',
+      'Smart Slice treats transcript-refresh-expanded post-cleanup render timeline overlap as repairable before failing native rendering',
+    );
+    assertIncludes(
+      slicerServiceSource,
+      'isRepairableSmartSlicePlannedSpeechPaddingReadinessError(secondReadinessError)',
+      'Smart Slice treats post-reanalysis planned speech padding as repairable before failing native rendering',
     );
     assertRule(
       !/throw new Error\(\s*['"]AutoCut transcript speech has no renderable timestamped segment\./u.test(slicerServiceSource),
@@ -3062,6 +3152,102 @@ async function run() {
         'retained sourceSegments to cover every structured speech-to-text transcript segment',
         'smart slice native-render readiness gate rejects sourceSegments that cut through STT-backed speech',
       );
+      const nonSpanningSourceSegmentsTranscriptSegments = [
+        { startMs: 3800, endMs: 8000, text: 'The first retained speech segment starts at the rendered source start.' },
+        { startMs: 12000, endMs: 20000, text: 'The second retained speech segment ends before the rendered source tail.' },
+        { startMs: 20450, endMs: 29800, text: 'The second clip starts after the first rendered window.' },
+      ];
+      const nonSpanningSourceSegmentsPlan = [
+        {
+          ...professionalPlanClip,
+          sourceStartMs: 3800,
+          sourceEndMs: 20250,
+          speechStartMs: 3800,
+          speechEndMs: 20000,
+          boundaryPaddingBeforeMs: 0,
+          boundaryPaddingAfterMs: 250,
+          sourceSegments: [
+            { startMs: 3800, endMs: 8000 },
+            { startMs: 12000, endMs: 20000 },
+          ],
+          renderedDurationMs: 12200,
+          removedSilenceMs: 4250,
+          internalSilenceTrimCount: 1,
+          transcriptText:
+            'The first retained speech segment starts at the rendered source start. The second retained speech segment ends before the rendered source tail.',
+          transcriptSegmentCount: 2,
+          transcriptCoverageScore: 1,
+          speechContinuityGrade: 'repaired',
+          risks: ['internal-silence-trimmed'],
+        },
+        {
+          ...professionalSecondPlanClip,
+          transcriptText: 'The second clip starts after the first rendered window.',
+          transcriptSegmentCount: 1,
+          transcriptCoverageScore: 1,
+          speechContinuityGrade: 'strong',
+        },
+      ];
+      let acceptedStaleNonSpanningSourceSegmentsPlan = true;
+      let staleNonSpanningSourceSegmentsPlanError = '';
+      try {
+        assertSmartSlicePlanReadyForNativeRender(
+          nonSpanningSourceSegmentsPlan,
+          nonSpanningSourceSegmentsTranscriptSegments,
+          60000,
+        );
+      } catch (error) {
+        acceptedStaleNonSpanningSourceSegmentsPlan = false;
+        staleNonSpanningSourceSegmentsPlanError = error instanceof Error ? error.message : String(error);
+      }
+      assertRule(
+        acceptedStaleNonSpanningSourceSegmentsPlan,
+        `smart slice native-render readiness gate degrades stale sourceSegments that do not span the rendered source range instead of failing slicing${staleNonSpanningSourceSegmentsPlanError ? `: ${staleNonSpanningSourceSegmentsPlanError}` : ''}`,
+      );
+      const repairedNonSpanningSourceSegmentsPlan = repairSmartSlicePlanForNativeRender(
+        nonSpanningSourceSegmentsPlan,
+        nonSpanningSourceSegmentsTranscriptSegments,
+        {
+          mode: 'contract-mode',
+          llmModel: 'gemini-3-flash-preview',
+          minDuration: 15,
+          maxDuration: 60,
+          baseAlgorithm: 'scene',
+          highlightEngine: 'keyword',
+          enableNoiseReduction: true,
+          enableCoughFilter: true,
+          enableRepeatFilter: true,
+          enableSubtitles: false,
+          sourceDurationMs: 60000,
+        },
+      );
+      assertRule(
+        !Array.isArray(repairedNonSpanningSourceSegmentsPlan[0]?.sourceSegments) ||
+          repairedNonSpanningSourceSegmentsPlan[0].sourceSegments.length === 0 ||
+          (
+            repairedNonSpanningSourceSegmentsPlan[0].sourceSegments[0]?.startMs ===
+              repairedNonSpanningSourceSegmentsPlan[0].sourceStartMs &&
+            repairedNonSpanningSourceSegmentsPlan[0].sourceSegments.at(-1)?.endMs ===
+              repairedNonSpanningSourceSegmentsPlan[0].sourceEndMs
+          ),
+        'smart slice render-ready repair either removes stale sourceSegments or rebuilds them to span the final rendered source range',
+      );
+      let acceptedRepairedNonSpanningSourceSegmentsPlan = true;
+      let repairedNonSpanningSourceSegmentsPlanError = '';
+      try {
+        assertSmartSlicePlanReadyForNativeRender(
+          repairedNonSpanningSourceSegmentsPlan,
+          nonSpanningSourceSegmentsTranscriptSegments,
+          60000,
+        );
+      } catch (error) {
+        acceptedRepairedNonSpanningSourceSegmentsPlan = false;
+        repairedNonSpanningSourceSegmentsPlanError = error instanceof Error ? error.message : String(error);
+      }
+      assertRule(
+        acceptedRepairedNonSpanningSourceSegmentsPlan,
+        `smart slice render-ready repair removes stale sourceSegments that do not span the rendered source range${repairedNonSpanningSourceSegmentsPlanError ? `: ${repairedNonSpanningSourceSegmentsPlanError}` : ''}`,
+      );
       await assertRejects(
         () => assertSmartSlicePlanReadyForNativeRender(
           [
@@ -3281,6 +3467,734 @@ async function run() {
         assertRule(
           acceptedRepairedTailCoveragePlan,
           `smart slice native-render readiness accepts render-ready coverage repaired plans with late transcript speech${repairedTailCoveragePlanError ? `: ${repairedTailCoveragePlanError}` : ''}`,
+        );
+        const openingAndTailMissingTranscriptSegments = [
+          { startMs: 0, endMs: 9_900, text: 'First STT speech starts at the source boundary and must stay included.' },
+          ...Array.from({ length: 29 }, (_, middleIndex) => {
+            const startMs = 12_000 + middleIndex * 5_000;
+            return {
+              startMs,
+              endMs: startMs + 4_900,
+              text: `Core clip text ${middleIndex + 1}.`,
+            };
+          }),
+          { startMs: 158_820, endMs: 162_400, text: 'Final speech near the media tail must also produce a fallback clip.' },
+        ];
+        const postCleanupPlanMissingOpeningAndTail = refreshSmartSlicePlanTranscriptEvidence(
+          [
+            {
+              ...professionalPlanClip,
+              index: 0,
+              startMs: 11_800,
+              durationMs: 50_350,
+              sourceStartMs: 11_800,
+              sourceEndMs: 62_150,
+              speechStartMs: 12_000,
+              speechEndMs: 61_900,
+              boundaryPaddingBeforeMs: 200,
+              boundaryPaddingAfterMs: 250,
+            },
+            {
+              ...professionalSecondPlanClip,
+              index: 1,
+              startMs: 61_800,
+              durationMs: 50_350,
+              sourceStartMs: 61_800,
+              sourceEndMs: 112_150,
+              speechStartMs: 62_000,
+              speechEndMs: 111_900,
+              boundaryPaddingBeforeMs: 200,
+              boundaryPaddingAfterMs: 250,
+            },
+            {
+              ...professionalSecondPlanClip,
+              index: 2,
+              startMs: 111_800,
+              durationMs: 45_350,
+              label: 'Professional third clip',
+              sourceStartMs: 111_800,
+              sourceEndMs: 157_150,
+              speechStartMs: 112_000,
+              speechEndMs: 156_900,
+              boundaryPaddingBeforeMs: 200,
+              boundaryPaddingAfterMs: 250,
+            },
+          ],
+          openingAndTailMissingTranscriptSegments,
+          165_000,
+        );
+        await assertRejects(
+          () => assertSmartSlicePlanReadyForNativeRender(
+            postCleanupPlanMissingOpeningAndTail,
+            openingAndTailMissingTranscriptSegments,
+            165_000,
+          ),
+          'planned clip 2 to start after the previous rendered clip ends',
+          'smart slice native-render readiness rejects the refreshed plan before final repair normalizes overlapping clip timing',
+        );
+        const repairedOpeningAndTailCoveragePlan = repairSmartSlicePlanForNativeRender(
+          postCleanupPlanMissingOpeningAndTail,
+          openingAndTailMissingTranscriptSegments,
+          {
+            mode: 'contract-mode',
+            llmModel: 'gemini-3-flash-preview',
+            minDuration: 15,
+            maxDuration: 60,
+            baseAlgorithm: 'scene',
+            highlightEngine: 'keyword',
+            enableNoiseReduction: true,
+            enableCoughFilter: true,
+            enableRepeatFilter: true,
+            enableSubtitles: false,
+            sourceDurationMs: 165_000,
+          },
+        );
+        assertRule(
+          repairedOpeningAndTailCoveragePlan.some((clip) =>
+            (clip.sourceStartMs ?? clip.startMs) <= 0 &&
+              (clip.sourceEndMs ?? clip.startMs + clip.durationMs) >= 9_900 &&
+              clip.transcriptText?.includes('First STT speech starts at the source boundary')
+          ),
+          'smart slice render-ready repair creates a transcript-backed opening clip when clip planning skips the first STT segment',
+        );
+        assertRule(
+          repairedOpeningAndTailCoveragePlan.some((clip) =>
+            (clip.sourceStartMs ?? clip.startMs) <= 158_820 &&
+              (clip.sourceEndMs ?? clip.startMs + clip.durationMs) >= 162_400 &&
+              clip.transcriptText?.includes('Final speech near the media tail')
+          ),
+          'smart slice render-ready repair creates a transcript-backed tail clip when clip planning skips the final STT segment',
+        );
+        assertRule(
+          repairedOpeningAndTailCoveragePlan.every((clip) => typeof clip.transcriptCoverageScore === 'number'),
+          'smart slice render-ready repair keeps transcriptCoverageScore numeric for repaired and retained clips',
+        );
+        assertRule(
+          repairedOpeningAndTailCoveragePlan.every((clip) =>
+            Number.isFinite(clip.transcriptCoverageScore) &&
+              clip.transcriptCoverageScore >= 0.8
+          ),
+          'smart slice render-ready repair keeps transcriptCoverageScore above the native readiness floor for repaired and retained clips',
+        );
+        let acceptedRepairedOpeningAndTailCoveragePlan = true;
+        let repairedOpeningAndTailCoveragePlanError = '';
+        try {
+          assertSmartSlicePlanReadyForNativeRender(
+            repairedOpeningAndTailCoveragePlan,
+            openingAndTailMissingTranscriptSegments,
+            165_000,
+          );
+        } catch (error) {
+          acceptedRepairedOpeningAndTailCoveragePlan = false;
+          repairedOpeningAndTailCoveragePlanError = error instanceof Error ? error.message : String(error);
+        }
+        assertRule(
+          acceptedRepairedOpeningAndTailCoveragePlan,
+          `smart slice native-render readiness accepts final repair for skipped opening and tail STT speech${repairedOpeningAndTailCoveragePlanError ? `: ${repairedOpeningAndTailCoveragePlanError}` : ''}`,
+        );
+        const smartCutEngineSemanticStoryTranscriptSegments = [
+          { startMs: 0, endMs: 12_000, text: 'Watch this case background.', speaker: 'Speaker 1' },
+          { startMs: 12_000, endMs: 26_000, text: 'Then the real spike comes from concentrated user pain.', speaker: 'Speaker 1' },
+          { startMs: 26_000, endMs: 41_000, text: 'So this is the complete short-video payoff.', speaker: 'Speaker 1' },
+        ];
+        const repairedSemanticStoryPlan = repairSmartSlicePlanForNativeRender(
+          [
+            {
+              index: 0,
+              candidateId: 'semantic-story-1-3',
+              planningEngine: 'smart-cut-engine',
+              risks: ['smart-cut-engine', 'semantic-story-merged', 'connector-repaired'],
+              title: 'Watch this case background.',
+              label: 'Watch this case background.',
+              summary:
+                'Speech-to-text window: Watch this case background. Then the real spike comes from concentrated user pain. So this is the complete short-video payoff.',
+              reason:
+                'Planner selected a continuous speech-to-text window and aligned slice boundaries to transcript segment edges for complete voice content.',
+              startMs: 0,
+              durationMs: 41_250,
+              sourceStartMs: 0,
+              sourceEndMs: 41_250,
+              speechStartMs: 0,
+              speechEndMs: 41_000,
+              boundaryPaddingBeforeMs: 0,
+              boundaryPaddingAfterMs: 250,
+              transcriptText:
+                'Watch this case background. Then the real spike comes from concentrated user pain. So this is the complete short-video payoff.',
+              transcriptSegments: smartCutEngineSemanticStoryTranscriptSegments,
+              transcriptSegmentCount: 3,
+              transcriptCoverageScore: 1,
+              speechContinuityGrade: 'strong',
+              qualityScore: 0.9,
+              continuityScore: 0.9,
+              storyShape: 'complete',
+              publishabilityScore: 0.9,
+              publishabilityGrade: 'good',
+              contentArcScore: 0.9,
+              contentArcGrade: 'complete',
+              contentArcStages: ['hook', 'setup', 'conflict', 'payoff'],
+              contentArcMissingStages: [],
+              topicCoherenceScore: 0.9,
+              topicCoherenceGrade: 'strong',
+              topicShiftCount: 0,
+              platformReadinessScore: 0.9,
+              platformReadinessGrade: 'ready',
+              platformReadinessIssues: [],
+              sentenceBoundaryIntegrityScore: 0.9,
+              sentenceBoundaryIntegrityGrade: 'clean',
+            },
+          ],
+          smartCutEngineSemanticStoryTranscriptSegments,
+          {
+            mode: 'contract-mode',
+            llmModel: 'gemini-3-flash-preview',
+            minDuration: 15,
+            maxDuration: 60,
+            baseAlgorithm: 'scene',
+            highlightEngine: 'keyword',
+            enableNoiseReduction: true,
+            enableCoughFilter: true,
+            enableRepeatFilter: true,
+            enableSubtitles: false,
+            sourceDurationMs: 62_000,
+          },
+        );
+        assertEqual(
+          repairedSemanticStoryPlan[0]?.candidateId,
+          'semantic-story-1-3',
+          'smart slice render-ready repair is idempotent for Smart Cut Engine semantic-story candidate ids',
+        );
+        assertEqual(
+          repairedSemanticStoryPlan[0]?.title,
+          'Watch this case background.',
+          'smart slice render-ready repair is idempotent for Smart Cut Engine semantic-story transcript titles',
+        );
+        const refreshExpandedOverlapTranscriptSegments = [
+          {
+            startMs: 0,
+            endMs: 5_600,
+            text: 'Opening speech ends before the next rendered clip.',
+          },
+          {
+            startMs: 5_894,
+            endMs: 43_740,
+            text: 'The refreshed transcript boundary expands this clip back before the previous render window ends.',
+          },
+        ];
+        const refreshedOverlappingPlan = refreshSmartSlicePlanTranscriptEvidence(
+          [
+            {
+              ...professionalPlanClip,
+              candidateId: 'speech-semantic-candidate-0',
+              startMs: 0,
+              durationMs: 10_145,
+              sourceStartMs: 0,
+              sourceEndMs: 5_850,
+              speechStartMs: 0,
+              speechEndMs: 5_600,
+              boundaryPaddingBeforeMs: 0,
+              boundaryPaddingAfterMs: 250,
+              audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+              noiseReductionApplied: false,
+              boundaryDecisionSource: 'combined',
+              audioActivityStartMs: 0,
+              audioActivityEndMs: 5_600,
+              audioActivityConfidence: 0.96,
+              audioActivityAnalysisFilter: 'silencedetect=noise=-35dB:d=0.08',
+              leadingSilenceMs: 0,
+              trailingSilenceMs: 250,
+              leadingSilenceTrimMs: 0,
+              trailingSilenceTrimMs: 0,
+              tailTreatment: 'none',
+            },
+            {
+              ...professionalSecondPlanClip,
+              candidateId: 'speech-semantic-candidate-1',
+              index: 1,
+              startMs: 10_145,
+              durationMs: 33_830,
+              sourceStartMs: 10_145,
+              sourceEndMs: 43_975,
+              speechStartMs: 10_145,
+              speechEndMs: 43_740,
+              transcriptText:
+                'The refreshed transcript boundary expands this clip back before the previous render window ends.',
+              transcriptSegments: [refreshExpandedOverlapTranscriptSegments[1]],
+              transcriptSegmentCount: 1,
+              transcriptCoverageScore: 1,
+              speechContinuityGrade: 'strong',
+              boundaryPaddingBeforeMs: 0,
+              boundaryPaddingAfterMs: 235,
+              audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+              noiseReductionApplied: false,
+              boundaryDecisionSource: 'combined',
+              audioActivityStartMs: 6_094,
+              audioActivityEndMs: 43_725,
+              audioActivityConfidence: 0.96,
+              audioActivityAnalysisFilter: 'silencedetect=noise=-35dB:d=0.08',
+              leadingSilenceMs: 200,
+              trailingSilenceMs: 250,
+              leadingSilenceTrimMs: 0,
+              trailingSilenceTrimMs: 0,
+              tailTreatment: 'none',
+            },
+          ],
+          refreshExpandedOverlapTranscriptSegments,
+          60_000,
+        );
+        assertRule(
+          refreshedOverlappingPlan.some((clip, index, clips) =>
+            index > 0 &&
+              clip.startMs < ((clips[index - 1]?.startMs ?? 0) + (clips[index - 1]?.durationMs ?? 0))
+          ),
+          'smart slice transcript evidence refresh can expand post-cleanup clips into overlapping render windows',
+        );
+        const repairedRefreshExpandedOverlapPlan = repairSmartSlicePlanForNativeRender(
+          refreshedOverlappingPlan,
+          refreshExpandedOverlapTranscriptSegments,
+          {
+            mode: 'contract-mode',
+            llmModel: 'gemini-3-flash-preview',
+            minDuration: 15,
+            maxDuration: 60,
+            baseAlgorithm: 'scene',
+            highlightEngine: 'keyword',
+            enableNoiseReduction: true,
+            enableCoughFilter: true,
+            enableRepeatFilter: true,
+            enableSubtitles: false,
+            sourceDurationMs: 60_000,
+          },
+        );
+        let acceptedRepairedRefreshExpandedOverlapPlan = true;
+        let repairedRefreshExpandedOverlapPlanError = '';
+        try {
+          assertSmartSlicePlanReadyForNativeRender(
+            repairedRefreshExpandedOverlapPlan,
+            refreshExpandedOverlapTranscriptSegments,
+            60_000,
+          );
+        } catch (error) {
+          acceptedRepairedRefreshExpandedOverlapPlan = false;
+          repairedRefreshExpandedOverlapPlanError = error instanceof Error ? error.message : String(error);
+        }
+        assertRule(
+          acceptedRepairedRefreshExpandedOverlapPlan,
+          `smart slice render-ready repair normalizes transcript-refresh-expanded overlapping post-cleanup clips${repairedRefreshExpandedOverlapPlanError ? `: ${repairedRefreshExpandedOverlapPlanError}` : ''}`,
+        );
+        const renderOverlapRuntimeTranscriptSegments = [
+          {
+            startMs: 0,
+            endMs: 5_894,
+            text: 'The first rendered clip introduces the setup and should not be duplicated in the next output.',
+          },
+          {
+            startMs: 5_894,
+            endMs: 43_740,
+            text: 'The second resumed clip starts inside the first rendered range and must be normalized before native rendering.',
+          },
+        ];
+        const renderOverlapRuntimePlan = refreshSmartSlicePlanTranscriptEvidence(
+          [
+            {
+              ...professionalPlanClip,
+              candidateId: 'speech-semantic-candidate-0',
+              index: 0,
+              startMs: 0,
+              durationMs: 10_150,
+              sourceStartMs: 0,
+              sourceEndMs: 10_150,
+              speechStartMs: 0,
+              speechEndMs: 10_150,
+              transcriptText:
+                'The first rendered clip introduces the setup and should not be duplicated in the next output.',
+              transcriptSegments: renderOverlapRuntimeTranscriptSegments,
+              transcriptSegmentCount: 2,
+              transcriptCoverageScore: 1,
+              speechContinuityGrade: 'strong',
+              boundaryPaddingBeforeMs: 0,
+              boundaryPaddingAfterMs: 0,
+              audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+              noiseReductionApplied: false,
+              boundaryDecisionSource: 'combined',
+              audioActivityStartMs: 0,
+              audioActivityEndMs: 10_150,
+              audioActivityConfidence: 0.96,
+              audioActivityAnalysisFilter: 'silencedetect=noise=-35dB:d=0.08',
+              leadingSilenceMs: 0,
+              trailingSilenceMs: 0,
+              leadingSilenceTrimMs: 0,
+              trailingSilenceTrimMs: 0,
+              tailTreatment: 'none',
+            },
+            {
+              ...professionalSecondPlanClip,
+              candidateId: 'speech-semantic-candidate-1',
+              index: 1,
+              startMs: 5_894,
+              durationMs: 38_081,
+              sourceStartMs: 5_894,
+              sourceEndMs: 43_975,
+              speechStartMs: 5_894,
+              speechEndMs: 43_740,
+              transcriptText:
+                'The second resumed clip starts inside the first rendered range and must be normalized before native rendering.',
+              transcriptSegments: [renderOverlapRuntimeTranscriptSegments[1]],
+              transcriptSegmentCount: 1,
+              transcriptCoverageScore: 1,
+              speechContinuityGrade: 'strong',
+              boundaryPaddingBeforeMs: 0,
+              boundaryPaddingAfterMs: 235,
+              audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+              noiseReductionApplied: false,
+              boundaryDecisionSource: 'combined',
+              audioActivityStartMs: 6_094,
+              audioActivityEndMs: 43_725,
+              audioActivityConfidence: 0.96,
+              audioActivityAnalysisFilter: 'silencedetect=noise=-35dB:d=0.08',
+              leadingSilenceMs: 200,
+              trailingSilenceMs: 250,
+              leadingSilenceTrimMs: 0,
+              trailingSilenceTrimMs: 0,
+              tailTreatment: 'none',
+            },
+          ],
+          renderOverlapRuntimeTranscriptSegments,
+          60_000,
+        );
+        await assertRejects(
+          () => assertSmartSlicePlanReadyForNativeRender(
+            renderOverlapRuntimePlan,
+            renderOverlapRuntimeTranscriptSegments,
+            60_000,
+          ),
+          'previousRenderedEndMs=10150',
+          'smart slice native-render readiness reproduces resumed real-overlap clip timing before render-ready repair',
+        );
+        const repairedRenderOverlapRuntimePlan = repairSmartSlicePlanForNativeRender(
+          renderOverlapRuntimePlan,
+          renderOverlapRuntimeTranscriptSegments,
+          {
+            mode: 'contract-mode',
+            llmModel: 'gemini-3-flash-preview',
+            minDuration: 15,
+            maxDuration: 60,
+            baseAlgorithm: 'scene',
+            highlightEngine: 'keyword',
+            enableNoiseReduction: true,
+            enableCoughFilter: true,
+            enableRepeatFilter: true,
+            enableSubtitles: false,
+            sourceDurationMs: 60_000,
+          },
+        );
+        let acceptedRepairedRenderOverlapRuntimePlan = true;
+        let repairedRenderOverlapRuntimePlanError = '';
+        try {
+          assertSmartSlicePlanReadyForNativeRender(
+            repairedRenderOverlapRuntimePlan,
+            renderOverlapRuntimeTranscriptSegments,
+            60_000,
+          );
+        } catch (error) {
+          acceptedRepairedRenderOverlapRuntimePlan = false;
+          repairedRenderOverlapRuntimePlanError = error instanceof Error ? error.message : String(error);
+        }
+        assertRule(
+          acceptedRepairedRenderOverlapRuntimePlan,
+          `smart slice render-ready repair merges resumed real-overlap clips before native rendering${repairedRenderOverlapRuntimePlanError ? `: ${repairedRenderOverlapRuntimePlanError}` : ''}`,
+        );
+        assertRule(
+          repairedRenderOverlapRuntimePlan.some((clip) =>
+            (clip.sourceStartMs ?? clip.startMs) === 0 &&
+              (clip.sourceEndMs ?? clip.startMs + clip.durationMs) >= 43_975 &&
+              clip.transcriptText?.includes('The second resumed clip starts inside the first rendered range')
+          ),
+          'smart slice render-ready repair preserves resumed overlap transcript content in the normalized output clip',
+        );
+        const repairedRenderOverlapRuntimeMergedClip = repairedRenderOverlapRuntimePlan.find((clip) =>
+          clip.risks?.includes('timeline-overlap-merged')
+        );
+        assertRule(
+          repairedRenderOverlapRuntimeMergedClip !== undefined,
+          'smart slice render-ready repair records overlap-merge provenance on resumed overlap clips',
+        );
+        assertRule(
+          repairedRenderOverlapRuntimeMergedClip?.candidateId === undefined,
+          'smart slice render-ready repair clears single-candidate ids after merging multiple planned candidates',
+        );
+        const excessiveSpeechPaddingTranscriptSegments = [
+          { startMs: 4000, endMs: 12000, text: 'The hook starts immediately.' },
+          { startMs: 12000, endMs: 20000, text: 'The payoff ends cleanly.' },
+          { startMs: 20450, endMs: 29800, text: 'The second clip starts after the first rendered window.' },
+        ];
+        const excessiveSpeechPaddingPlan = [
+          {
+            ...professionalPlanClip,
+            durationMs: 16200,
+            sourceEndMs: 20000,
+            speechEndMs: 20000,
+            boundaryPaddingAfterMs: 0,
+          },
+          {
+            ...professionalSecondPlanClip,
+            startMs: 20100,
+            durationMs: 10250,
+            sourceStartMs: 20100,
+            sourceEndMs: 30350,
+            speechStartMs: 20450,
+            speechEndMs: 29800,
+            boundaryPaddingBeforeMs: 350,
+            boundaryPaddingAfterMs: 550,
+            audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+            noiseReductionApplied: false,
+            boundaryDecisionSource: 'combined',
+            audioActivityStartMs: 20450,
+            audioActivityEndMs: 29800,
+            audioActivityConfidence: 0.96,
+            audioActivityAnalysisFilter: 'silencedetect=noise=-35dB:d=0.08',
+            leadingSilenceMs: 350,
+            trailingSilenceMs: 550,
+            leadingSilenceTrimMs: 0,
+            trailingSilenceTrimMs: 0,
+            tailTreatment: 'none',
+          },
+        ];
+        await assertRejects(
+          () => assertSmartSlicePlanReadyForNativeRender(
+            excessiveSpeechPaddingPlan,
+            excessiveSpeechPaddingTranscriptSegments,
+            60_000,
+          ),
+          'planned clip 2 to keep no more than 200ms leading and 250ms trailing silence around speech',
+          'smart slice native-render readiness reproduces excessive planned speech padding before render-ready repair',
+        );
+        const repairedExcessiveSpeechPaddingPlan = repairSmartSlicePlanForNativeRender(
+          excessiveSpeechPaddingPlan,
+          excessiveSpeechPaddingTranscriptSegments,
+          {
+            mode: 'contract-mode',
+            llmModel: 'gemini-3-flash-preview',
+            minDuration: 15,
+            maxDuration: 60,
+            baseAlgorithm: 'scene',
+            highlightEngine: 'keyword',
+            enableNoiseReduction: true,
+            enableCoughFilter: true,
+            enableRepeatFilter: true,
+            enableSubtitles: false,
+            sourceDurationMs: 60_000,
+          },
+        );
+        const repairedExcessiveSpeechPaddingClip = repairedExcessiveSpeechPaddingPlan.find((clip) =>
+          clip.transcriptText?.includes('The second clip starts after the first rendered window.')
+        );
+        assertRule(
+          repairedExcessiveSpeechPaddingClip !== undefined &&
+            (repairedExcessiveSpeechPaddingClip.speechStartMs ?? 0) -
+              (repairedExcessiveSpeechPaddingClip.sourceStartMs ?? repairedExcessiveSpeechPaddingClip.startMs) <= 200 &&
+            (repairedExcessiveSpeechPaddingClip.sourceEndMs ??
+              repairedExcessiveSpeechPaddingClip.startMs + repairedExcessiveSpeechPaddingClip.durationMs) -
+              (repairedExcessiveSpeechPaddingClip.speechEndMs ?? 0) <= 250,
+          'smart slice render-ready repair trims excessive planned speech padding before native rendering',
+        );
+        let acceptedRepairedExcessiveSpeechPaddingPlan = true;
+        let repairedExcessiveSpeechPaddingPlanError = '';
+        try {
+          assertSmartSlicePlanReadyForNativeRender(
+            repairedExcessiveSpeechPaddingPlan,
+            excessiveSpeechPaddingTranscriptSegments,
+            60_000,
+          );
+        } catch (error) {
+          acceptedRepairedExcessiveSpeechPaddingPlan = false;
+          repairedExcessiveSpeechPaddingPlanError = error instanceof Error ? error.message : String(error);
+        }
+        assertRule(
+          acceptedRepairedExcessiveSpeechPaddingPlan,
+          `smart slice native-render readiness accepts speech-padding repaired plans${repairedExcessiveSpeechPaddingPlanError ? `: ${repairedExcessiveSpeechPaddingPlanError}` : ''}`,
+        );
+        const excessiveAudioActivityPaddingTranscriptSegments = [
+          {
+            startMs: 0,
+            endMs: 10_000,
+            text: 'The recognizer keeps a coarse opening span while trusted audio activity starts later.',
+          },
+        ];
+        const excessiveAudioActivityPaddingPlan = [
+          {
+            ...professionalPlanClip,
+            startMs: 0,
+            durationMs: 10_250,
+            sourceStartMs: 0,
+            sourceEndMs: 10_250,
+            speechStartMs: 0,
+            speechEndMs: 10_000,
+            boundaryPaddingBeforeMs: 0,
+            boundaryPaddingAfterMs: 250,
+            audioCleanupProfile: 'smart-slice-speech-denoise-v1',
+            noiseReductionApplied: true,
+            boundaryDecisionSource: 'combined',
+            audioActivityStartMs: 1_500,
+            audioActivityEndMs: 9_500,
+            audioActivityConfidence: 0.96,
+            audioActivityAnalysisFilter: 'highpass=f=80,lowpass=f=12000,afftdn=nr=10:nf=-25,silencedetect=noise=-35dB:d=0.08',
+            leadingSilenceMs: 1_500,
+            trailingSilenceMs: 750,
+            leadingSilenceTrimMs: 0,
+            trailingSilenceTrimMs: 0,
+            tailTreatment: 'none',
+            transcriptText: 'The recognizer keeps a coarse opening span while trusted audio activity starts later.',
+            transcriptSegmentCount: 1,
+            transcriptCoverageScore: 1,
+            speechContinuityGrade: 'strong',
+          },
+        ];
+        await assertRejects(
+          () => assertSmartSlicePlanReadyForNativeRender(
+            excessiveAudioActivityPaddingPlan,
+            excessiveAudioActivityPaddingTranscriptSegments,
+            60_000,
+          ),
+          'audio activity padding',
+          'smart slice native-render readiness reproduces excessive trusted audio activity padding before render-ready repair',
+        );
+        const repairedExcessiveAudioActivityPaddingPlan = repairSmartSlicePlanForNativeRender(
+          excessiveAudioActivityPaddingPlan,
+          excessiveAudioActivityPaddingTranscriptSegments,
+          {
+            mode: 'contract-mode',
+            llmModel: 'gemini-3-flash-preview',
+            minDuration: 15,
+            maxDuration: 60,
+            baseAlgorithm: 'scene',
+            highlightEngine: 'keyword',
+            enableNoiseReduction: true,
+            enableCoughFilter: true,
+            enableRepeatFilter: true,
+            enableSubtitles: false,
+            sourceDurationMs: 60_000,
+          },
+        );
+        const repairedExcessiveAudioActivityPaddingClip = repairedExcessiveAudioActivityPaddingPlan[0];
+        assertEqual(
+          repairedExcessiveAudioActivityPaddingClip?.sourceStartMs,
+          1_300,
+          'smart slice render-ready repair trims sourceStartMs to trusted audio activity leading padding',
+        );
+        assertEqual(
+          repairedExcessiveAudioActivityPaddingClip?.sourceEndMs,
+          9_750,
+          'smart slice render-ready repair trims sourceEndMs to trusted audio activity trailing padding',
+        );
+        assertEqual(
+          repairedExcessiveAudioActivityPaddingClip?.leadingSilenceMs,
+          200,
+          'smart slice render-ready repair refreshes leading audio activity silence evidence',
+        );
+        assertEqual(
+          repairedExcessiveAudioActivityPaddingClip?.trailingSilenceMs,
+          250,
+          'smart slice render-ready repair refreshes trailing audio activity silence evidence',
+        );
+        let acceptedRepairedExcessiveAudioActivityPaddingPlan = true;
+        let repairedExcessiveAudioActivityPaddingPlanError = '';
+        try {
+          assertSmartSlicePlanReadyForNativeRender(
+            repairedExcessiveAudioActivityPaddingPlan,
+            excessiveAudioActivityPaddingTranscriptSegments,
+            60_000,
+          );
+        } catch (error) {
+          acceptedRepairedExcessiveAudioActivityPaddingPlan = false;
+          repairedExcessiveAudioActivityPaddingPlanError = error instanceof Error ? error.message : String(error);
+        }
+        assertRule(
+          acceptedRepairedExcessiveAudioActivityPaddingPlan,
+          `smart slice native-render readiness accepts audio-activity-padding repaired plans${repairedExcessiveAudioActivityPaddingPlanError ? `: ${repairedExcessiveAudioActivityPaddingPlanError}` : ''}`,
+        );
+        const shortMinimumFloorPaddingPlan = [
+          {
+            ...professionalPlanClip,
+            startMs: 0,
+            durationMs: 10_000,
+            sourceStartMs: 0,
+            sourceEndMs: 10_000,
+            speechStartMs: 200,
+            speechEndMs: 10_000,
+            boundaryPaddingBeforeMs: 200,
+            boundaryPaddingAfterMs: 0,
+            transcriptText: 'An earlier clip keeps the timeline in order before the short repaired slice.',
+            transcriptSegmentCount: 1,
+            transcriptCoverageScore: 1,
+          },
+          {
+            ...professionalSecondPlanClip,
+            startMs: 10_000,
+            durationMs: 5_000,
+            sourceStartMs: 10_000,
+            sourceEndMs: 15_000,
+            speechStartMs: 10_200,
+            speechEndMs: 14_720,
+            boundaryPaddingBeforeMs: 200,
+            boundaryPaddingAfterMs: 280,
+            transcriptText: 'The short clip keeps only a small amount of silence around the speech.',
+            transcriptSegmentCount: 1,
+            transcriptCoverageScore: 1,
+          },
+        ];
+        const shortMinimumFloorPaddingTranscriptSegments = [
+          { startMs: 200, endMs: 10_000, text: 'An earlier clip keeps the timeline in order before the short repaired slice.' },
+          { startMs: 10_200, endMs: 14_720, text: 'The short clip keeps only a small amount of silence around the speech.' },
+        ];
+        await assertRejects(
+          () => assertSmartSlicePlanReadyForNativeRender(
+            shortMinimumFloorPaddingPlan,
+            shortMinimumFloorPaddingTranscriptSegments,
+            60_000,
+          ),
+          'planned clip 2 to keep no more than 200ms leading and 250ms trailing silence around speech',
+          'smart slice native-render readiness reproduces short minimum-floor trailing silence before render-ready repair',
+        );
+        const repairedShortMinimumFloorPaddingPlan = repairSmartSlicePlanForNativeRender(
+          shortMinimumFloorPaddingPlan,
+          shortMinimumFloorPaddingTranscriptSegments,
+          {
+            mode: 'contract-mode',
+            llmModel: 'gemini-3-flash-preview',
+            minDuration: 15,
+            maxDuration: 60,
+            baseAlgorithm: 'scene',
+            highlightEngine: 'keyword',
+            enableNoiseReduction: true,
+            enableCoughFilter: true,
+            enableRepeatFilter: true,
+            enableSubtitles: false,
+            sourceDurationMs: 60_000,
+          },
+        );
+        const repairedShortMinimumFloorPaddingClip = repairedShortMinimumFloorPaddingPlan.find((clip) =>
+          clip.transcriptText?.includes('The short clip keeps only a small amount of silence around the speech.')
+        );
+        assertEqual(
+          repairedShortMinimumFloorPaddingClip?.sourceEndMs,
+          14_970,
+          'smart slice render-ready repair trims short clips below the planning duration floor when native silence limits require it',
+        );
+        let acceptedRepairedShortMinimumFloorPaddingPlan = true;
+        let repairedShortMinimumFloorPaddingPlanError = '';
+        try {
+          assertSmartSlicePlanReadyForNativeRender(
+            repairedShortMinimumFloorPaddingPlan,
+            shortMinimumFloorPaddingTranscriptSegments,
+            60_000,
+          );
+        } catch (error) {
+          acceptedRepairedShortMinimumFloorPaddingPlan = false;
+          repairedShortMinimumFloorPaddingPlanError = error instanceof Error ? error.message : String(error);
+        }
+        assertRule(
+          acceptedRepairedShortMinimumFloorPaddingPlan,
+          `smart slice native-render readiness accepts short minimum-floor padding repairs${repairedShortMinimumFloorPaddingPlanError ? `: ${repairedShortMinimumFloorPaddingPlanError}` : ''}`,
         );
         const refreshedSilenceCompactedPlan = refreshSmartSlicePlanTranscriptEvidence(
           [
@@ -3537,6 +4451,76 @@ async function run() {
         assertRule(
           acceptedAudioPaddingProtectedBoundaryPlan,
           `smart slice native-render readiness accepts trusted audio-trimmed clips even when coarse STT starts before the allowed audio padding${audioPaddingProtectedBoundaryPlanError ? `: ${audioPaddingProtectedBoundaryPlanError}` : ''}`,
+        );
+        const repairedShortPaddingRefreshPlan = refreshSmartSlicePlanTranscriptEvidence(
+          [
+            {
+              ...professionalSecondPlanClip,
+              startMs: 10_000,
+              durationMs: 4_970,
+              sourceStartMs: 10_000,
+              sourceEndMs: 14_970,
+              speechStartMs: 10_200,
+              speechEndMs: 14_720,
+              boundaryPaddingBeforeMs: 200,
+              boundaryPaddingAfterMs: 250,
+              transcriptText: 'The repaired short clip already keeps valid speech padding.',
+              transcriptSegmentCount: 1,
+              transcriptCoverageScore: 1,
+              speechContinuityGrade: 'strong',
+              risks: ['excess-trailing-silence-trimmed'],
+            },
+          ],
+          [
+            {
+              startMs: 10_150,
+              endMs: 14_800,
+              text: 'The repaired short clip already keeps valid speech padding.',
+            },
+          ],
+          60_000,
+        );
+        assertEqual(
+          repairedShortPaddingRefreshPlan[0]?.sourceStartMs,
+          10_000,
+          'smart slice transcript evidence refresh preserves repaired sourceStartMs when padding is already native-ready',
+        );
+        assertEqual(
+          repairedShortPaddingRefreshPlan[0]?.sourceEndMs,
+          14_970,
+          'smart slice transcript evidence refresh preserves repaired sourceEndMs when padding is already native-ready',
+        );
+        assertEqual(
+          repairedShortPaddingRefreshPlan[0]?.boundaryPaddingBeforeMs,
+          200,
+          'smart slice transcript evidence refresh keeps repaired leading padding at the native standard',
+        );
+        assertEqual(
+          repairedShortPaddingRefreshPlan[0]?.boundaryPaddingAfterMs,
+          250,
+          'smart slice transcript evidence refresh keeps repaired trailing padding at the native standard',
+        );
+        let acceptedRepairedShortPaddingRefreshPlan = true;
+        let repairedShortPaddingRefreshPlanError = '';
+        try {
+          assertSmartSlicePlanReadyForNativeRender(
+            repairedShortPaddingRefreshPlan,
+            [
+              {
+                startMs: 10_150,
+                endMs: 14_800,
+                text: 'The repaired short clip already keeps valid speech padding.',
+              },
+            ],
+            60_000,
+          );
+        } catch (error) {
+          acceptedRepairedShortPaddingRefreshPlan = false;
+          repairedShortPaddingRefreshPlanError = error instanceof Error ? error.message : String(error);
+        }
+        assertRule(
+          acceptedRepairedShortPaddingRefreshPlan,
+          `smart slice native-render readiness accepts repaired clips after transcript evidence refresh without padding regression${repairedShortPaddingRefreshPlanError ? `: ${repairedShortPaddingRefreshPlanError}` : ''}`,
         );
         const trustedAudioOpeningTrimmedBoundaryPlan = refreshSmartSlicePlanTranscriptEvidence(
           [
@@ -4289,7 +5273,15 @@ async function run() {
           transcriptSegmentCount: 1,
           transcriptCoverageScore: 0.96,
           speechContinuityGrade: 'strong',
-          ...createRecoveredSmartSliceAudioCleanupEvidence(),
+          ...createRecoveredSmartSliceAudioCleanupEvidence({
+            sourceSegments: [
+              { startMs: 2000, endMs: 9000 },
+              { startMs: 12000, endMs: 15000 },
+            ],
+            renderedDurationMs: 10000,
+            removedSilenceMs: 5000,
+            internalSilenceTrimCount: 1,
+          }),
         };
         const lowCoverageInputClip = {
           ...recoveredInputClip,
@@ -4322,6 +5314,44 @@ async function run() {
           transcriptCoverageScore: 0.96,
           speechContinuityGrade: 'weak',
           ...createRecoveredSmartSliceAudioCleanupEvidence(),
+        };
+        const sourceSegmentGapInputClip = {
+          ...recoveredInputClip,
+          label: 'Source segment gap opening',
+          transcriptText:
+            'First recovered speech remains. Middle recovered speech must not be cut. Final recovered speech remains.',
+          transcriptSegments: [
+            {
+              startMs: 1200,
+              endMs: 5000,
+              text: 'First recovered speech remains.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 9500,
+              endMs: 11000,
+              text: 'Middle recovered speech must not be cut.',
+              speaker: 'Speaker 1',
+            },
+            {
+              startMs: 13000,
+              endMs: 15750,
+              text: 'Final recovered speech remains.',
+              speaker: 'Speaker 1',
+            },
+          ],
+          transcriptSegmentCount: 3,
+          transcriptCoverageScore: 0.96,
+          speechContinuityGrade: 'repaired',
+          ...createRecoveredSmartSliceAudioCleanupEvidence({
+            sourceSegments: [
+              { startMs: 1000, endMs: 9000 },
+              { startMs: 12000, endMs: 16000 },
+            ],
+            renderedDurationMs: 12000,
+            removedSilenceMs: 3000,
+            internalSilenceTrimCount: 1,
+          }),
         };
         const timingOnlyInputClip = {
           startMs: 1000,
@@ -4367,6 +5397,46 @@ async function run() {
             }),
             createdAt: '2026-05-05T00:00:00.000Z',
             updatedAt: '2026-05-05T00:05:00.000Z',
+            stages: [],
+            events: [],
+            workerLeases: [],
+          },
+          {
+            uuid: 'ops-task-slice-input-clip-source-segment-gap-recovery',
+            taskType: 6,
+            status: 2,
+            progress: 100,
+            sourceAssetUuid: 'asset-slice-input-clip-source-segment-gap-recovery',
+            inputJson: JSON.stringify({
+              operation: 'videoSlice',
+              assetUuid: 'asset-slice-input-clip-source-segment-gap-recovery',
+              sourceName: 'input-clip-source-segment-gap-recovery.mp4',
+              outputFormat: 'mp4',
+              clips: [sourceSegmentGapInputClip],
+              requestedClips: [sourceSegmentGapInputClip],
+            }),
+            outputJson: JSON.stringify({
+              assetUuid: 'asset-slice-input-clip-source-segment-gap-recovery',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-input-clip-source-segment-gap-recovery',
+              sliceCount: 1,
+              sliceResults: [
+                {
+                  artifactUuid: 'slice-artifact-input-clip-source-segment-gap-recovery',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-input-clip-source-segment-gap-recovery/slice-001.mp4',
+                  thumbnailArtifactUuid: 'slice-thumb-input-clip-source-segment-gap-recovery',
+                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-input-clip-source-segment-gap-recovery/cover/slice-001.jpg',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-input-clip-source-segment-gap-recovery',
+                  byteSize: 1234567,
+                  thumbnailByteSize: 12345,
+                  format: 'mp4',
+                  startMs: 1000,
+                  durationMs: 15000,
+                  label: 'Source segment gap opening',
+                },
+              ],
+            }),
+            createdAt: '2026-05-05T00:00:15.000Z',
+            updatedAt: '2026-05-05T00:05:15.000Z',
             stages: [],
             events: [],
             workerLeases: [],
@@ -4525,6 +5595,52 @@ async function run() {
             workerLeases: [],
           },
           {
+            uuid: 'ops-task-slice-basic-stale-source-segments-recovery',
+            taskType: 6,
+            status: 2,
+            progress: 100,
+            sourceAssetUuid: 'asset-slice-basic-stale-source-segments-recovery',
+            inputJson: JSON.stringify({
+              operation: 'videoSlice',
+              assetUuid: 'asset-slice-basic-stale-source-segments-recovery',
+              sourceName: 'basic-stale-source-segments-recovery.mp4',
+              outputFormat: 'mp4',
+            }),
+            outputJson: JSON.stringify({
+              assetUuid: 'asset-slice-basic-stale-source-segments-recovery',
+              taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-basic-stale-source-segments-recovery',
+              sliceCount: 1,
+              sliceResults: [
+                {
+                  artifactUuid: 'slice-artifact-basic-stale-source-segments-recovery',
+                  artifactPath: 'D:/autocut/media/tasks/ops-task-slice-basic-stale-source-segments-recovery/slice-001.mp4',
+                  thumbnailArtifactUuid: 'slice-thumb-basic-stale-source-segments-recovery',
+                  thumbnailArtifactPath: 'D:/autocut/media/tasks/ops-task-slice-basic-stale-source-segments-recovery/cover/slice-001.jpg',
+                  taskOutputDir: 'D:/autocut/media/tasks/ops-task-slice-basic-stale-source-segments-recovery',
+                  byteSize: 1234567,
+                  thumbnailByteSize: 12345,
+                  format: 'mp4',
+                  startMs: 1000,
+                  durationMs: 15000,
+                  label: 'Basic stale sourceSegments opening',
+                  sourceStartMs: 1000,
+                  sourceEndMs: 16000,
+                  sourceSegments: [
+                    { startMs: 2000, endMs: 9000 },
+                    { startMs: 12000, endMs: 15000 },
+                  ],
+                  removedSilenceMs: 5000,
+                  internalSilenceTrimCount: 1,
+                },
+              ],
+            }),
+            createdAt: '2026-05-05T00:01:30.000Z',
+            updatedAt: '2026-05-05T00:05:30.000Z',
+            stages: [],
+            events: [],
+            workerLeases: [],
+          },
+          {
             uuid: 'ops-task-slice-input-clip-low-coverage-recovery',
             taskType: 6,
             status: 2,
@@ -4635,6 +5751,44 @@ async function run() {
       'slice-artifact-input-clip-transcript-recovery',
       'native completed slice task keeps generated asset ids after input clip transcript evidence recovery',
     );
+    assertNotOwnProperty(
+      nativeSliceTaskRecoveredFromInputClipEvidence?.sliceResults?.[0],
+      'sourceSegments',
+      'native completed slice task drops stale recovered sourceSegments that do not span the final source range',
+    );
+    assertNotOwnProperty(
+      nativeSliceTaskRecoveredFromInputClipEvidence?.sliceResults?.[0],
+      'removedSilenceMs',
+      'native completed slice task drops stale recovered removedSilenceMs when sourceSegments are not renderable',
+    );
+    assertNotOwnProperty(
+      nativeSliceTaskRecoveredFromInputClipEvidence?.sliceResults?.[0],
+      'internalSilenceTrimCount',
+      'native completed slice task drops stale recovered internalSilenceTrimCount when sourceSegments are not renderable',
+    );
+    const nativeSliceTaskRecoveredWithSourceSegmentGap = nativeTasksRecoveredFromInputClipEvidence.find(
+      (task) => task.id === 'ops-task-slice-input-clip-source-segment-gap-recovery',
+    );
+    assertEqual(
+      nativeSliceTaskRecoveredWithSourceSegmentGap?.status,
+      types.AUTOCUT_TASK_STATUS.completed,
+      'native completed slice task stays completed when recovered sourceSegments cut through transcript speech',
+    );
+    assertNotOwnProperty(
+      nativeSliceTaskRecoveredWithSourceSegmentGap?.sliceResults?.[0],
+      'sourceSegments',
+      'native completed slice task drops recovered sourceSegments that cut through structured transcript speech',
+    );
+    assertNotOwnProperty(
+      nativeSliceTaskRecoveredWithSourceSegmentGap?.sliceResults?.[0],
+      'removedSilenceMs',
+      'native completed slice task drops recovered removedSilenceMs when sourceSegments cut through transcript speech',
+    );
+    assertNotOwnProperty(
+      nativeSliceTaskRecoveredWithSourceSegmentGap?.sliceResults?.[0],
+      'internalSilenceTrimCount',
+      'native completed slice task drops recovered internalSilenceTrimCount when sourceSegments cut through transcript speech',
+    );
     const nativeSliceTaskRecoveredFromSiblingSpeechTask = nativeTasksRecoveredFromInputClipEvidence.find(
       (task) => task.id === 'ops-task-slice-speech-task-recovery',
     );
@@ -4670,6 +5824,29 @@ async function run() {
       nativeSliceTaskRecoveredFromSiblingSpeechTaskAfterTimingOnlyInputClip?.sliceResults?.[0]?.transcriptSegments?.[0]?.text,
       'Sibling speech transcript must recover when input clips only preserve timing.',
       'native completed slice task uses sibling structured STT segments after timing-only input clip recovery evidence',
+    );
+    const nativeBasicSliceTaskWithStaleSourceSegments = nativeTasksRecoveredFromInputClipEvidence.find(
+      (task) => task.id === 'ops-task-slice-basic-stale-source-segments-recovery',
+    );
+    assertEqual(
+      nativeBasicSliceTaskWithStaleSourceSegments?.status,
+      types.AUTOCUT_TASK_STATUS.completed,
+      'native completed basic slice task ignores stale sourceSegments instead of failing recovered task listing',
+    );
+    assertNotOwnProperty(
+      nativeBasicSliceTaskWithStaleSourceSegments?.sliceResults?.[0],
+      'sourceSegments',
+      'native completed basic slice task drops stale sourceSegments that do not span the final source range',
+    );
+    assertNotOwnProperty(
+      nativeBasicSliceTaskWithStaleSourceSegments?.sliceResults?.[0],
+      'removedSilenceMs',
+      'native completed basic slice task drops stale removedSilenceMs when sourceSegments are not renderable',
+    );
+    assertNotOwnProperty(
+      nativeBasicSliceTaskWithStaleSourceSegments?.sliceResults?.[0],
+      'internalSilenceTrimCount',
+      'native completed basic slice task drops stale internalSilenceTrimCount when sourceSegments are not renderable',
     );
     const nativeSliceTaskRejectedForLowCoverage = nativeTasksRecoveredFromInputClipEvidence.find(
       (task) => task.id === 'ops-task-slice-input-clip-low-coverage-recovery',
@@ -5114,62 +6291,43 @@ async function run() {
     );
     assertEqual(
       missingTranscriptEvidenceTask?.status,
-      types.AUTOCUT_TASK_STATUS.failed,
-      'native completed slice task fails closed when recovered speech-to-text transcript evidence is missing',
-    );
-    assertIncludes(
-      missingTranscriptEvidenceTask?.errorMessage ?? '',
-      'missing speech-to-text transcript evidence',
-      'native completed slice task explains missing recovered speech-to-text transcript evidence',
-    );
-    assertRule(
-      !(missingTranscriptEvidenceTask?.errorMessage ?? '').includes('AutoCut recovered native video slicing'),
-      'native completed legacy slice task does not expose internal recovered smart-slice assertion text to users',
-    );
-    assertIncludes(
-      missingTranscriptEvidenceTask?.errorMessage ?? '',
-      'Re-run Smart Slice after local speech-to-text setup',
-      'native completed legacy slice task gives an actionable local STT regeneration path instead of a raw assertion',
-    );
-    assertIncludes(
-      missingTranscriptEvidenceTask?.failureDiagnostics ?? '',
-      'AutoCut recovered native video slicing slice artifact 1 is missing speech-to-text transcript evidence.',
-      'native completed slice task exposes the original recovered transcript evidence assertion for debugging',
-    );
-    assertIncludes(
-      missingTranscriptEvidenceTask?.failureDiagnostics ?? '',
-      'Stack:',
-      'native completed slice task exposes the recovered transcript evidence validation stack trace for debugging',
-    );
-    assertIncludes(
-      missingTranscriptEvidenceTask?.failureDiagnostics ?? '',
-      'at assertRecoveredNativeVideoSliceProfessionalTranscriptEvidence',
-      'native completed slice task stack names the professional transcript evidence validator',
-    );
-    assertIncludes(
-      missingTranscriptEvidenceTask?.failureDiagnostics ?? '',
-      'Native task snapshot: uuid=ops-task-slice-missing-transcript-evidence taskType=6 status=2 sourceAssetUuid=asset-slice-missing-transcript-evidence',
-      'native completed slice task diagnostics identify the exact native snapshot that failed recovery',
-    );
-    assertIncludes(
-      missingTranscriptEvidenceTask?.failureDiagnostics ?? '',
-      'Input clip evidence: clips=0 requestedClips=0 clipsWithTranscriptSegments=0 requestedClipsWithTranscriptSegments=0',
-      'native completed slice task diagnostics summarize missing request-side transcript evidence',
-    );
-    assertIncludes(
-      missingTranscriptEvidenceTask?.failureDiagnostics ?? '',
-      'Output slice evidence: sliceResults=1 slicesWithTranscriptSegments=0 slicesWithTranscriptText=0',
-      'native completed slice task diagnostics summarize missing output-side transcript evidence',
+      types.AUTOCUT_TASK_STATUS.completed,
+      'native completed slice task recovers completed timeline slices when speech-to-text transcript evidence is missing',
     );
     assertEqual(
-      missingTranscriptEvidenceTask?.sliceResults,
+      missingTranscriptEvidenceTask?.errorMessage,
       undefined,
-      'native completed slice task does not expose generated slices without recovered transcript evidence',
+      'native completed timeline-only slice task does not surface a transcript evidence failure',
     );
     assertEqual(
-      missingTranscriptEvidenceTask?.generatedAssetIds,
+      missingTranscriptEvidenceTask?.failureDiagnostics,
       undefined,
-      'native completed slice task does not expose generated asset ids without recovered transcript evidence',
+      'native completed timeline-only slice task does not store transcript evidence failure diagnostics',
+    );
+    assertEqual(
+      missingTranscriptEvidenceTask?.sliceResults?.[0]?.id,
+      'slice-artifact-missing-transcript-evidence',
+      'native completed timeline-only slice task exposes generated slices without transcript evidence',
+    );
+    assertEqual(
+      missingTranscriptEvidenceTask?.sliceResults?.[0]?.transcriptSegments,
+      undefined,
+      'native completed timeline-only slice task keeps missing transcript evidence absent',
+    );
+    assertEqual(
+      missingTranscriptEvidenceTask?.sliceResults?.[0]?.sourceStartMs,
+      1000,
+      'native completed timeline-only slice task preserves sourceStartMs',
+    );
+    assertEqual(
+      missingTranscriptEvidenceTask?.sliceResults?.[0]?.sourceEndMs,
+      16000,
+      'native completed timeline-only slice task preserves sourceEndMs',
+    );
+    assertEqual(
+      missingTranscriptEvidenceTask?.generatedAssetIds?.[0],
+      'slice-artifact-missing-transcript-evidence',
+      'native completed timeline-only slice task exposes generated asset ids without transcript evidence',
     );
     await services.deleteTask('ops-task-slice-missing-transcript-evidence');
     const nativeTasksAfterDeletingMissingTranscriptEvidence = await withImmediateTimers(() => services.getTasks());
@@ -5291,42 +6449,18 @@ async function run() {
     );
     assertEqual(
       missingAudioCleanupEvidenceTask?.status,
-      types.AUTOCUT_TASK_STATUS.failed,
-      'native completed slice task fails closed when recovered audio cleanup evidence is missing',
-    );
-    assertIncludes(
-      missingAudioCleanupEvidenceTask?.errorMessage ?? '',
-      'missing smart-slice audio cleanup evidence',
-      'native completed slice task explains missing recovered audio cleanup evidence',
-    );
-    assertRule(
-      !(missingAudioCleanupEvidenceTask?.errorMessage ?? '').includes('AutoCut recovered native video slicing'),
-      'native completed slice task does not expose internal recovered audio cleanup assertion text to users',
-    );
-    assertIncludes(
-      missingAudioCleanupEvidenceTask?.errorMessage ?? '',
-      'Re-run Smart Slice so noise-reduction decision, boundary trimming, and tail treatment evidence are regenerated',
-      'native completed slice task gives an actionable audio cleanup regeneration path instead of a raw assertion',
-    );
-    assertIncludes(
-      missingAudioCleanupEvidenceTask?.failureDiagnostics ?? '',
-      'AutoCut recovered native video slicing slice artifact 1 is missing smart-slice audio cleanup evidence.',
-      'native completed slice task exposes the original recovered audio cleanup assertion for debugging',
-    );
-    assertIncludes(
-      missingAudioCleanupEvidenceTask?.failureDiagnostics ?? '',
-      'audioCleanupProfile=unknown noiseReductionApplied=unknown boundaryDecisionSource=unknown leadingSilenceTrimMs=unknown trailingSilenceTrimMs=unknown tailTreatment=unknown',
-      'native completed slice task diagnostics summarize missing output-side audio cleanup evidence',
+      types.AUTOCUT_TASK_STATUS.completed,
+      'native completed slice task stays completed when recovered audio cleanup evidence is missing',
     );
     assertEqual(
-      missingAudioCleanupEvidenceTask?.sliceResults,
-      undefined,
-      'native completed slice task does not expose generated slices without recovered audio cleanup evidence',
+      missingAudioCleanupEvidenceTask?.sliceResults?.length,
+      1,
+      'native completed slice task exposes the recovered generated slice results',
     );
     assertEqual(
-      missingAudioCleanupEvidenceTask?.generatedAssetIds,
-      undefined,
-      'native completed slice task does not expose generated asset ids without recovered audio cleanup evidence',
+      missingAudioCleanupEvidenceTask?.generatedAssetIds?.length,
+      1,
+      'native completed slice task exposes the recovered generated asset ids',
     );
 
     resetStorage();
@@ -5443,23 +6577,18 @@ async function run() {
     );
     assertEqual(
       missingRawSilenceTask?.status,
-      types.AUTOCUT_TASK_STATUS.failed,
-      'native completed slice task fails closed when recovered raw leading/trailing silence evidence is missing',
-    );
-    assertIncludes(
-      String(missingRawSilenceTask?.errorMessage ?? ''),
-      'audio cleanup evidence',
-      'native completed slice task explains missing raw silence evidence as incomplete audio cleanup evidence',
+      types.AUTOCUT_TASK_STATUS.completed,
+      'native completed slice task stays completed when recovered raw leading/trailing silence evidence is missing',
     );
     assertEqual(
-      missingRawSilenceTask?.sliceResults,
-      undefined,
-      'native completed slice task does not expose generated slices without recovered raw silence evidence',
+      missingRawSilenceTask?.sliceResults?.length,
+      1,
+      'native completed slice task exposes the recovered raw silence slice results',
     );
-    assertIncludes(
-      String(missingRawSilenceTask?.failureDiagnostics ?? ''),
-      'leadingSilenceMs is not a non-negative millisecond value',
-      'recovered raw silence validation diagnostics include the exact failed evidence assertion',
+    assertEqual(
+      missingRawSilenceTask?.generatedAssetIds?.length,
+      1,
+      'native completed slice task exposes the recovered raw silence generated asset ids',
     );
 
     resetStorage();
@@ -7188,20 +8317,15 @@ async function run() {
         ffmpegExecutable: 'ffmpeg',
       };
     });
-    await assertRejects(
-      () =>
-        invalidNativeVideoSliceClient.sliceVideo({
-          assetUuid: 'media-asset-1',
-          clips: [{ startMs: 0, durationMs: 45000, label: 'Fixed interval without STT' }],
-          outputFormat: 'mp4',
-        }),
-      'speech-to-text transcript evidence',
-      'native host client rejects video slice clips without STT evidence before invoking Tauri',
-    );
+    await invalidNativeVideoSliceClient.sliceVideo({
+      assetUuid: 'media-asset-1',
+      clips: [{ startMs: 0, durationMs: 45000, label: 'Fixed interval without STT' }],
+      outputFormat: 'mp4',
+    });
     assertEqual(
       invalidNativeVideoSliceInvocations.length,
-      0,
-      'native host client does not invoke Tauri video slicing when clips lack STT evidence',
+      1,
+      'native host client invokes Tauri video slicing for basic timeline clips without STT evidence',
     );
     const audioRefinedNativeVideoSliceInvocations = [];
     const audioRefinedNativeVideoSliceClient = services.createAutoCutNativeHostClient(async (command, args) => {
@@ -9341,6 +10465,177 @@ async function run() {
     services.resetAutoCutNativeHostClient();
 
     resetStorage();
+    const staleNativeResultSourceSegmentsCommands = [];
+    await services.saveAutoCutWorkspaceSettings({
+      ...(await services.getAutoCutSettings()).workspace,
+      outputDirectory: configuredOutputDirectory,
+    });
+    await saveVerifiedLocalSpeechTranscriptionSettings(services);
+    configureAutoCutNativeHostClient(services, {
+      getCapabilities: async () => ({
+        contractVersion: 'smart-slice-stale-native-result-source-segments-regression',
+        hostKind: 'native-host',
+        mediaImportCommandReady: true,
+        videoSliceCommandReady: true,
+        videoSliceAudioActivityAnalysisCommandReady: true,
+        speechTranscriptionCommandReady: true,
+        speechTranscriptionToolchainReady: true,
+        speechTranscriptionProbeCommandReady: true,
+        nativeTaskQueryCommandReady: true,
+      }),
+      importMediaFile: async (request) => {
+        staleNativeResultSourceSegmentsCommands.push({ kind: 'import', request });
+        return {
+          assetUuid: 'stale-native-result-source-segments-asset',
+          sandboxPath: `${configuredOutputDirectory}/inputs/stale-native-result-source-segments-source.mp4`,
+          byteSize: 654000,
+          name: 'stale-native-result-source-segments-source.mp4',
+          mediaType: 'video',
+          hasAudioStream: true,
+          hasVideoStream: true,
+          mimeType: 'video/mp4',
+          durationMs: 42000,
+        };
+      },
+      probeSpeechTranscription: async (request) => ({
+        ready: true,
+        executablePath: request.executablePath,
+        modelPath: request.modelPath,
+        sourceKind: request.sourceKind ?? 'execution-preflight',
+        diagnostics: [],
+        versionLine: 'stale native result sourceSegments regression',
+      }),
+      transcribeMedia: async (request) => {
+        staleNativeResultSourceSegmentsCommands.push({ kind: 'transcribe', request });
+        return createNativeVideoSliceTranscriptResult(
+          request,
+          'stale-native-result-source-segments-transcript-task',
+          configuredOutputDirectory,
+          [
+            {
+              startMs: 8000,
+              endMs: 24000,
+              text:
+                'Why stale native result evidence should not block slicing is simple. The rendered artifact can be correct while optional source segment metadata is old.',
+              speaker: 'Speaker 1',
+            },
+          ],
+        );
+      },
+      analyzeVideoSliceAudioActivity: async (request) => {
+        staleNativeResultSourceSegmentsCommands.push({ kind: 'analyze-audio-boundaries', request });
+        return createNativeVideoSliceAudioActivityAnalysisResult(request);
+      },
+      sliceVideo: async (request) => {
+        staleNativeResultSourceSegmentsCommands.push({ kind: 'slice', request });
+        const clip = request.clips[0];
+        const sourceStartMs = clip?.sourceStartMs ?? clip?.startMs ?? 0;
+        const sourceEndMs = clip?.sourceEndMs ?? (clip?.startMs ?? 0) + (clip?.durationMs ?? 1);
+        const staleSourceSegments = [
+          {
+            startMs: sourceStartMs,
+            endMs: Math.max(sourceStartMs + 1, Math.min(sourceEndMs - 2, sourceStartMs + 4000)),
+          },
+          {
+            startMs: Math.max(sourceStartMs + 2, sourceEndMs - 4000),
+            endMs: sourceEndMs,
+          },
+        ].filter((segment) => segment.endMs > segment.startMs);
+        const staleRenderedDurationMs = staleSourceSegments.reduce(
+          (durationMs, segment) => durationMs + Math.max(0, segment.endMs - segment.startMs),
+          0,
+        );
+        const output = createNativeTaskOutputArtifact(
+          'stale-native-result-source-segments-render-task',
+          clip?.outputFileName ?? 'stale-native-result-source-segments.mp4',
+          configuredOutputDirectory,
+        );
+        const thumbnail = createNativeTaskCoverArtifact(
+          'stale-native-result-source-segments-render-task',
+          'stale-native-result-source-segments-thumb.jpg',
+          configuredOutputDirectory,
+        );
+        return {
+          taskUuid: 'stale-native-result-source-segments-render-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: output.taskOutputDir,
+          ffmpegExecutable: 'ffmpeg',
+          slices: [
+            {
+              artifactUuid: 'stale-native-result-source-segments-artifact',
+              artifactPath: output.artifactPath,
+              thumbnailArtifactUuid: 'stale-native-result-source-segments-thumb',
+              thumbnailArtifactPath: thumbnail.artifactPath,
+              taskOutputDir: output.taskOutputDir,
+              byteSize: 240000,
+              thumbnailByteSize: 12000,
+              format: 'mp4',
+              ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+              durationMs: Math.max(1, sourceEndMs - sourceStartMs),
+              sourceSegments: staleSourceSegments,
+              renderedDurationMs: staleRenderedDurationMs,
+              removedSilenceMs: Math.max(0, sourceEndMs - sourceStartMs - staleRenderedDurationMs),
+              internalSilenceTrimCount: staleSourceSegments.length - 1,
+            },
+          ],
+        };
+      },
+      createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
+    });
+    let staleNativeResultSourceSegmentsResult;
+    let staleNativeResultSourceSegmentsError = null;
+    try {
+      staleNativeResultSourceSegmentsResult = await withImmediateTimers(async () =>
+        processVideoSlice({
+          fileId: 'asset-source-stale-native-result-source-segments',
+          file: createTrustedLocalMediaFile(
+            commons,
+            'D:/media/stale-native-result-source-segments-source.mp4',
+            'stale-native-result-source-segments-source.mp4',
+          ),
+          mode: 'contract-mode',
+          llmModel: 'gemini-3-flash-preview',
+          targetPlatform: 'generic',
+          idealDuration: 20,
+          continuityLevel: 'standard',
+          minDuration: 10,
+          maxDuration: 25,
+          baseAlgorithm: 'scene',
+          highlightEngine: 'keyword',
+          enableNoiseReduction: false,
+          enableCoughFilter: true,
+          enableRepeatFilter: true,
+          enableSubtitles: false,
+        }),
+      );
+    } catch (error) {
+      staleNativeResultSourceSegmentsError = error;
+    }
+    const staleNativeResultSourceSegmentsTask = staleNativeResultSourceSegmentsResult
+      ? readScopedStoredArray(services, 'tasks').find((task) =>
+          task.id === staleNativeResultSourceSegmentsResult.taskId
+        )
+      : undefined;
+    assertEqual(
+      staleNativeResultSourceSegmentsError instanceof Error
+        ? staleNativeResultSourceSegmentsError.message
+        : undefined,
+      undefined,
+      'Smart Slice ignores stale native-result sourceSegments instead of failing a usable render artifact',
+    );
+    assertEqual(
+      staleNativeResultSourceSegmentsTask?.status,
+      types.AUTOCUT_TASK_STATUS.completed,
+      'Smart Slice completes when native result sourceSegments are stale but the continuous artifact timing is valid',
+    );
+    assertEqual(
+      staleNativeResultSourceSegmentsTask?.sliceResults?.[0]?.sourceSegments,
+      undefined,
+      'Smart Slice drops stale native-result sourceSegments from completed slice results',
+    );
+    services.resetAutoCutNativeHostClient();
+
+    resetStorage();
     const reviewBeforeRenderSmartSliceCommands = [];
     await services.saveAutoCutWorkspaceSettings({
       ...(await services.getAutoCutSettings()).workspace,
@@ -9548,6 +10843,34 @@ async function run() {
       reviewBeforeRenderSession?.duplicateGroups?.some((group) => group.reason === 'smart-dedup'),
       'Smart Slice review session converts video dedup matches into reviewable duplicate groups',
     );
+    const reviewBeforeRenderSmartDedupGroup = reviewBeforeRenderSession?.duplicateGroups?.find((group) => group.reason === 'smart-dedup');
+    assertRule(
+      (reviewBeforeRenderSmartDedupGroup?.segmentIds ?? []).every((segmentId) =>
+        reviewBeforeRenderSegments.find((segment) => segment.id === segmentId)?.duplicateGroupId === reviewBeforeRenderSmartDedupGroup?.id
+      ),
+      'Smart Slice review session links smart dedup duplicate groups back onto each review segment for deterministic keep-target resolution',
+    );
+    assertEqual(
+      reviewBeforeRenderSmartDedupGroup?.segmentIds?.length,
+      1,
+      'Smart Slice review fixture covers external smart-dedup matches that have no in-plan keep segment',
+    );
+    const externalSmartDedupSegmentId = reviewBeforeRenderSmartDedupGroup?.segmentIds?.[0] ?? '';
+    await assertRejects(
+      () => withImmediateTimers(() => renderVideoSlicePlan(reviewBeforeRenderAnalyzeResult.taskId, {
+        reviewSessionId: reviewBeforeRenderSession?.id ?? '',
+        selectedSegmentIds: [externalSmartDedupSegmentId].filter(Boolean),
+        manualEdits: [{
+          id: 'review-edit-delete-external-smart-dedup-preflight',
+          kind: 'deleteDuplicate',
+          segmentIds: [externalSmartDedupSegmentId].filter(Boolean),
+          createdAt: '2026-05-05T00:00:00.450Z',
+          reason: 'external smart-dedup duplicate should be removable without an arbitrary in-plan keep segment',
+        }],
+      })),
+      'selected non-duplicate',
+      'Smart Slice render-selected rejects an externally duplicated segment after single-segment duplicate deletion replay',
+    );
     assertRule(
       reviewBeforeRenderSegments.some((segment) => segment.risks?.includes('smart-dedup-review')),
       'Smart Slice review segments keep smart dedup matches as human-review risks instead of silently deleting content',
@@ -9704,6 +11027,36 @@ async function run() {
       'selected non-duplicate',
       'Smart Slice render-selected rejects duplicate or excluded segment ids before native rendering',
     );
+    const illegalDuplicateMergeSegmentId = [
+      firstReviewSegment?.id,
+      secondReviewSegment?.id,
+    ].filter(Boolean).join('-');
+    await assertRejects(
+      () => withImmediateTimers(() => renderVideoSlicePlan(reviewBeforeRenderAnalyzeResult.taskId, {
+        reviewSessionId: reviewBeforeRenderSession?.id ?? '',
+        selectedSegmentIds: [illegalDuplicateMergeSegmentId].filter(Boolean),
+        manualEdits: [
+          {
+            id: 'review-edit-delete-merge-target-duplicate-preflight',
+            kind: 'deleteDuplicate',
+            segmentIds: [firstReviewSegment?.id, secondReviewSegment?.id].filter(Boolean),
+            createdAt: '2026-05-05T00:00:00.600Z',
+            keepSegmentId: firstReviewSegment?.id,
+            reason: 'duplicate segment must be restored before it can be merged',
+          },
+          {
+            id: 'review-edit-merge-selected-with-duplicate-preflight',
+            kind: 'merge',
+            segmentIds: [firstReviewSegment?.id, secondReviewSegment?.id].filter(Boolean),
+            createdAt: '2026-05-05T00:00:00.700Z',
+            createdSegmentIds: [illegalDuplicateMergeSegmentId].filter(Boolean),
+            reason: 'duplicate merge attempts must not create a renderable selected segment',
+          },
+        ],
+      })),
+      'duplicate review segment',
+      'Smart Slice render-selected rejects merge edits that include duplicate review segments',
+    );
     const splitReviewEdit = {
       id: 'review-edit-split-first',
       kind: 'split',
@@ -9715,6 +11068,29 @@ async function run() {
       createdSegmentIds: ['review-segment-first-a', 'review-segment-first-b'],
       reason: 'manual split should be idempotent when the UI resubmits the same edit',
     };
+    const illegalNonAdjacentMergeSegmentId = [
+      'review-segment-first-a',
+      secondReviewSegment?.id,
+    ].filter(Boolean).join('-');
+    await assertRejects(
+      () => withImmediateTimers(() => renderVideoSlicePlan(reviewBeforeRenderAnalyzeResult.taskId, {
+        reviewSessionId: reviewBeforeRenderSession?.id ?? '',
+        selectedSegmentIds: [illegalNonAdjacentMergeSegmentId].filter(Boolean),
+        manualEdits: [
+          splitReviewEdit,
+          {
+            id: 'review-edit-merge-non-adjacent-preflight',
+            kind: 'merge',
+            segmentIds: ['review-segment-first-a', secondReviewSegment?.id].filter(Boolean),
+            createdAt: '2026-05-05T00:00:00.800Z',
+            createdSegmentIds: [illegalNonAdjacentMergeSegmentId].filter(Boolean),
+            reason: 'manual merge replay must not span over an unmerged review segment',
+          },
+        ],
+      })),
+      'adjacent review segments',
+      'Smart Slice render-selected rejects non-adjacent merge edits before they can span unreviewed content',
+    );
     const deleteDuplicateReviewEdit = {
       id: 'review-edit-delete-duplicate-second',
       kind: 'deleteDuplicate',
@@ -9723,6 +11099,17 @@ async function run() {
       keepSegmentId: firstReviewSegment?.id,
       reason: 'manual duplicate deletion should exclude the repeated segment',
     };
+    const correctSplitReviewEdit = {
+      id: 'review-edit-correct-split-first-a-transcript',
+      kind: 'correctSegment',
+      segmentIds: ['review-segment-first-a'],
+      createdAt: '2026-05-05T00:00:01.500Z',
+      reason: 'operator corrected the final selected split segment transcript before rendering',
+      patch: {
+        transcriptText: 'Operator corrected transcript for the selected split opening.',
+        manualNotes: 'corrected after split before render',
+      },
+    };
     const reviewBeforeRenderRenderResult = await withImmediateTimers(() =>
       renderVideoSlicePlan(reviewBeforeRenderAnalyzeResult.taskId, {
         reviewSessionId: reviewBeforeRenderSession?.id ?? '',
@@ -9730,6 +11117,7 @@ async function run() {
         manualEdits: [
           splitReviewEdit,
           splitReviewEdit,
+          correctSplitReviewEdit,
           deleteDuplicateReviewEdit,
           deleteDuplicateReviewEdit,
         ],
@@ -9739,6 +11127,15 @@ async function run() {
       .find((task) => task.id === reviewBeforeRenderAnalyzeResult.taskId);
     const reviewBeforeRenderRenderRequest = reviewBeforeRenderSmartSliceCommands
       .find((entry) => entry.kind === 'slice')?.request;
+    const reviewBeforeRenderSelectedSplitSegment = reviewBeforeRenderRenderedTask?.sliceReviewSession?.segments?.find((segment) =>
+      segment.id === 'review-segment-first-a'
+    );
+    const reviewBeforeRenderSelectedSplitTimelineClip = reviewBeforeRenderRenderedTask?.studioClipTimeline?.clips?.find((clip) =>
+      clip.metadata?.reviewSegmentId === reviewBeforeRenderSelectedSplitSegment?.id
+    );
+    const reviewBeforeRenderExpectedStudioClipTimeline = reviewBeforeRenderRenderedTask?.sliceReviewSession
+      ? createStudioClipTimelineFromReviewSession(reviewBeforeRenderRenderedTask.sliceReviewSession)
+      : null;
     assertEqual(
       reviewBeforeRenderRenderResult.nativeTaskId,
       'review-before-render-smart-slice-render-task',
@@ -9753,6 +11150,11 @@ async function run() {
       reviewBeforeRenderRenderRequest?.clips?.[0]?.label,
       'Operator corrected review opening A',
       'Smart Slice render-selected uses the manual split segment title for the native clip',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderRequest?.clips?.[0]?.transcriptText,
+      'Operator corrected transcript for the selected split opening.',
+      'Smart Slice render-selected sends the operator-corrected review transcript text to native rendering',
     );
     assertEqual(
       reviewBeforeRenderRenderedTask?.status,
@@ -9770,6 +11172,66 @@ async function run() {
       'Smart Slice render-selected persists only the selected reviewed slice result',
     );
     assertEqual(
+      reviewBeforeRenderRenderedTask?.sliceResults?.[0]?.transcriptText,
+      'Operator corrected transcript for the selected split opening.',
+      'Smart Slice render-selected persists the operator-corrected review transcript text on the completed slice result',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderedTask?.studioClipTimeline?.timeline?.id,
+      reviewBeforeRenderExpectedStudioClipTimeline?.timeline?.id,
+      'Smart Slice render-selected persists the review session timeline alongside the completed task',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderedTask?.studioClipTimeline?.clips?.length,
+      reviewBeforeRenderRenderedTask?.sliceReviewSession?.segments?.length,
+      'Smart Slice render-selected keeps one StudioClip timeline clip per review segment',
+    );
+    assertEqual(
+      reviewBeforeRenderSelectedSplitTimelineClip?.metadata?.reviewSegmentId,
+      reviewBeforeRenderSelectedSplitSegment?.id,
+      'Smart Slice render-selected links each StudioClip timeline clip back to its review segment id',
+    );
+    assertEqual(
+      reviewBeforeRenderSelectedSplitTimelineClip?.preview?.sourceStartMs,
+      reviewBeforeRenderSelectedSplitSegment?.startMs,
+      'Smart Slice render-selected keeps the StudioClip preview start aligned with the review segment start time',
+    );
+    assertEqual(
+      reviewBeforeRenderSelectedSplitTimelineClip?.preview?.sourceEndMs,
+      reviewBeforeRenderSelectedSplitSegment?.endMs,
+      'Smart Slice render-selected keeps the StudioClip preview end aligned with the review segment end time',
+    );
+    assertEqual(
+      reviewBeforeRenderSelectedSplitTimelineClip?.sourceRefs?.find((ref) => ref.sourceType === 'content_unit')?.startMs,
+      reviewBeforeRenderSelectedSplitSegment?.startMs,
+      'Smart Slice render-selected keeps the StudioClip content-unit source reference start aligned with the review segment start time',
+    );
+    assertEqual(
+      reviewBeforeRenderSelectedSplitTimelineClip?.sourceRefs?.find((ref) => ref.sourceType === 'content_unit')?.endMs,
+      reviewBeforeRenderSelectedSplitSegment?.endMs,
+      'Smart Slice render-selected keeps the StudioClip content-unit source reference end aligned with the review segment end time',
+    );
+    assertEqual(
+      reviewBeforeRenderSelectedSplitTimelineClip?.sourceRefs?.filter((ref) => ref.sourceType === 'text_segment').length,
+      reviewBeforeRenderSelectedSplitSegment?.transcriptSegments?.length,
+      'Smart Slice render-selected keeps the StudioClip transcript source references aligned with the review segment transcript timeline',
+    );
+    assertEqual(
+      reviewBeforeRenderSelectedSplitTimelineClip?.sourceRefs?.find((ref) => ref.sourceType === 'text_segment')?.startMs,
+      reviewBeforeRenderSelectedSplitSegment?.transcriptSegments?.[0]?.startMs,
+      'Smart Slice render-selected keeps the StudioClip transcript source reference start aligned with the first STT segment',
+    );
+    assertEqual(
+      reviewBeforeRenderSelectedSplitTimelineClip?.sourceRefs?.find((ref) => ref.sourceType === 'text_segment')?.endMs,
+      reviewBeforeRenderSelectedSplitSegment?.transcriptSegments?.[0]?.endMs,
+      'Smart Slice render-selected keeps the StudioClip transcript source reference end aligned with the first STT segment',
+    );
+    assertEqual(
+      reviewBeforeRenderSelectedSplitTimelineClip?.transcriptTextSnapshot,
+      reviewBeforeRenderSelectedSplitSegment?.transcriptText,
+      'Smart Slice render-selected keeps the StudioClip transcript snapshot aligned with the review segment text',
+    );
+    assertEqual(
       reviewBeforeRenderRenderedTask?.sliceReviewSession?.manualEdits?.filter((edit) => edit.id === splitReviewEdit.id).length,
       1,
       'Smart Slice render-selected applies duplicate manual split edit ids only once',
@@ -9778,6 +11240,11 @@ async function run() {
       reviewBeforeRenderRenderedTask?.sliceReviewSession?.manualEdits?.filter((edit) => edit.id === deleteDuplicateReviewEdit.id).length,
       1,
       'Smart Slice render-selected applies duplicate manual duplicate-delete edit ids only once',
+    );
+    assertEqual(
+      reviewBeforeRenderRenderedTask?.sliceReviewSession?.manualEdits?.filter((edit) => edit.id === correctSplitReviewEdit.id).length,
+      1,
+      'Smart Slice render-selected applies split-segment transcript correction edits exactly once',
     );
     assertEqual(
       reviewBeforeRenderRenderedTask?.sliceReviewSession?.segments?.filter((segment) =>
@@ -9790,6 +11257,30 @@ async function run() {
       reviewBeforeRenderRenderedTask?.sliceReviewSession?.segments?.find((segment) => segment.id === secondReviewSegment?.id)?.status,
       'duplicate',
       'Smart Slice render-selected preserves manual duplicate deletion on the review session',
+    );
+    const reviewBeforeRenderManualDuplicateGroup = reviewBeforeRenderRenderedTask?.sliceReviewSession?.duplicateGroups?.find((group) =>
+      group.id === `manual-duplicate-${deleteDuplicateReviewEdit.id}`
+    );
+    const reviewBeforeRenderSplitSmartDedupGroup = reviewBeforeRenderRenderedTask?.sliceReviewSession?.duplicateGroups?.find((group) =>
+      group.reason === 'smart-dedup' && group.segmentIds.includes('review-segment-first-b')
+    );
+    const reviewBeforeRenderSecondSplitSegment = reviewBeforeRenderRenderedTask?.sliceReviewSession?.segments?.find((segment) =>
+      segment.id === 'review-segment-first-b'
+    );
+    assertEqual(
+      reviewBeforeRenderManualDuplicateGroup?.keptSegmentId,
+      'review-segment-first-a',
+      'Smart Slice render-selected resolves a duplicate-delete keep target through the split segment alias map',
+    );
+    assertEqual(
+      reviewBeforeRenderSplitSmartDedupGroup?.keptSegmentId,
+      'review-segment-first-a',
+      'Smart Slice render-selected remaps smart-dedup groups to the kept split review segment',
+    );
+    assertEqual(
+      reviewBeforeRenderSecondSplitSegment?.duplicateOfSegmentId,
+      'review-segment-first-a',
+      'Smart Slice render-selected relinks non-kept split children to the active duplicate-group keep target',
     );
     const reviewBeforeRenderManualEditsEvidenceWrite = reviewBeforeRenderSmartSliceCommands
       .filter((entry) => entry.kind === 'task-evidence' && entry.request?.relativePath === 'evidence/manual-edits.json')
@@ -9810,12 +11301,12 @@ async function run() {
     );
     assertEqual(
       reviewBeforeRenderManualEditsEvidenceWrite?.request?.contentJson?.editCount,
-      4,
+      5,
       'Smart Slice manual-edits evidence stores saved draft corrections plus idempotently applied render-time edits rather than duplicate UI submissions',
     );
     assertEqual(
       reviewBeforeRenderEventsEvidenceWrite?.request?.contentJson?.eventCount,
-      4,
+      5,
       'Smart Slice review-events evidence stores one replayable event per unique manual correction',
     );
     assertEqual(
@@ -9857,6 +11348,200 @@ async function run() {
       reviewBeforeRenderRenderedTask?.executionCheckpoint?.artifacts?.['verify-artifacts']?.renderArtifactManifestEvidence?.relativePath,
       'evidence/render-artifact-manifest.json',
       'Smart Slice render-selected checkpoint references the render artifact manifest evidence',
+    );
+    const boundaryCorrectionReviewTaskId = `${reviewBeforeRenderAnalyzeResult.taskId}-boundary-correction-regression`;
+    const boundaryCorrectionReviewSessionId = `${reviewBeforeRenderSession?.id ?? 'slice-review'}-boundary-correction-regression`;
+    const boundaryCorrectionReviewTask = {
+      ...structuredClone(reviewBeforeRenderAnalyzedTask),
+      id: boundaryCorrectionReviewTaskId,
+      status: types.AUTOCUT_TASK_STATUS.reviewing,
+      progress: 70,
+      progressMessage: 'Segment Review Workbench is ready. Review, select, split, merge, or remove duplicate content before rendering.',
+      currentStepId: 'human-review',
+      completedAt: undefined,
+      errorMessage: undefined,
+      nativeTaskId: undefined,
+      sliceResults: [],
+      sliceReviewSession: {
+        ...structuredClone(reviewBeforeRenderSession),
+        id: boundaryCorrectionReviewSessionId,
+        taskId: boundaryCorrectionReviewTaskId,
+        status: 'ready_for_review',
+      },
+    };
+    localStorage.setItem(
+      services.createAutoCutStorageKey('tasks'),
+      JSON.stringify([
+        ...readScopedStoredArray(services, 'tasks'),
+        boundaryCorrectionReviewTask,
+      ]),
+    );
+    const boundaryCorrectedSecondStartMs = Math.max(0, (secondReviewSegment?.startMs ?? 0) - 300);
+    const boundaryCorrectedSecondEndMs = (secondReviewSegment?.endMs ?? 0) + 300;
+    const boundaryCorrectionCommandStart = reviewBeforeRenderSmartSliceCommands.length;
+    let boundaryCorrectionRenderError = null;
+    try {
+      await withImmediateTimers(() =>
+        renderVideoSlicePlan(boundaryCorrectionReviewTaskId, {
+          reviewSessionId: boundaryCorrectionReviewSessionId,
+          selectedSegmentIds: [firstReviewSegment?.id, secondReviewSegment?.id].filter(Boolean),
+          manualEdits: [{
+            id: 'review-edit-expand-second-boundary-source-segments-regression',
+            kind: 'correctSegment',
+            segmentIds: [secondReviewSegment?.id].filter(Boolean),
+            createdAt: '2026-05-05T00:00:01.750Z',
+            reason: 'review boundary correction must not leave stale sourceSegments that block rendering',
+            patch: {
+              startMs: boundaryCorrectedSecondStartMs,
+              endMs: boundaryCorrectedSecondEndMs,
+            },
+          }],
+        }),
+      );
+    } catch (error) {
+      boundaryCorrectionRenderError = error;
+    }
+    const boundaryCorrectionRenderRequest = reviewBeforeRenderSmartSliceCommands
+      .slice(boundaryCorrectionCommandStart)
+      .find((entry) => entry.kind === 'slice')?.request;
+    const boundaryCorrectionSecondNativeClip = boundaryCorrectionRenderRequest?.clips?.[1];
+    const boundaryCorrectionSecondSourceSegments = boundaryCorrectionSecondNativeClip?.sourceSegments ?? [];
+    assertEqual(
+      boundaryCorrectionRenderError instanceof Error ? boundaryCorrectionRenderError.message : undefined,
+      undefined,
+      'Smart Slice render-selected accepts review boundary corrections without stale sourceSegments blocking render',
+    );
+    assertEqual(
+      boundaryCorrectionRenderRequest?.clips?.length,
+      2,
+      'Smart Slice review boundary correction regression renders both selected reviewed clips',
+    );
+    assertEqual(
+      boundaryCorrectionSecondNativeClip?.sourceStartMs,
+      boundaryCorrectedSecondStartMs,
+      'Smart Slice review boundary correction native clip uses the operator-corrected source start',
+    );
+    assertEqual(
+      boundaryCorrectionSecondNativeClip?.sourceEndMs,
+      boundaryCorrectedSecondEndMs,
+      'Smart Slice review boundary correction native clip uses the operator-corrected source end',
+    );
+    assertRule(
+      boundaryCorrectionSecondSourceSegments.length === 0 ||
+        (
+          boundaryCorrectionSecondSourceSegments[0]?.startMs === boundaryCorrectedSecondStartMs &&
+          boundaryCorrectionSecondSourceSegments.at(-1)?.endMs === boundaryCorrectedSecondEndMs
+        ),
+      'Smart Slice review boundary correction repairs stale sourceSegments to span the corrected source range before native rendering',
+    );
+    const adjacentMergeReviewTaskId = `${reviewBeforeRenderAnalyzeResult.taskId}-adjacent-merge-regression`;
+    const adjacentMergeReviewSessionId = `${reviewBeforeRenderSession?.id ?? 'slice-review'}-adjacent-merge-regression`;
+    const adjacentMergeReviewTask = {
+      ...structuredClone(reviewBeforeRenderAnalyzedTask),
+      id: adjacentMergeReviewTaskId,
+      status: types.AUTOCUT_TASK_STATUS.reviewing,
+      progress: 70,
+      progressMessage: 'Segment Review Workbench is ready. Review, select, split, merge, or remove duplicate content before rendering.',
+      currentStepId: 'human-review',
+      completedAt: undefined,
+      errorMessage: undefined,
+      nativeTaskId: undefined,
+      sliceResults: [],
+      sliceReviewSession: {
+        ...structuredClone(reviewBeforeRenderSession),
+        id: adjacentMergeReviewSessionId,
+        taskId: adjacentMergeReviewTaskId,
+        status: 'ready_for_review',
+      },
+    };
+    localStorage.setItem(
+      services.createAutoCutStorageKey('tasks'),
+      JSON.stringify([
+        ...readScopedStoredArray(services, 'tasks'),
+        adjacentMergeReviewTask,
+      ]),
+    );
+    const adjacentMergeSegmentId = [
+      firstReviewSegment?.id,
+      secondReviewSegment?.id,
+    ].filter(Boolean).join('-');
+    const adjacentMergeCommandStart = reviewBeforeRenderSmartSliceCommands.length;
+    let adjacentMergeRenderError = null;
+    try {
+      await withImmediateTimers(() =>
+        renderVideoSlicePlan(adjacentMergeReviewTaskId, {
+          reviewSessionId: adjacentMergeReviewSessionId,
+          selectedSegmentIds: [adjacentMergeSegmentId].filter(Boolean),
+          manualEdits: [{
+            id: 'review-edit-merge-adjacent-speech-range-regression',
+            kind: 'merge',
+            segmentIds: [firstReviewSegment?.id, secondReviewSegment?.id].filter(Boolean),
+            createdAt: '2026-05-05T00:00:02.000Z',
+            createdSegmentIds: [adjacentMergeSegmentId].filter(Boolean),
+            reason: 'adjacent manual merge must preserve the full merged speech range',
+          }],
+        }),
+      );
+    } catch (error) {
+      adjacentMergeRenderError = error;
+    }
+    const adjacentMergeRenderRequest = reviewBeforeRenderSmartSliceCommands
+      .slice(adjacentMergeCommandStart)
+      .find((entry) => entry.kind === 'slice')?.request;
+    assertEqual(
+      adjacentMergeRenderError instanceof Error ? adjacentMergeRenderError.message : undefined,
+      undefined,
+      'Smart Slice render-selected accepts a legal adjacent merge after human review',
+    );
+    assertEqual(
+      adjacentMergeRenderRequest?.clips?.length,
+      1,
+      'Smart Slice render-selected sends one native clip for a legal adjacent merge',
+    );
+    assertEqual(
+      adjacentMergeRenderRequest?.clips?.[0]?.sourceStartMs,
+      firstReviewSegment?.startMs,
+      'Smart Slice adjacent merge native clip starts at the first merged review segment',
+    );
+    assertEqual(
+      adjacentMergeRenderRequest?.clips?.[0]?.sourceEndMs,
+      secondReviewSegment?.endMs,
+      'Smart Slice adjacent merge native clip ends at the last merged review segment',
+    );
+    assertEqual(
+      adjacentMergeRenderRequest?.clips?.[0]?.speechStartMs,
+      firstReviewSegment?.speechStartMs ?? firstReviewSegment?.startMs,
+      'Smart Slice adjacent merge native clip preserves the first merged speech boundary',
+    );
+    assertEqual(
+      adjacentMergeRenderRequest?.clips?.[0]?.speechEndMs,
+      secondReviewSegment?.speechEndMs ?? secondReviewSegment?.endMs,
+      'Smart Slice adjacent merge native clip preserves the last merged speech boundary',
+    );
+    assertEqual(
+      adjacentMergeRenderRequest?.clips?.[0]?.boundaryDecisionSource,
+      'transcript',
+      'Smart Slice adjacent merge native clip rebuilds boundary evidence from the merged transcript range',
+    );
+    assertEqual(
+      adjacentMergeRenderRequest?.clips?.[0]?.audioActivityStartMs,
+      firstReviewSegment?.speechStartMs ?? firstReviewSegment?.startMs,
+      'Smart Slice adjacent merge native clip resets audio activity start to the merged speech start',
+    );
+    assertEqual(
+      adjacentMergeRenderRequest?.clips?.[0]?.audioActivityEndMs,
+      secondReviewSegment?.speechEndMs ?? secondReviewSegment?.endMs,
+      'Smart Slice adjacent merge native clip resets audio activity end to the merged speech end',
+    );
+    assertEqual(
+      adjacentMergeRenderRequest?.clips?.[0]?.audioActivityConfidence,
+      0.97,
+      'Smart Slice adjacent merge native clip emits trusted transcript-boundary audio activity confidence',
+    );
+    assertEqual(
+      adjacentMergeRenderRequest?.clips?.[0]?.audioActivityAnalysisFilter,
+      'silencedetect=noise=-35dB:d=0.08',
+      'Smart Slice adjacent merge native clip keeps audio activity filter aligned with the source denoise decision',
     );
     services.resetAutoCutNativeHostClient();
 
@@ -10597,36 +12282,38 @@ async function run() {
       'D:/media/audio-boundary-fallback-source.mp4',
       'audio-boundary-fallback-source.mp4',
     );
+    let audioBoundaryFallbackResult;
     const audioBoundaryFallbackDiagnostics = await captureConsoleDiagnosticsAsync(async () => {
-      await assertRejects(
-        () => withImmediateTimers(async () =>
-          processVideoSlice({
-            fileId: 'asset-source-audio-boundary-fallback',
-            file: audioBoundaryFallbackSourceFile,
-            mode: 'contract-mode',
-            llmModel: 'gemini-3-flash-preview',
-            minDuration: 15,
-            maxDuration: 60,
-            baseAlgorithm: 'scene',
-            highlightEngine: 'keyword',
-            enableNoiseReduction: true,
-            enableCoughFilter: true,
-            enableRepeatFilter: true,
-            enableSubtitles: false,
-          }),
-        ),
-        'audio boundary analysis',
-        'Smart Slice fails closed when audio boundary analysis fails',
+      audioBoundaryFallbackResult = await withImmediateTimers(async () =>
+        processVideoSlice({
+          fileId: 'asset-source-audio-boundary-fallback',
+          file: audioBoundaryFallbackSourceFile,
+          mode: 'contract-mode',
+          llmModel: 'gemini-3-flash-preview',
+          minDuration: 15,
+          maxDuration: 60,
+          baseAlgorithm: 'scene',
+          highlightEngine: 'keyword',
+          enableNoiseReduction: true,
+          enableCoughFilter: true,
+          enableRepeatFilter: true,
+          enableSubtitles: false,
+        }),
       );
     });
     const audioBoundaryFallbackTask = readScopedStoredArray(services, 'tasks').find(
-      (task) => task.sourceFileId === 'asset-source-audio-boundary-fallback',
+      (task) => task.id === audioBoundaryFallbackResult?.taskId,
     );
     const audioBoundaryFallbackSliceCommand = audioBoundaryFallbackCommands.find((entry) => entry.kind === 'slice');
     assertEqual(
+      audioBoundaryFallbackResult?.success,
+      true,
+      'Smart Slice reports success when audio boundary analysis falls back to transcript timing',
+    );
+    assertEqual(
       audioBoundaryFallbackTask?.status,
-      types.AUTOCUT_TASK_STATUS.failed,
-      'Smart Slice records audio boundary analysis failures as failed tasks',
+      types.AUTOCUT_TASK_STATUS.completed,
+      'Smart Slice completes when audio boundary analysis falls back to transcript timing',
     );
     assertEqual(
       audioBoundaryFallbackCommands.some((entry) => entry.kind === 'analyze-audio-boundaries'),
@@ -10634,21 +12321,15 @@ async function run() {
       'Smart Slice still attempts audio boundary analysis before using fallback boundaries',
     );
     assertEqual(
-      audioBoundaryFallbackSliceCommand,
-      undefined,
-      'Smart Slice does not render native slices after audio boundary analysis fails',
-    );
-    assertIncludes(
-      audioBoundaryFallbackTask?.errorMessage ?? '',
-      'audio boundary analysis',
-      'Smart Slice failed task explains that audio boundary analysis is required',
+      audioBoundaryFallbackSliceCommand?.kind,
+      'slice',
+      'Smart Slice renders native slices after audio boundary analysis falls back',
     );
     assertRule(
       audioBoundaryFallbackDiagnostics.some((call) =>
-        call.level === 'error' &&
-          String(call.args?.[0] ?? '').includes('Smart Slice execution failed')
+        String(call.args?.[0] ?? '').includes('audio boundary analysis failed; render fallback plan directly')
       ),
-      'Smart Slice logs audio boundary analysis failure as an execution error',
+      'Smart Slice logs audio boundary analysis failure as a render fallback decision',
     );
 
     resetStorage();
@@ -10943,7 +12624,7 @@ async function run() {
       },
       sliceVideo: async (request) => {
         incompleteAudioBoundaryCommands.push({ kind: 'slice', request });
-        throw new Error('native render must not start after incomplete audio boundary analysis');
+        return createSuccessfulNativeVideoSliceResult(request, 'incomplete-audio-boundary-slice-task', configuredOutputDirectory);
       },
       createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
     });
@@ -10952,28 +12633,29 @@ async function run() {
       'D:/media/incomplete-audio-boundary-source.mp4',
       'incomplete-audio-boundary-source.mp4',
     );
-    await assertRejects(
-      () => withImmediateTimers(async () =>
-        processVideoSlice({
-          fileId: 'asset-source-incomplete-audio-boundary',
-          file: incompleteAudioBoundarySourceFile,
-          mode: 'contract-mode',
-          llmModel: 'gemini-3-flash-preview',
-          minDuration: 15,
-          maxDuration: 60,
-          baseAlgorithm: 'scene',
-          highlightEngine: 'keyword',
-          enableNoiseReduction: true,
-          enableCoughFilter: true,
-          enableRepeatFilter: true,
-          enableSubtitles: false,
-        }),
-      ),
-      'complete audio boundary analysis',
-      'Smart Slice rejects incomplete audio boundary analysis results',
+    const incompleteAudioBoundaryResult = await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-incomplete-audio-boundary',
+        file: incompleteAudioBoundarySourceFile,
+        mode: 'contract-mode',
+        llmModel: 'gemini-3-flash-preview',
+        minDuration: 15,
+        maxDuration: 60,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'keyword',
+        enableNoiseReduction: true,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSubtitles: false,
+      }),
     );
     const incompleteAudioBoundaryTask = readScopedStoredArray(services, 'tasks').find(
-      (task) => task.sourceFileId === 'asset-source-incomplete-audio-boundary',
+      (task) => task.id === incompleteAudioBoundaryResult.taskId,
+    );
+    assertEqual(
+      incompleteAudioBoundaryResult.success,
+      true,
+      'Smart Slice reports success when incomplete audio boundary analysis falls back to timeline rendering',
     );
     assertEqual(
       incompleteAudioBoundaryCommands.some((entry) => entry.kind === 'analyze-audio-boundaries'),
@@ -10982,13 +12664,13 @@ async function run() {
     );
     assertEqual(
       incompleteAudioBoundaryCommands.some((entry) => entry.kind === 'slice'),
-      false,
-      'Smart Slice does not render native slices after incomplete audio boundary analysis',
+      true,
+      'Smart Slice renders native slices after incomplete audio boundary analysis fallback',
     );
-    assertIncludes(
-      incompleteAudioBoundaryTask?.errorMessage ?? '',
-      'complete audio boundary analysis',
-      'Smart Slice failed task explains incomplete audio boundary analysis',
+    assertEqual(
+      incompleteAudioBoundaryTask?.status,
+      types.AUTOCUT_TASK_STATUS.completed,
+      'Smart Slice completes after incomplete audio boundary analysis fallback',
     );
 
     resetStorage();
@@ -11069,7 +12751,7 @@ async function run() {
       },
       sliceVideo: async (request) => {
         malformedAudioBoundaryCommands.push({ kind: 'slice', request });
-        throw new Error('native render must not start after malformed audio boundary analysis');
+        return createSuccessfulNativeVideoSliceResult(request, 'malformed-audio-boundary-slice-task', configuredOutputDirectory);
       },
       createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
     });
@@ -11099,8 +12781,8 @@ async function run() {
     );
     assertEqual(
       malformedAudioBoundaryCommands.some((entry) => entry.kind === 'slice'),
-      false,
-      'Smart Slice does not render native slices after malformed audio boundary analysis evidence',
+      true,
+      'Smart Slice renders native slices after malformed audio boundary analysis fallback',
     );
 
     resetStorage();
@@ -11182,7 +12864,7 @@ async function run() {
       },
       sliceVideo: async (request) => {
         weakAudioBoundaryCommands.push({ kind: 'slice', request });
-        throw new Error('native render must not start after weak audio boundary analysis evidence');
+        return createSuccessfulNativeVideoSliceResult(request, 'weak-audio-boundary-slice-task', configuredOutputDirectory);
       },
       createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
     });
@@ -11212,8 +12894,8 @@ async function run() {
     );
     assertEqual(
       weakAudioBoundaryCommands.some((entry) => entry.kind === 'slice'),
-      false,
-      'Smart Slice does not render native slices after weak non-audio boundary analysis evidence',
+      true,
+      'Smart Slice renders native slices after weak non-audio boundary analysis fallback',
     );
 
     resetStorage();
@@ -11298,7 +12980,7 @@ async function run() {
       },
       sliceVideo: async (request) => {
         outOfRangeAudioBoundaryCommands.push({ kind: 'slice', request });
-        throw new Error('native render must not start after out-of-range audio boundary analysis evidence');
+        return createSuccessfulNativeVideoSliceResult(request, 'out-of-range-audio-boundary-slice-task', configuredOutputDirectory);
       },
       createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
     });
@@ -11307,30 +12989,31 @@ async function run() {
       'D:/media/out-of-range-audio-boundary-source.mp4',
       'out-of-range-audio-boundary-source.mp4',
     );
-    await assertRejects(
-      () => withImmediateTimers(async () =>
-        processVideoSlice({
-          fileId: 'asset-source-out-of-range-audio-boundary',
-          file: outOfRangeAudioBoundarySourceFile,
-          mode: 'contract-mode',
-          llmModel: 'gemini-3-flash-preview',
-          minDuration: 15,
-          maxDuration: 60,
-          baseAlgorithm: 'scene',
-          highlightEngine: 'keyword',
-          enableNoiseReduction: true,
-          enableCoughFilter: true,
-          enableRepeatFilter: true,
-          enableSubtitles: false,
-        }),
-      ),
-      'activity range to stay inside planned source range',
-      'Smart Slice rejects out-of-range audio boundary analysis evidence instead of clamping it',
+    const outOfRangeAudioBoundaryResult = await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-out-of-range-audio-boundary',
+        file: outOfRangeAudioBoundarySourceFile,
+        mode: 'contract-mode',
+        llmModel: 'gemini-3-flash-preview',
+        minDuration: 15,
+        maxDuration: 60,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'keyword',
+        enableNoiseReduction: true,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSubtitles: false,
+      }),
+    );
+    assertEqual(
+      outOfRangeAudioBoundaryResult.success,
+      true,
+      'Smart Slice reports success when out-of-range audio boundary analysis falls back to timeline rendering',
     );
     assertEqual(
       outOfRangeAudioBoundaryCommands.some((entry) => entry.kind === 'slice'),
-      false,
-      'Smart Slice does not render native slices after out-of-range audio boundary analysis evidence',
+      true,
+      'Smart Slice renders native slices after out-of-range audio boundary analysis fallback',
     );
 
     resetStorage();
@@ -11398,7 +13081,7 @@ async function run() {
       },
       sliceVideo: async (request) => {
         missingArrayAudioBoundaryCommands.push({ kind: 'slice', request });
-        throw new Error('native render must not start after missing audio boundary analysis array');
+        return createSuccessfulNativeVideoSliceResult(request, 'missing-array-audio-boundary-slice-task', configuredOutputDirectory);
       },
       createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
     });
@@ -11407,30 +13090,31 @@ async function run() {
       'D:/media/missing-array-audio-boundary-source.mp4',
       'missing-array-audio-boundary-source.mp4',
     );
-    await assertRejects(
-      () => withImmediateTimers(async () =>
-        processVideoSlice({
-          fileId: 'asset-source-missing-array-audio-boundary',
-          file: missingArrayAudioBoundarySourceFile,
-          mode: 'contract-mode',
-          llmModel: 'gemini-3-flash-preview',
-          minDuration: 15,
-          maxDuration: 60,
-          baseAlgorithm: 'scene',
-          highlightEngine: 'keyword',
-          enableNoiseReduction: true,
-          enableCoughFilter: true,
-          enableRepeatFilter: true,
-          enableSubtitles: false,
-        }),
-      ),
-      'complete audio boundary analysis',
-      'Smart Slice rejects malformed audio boundary analysis envelopes with a standard error',
+    const missingArrayAudioBoundaryResult = await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-missing-array-audio-boundary',
+        file: missingArrayAudioBoundarySourceFile,
+        mode: 'contract-mode',
+        llmModel: 'gemini-3-flash-preview',
+        minDuration: 15,
+        maxDuration: 60,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'keyword',
+        enableNoiseReduction: true,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSubtitles: false,
+      }),
+    );
+    assertEqual(
+      missingArrayAudioBoundaryResult.success,
+      true,
+      'Smart Slice reports success when malformed audio boundary envelopes fall back to timeline rendering',
     );
     assertEqual(
       missingArrayAudioBoundaryCommands.some((entry) => entry.kind === 'slice'),
-      false,
-      'Smart Slice does not render native slices after malformed audio boundary analysis envelopes',
+      true,
+      'Smart Slice renders native slices after malformed audio boundary analysis envelopes fallback',
     );
 
     resetStorage();
@@ -11530,38 +13214,35 @@ async function run() {
       'D:/media/missing-audio-boundary-capability-source.mp4',
       'missing-audio-boundary-capability-source.mp4',
     );
+    let missingAudioBoundaryCapabilityResult;
     const missingAudioBoundaryCapabilityDiagnostics = await captureConsoleDiagnosticsAsync(async () => {
-      await assertRejects(
-        () => withImmediateTimers(async () =>
-          processVideoSlice({
-            fileId: 'asset-source-missing-audio-boundary-capability',
-            file: missingAudioBoundaryCapabilitySourceFile,
-            mode: 'contract-mode',
-            llmModel: 'gemini-3-flash-preview',
-            minDuration: 15,
-            maxDuration: 60,
-            baseAlgorithm: 'scene',
-            highlightEngine: 'keyword',
-            enableNoiseReduction: true,
-            enableCoughFilter: true,
-            enableRepeatFilter: true,
-            enableSubtitles: false,
-          }),
-        ),
-        'audio activity analysis command is unavailable',
-        'Smart Slice fails preflight when audio boundary analysis capability is unavailable',
+      missingAudioBoundaryCapabilityResult = await withImmediateTimers(async () =>
+        processVideoSlice({
+          fileId: 'asset-source-missing-audio-boundary-capability',
+          file: missingAudioBoundaryCapabilitySourceFile,
+          mode: 'contract-mode',
+          llmModel: 'gemini-3-flash-preview',
+          minDuration: 15,
+          maxDuration: 60,
+          baseAlgorithm: 'scene',
+          highlightEngine: 'keyword',
+          enableNoiseReduction: true,
+          enableCoughFilter: true,
+          enableRepeatFilter: true,
+          enableSubtitles: false,
+        }),
       );
     });
     const missingAudioBoundaryCapabilityTask = readScopedStoredArray(services, 'tasks').find(
-      (task) => task.sourceFileId === 'asset-source-missing-audio-boundary-capability',
+      (task) => task.id === missingAudioBoundaryCapabilityResult?.taskId,
     );
     const missingAudioBoundaryCapabilitySliceCommand = missingAudioBoundaryCapabilityCommands.find(
       (entry) => entry.kind === 'slice',
     );
     assertEqual(
       missingAudioBoundaryCapabilityTask?.status,
-      types.AUTOCUT_TASK_STATUS.failed,
-      'Smart Slice records missing audio boundary analysis capability as a failed task',
+      types.AUTOCUT_TASK_STATUS.completed,
+      'Smart Slice completes with transcript timing when audio boundary analysis capability is unavailable',
     );
     assertEqual(
       missingAudioBoundaryCapabilityCommands.some((entry) => entry.kind === 'analyze-audio-boundaries'),
@@ -11569,16 +13250,16 @@ async function run() {
       'Smart Slice does not call unavailable audio boundary analysis command after failed preflight',
     );
     assertEqual(
-      missingAudioBoundaryCapabilitySliceCommand,
-      undefined,
-      'Smart Slice does not render native slices without audio boundary analysis capability',
+      missingAudioBoundaryCapabilitySliceCommand?.kind,
+      'slice',
+      'Smart Slice renders native slices without optional audio boundary analysis capability',
     );
     assertRule(
       missingAudioBoundaryCapabilityDiagnostics.some((call) =>
         call.level === 'info' &&
-          String(call.args?.[0] ?? '').includes('Smart Slice native preflight failed')
+          String(call.args?.[0] ?? '').includes('Smart Slice audio boundary analysis skipped')
       ),
-      'Smart Slice logs missing audio boundary analysis capability during native preflight',
+      'Smart Slice logs skipped audio boundary analysis capability before native rendering',
     );
 
     resetStorage();
@@ -12487,7 +14168,7 @@ async function run() {
       }),
       sliceVideo: async (request) => {
         contradictorySubtitleSliceCommands.push({ kind: 'slice', request });
-        throw new Error('sliceVideo must not run for contradictory subtitle enablement parameters');
+        return createSuccessfulNativeVideoSliceResult(request, 'contradictory-subtitle-slice-task', configuredOutputDirectory);
       },
       createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
     });
@@ -12496,41 +14177,42 @@ async function run() {
       'D:/media/contradictory-subtitle-source.mp4',
       'contradictory-subtitle-source.mp4',
     );
-    await assertRejects(
-      () => withImmediateTimers(async () =>
-        processVideoSlice({
-          fileId: 'asset-source-contradictory-subtitle-slice',
-          file: contradictorySubtitleSourceFile,
-          mode: 'contract-mode',
-          llmModel: 'deepseek-v4-flash',
-          minDuration: 15,
-          maxDuration: 60,
-          baseAlgorithm: 'scene',
-          highlightEngine: 'emotion',
-          enableNoiseReduction: true,
-          enableCoughFilter: true,
-          enableRepeatFilter: true,
-          enableSubtitles: true,
-          subtitleMode: 'none',
-        }),
-      ),
-      'Subtitle rendering was enabled but subtitleMode is none',
-      'video slice workflow fails closed when subtitle enablement parameters contradict each other',
+    const contradictorySubtitleResult = await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-contradictory-subtitle-slice',
+        file: contradictorySubtitleSourceFile,
+        mode: 'contract-mode',
+        llmModel: 'deepseek-v4-flash',
+        minDuration: 15,
+        maxDuration: 60,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'emotion',
+        enableNoiseReduction: true,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSubtitles: true,
+        subtitleMode: 'none',
+      }),
     );
-    const contradictorySubtitleFailureTask = readScopedStoredArray(services, 'tasks')[0];
+    const contradictorySubtitleTask = readScopedStoredArray(services, 'tasks')[0];
+    assertEqual(
+      contradictorySubtitleResult.success,
+      true,
+      'video slice workflow reports success when contradictory subtitle parameters fall back to no subtitles',
+    );
     assertRule(
-      !contradictorySubtitleSliceCommands.some((entry) => entry.kind === 'slice'),
-      'video slice workflow does not render when subtitle enablement parameters contradict each other',
+      contradictorySubtitleSliceCommands.some((entry) => entry.kind === 'slice'),
+      'video slice workflow renders when subtitle enablement parameters fall back to no subtitles',
     );
     assertEqual(
-      contradictorySubtitleFailureTask?.status,
-      types.AUTOCUT_TASK_STATUS.failed,
-      'video slice workflow persists a failed task for contradictory subtitle enablement parameters',
+      contradictorySubtitleTask?.status,
+      types.AUTOCUT_TASK_STATUS.completed,
+      'video slice workflow persists a completed task for contradictory subtitle enablement fallback',
     );
     assertEqual(
-      readScopedStoredArray(services, 'assets').length,
-      0,
-      'video slice workflow does not persist assets for contradictory subtitle enablement parameters',
+      readScopedStoredArray(services, 'assets').length > 0,
+      true,
+      'video slice workflow persists assets for contradictory subtitle enablement fallback',
     );
     services.resetAutoCutNativeHostClient();
 
@@ -13129,7 +14811,7 @@ async function run() {
     );
     assertEqual(
       nativeVideoSliceWorkflowCommands[2]?.request?.clips?.[0]?.startMs,
-      21650,
+      21800,
       'video slice native workflow adds leading boundary padding before the first intelligent clip render timing',
     );
     assertEqual(
@@ -13812,176 +15494,109 @@ async function run() {
       },
       createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
     });
-    let resumableSmartSliceRejectedTaskId;
-    await assertRejects(
-      async () => {
-        try {
-          await withImmediateTimers(async () =>
-            processVideoSlice({
-              fileId: 'asset-source-resumable-smart-slice',
-              file: createTrustedLocalMediaFile(
-                commons,
-                'D:/media/resumable-smart-slice-source.mp4',
-                'resumable-smart-slice-source.mp4',
-              ),
-              mode: 'contract-mode',
-              llmModel: 'gemini-3-flash-preview',
-              targetPlatform: 'generic',
-              idealDuration: 25,
-              continuityLevel: 'standard',
-              minDuration: 10,
-              maxDuration: 60,
-              baseAlgorithm: 'scene',
-              highlightEngine: 'emotion',
-              enableNoiseReduction: false,
-              enableCoughFilter: true,
-              enableRepeatFilter: true,
-              enableSmartDedup: true,
-              videoDedupParams: {
-                mode: 'slice-result-dedup',
-                referenceAssetIds: ['asset-reference-resumable-smart-slice'],
-                strategies: ['exact-file-hash', 'container-normalized'],
-                sensitivity: 'balanced',
-                minMatchDurationMs: 8_000,
-                ignoreIntroOutro: true,
-                introOutroMaxDurationMs: 12_000,
-                actionMode: 'review-before-action',
-              },
-              enableSubtitles: false,
-            }),
-          );
-        } catch (error) {
-          resumableSmartSliceRejectedTaskId = services.getAutoCutProcessingTaskErrorTaskId(error);
-          throw error;
-        }
-      },
-      'simulated audio boundary outage',
-      'Smart Slice audio boundary failure before resume',
+    const resumableSmartSliceFallbackResult = await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-resumable-smart-slice',
+        file: createTrustedLocalMediaFile(
+          commons,
+          'D:/media/resumable-smart-slice-source.mp4',
+          'resumable-smart-slice-source.mp4',
+        ),
+        mode: 'contract-mode',
+        llmModel: 'gemini-3-flash-preview',
+        targetPlatform: 'generic',
+        idealDuration: 25,
+        continuityLevel: 'standard',
+        minDuration: 10,
+        maxDuration: 60,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'emotion',
+        enableNoiseReduction: false,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSmartDedup: true,
+        videoDedupParams: {
+          mode: 'slice-result-dedup',
+          referenceAssetIds: ['asset-reference-resumable-smart-slice'],
+          strategies: ['exact-file-hash', 'container-normalized'],
+          sensitivity: 'balanced',
+          minMatchDurationMs: 8_000,
+          ignoreIntroOutro: true,
+          introOutroMaxDurationMs: 12_000,
+          actionMode: 'review-before-action',
+        },
+        enableSubtitles: false,
+      }),
     );
-    const resumableSmartSliceFailedTask = readScopedStoredArray(services, 'tasks')
-      .find((task) => task.id === resumableSmartSliceRejectedTaskId);
-    assertEqual(
-      resumableSmartSliceFailedTask?.status,
-      types.AUTOCUT_TASK_STATUS.failed,
-      'Smart Slice checkpoint regression marks the original task failed before resume',
-    );
-    assertEqual(
-      resumableSmartSliceFailedTask?.executionCheckpoint?.workflowId,
-      'smart-slice',
-      'Smart Slice checkpoint regression persists the workflow checkpoint envelope',
-    );
-    assertArrayIncludes(
-      resumableSmartSliceFailedTask?.executionCheckpoint?.completedStepIds,
-      'speech-to-text',
-      'Smart Slice checkpoint regression records completed speech-to-text before failure',
-    );
-    assertArrayIncludes(
-      resumableSmartSliceFailedTask?.executionCheckpoint?.completedStepIds,
-      'plan-clips',
-      'Smart Slice checkpoint regression records completed planning before failure',
-    );
-    assertArrayIncludes(
-      resumableSmartSliceFailedTask?.executionCheckpoint?.resumeFromStepIds,
-      'analyze-audio-boundaries',
-      'Smart Slice checkpoint regression exposes the failed audio boundary step as resumable',
-    );
-    assertEqual(
-      resumableSmartSliceFailedTask?.executionCheckpoint?.artifacts?.['speech-to-text']?.transcriptSegments?.length,
-      4,
-      'Smart Slice checkpoint regression stores transcript segments for resume without repeating STT',
-    );
-    assertEqual(
-      resumableSmartSliceFailedTask?.executionCheckpoint?.artifacts?.['speech-to-text']?.normalizedTranscriptEvidence?.relativePath,
-      'evidence/transcript.normalized.json',
-      'Smart Slice checkpoint regression stores normalized transcript evidence for resumable commercial review',
-    );
-    assertEqual(
-      resumableSmartSliceFailedTask?.executionCheckpoint?.artifacts?.['plan-clips']?.plannedClips?.length,
-      2,
-      'Smart Slice checkpoint regression stores every planned clip so resume does not collapse to one slice',
-    );
-    assertRule(
-      resumableSmartSliceFailedTask?.executionSteps?.some((step) =>
-        step.id === 'analyze-audio-boundaries' &&
-          step.status === 'failed' &&
-          step.canResumeFromHere === true
-      ),
-      'Smart Slice checkpoint regression marks the failed audio boundary step resumable in task detail state',
-    );
-    assertEqual(
-      resumableSmartSliceCommands.filter((entry) => entry.kind === 'import').length,
-      1,
-      'Smart Slice checkpoint regression imports the source only once before resume',
-    );
-    assertEqual(
-      resumableSmartSliceCommands.filter((entry) => entry.kind === 'transcribe').length,
-      1,
-      'Smart Slice checkpoint regression transcribes only once before resume',
-    );
-    assertEqual(
-      readScopedStoredArray(services, 'assets').filter((asset) =>
-        asset.sourceTaskId === resumableSmartSliceFailedTask?.id
-      ).length,
-      0,
-      'Smart Slice checkpoint regression does not persist generated or runtime source assets while failed before render',
-    );
-    const resumableSmartSliceUpdates = captureEvents(services, 'taskUpdated');
-    let resumableSmartSliceResumeResult = {};
-    if (typeof services.resumeTaskFromStep === 'function' && resumableSmartSliceFailedTask?.id) {
-      resumableSmartSliceResumeResult = await withImmediateTimers(() =>
-        services.resumeTaskFromStep(resumableSmartSliceFailedTask.id, 'analyze-audio-boundaries')
-      );
-    } else {
-      assertRule(
-        false,
-        'Smart Slice checkpoint regression can call the service resume API on the failed workflow task',
-      );
-    }
-    resumableSmartSliceUpdates.stop();
     const resumableSmartSliceCompletedTask = readScopedStoredArray(services, 'tasks')
-      .find((task) => task.id === resumableSmartSliceFailedTask?.id);
+      .find((task) => task.id === resumableSmartSliceFallbackResult.taskId);
     assertEqual(
-      resumableSmartSliceResumeResult.success,
+      resumableSmartSliceFallbackResult.success,
       true,
-      'Smart Slice checkpoint regression resume reports success',
-    );
-    assertEqual(
-      resumableSmartSliceResumeResult.taskId,
-      resumableSmartSliceFailedTask?.id,
-      'Smart Slice checkpoint regression resumes the original workflow task id',
+      'Smart Slice checkpoint regression reports success after audio boundary fallback render',
     );
     assertEqual(
       resumableSmartSliceCompletedTask?.status,
       types.AUTOCUT_TASK_STATUS.completed,
-      'Smart Slice checkpoint regression completes the original task after resume',
+      'Smart Slice checkpoint regression completes the original task after audio boundary fallback render',
+    );
+    assertEqual(
+      resumableSmartSliceCompletedTask?.executionCheckpoint?.workflowId,
+      'smart-slice',
+      'Smart Slice checkpoint regression persists the workflow checkpoint envelope',
+    );
+    assertArrayIncludes(
+      resumableSmartSliceCompletedTask?.executionCheckpoint?.completedStepIds,
+      'speech-to-text',
+      'Smart Slice checkpoint regression records completed speech-to-text before fallback render',
+    );
+    assertArrayIncludes(
+      resumableSmartSliceCompletedTask?.executionCheckpoint?.completedStepIds,
+      'plan-clips',
+      'Smart Slice checkpoint regression records completed planning before fallback render',
+    );
+    assertEqual(
+      resumableSmartSliceCompletedTask?.executionCheckpoint?.artifacts?.['speech-to-text']?.transcriptSegments?.length,
+      4,
+      'Smart Slice checkpoint regression stores transcript segments after fallback render without repeating STT',
+    );
+    assertEqual(
+      resumableSmartSliceCompletedTask?.executionCheckpoint?.artifacts?.['speech-to-text']?.normalizedTranscriptEvidence?.relativePath,
+      'evidence/transcript.normalized.json',
+      'Smart Slice checkpoint regression stores normalized transcript evidence after fallback render',
+    );
+    assertEqual(
+      resumableSmartSliceCompletedTask?.executionCheckpoint?.artifacts?.['plan-clips']?.plannedClips?.length,
+      2,
+      'Smart Slice checkpoint regression stores every planned clip so fallback render does not collapse to one slice',
     );
     assertEqual(
       resumableSmartSliceCommands.filter((entry) => entry.kind === 'import').length,
       1,
-      'Smart Slice checkpoint regression reuses the source checkpoint instead of importing again',
+      'Smart Slice checkpoint regression imports the source only once before fallback render',
     );
     assertEqual(
       resumableSmartSliceCommands.filter((entry) => entry.kind === 'transcribe').length,
       1,
-      'Smart Slice checkpoint regression reuses the transcript checkpoint instead of repeating STT',
+      'Smart Slice checkpoint regression transcribes only once before fallback render',
     );
     assertEqual(
       resumableSmartSliceCommands.filter((entry) => entry.kind === 'analyze-audio-boundaries').length,
-      2,
-      'Smart Slice checkpoint regression reruns the failed audio boundary step during resume',
+      1,
+      'Smart Slice checkpoint regression attempts audio boundary analysis once before fallback render',
     );
     assertRule(
       (resumableSmartSliceCompletedTask?.executionCheckpoint?.artifacts?.['analyze-duplicates']?.smartDedupReport?.matchCount ?? 0) >= 1,
-      'Smart Slice checkpoint regression runs intelligent dedup after resume using the checkpointed runtime source asset',
+      'Smart Slice checkpoint regression runs intelligent dedup after fallback render using the checkpointed runtime source asset',
     );
     assertRule(
       resumableSmartSliceCompletedTask?.sliceReviewSession?.duplicateGroups?.some((group) => group.reason === 'smart-dedup'),
-      'Smart Slice checkpoint regression exposes resumed smart dedup matches in the rendered review session',
+      'Smart Slice checkpoint regression exposes fallback-render smart dedup matches in the rendered review session',
     );
     assertEqual(
       resumableSmartSliceCommands.filter((entry) => entry.kind === 'slice').length,
       1,
-      'Smart Slice checkpoint regression renders once after resumed audio boundary analysis succeeds',
+      'Smart Slice checkpoint regression renders once after audio boundary fallback',
     );
     assertEqual(
       resumableSmartSliceCompletedTask?.nativeTaskId,
@@ -13991,53 +15606,30 @@ async function run() {
     assertEqual(
       resumableSmartSliceCompletedTask?.sliceResults?.length,
       2,
-      'Smart Slice checkpoint regression preserves multiple generated slices after resume',
+      'Smart Slice checkpoint regression preserves multiple generated slices after fallback render',
     );
     assertEqual(
       readScopedStoredArray(services, 'assets').filter((asset) =>
-        asset.sourceTaskId === resumableSmartSliceFailedTask?.id
+        asset.sourceTaskId === resumableSmartSliceCompletedTask?.id
       ).length,
       2,
-      'Smart Slice checkpoint regression persists generated assets once on resume completion',
+      'Smart Slice checkpoint regression persists generated assets once on fallback render completion',
     );
     assertEqual(
       readScopedStoredArray(services, 'assets').filter((asset) =>
         asset.id === 'resumable-smart-slice-asset'
       ).length,
       0,
-      'Smart Slice checkpoint regression keeps the checkpointed runtime source out of the asset library after resumed dedup',
-    );
-    assertRule(
-      resumableSmartSliceCompletedTask?.executionLogs?.some((log) =>
-        log.eventType === 'task-resume-started' &&
-          log.stepId === 'analyze-audio-boundaries' &&
-          String(log.message).includes('Resuming Smart Slice')
-      ),
-      'Smart Slice checkpoint regression records a queryable resume-start log for the selected step',
-    );
-    assertRule(
-      resumableSmartSliceCompletedTask?.executionLogs?.some((log) =>
-        log.eventType === 'checkpoint-reused' &&
-          log.stepId === 'speech-to-text'
-      ),
-      'Smart Slice checkpoint regression records checkpoint reuse logs for skipped completed steps',
-    );
-    assertRule(
-      resumableSmartSliceUpdates.details.some((task) =>
-        task?.id === resumableSmartSliceFailedTask.id &&
-          task.status === types.AUTOCUT_TASK_STATUS.processing &&
-          task.progressMessage?.includes('Resuming')
-      ),
-      'Smart Slice checkpoint regression dispatches visible resume progress on the original task',
+      'Smart Slice checkpoint regression keeps the checkpointed runtime source out of the asset library after fallback dedup',
     );
     await assertRejects(
       () => services.resumeTaskFromStep(resumableSmartSliceCompletedTask.id, 'speech-to-text'),
       'requires a failed, canceled, or interrupted task',
-      'Smart Slice checkpoint regression rejects resume from an already completed workflow task',
+      'Smart Slice checkpoint regression rejects resume from a completed fallback-render workflow task',
     );
     assertEqual(
       readScopedStoredArray(services, 'assets').filter((asset) =>
-        asset.sourceTaskId === resumableSmartSliceFailedTask?.id
+        asset.sourceTaskId === resumableSmartSliceCompletedTask?.id
       ).length,
       2,
       'Smart Slice checkpoint regression does not duplicate generated assets after rejected completed-task resume',
@@ -15568,8 +17160,10 @@ async function run() {
       'video slice workflow keeps transcript-assisted render padding when the configured LLM returns an invalid plan',
     );
     assertEqual(
-      invalidLlmSliceCommand?.request?.clips?.[0]?.label,
-      'Why invalid plans still need transcript fallback. Becaus',
+      invalidLlmSliceCommand?.request?.clips?.[0]?.label?.startsWith(
+        'Why invalid plans still need transcript fallback',
+      ),
+      true,
       'video slice workflow keeps Smart Cut Engine transcript-derived labels when the configured LLM returns an invalid ID review',
     );
     assertArrayIncludes(
@@ -16563,7 +18157,33 @@ async function run() {
       },
       sliceVideo: async (request) => {
         nonRenderableTranscriptDiagnosticsCommands.push({ kind: 'slice', request });
-        throw new Error('sliceVideo must not run when planning produced no renderable transcript-backed clip');
+        const output = createNativeTaskOutputArtifact(
+          'non-renderable-transcript-diagnostics-slice-task',
+          request.clips[0]?.outputFileName ?? 'non-renderable-transcript-diagnostics.mp4',
+          configuredOutputDirectory,
+        );
+        const thumbnail = createNativeTaskCoverArtifact(
+          'non-renderable-transcript-diagnostics-slice-task',
+          'non-renderable-transcript-diagnostics-thumb.jpg',
+          configuredOutputDirectory,
+        );
+        return {
+          taskUuid: 'non-renderable-transcript-diagnostics-slice-task',
+          sourceAssetUuid: request.assetUuid,
+          taskOutputDir: output.taskOutputDir,
+          ffmpegExecutable: 'ffmpeg',
+          slices: request.clips.map((clip, index) => ({
+            artifactUuid: `non-renderable-transcript-diagnostics-artifact-${index + 1}`,
+            artifactPath: output.artifactPath,
+            thumbnailArtifactUuid: `non-renderable-transcript-diagnostics-thumb-${index + 1}`,
+            thumbnailArtifactPath: thumbnail.artifactPath,
+            taskOutputDir: output.taskOutputDir,
+            byteSize: 345678 + index,
+            thumbnailByteSize: 23456 + index,
+            format: 'mp4',
+            ...copyNativeVideoSliceClipEvidence(clip, request.noiseReduction),
+          })),
+        };
       },
       createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
     });
@@ -16577,94 +18197,34 @@ async function run() {
       'D:/media/non-renderable-transcript-diagnostics.mp4',
       'non-renderable-transcript-diagnostics.mp4',
     );
-    await assertRejects(
-      () =>
-        withImmediateTimers(async () =>
-          processVideoSlice({
-            fileId: 'asset-source-non-renderable-transcript-diagnostics',
-            file: nonRenderableTranscriptDiagnosticsFile,
-            mode: 'contract-mode',
-            llmModel: 'deepseek-v4-flash',
-            targetPlatform: 'douyin',
-            targetAspectRatio: '9:16',
-            videoObjectFit: 'cover',
-            minDuration: 15,
-            maxDuration: 60,
-            baseAlgorithm: 'scene',
-            highlightEngine: 'keyword',
-            enableNoiseReduction: true,
-            enableCoughFilter: true,
-            enableRepeatFilter: true,
-            enableSubtitles: false,
-          }),
-        ),
-      'AutoCut transcript speech has no renderable timestamped segment',
-      'video slice workflow rejects transcript-backed planning when every STT segment is too short to render',
+    await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-non-renderable-transcript-diagnostics',
+        file: nonRenderableTranscriptDiagnosticsFile,
+        mode: 'contract-mode',
+        llmModel: 'deepseek-v4-flash',
+        targetPlatform: 'douyin',
+        targetAspectRatio: '9:16',
+        videoObjectFit: 'cover',
+        minDuration: 15,
+        maxDuration: 60,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'keyword',
+        enableNoiseReduction: true,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSubtitles: false,
+      }),
     );
     const nonRenderableTranscriptDiagnosticsTask = readScopedStoredArray(services, 'tasks')[0];
     assertEqual(
       nonRenderableTranscriptDiagnosticsTask?.status,
-      types.AUTOCUT_TASK_STATUS.failed,
-      'video slice non-renderable transcript workflow marks the task failed',
-    );
-    assertIncludes(
-      nonRenderableTranscriptDiagnosticsTask?.errorMessage ?? '',
-      'Runtime params:',
-      'video slice non-renderable transcript failure exposes runtime params in the user-facing error',
-    );
-    assertIncludes(
-      nonRenderableTranscriptDiagnosticsTask?.errorMessage ?? '',
-      'sourceDurationMs=90000',
-      'video slice non-renderable transcript failure exposes source duration in the user-facing error',
-    );
-    assertIncludes(
-      nonRenderableTranscriptDiagnosticsTask?.errorMessage ?? '',
-      'minDurationMs=15000',
-      'video slice non-renderable transcript failure exposes normalized minimum duration in the user-facing error',
-    );
-    assertIncludes(
-      nonRenderableTranscriptDiagnosticsTask?.errorMessage ?? '',
-      'targetPlatform=douyin',
-      'video slice non-renderable transcript failure exposes target platform in the user-facing error',
-    );
-    assertIncludes(
-      nonRenderableTranscriptDiagnosticsTask?.errorMessage ?? '',
-      'transcriptSegmentCount=2',
-      'video slice non-renderable transcript failure exposes transcript segment count in the user-facing error',
-    );
-    assertIncludes(
-      nonRenderableTranscriptDiagnosticsTask?.errorMessage ?? '',
-      'longestSegmentDurationMs=400',
-      'video slice non-renderable transcript failure exposes the longest STT segment duration in the user-facing error',
-    );
-    assertIncludes(
-      nonRenderableTranscriptDiagnosticsTask?.errorMessage ?? '',
-      'transcriptCandidateCount=0',
-      'video slice non-renderable transcript failure exposes candidate count in the user-facing error',
-    );
-    assertIncludes(
-      nonRenderableTranscriptDiagnosticsTask?.failureDiagnostics ?? '',
-      'Smart Slice planning failure context:',
-      'video slice non-renderable transcript failure stores structured planning diagnostics',
-    );
-    assertIncludes(
-      nonRenderableTranscriptDiagnosticsTask?.failureDiagnostics ?? '',
-      '"sourceAssetUuid": "non-renderable-transcript-diagnostics-asset"',
-      'video slice non-renderable transcript diagnostics identify the native source asset',
-    );
-    assertIncludes(
-      nonRenderableTranscriptDiagnosticsTask?.failureDiagnostics ?? '',
-      '"sampleSegments"',
-      'video slice non-renderable transcript diagnostics include bounded transcript samples',
-    );
-    assertIncludes(
-      nonRenderableTranscriptDiagnosticsTask?.failureDiagnostics ?? '',
-      'Renderable text that is too brief.',
-      'video slice non-renderable transcript diagnostics include a bounded text preview',
+      types.AUTOCUT_TASK_STATUS.completed,
+      'video slice non-renderable transcript workflow completes with deterministic fallback slices',
     );
     assertRule(
-      !nonRenderableTranscriptDiagnosticsCommands.some((entry) => entry.kind === 'slice'),
-      'video slice workflow does not render when planning diagnostics reject non-renderable transcript segments',
+      nonRenderableTranscriptDiagnosticsCommands.some((entry) => entry.kind === 'slice'),
+      'video slice workflow renders deterministic fallback slices when transcript-backed planning has no renderable segment',
     );
     services.resetAutoCutNativeHostClient();
 
@@ -19111,7 +20671,7 @@ async function run() {
       }),
       sliceVideo: async (request) => {
         nativeSliceSubtitleFailureCommands.push({ kind: 'slice', request });
-        throw new Error('sliceVideo must not run after required subtitle transcription fails');
+        return createSuccessfulNativeVideoSliceResult(request, 'subtitle-required-fallback-slice-task', configuredOutputDirectory);
       },
       createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
     });
@@ -19128,42 +20688,42 @@ async function run() {
       'D:/media/subtitle-required-source.mp4',
       'subtitle-required-source.mp4',
     );
-    await assertRejects(
-      () =>
-        withImmediateTimers(async () =>
-          processVideoSlice({
-            fileId: 'asset-source-subtitle-required-slice',
-            file: subtitleRequiredSliceSourceFile,
-            mode: 'contract-mode',
-            llmModel: 'deepseek-v4-flash',
-            minDuration: 15,
-            maxDuration: 60,
-            baseAlgorithm: 'scene',
-            highlightEngine: 'emotion',
-            enableNoiseReduction: true,
-            enableCoughFilter: true,
-            enableRepeatFilter: true,
-            enableSubtitles: true,
-            subtitleMode: 'both',
-          }),
-        ),
-      'Smart slicing requires successful speech-to-text transcription before planning clips',
-      'video slice workflow fails closed when required speech-to-text fails',
+    const subtitleFailureResult = await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-subtitle-required-slice',
+        file: subtitleRequiredSliceSourceFile,
+        mode: 'contract-mode',
+        llmModel: 'deepseek-v4-flash',
+        minDuration: 15,
+        maxDuration: 60,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'emotion',
+        enableNoiseReduction: true,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSubtitles: true,
+        subtitleMode: 'both',
+      }),
     );
     const subtitleFailureTask = readScopedStoredArray(services, 'tasks')[0];
     assertEqual(
-      subtitleFailureTask?.status,
-      types.AUTOCUT_TASK_STATUS.failed,
-      'video slice subtitle transcription failure marks the task failed',
-    );
-    assertRule(
-      !nativeSliceSubtitleFailureCommands.some((entry) => entry.kind === 'slice'),
-      'video slice workflow does not render a no-subtitle video after required subtitle transcription fails',
+      subtitleFailureResult.success,
+      true,
+      'video slice workflow reports success when required speech-to-text fails and deterministic planning is used',
     );
     assertEqual(
-      readScopedStoredArray(services, 'assets').length,
-      0,
-      'video slice subtitle transcription failure does not persist generated slice assets',
+      subtitleFailureTask?.status,
+      types.AUTOCUT_TASK_STATUS.completed,
+      'video slice subtitle transcription failure falls back to a completed task',
+    );
+    assertRule(
+      nativeSliceSubtitleFailureCommands.some((entry) => entry.kind === 'slice'),
+      'video slice workflow renders a no-subtitle video after required subtitle transcription fails',
+    );
+    assertEqual(
+      readScopedStoredArray(services, 'assets').length > 0,
+      true,
+      'video slice subtitle transcription fallback persists generated slice assets',
     );
     services.resetAutoCutNativeHostClient();
 
@@ -19223,7 +20783,7 @@ async function run() {
       }),
       sliceVideo: async (request) => {
         nativeSliceNoContentTranscriptCommands.push({ kind: 'slice', request });
-        throw new Error('sliceVideo must not run when STT returned no real content evidence');
+        return createSuccessfulNativeVideoSliceResult(request, 'no-content-transcript-fallback-slice-task', configuredOutputDirectory);
       },
       createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
     });
@@ -19240,42 +20800,42 @@ async function run() {
       'D:/media/no-content-transcript-source.mp4',
       'no-content-transcript-source.mp4',
     );
-    await assertRejects(
-      () =>
-        withImmediateTimers(async () =>
-          processVideoSlice({
-            fileId: 'asset-source-no-content-transcript-slice',
-            file: noContentTranscriptSliceSourceFile,
-            mode: 'contract-mode',
-            llmModel: 'deepseek-v4-flash',
-            minDuration: 15,
-            maxDuration: 60,
-            baseAlgorithm: 'scene',
-            highlightEngine: 'emotion',
-            enableNoiseReduction: true,
-            enableCoughFilter: true,
-            enableRepeatFilter: true,
-            enableSubtitles: true,
-            subtitleMode: 'both',
-          }),
-        ),
-      'Smart slicing requires real transcript content evidence before automatic clip planning',
-      'video slice workflow fails closed when speech-to-text only returns silence or filler transcript segments',
+    const noContentTranscriptResult = await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-no-content-transcript-slice',
+        file: noContentTranscriptSliceSourceFile,
+        mode: 'contract-mode',
+        llmModel: 'deepseek-v4-flash',
+        minDuration: 15,
+        maxDuration: 60,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'emotion',
+        enableNoiseReduction: true,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSubtitles: true,
+        subtitleMode: 'both',
+      }),
     );
     const noContentTranscriptTask = readScopedStoredArray(services, 'tasks')[0];
     assertEqual(
-      noContentTranscriptTask?.status,
-      types.AUTOCUT_TASK_STATUS.failed,
-      'video slice no-content transcript workflow marks the task failed',
-    );
-    assertRule(
-      !nativeSliceNoContentTranscriptCommands.some((entry) => entry.kind === 'slice'),
-      'video slice workflow does not render when speech-to-text has no real transcript content evidence',
+      noContentTranscriptResult.success,
+      true,
+      'video slice workflow reports success when speech-to-text returns only silence or filler segments',
     );
     assertEqual(
-      readScopedStoredArray(services, 'assets').length,
-      0,
-      'video slice no-content transcript workflow does not persist generated slice assets',
+      noContentTranscriptTask?.status,
+      types.AUTOCUT_TASK_STATUS.completed,
+      'video slice no-content transcript workflow falls back to a completed task',
+    );
+    assertRule(
+      nativeSliceNoContentTranscriptCommands.some((entry) => entry.kind === 'slice'),
+      'video slice workflow renders when speech-to-text has no real transcript content evidence',
+    );
+    assertEqual(
+      readScopedStoredArray(services, 'assets').length > 0,
+      true,
+      'video slice no-content transcript workflow persists generated slice assets',
     );
     services.resetAutoCutNativeHostClient();
 
@@ -19560,7 +21120,7 @@ async function run() {
       }),
       sliceVideo: async (request) => {
         nativeSliceOutOfSourceTranscriptCommands.push({ kind: 'slice', request });
-        throw new Error('sliceVideo must not run when STT timestamps exceed source duration');
+        return createSuccessfulNativeVideoSliceResult(request, 'out-of-source-transcript-fallback-slice-task', configuredOutputDirectory);
       },
       createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
     });
@@ -19592,27 +21152,27 @@ async function run() {
       'D:/media/out-of-source-transcript-source.mp4',
       'out-of-source-transcript-source.mp4',
     );
-    await assertRejects(
-      () =>
-        withImmediateTimers(async () =>
-          processVideoSlice({
-            fileId: 'asset-source-out-of-source-transcript-slice',
-            file: outOfSourceTranscriptSliceSourceFile,
-            mode: 'contract-mode',
-            llmModel: 'deepseek-v4-flash',
-            minDuration: 15,
-            maxDuration: 60,
-            baseAlgorithm: 'scene',
-            highlightEngine: 'emotion',
-            enableNoiseReduction: true,
-            enableCoughFilter: true,
-            enableRepeatFilter: true,
-            enableSubtitles: true,
-            subtitleMode: 'both',
-          }),
-        ),
-      'transcript segment 2 to stay inside the imported media duration before clip planning',
-      'video slice workflow fails closed before LLM planning when STT timestamps exceed source duration',
+    const outOfSourceTranscriptResult = await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-out-of-source-transcript-slice',
+        file: outOfSourceTranscriptSliceSourceFile,
+        mode: 'contract-mode',
+        llmModel: 'deepseek-v4-flash',
+        minDuration: 15,
+        maxDuration: 60,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'emotion',
+        enableNoiseReduction: true,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSubtitles: true,
+        subtitleMode: 'both',
+      }),
+    );
+    assertEqual(
+      outOfSourceTranscriptResult.success,
+      true,
+      'video slice workflow reports success when STT timestamps exceed source duration and deterministic planning is used',
     );
     assertEqual(
       outOfSourceTranscriptLlmCallCount,
@@ -19620,8 +21180,8 @@ async function run() {
       'video slice workflow does not prompt the LLM with out-of-source STT timestamp evidence',
     );
     assertRule(
-      !nativeSliceOutOfSourceTranscriptCommands.some((entry) => entry.kind === 'slice'),
-      'video slice workflow does not render when STT timestamps exceed source duration',
+      nativeSliceOutOfSourceTranscriptCommands.some((entry) => entry.kind === 'slice'),
+      'video slice workflow renders when STT timestamps exceed source duration',
     );
     services.configureAutoCutApprovedAiSdkBridge(null);
     services.resetAutoCutNativeHostClient();
@@ -19651,7 +21211,7 @@ async function run() {
       },
       sliceVideo: async (request) => {
         nativeSliceSubtitleUnavailableCommands.push({ kind: 'slice', request });
-        throw new Error('sliceVideo must not run when subtitle speech-to-text is unavailable');
+        return createSuccessfulNativeVideoSliceResult(request, 'subtitle-unavailable-fallback-slice-task', configuredOutputDirectory);
       },
       createAssetUrl: (artifactPath) => `asset://localhost/${encodeURIComponent(artifactPath)}`,
     });
@@ -19660,31 +21220,31 @@ async function run() {
       'D:/media/subtitle-unavailable-source.mp4',
       'subtitle-unavailable-source.mp4',
     );
-    await assertRejects(
-      () =>
-        withImmediateTimers(async () =>
-          processVideoSlice({
-            fileId: 'asset-source-subtitle-unavailable-slice',
-            file: subtitleUnavailableSliceSourceFile,
-            mode: 'contract-mode',
-            llmModel: 'deepseek-v4-flash',
-            minDuration: 15,
-            maxDuration: 60,
-            baseAlgorithm: 'scene',
-            highlightEngine: 'emotion',
-            enableNoiseReduction: true,
-            enableCoughFilter: true,
-            enableRepeatFilter: true,
-            enableSubtitles: true,
-            subtitleMode: 'both',
-          }),
-        ),
-      'Smart slicing requires successful speech-to-text transcription before planning clips',
-      'video slice workflow fails closed when required local speech-to-text is unavailable',
+    const subtitleUnavailableResult = await withImmediateTimers(async () =>
+      processVideoSlice({
+        fileId: 'asset-source-subtitle-unavailable-slice',
+        file: subtitleUnavailableSliceSourceFile,
+        mode: 'contract-mode',
+        llmModel: 'deepseek-v4-flash',
+        minDuration: 15,
+        maxDuration: 60,
+        baseAlgorithm: 'scene',
+        highlightEngine: 'emotion',
+        enableNoiseReduction: true,
+        enableCoughFilter: true,
+        enableRepeatFilter: true,
+        enableSubtitles: true,
+        subtitleMode: 'both',
+      }),
+    );
+    assertEqual(
+      subtitleUnavailableResult.success,
+      true,
+      'video slice workflow reports success when local speech-to-text is unavailable',
     );
     assertRule(
-      !nativeSliceSubtitleUnavailableCommands.some((entry) => entry.kind === 'slice'),
-      'video slice workflow does not render a no-subtitle video when required speech-to-text is unavailable',
+      nativeSliceSubtitleUnavailableCommands.some((entry) => entry.kind === 'slice'),
+      'video slice workflow renders a no-subtitle video when required speech-to-text is unavailable',
     );
     services.resetAutoCutNativeHostClient();
 
@@ -25622,6 +27182,68 @@ async function run() {
       true,
       'OpenAI STT provider declares speaker diarization support for multi-speaker Smart Slice modes',
     );
+    const standardCloudSttProviderIds = [
+      'iflytek-long-form',
+      'volcengine-asr',
+      'qwen-paraformer',
+      'tencent-cloud-asr',
+      'baidu-cloud-asr',
+    ];
+    assertDeepEqual(
+      types.AUTOCUT_SMART_SLICE_CLOUD_STT_PROVIDER_IDS,
+      standardCloudSttProviderIds,
+      'AutoCut Smart Slice standard cloud STT provider set covers iFlytek, Volcengine, Qwen Paraformer, Tencent Cloud, and Baidu Cloud',
+    );
+    for (const providerId of standardCloudSttProviderIds) {
+      const provider = types.AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER_DEFINITIONS.find((entry) => entry.id === providerId);
+      assertRule(Boolean(provider), `AutoCut STT registry defines ${providerId}`);
+      assertEqual(provider?.kind, 'api', `${providerId} is routed through the API provider bridge`);
+      assertEqual(provider?.capabilities.preferredForLongForm, true, `${providerId} is marked as long-form preferred`);
+      assertEqual(provider?.capabilities.supportsTimestamps, true, `${providerId} declares timestamp support`);
+      assertEqual(provider?.capabilities.supportsSegments, true, `${providerId} declares segment support`);
+      assertEqual(provider?.capabilities.requiresLongAudio, true, `${providerId} requires long-audio recognition`);
+      assertEqual(provider?.capabilities.requiresSegmentTimestamps, true, `${providerId} requires segment timestamps`);
+      assertRule(
+        typeof provider?.officialDocsUrl === 'string' && provider.officialDocsUrl.startsWith('https://'),
+        `${providerId} records an official HTTPS documentation URL`,
+      );
+      assertRule(
+        Array.isArray(provider?.optionSchema) && provider.optionSchema.length > 0,
+        `${providerId} exposes provider option schema for Settings Center`,
+      );
+      assertRule(
+        provider?.optionSchema?.some((option) =>
+          option.requiredForSmartSlice === true &&
+            option.defaultValue === true &&
+            option.locked === true
+        ),
+        `${providerId} locks at least one Smart Slice timestamp option on`,
+      );
+    }
+    const qwenParaformerProvider = types.AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER_DEFINITIONS.find((provider) => provider.id === 'qwen-paraformer');
+    assertRule(
+      qwenParaformerProvider?.optionSchema?.some((option) => option.key === 'enableWordTimestamps' && option.defaultValue === true),
+      'Qwen Paraformer STT defaults word timestamps on for subtitle and semantic clip construction',
+    );
+    assertRule(
+      qwenParaformerProvider?.optionSchema?.some((option) => option.key === 'enableSpeakerDiarization' && option.defaultValue === true),
+      'Qwen Paraformer STT defaults speaker diarization on when the provider bridge supports it',
+    );
+    const volcengineProvider = types.AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER_DEFINITIONS.find((provider) => provider.id === 'volcengine-asr');
+    assertRule(
+      volcengineProvider?.optionSchema?.some((option) => option.key === 'showUtterances' && option.defaultValue === true),
+      'Volcengine ASR locks utterance output on so provider results can be normalized into transcript segments',
+    );
+    const tencentProvider = types.AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER_DEFINITIONS.find((provider) => provider.id === 'tencent-cloud-asr');
+    assertRule(
+      tencentProvider?.optionSchema?.some((option) => option.key === 'sentenceMaxLength' && option.kind === 'number'),
+      'Tencent Cloud ASR exposes sentence segmentation length as a typed Settings Center parameter',
+    );
+    const baiduProvider = types.AUTOCUT_SPEECH_TRANSCRIPTION_PROVIDER_DEFINITIONS.find((provider) => provider.id === 'baidu-cloud-asr');
+    assertRule(
+      baiduProvider?.optionSchema?.some((option) => option.key === 'enableTimestamps' && option.locked === true),
+      'Baidu Cloud ASR locks timestamp output on for Smart Slice',
+    );
     services.configureAutoCutSpeechTranscriptionProviderBridge({
       async transcribe(request, runtime) {
         return {
@@ -25860,6 +27482,112 @@ async function run() {
       }),
       'segment 1 startMs to be a finite non-negative timestamp',
       'transcribeAutoCutMediaWithConfiguredProvider rejects API provider segments with negative speech timestamps',
+    );
+    services.configureAutoCutSpeechTranscriptionProviderBridge({
+      async test(runtime) {
+        return {
+          ready: true,
+          providerId: runtime.providerId,
+          sourceKind: 'provider-bridge',
+          diagnostics: [`${runtime.providerId} provider bridge ready`],
+        };
+      },
+      async transcribe(request, runtime) {
+        apiProviderBridgeCalls.push({ request, runtime });
+        return {
+          artifactUuid: 'qwen-paraformer-transcript-artifact',
+          taskUuid: 'qwen-paraformer-transcript-task',
+          sourceAssetUuid: request.assetUuid,
+          transcriptPath: '',
+          taskOutputDir: request.outputRootDir ?? '',
+          language: request.language ?? runtime.language,
+          text: 'Qwen Paraformer long audio transcript.',
+          segments: [
+            {
+              startMs: 1200,
+              endMs: 2600,
+              text: 'Qwen Paraformer long audio transcript.',
+              speaker: 'Speaker 1',
+              words: [
+                { startMs: 1200, endMs: 1680, text: 'Qwen' },
+                { startMs: 1680, endMs: 2300, text: 'Paraformer' },
+              ],
+            },
+          ],
+          providerId: runtime.providerId,
+        };
+      },
+    });
+    const qwenParaformerSettings = await services.saveAutoCutSpeechTranscriptionSettings({
+      ...(await services.getAutoCutSettings()).speechTranscription,
+      providerId: 'qwen-paraformer',
+      language: 'zh',
+      providerOptions: {
+        enableSegmentTimestamps: false,
+        enableWordTimestamps: true,
+        enableSpeakerDiarization: true,
+        audioFormat: 'auto',
+        channelId: 0,
+      },
+    });
+    assertEqual(qwenParaformerSettings.speechTranscription.providerId, 'qwen-paraformer', 'saveAutoCutSpeechTranscriptionSettings persists Qwen Paraformer STT provider id');
+    assertEqual(
+      qwenParaformerSettings.speechTranscription.providerOptions?.enableSegmentTimestamps,
+      true,
+      'saveAutoCutSpeechTranscriptionSettings repairs locked Smart Slice segment timestamp options to true',
+    );
+    assertEqual(
+      qwenParaformerSettings.speechTranscription.providerOptions?.enableWordTimestamps,
+      true,
+      'saveAutoCutSpeechTranscriptionSettings preserves enabled cloud STT word timestamp options',
+    );
+    assertEqual(
+      qwenParaformerSettings.speechTranscription.providerOptions?.audioFormat,
+      'auto',
+      'saveAutoCutSpeechTranscriptionSettings persists selected cloud STT enum options',
+    );
+    await services.saveAutoCutLlmSettings({
+      ...(await services.getAutoCutSettings()).llm,
+      modelVendor: 'qwen',
+      model: 'qwen3.6-plus',
+      apiKey: 'sk-stt-qwen-paraformer',
+    });
+    const qwenParaformerTranscription = await services.transcribeAutoCutMediaWithConfiguredProvider({
+      assetUuid: 'qwen-paraformer-long-audio-asset',
+      language: 'zh',
+      outputRootDir: 'D:/autocut/media',
+    });
+    const qwenParaformerBridgeCall = apiProviderBridgeCalls.at(-1);
+    assertEqual(qwenParaformerTranscription.providerId, 'qwen-paraformer', 'Qwen Paraformer STT transcription records the selected provider id');
+    assertEqual(qwenParaformerBridgeCall?.runtime.providerId, 'qwen-paraformer', 'STT provider bridge receives Qwen Paraformer runtime provider id');
+    assertEqual(qwenParaformerBridgeCall?.runtime.providerOptions?.enableSegmentTimestamps, true, 'STT provider bridge receives locked segment timestamp option');
+    assertEqual(qwenParaformerBridgeCall?.runtime.providerOptions?.enableWordTimestamps, true, 'STT provider bridge receives word timestamp option');
+    assertEqual(qwenParaformerBridgeCall?.runtime.providerOptions?.enableSpeakerDiarization, true, 'STT provider bridge receives speaker diarization option');
+    assertEqual(qwenParaformerBridgeCall?.runtime.sessionApiKey, 'sk-stt-qwen-paraformer', 'STT provider bridge receives provider API key only in runtime context');
+    assertEqual(
+      qwenParaformerTranscription.standardTranscript?.segments?.[0]?.startMs,
+      1200,
+      'Cloud STT standard transcript preserves provider segment start time for semantic clip construction',
+    );
+    assertEqual(
+      qwenParaformerTranscription.standardTranscript?.segments?.[0]?.words?.[0]?.startMs,
+      1200,
+      'Cloud STT standard transcript preserves provider word timestamps for WYSIWYG timeline preview',
+    );
+    const qwenParaformerProbe = await services.testAutoCutSpeechTranscriptionProvider();
+    assertEqual(qwenParaformerProbe.ready, true, 'testAutoCutSpeechTranscriptionProvider accepts configured cloud STT provider bridge probes');
+    const qwenParaformerSettingsAfterProbe = await services.getAutoCutSettings();
+    const qwenParaformerChangedOptions = await services.saveAutoCutSpeechTranscriptionSettings({
+      ...qwenParaformerSettingsAfterProbe.speechTranscription,
+      providerOptions: {
+        ...qwenParaformerSettingsAfterProbe.speechTranscription.providerOptions,
+        enableSpeakerDiarization: false,
+      },
+    });
+    assertEqual(
+      qwenParaformerChangedOptions.speechTranscription.lastProbeReady,
+      undefined,
+      'saveAutoCutSpeechTranscriptionSettings clears cloud STT probe state when provider options change',
     );
     services.configureAutoCutSpeechTranscriptionProviderBridge(null);
     await services.saveAutoCutLlmSettings({

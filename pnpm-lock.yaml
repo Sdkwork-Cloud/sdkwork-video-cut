@@ -419,6 +419,8 @@ importers:
         specifier: 'catalog:'
         version: 7.14.2(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
 
+  packages/sdkwork-autocut-smart-cut-engine: {}
+
   packages/sdkwork-autocut-subtitle-translate:
     dependencies:
       '@sdkwork/autocut-commons':
@@ -529,6 +531,21 @@ importers:
         specifier: 'catalog:'
         version: 7.14.2(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
 
+  packages/sdkwork-autocut-video-dedup:
+    dependencies:
+      '@sdkwork/autocut-commons':
+        specifier: workspace:*
+        version: link:../sdkwork-autocut-commons
+      '@sdkwork/autocut-services':
+        specifier: workspace:*
+        version: link:../sdkwork-autocut-services
+      '@sdkwork/autocut-types':
+        specifier: workspace:*
+        version: link:../sdkwork-autocut-types
+      react:
+        specifier: 'catalog:'
+        version: 19.2.5
+
   packages/sdkwork-autocut-video-enhance:
     dependencies:
       '@sdkwork/autocut-commons':
@@ -549,21 +566,6 @@ importers:
       react-router-dom:
         specifier: 'catalog:'
         version: 7.14.2(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
-
-  packages/sdkwork-autocut-video-dedup:
-    dependencies:
-      '@sdkwork/autocut-commons':
-        specifier: workspace:*
-        version: link:../sdkwork-autocut-commons
-      '@sdkwork/autocut-services':
-        specifier: workspace:*
-        version: link:../sdkwork-autocut-services
-      '@sdkwork/autocut-types':
-        specifier: workspace:*
-        version: link:../sdkwork-autocut-types
-      react:
-        specifier: 'catalog:'
-        version: 19.2.5
 
   packages/sdkwork-autocut-video-gif:
     dependencies:
