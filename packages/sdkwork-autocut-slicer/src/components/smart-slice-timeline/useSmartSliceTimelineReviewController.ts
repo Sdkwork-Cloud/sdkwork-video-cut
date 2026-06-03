@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import type {
   AutoCutSliceManualEdit,
   AutoCutSliceReviewSegment,
@@ -45,6 +45,7 @@ export interface UseSmartSliceTimelineReviewControllerParams {
   reviewSession: AutoCutSliceReviewSession | null;
   timelineSnapshot: AutoCutStudioClipTimelineSnapshot | null;
   timelineDurationMs: number;
+  viewportPxPerMs?: number;
   onActiveReviewSegmentIdChange: (segmentId: string) => void;
   onSeekPreviewMs: (timeMs: number) => void;
   onCommitReviewSessionDraft: SmartSliceTimelineReviewCommitDraft;
@@ -54,6 +55,7 @@ export function useSmartSliceTimelineReviewController({
   reviewSession,
   timelineSnapshot,
   timelineDurationMs,
+  viewportPxPerMs,
   onActiveReviewSegmentIdChange,
   onSeekPreviewMs,
   onCommitReviewSessionDraft,
@@ -88,8 +90,8 @@ export function useSmartSliceTimelineReviewController({
   ) => {
     const { previousClipEndMs, nextClipStartMs } = resolveNeighborBounds(item);
     const constrainedMs = side === 'left'
-      ? Math.max(previousClipEndMs ?? 0, nextMs)
-      : Math.min(nextClipStartMs ?? timelineDurationMs, nextMs);
+      ? Math.max(previousClipEndMs ?? 0, Math.min(nextMs, item.clip.endMs - 1))
+      : Math.min(nextClipStartMs ?? timelineDurationMs, Math.max(nextMs, item.clip.startMs + 1));
     return clampSmartSliceTimelineMs(constrainedMs, timelineDurationMs);
   }, [resolveNeighborBounds, timelineDurationMs]);
 
@@ -176,15 +178,16 @@ export function useSmartSliceTimelineReviewController({
     });
     onActiveReviewSegmentIdChange(item.segment.id);
     setPreviewRange(createStudioClipPreviewRange(previewClipForBoundary));
+    const effectivePxPerMs = viewportPxPerMs ?? (item.widthPx / Math.max(1, item.clip.endMs - item.clip.startMs));
     setBoundaryPreview(
       buildSmartSliceTimelineBoundaryPreview(
         item,
         previewClipForBoundary,
-        item.widthPx / Math.max(1, item.clip.endMs - item.clip.startMs),
+        effectivePxPerMs,
         side,
       ),
     );
-  }, [constrainBoundaryMs, onActiveReviewSegmentIdChange, timelineSnapshot]);
+  }, [constrainBoundaryMs, onActiveReviewSegmentIdChange, timelineSnapshot, viewportPxPerMs]);
 
   const splitClipAtTime = useCallback((segmentId: string, requestedSplitAtMs?: number) => {
     if (!reviewSession) {
@@ -203,7 +206,10 @@ export function useSmartSliceTimelineReviewController({
     onCommitReviewSessionDraft(reviewSession, splitResult.segments, splitResult.manualEdit, {
       processingOperations: timelineSnapshot?.processingOperations ?? [],
     });
-    onActiveReviewSegmentIdChange(splitResult.createdSegmentIds[0]);
+    const firstCreatedId = splitResult.createdSegmentIds[0];
+    if (firstCreatedId !== undefined) {
+      onActiveReviewSegmentIdChange(firstCreatedId);
+    }
     setPreviewRange({
       startMs: Math.max(0, splitResult.splitAtMs - 500),
       endMs: Math.min(timelineDurationMs, splitResult.splitAtMs + 500),
@@ -218,18 +224,24 @@ export function useSmartSliceTimelineReviewController({
     timelineSnapshot?.processingOperations,
   ]);
 
+  const lastSeekedLoopMsRef = useRef(0);
+
   const syncPreviewPlayback = useCallback((currentSeconds: number, durationSeconds: number) => {
     if (!previewRange || durationSeconds <= 0) {
       return;
     }
 
-    const currentMs = Math.round(currentSeconds * 1_000);
+    const currentMs = Number.isFinite(currentSeconds) ? Math.round(currentSeconds * 1_000) : 0;
     if (currentMs < previewRange.endMs) {
+      lastSeekedLoopMsRef.current = 0;
       return;
     }
 
     if (previewRange.loop) {
-      onSeekPreviewMs(previewRange.startMs);
+      if (lastSeekedLoopMsRef.current === 0 || currentMs - lastSeekedLoopMsRef.current < 500) {
+        lastSeekedLoopMsRef.current = currentMs;
+        onSeekPreviewMs(previewRange.startMs);
+      }
       return;
     }
 
@@ -241,6 +253,10 @@ export function useSmartSliceTimelineReviewController({
     setBoundaryPreview(null);
   }, []);
 
+  const cancelBoundaryPreview = useCallback(() => {
+    setBoundaryPreview(null);
+  }, []);
+
   return {
     previewRange,
     boundaryPreview,
@@ -249,6 +265,7 @@ export function useSmartSliceTimelineReviewController({
     previewClip,
     previewClipBoundaryDrag,
     commitClipBoundary,
+    cancelBoundaryPreview,
     splitClipAtTime,
     syncPreviewPlayback,
     reset,

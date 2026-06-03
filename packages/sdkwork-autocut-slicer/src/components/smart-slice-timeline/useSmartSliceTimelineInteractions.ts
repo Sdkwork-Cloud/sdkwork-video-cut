@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 
 import { canSplitSmartSliceTimelineClipAtTime, clampSmartSliceTimelineMs } from './timelineModel';
@@ -46,6 +46,7 @@ export function useSmartSliceTimelineInteractions({
   onCancelClipBoundaryDrag,
   onSplitClipAtTime,
 }: UseSmartSliceTimelineInteractionsParams) {
+  const activeBoundaryDragCleanupRef = useRef<(() => void) | null>(null);
   const seekAtTrackClientX = useCallback((trackElement: HTMLElement, clientX: number) => {
     onSeekMs(resolveSmartSliceTimelineTrackTimeMs(trackElement, clientX, durationMs));
   }, [durationMs, onSeekMs]);
@@ -94,6 +95,7 @@ export function useSmartSliceTimelineInteractions({
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerCancel);
+      activeBoundaryDragCleanupRef.current = null;
     };
     const handlePointerUp = (pointerEvent: PointerEvent) => {
       adjustClipBoundary(
@@ -111,6 +113,8 @@ export function useSmartSliceTimelineInteractions({
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
     window.addEventListener('pointercancel', handlePointerCancel);
+    activeBoundaryDragCleanupRef.current?.();
+    activeBoundaryDragCleanupRef.current = removeWindowListeners;
   }, [adjustClipBoundary, durationMs, onCancelClipBoundaryDrag, previewClipBoundaryDrag]);
 
   const splitClipAtTime = useCallback((item: SmartSliceTimelineClipItem | null, splitAtMs: number) => {
@@ -119,6 +123,12 @@ export function useSmartSliceTimelineInteractions({
     }
     onSplitClipAtTime(item.segment.id, clampSmartSliceTimelineMs(splitAtMs, durationMs));
   }, [durationMs, onSplitClipAtTime]);
+
+  useEffect(() => {
+    return () => {
+      activeBoundaryDragCleanupRef.current?.();
+    };
+  }, []);
 
   return {
     seekAtTrackClientX,

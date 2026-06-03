@@ -138,10 +138,24 @@ function writeWorkflowPreferences(preferences: AutoCutWorkflowPreferences) {
   return safePreferences;
 }
 
+const workflowPreferencesMutex = { locked: false, queue: [] as (() => void)[] };
+
+function withWorkflowPreferencesMutex<T>(fn: () => T): T {
+  if (workflowPreferencesMutex.locked) {
+    throw new Error('AutoCut workflow preferences storage is busy.');
+  }
+  workflowPreferencesMutex.locked = true;
+  try {
+    return fn();
+  } finally {
+    workflowPreferencesMutex.locked = false;
+  }
+}
+
 function updateWorkflowPreferences(
   updater: (preferences: AutoCutWorkflowPreferences) => AutoCutWorkflowPreferences,
 ) {
-  return writeWorkflowPreferences(updater(readWorkflowPreferences()));
+  return withWorkflowPreferencesMutex(() => writeWorkflowPreferences(updater(readWorkflowPreferences())));
 }
 
 function normalizeAutoCutWorkflowPreferences(

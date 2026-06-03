@@ -1,5 +1,5 @@
 import { processExtractorText } from '../service/extractorTextService';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { FileText, Type, Download, PlayCircle, Activity, Copy, CheckCircle2 } from 'lucide-react';
 import { FileUpload, Button, TaskFailureState, useAutoCutCommonLabels, useToast } from '@sdkwork/autocut-commons';
 import { downloadExtractedTextFile, formatExtractedText, getAutoCutProcessingTaskErrorTaskId, getAutoCutWorkflowPreferences, getTasks, listenAutoCutEvent, reportAutoCutDiagnostic, saveAutoCutTextExtractionPreferences, selectAutoCutTrustedLocalMediaFile, writeAutoCutClipboardText } from '@sdkwork/autocut-services';
@@ -21,6 +21,7 @@ export function ExtractorTextPage() {
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [activeTask, setActiveTask] = useState<AppTask | null>(null);
   const [copied, setCopied] = useState(false);
+  const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
     getAutoCutWorkflowPreferences()
@@ -38,7 +39,7 @@ export function ExtractorTextPage() {
       getTasks().then(tasks => {
         const t = tasks.find(x => x.id === activeTaskId);
         if (t) setActiveTask(t);
-      });
+      }).catch(() => {});
     };
     fetchTask();
         const handleUpdate = (task: AppTask) => {
@@ -48,6 +49,8 @@ export function ExtractorTextPage() {
     };
     return listenAutoCutEvent('taskUpdated', handleUpdate);
   }, [activeTaskId]);
+
+  useEffect(() => () => { if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current); }, []);
 
   const handleStartProcess = async () => {
     toast('开始分析与提取文案任务...', 'info');
@@ -220,7 +223,8 @@ export function ExtractorTextPage() {
                      const text = formatExtractedText(activeTask);
                      void writeAutoCutClipboardText(text);
                      setCopied(true);
-                     setTimeout(() => setCopied(false), 2000);
+                     if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+                     copiedTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
                    }} variant="outline" className="text-xs">
                      <Copy size={14} className="mr-2" /> {copied ? '已复制' : '复制全文'}
                    </Button>
@@ -236,7 +240,7 @@ export function ExtractorTextPage() {
                         <div className="absolute -left-16 top-1 text-[10px] font-mono text-gray-500">{item.time}</div>
                         <div className="flex items-start gap-4">
                           <div className="shrink-0 w-8 h-8 bg-purple-500/10 border border-purple-500/20 text-purple-400 rounded-full flex items-center justify-center font-bold text-[10px]">
-                            {item.speaker[0]}
+                            {item.speaker?.[0] || '?'}
                           </div>
                           <div className="flex-1">
                              <div className="text-[10px] text-gray-500 font-bold mb-1 uppercase tracking-wider">{item.speaker}</div>

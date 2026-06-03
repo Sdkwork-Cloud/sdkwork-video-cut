@@ -1,5 +1,7 @@
 import { AUTOCUT_TASK_TYPE } from '@sdkwork/autocut-types';
-const AUTOCUT_TASK_DETAIL_REVIEW_RISK_EN_US_MESSAGES = {
+import { AUTOCUT_SLICER_SETTINGS_EN_US_MESSAGES } from './slicer-settings';
+import { AUTOCUT_TASK_DETAIL_EN_US_MESSAGES } from './task-detail';
+export const AUTOCUT_TASK_DETAIL_REVIEW_RISK_EN_US_MESSAGES = {
   title: 'Smart slice review warnings',
   unknownLabel: '{{risk}}',
   unknownMessage: 'Smart slicing reported a human-review risk: {{risk}}.',
@@ -760,6 +762,7 @@ export const AUTOCUT_EN_US_MESSAGES = {
         preparing: 'Preparing',
       },
     },
+    settings: AUTOCUT_SLICER_SETTINGS_EN_US_MESSAGES,
   },
   tools: {
     page: {
@@ -790,149 +793,8 @@ export const AUTOCUT_EN_US_MESSAGES = {
     },
   },
   taskDetail: {
+    ...AUTOCUT_TASK_DETAIL_EN_US_MESSAGES,
     reviewRisk: AUTOCUT_TASK_DETAIL_REVIEW_RISK_EN_US_MESSAGES,
-    engineSteps: {
-      title: "Engine steps",
-      step: {
-        sourcePreparation: {
-          label: "Prepare source",
-          description: "Confirm the source video, media tracks, duration, and output location before analysis and export.",
-        },
-        speechRecognition: {
-          label: "Recognize speech",
-          description: "Create structured speech transcripts so planning follows real expression and semantic boundaries.",
-        },
-        contentUnderstandingSegmentation: {
-          label: "Understand content",
-          description: "Analyze topic flow, complete ideas, and publishability to create natural candidate clips.",
-        },
-        speakerIdentification: {
-          label: "Identify speakers",
-          description: "Identify speaker roles and identities so dialogue clips preserve complete context.",
-        },
-        qaUnitUnderstanding: {
-          label: "Understand Q&A units",
-          description: "Identify question and answer pairs so each clip keeps complete dialogue context.",
-        },
-        speakerTopicIdentification: {
-          label: "Identify speaker topics",
-          description: "Identify each speaker's topics and points of focus.",
-        },
-        decisionActionSegmentation: {
-          label: "Segment decisions and actions",
-          description: "Organize meeting clips around agenda items, decisions, action items, and owners.",
-        },
-        decisionContextBoundaryRefinement: {
-          label: "Refine decision boundaries",
-          description: "Optimize clip boundaries for decision-related content.",
-        },
-        productSellingPointIdentification: {
-          label: "Identify selling points",
-          description: "Detect products, pain points, benefits, offers, and conversion-ready selling moments.",
-        },
-        conversionSegmentation: {
-          label: "Segment conversions",
-          description: "Organize commerce clips around conversion moments.",
-        },
-        salesScriptBoundaryRefinement: {
-          label: "Refine sales boundaries",
-          description: "Optimize clip boundaries for sales scripts.",
-        },
-        repeatedScriptDeduplication: {
-          label: "Deduplicate scripts",
-          description: "Merge or remove repeated sales script segments.",
-        },
-        highlightMomentIdentification: {
-          label: "Identify highlights",
-          description: "Identify emotion shifts, turns, and high-value moments.",
-        },
-        momentBoundaryRefinement: {
-          label: "Refine moment boundaries",
-          description: "Optimize clip boundaries for highlight moments.",
-        },
-        visualEvidenceCheck: {
-          label: "Check visual evidence",
-          description: "Confirm shot changes, on-screen information, and audio events.",
-        },
-        speechAssistedRecognition: {
-          label: "Speech-assisted recognition",
-          description: "Use speech to assist understanding of visual content.",
-        },
-        sceneUnderstandingSegmentation: {
-          label: "Understand scenes",
-          description: "Build clips around shot and scene changes.",
-        },
-        sceneBoundaryRefinement: {
-          label: "Refine scene boundaries",
-          description: "Optimize clip boundaries for scene-related content.",
-        },
-        timelineRefinement: {
-          label: "Refine timeline",
-          description: "Preview and edit clip boundaries on the source timeline.",
-        },
-        publishingReview: {
-          label: "Publishing review",
-          description: "Confirm boundaries, titles, captions, duplicates, and publishing risks before export.",
-        },
-        nativeRender: {
-          label: "Native render",
-          description: "Render video slices with FFmpeg and generate downloadable results.",
-        },
-        artifactVerification: {
-          label: "Verify artifacts",
-          description: "Verify rendered files, thumbnails, and subtitles are complete and consistent.",
-        },
-        legacySlicing: {
-          label: "Basic slicing",
-          description: "Use legacy methods for basic video slicing.",
-        },
-      },
-      evidence: {
-        title: "Evidence files",
-        files: "{{present}}/{{total}} evidence files",
-        checkpointSteps: "{{completed}}/{{total}} checkpoints",
-        ready: "Ready",
-        missingStatus: "Missing",
-        pending: "Pending",
-        schema: "Schema",
-        summary: "Summary",
-        size: "Size",
-        sha: "SHA",
-      },
-    },
-    slicingLogic: {
-      title: 'Slicing logic',
-      summary: 'Smart slicing generates candidate clips from structured transcript semantic windows, content arc completeness, topic coherence, publishability standards, and audio activity boundaries.',
-      sliceCount: 'Slice count',
-      reasonUnavailable: 'This slice has no dedicated AI selection reason. Review the semantic, boundary, and risk evidence below.',
-    },
-    transcript: {
-      title: 'Speech transcript',
-      segmentCount: '{{count}} transcript segments',
-      exportTxt: 'Speech transcript TXT',
-      subtitle: 'Subtitle',
-      copyTranscript: 'Copy transcript',
-      copyTranscriptText: 'Copy transcript text',
-      copyAll: 'Copy all',
-      copySegment: 'Copy segment',
-      copySegmentAria: 'Copy transcript segment {{index}}',
-      editSegmentAria: 'Edit transcript segment {{index}}',
-      editTextAria: 'Edit transcript text',
-      copied: 'Copied',
-      segmentCopied: 'Segment copied',
-      copyFailed: 'Copy failed',
-      save: 'Save',
-      saving: 'Saving',
-      saved: 'Saved',
-      saveFailed: 'Save failed',
-      saveEdits: 'Save transcript edits',
-      cancel: 'Cancel',
-      cancelEdits: 'Cancel transcript edits',
-      edit: 'Edit',
-      editTranscript: 'Edit transcript',
-      corrected: 'Manually corrected',
-      correctionCount: '{{count}} corrections',
-    },
   },
   tool: {
     slicer: {
@@ -995,6 +857,84 @@ export const AUTOCUT_EN_US_MESSAGES = {
         description: 'Use a custom OpenAI-compatible transcription endpoint through the STT provider bridge.',
       },
     },
+  },
+  videoDedup: {
+    title: 'Video deduplication',
+    description: 'Shared dedup engine for exact copies, near-duplicate visuals, same audio, repeated speech, partial reuse, and template-only matches.',
+    buttonAnalyzing: 'Analyzing',
+    buttonConfigured: 'Configured in workflow',
+    buttonRun: 'Run dedup analysis',
+    mode: 'Mode',
+    sensitivity: 'Sensitivity',
+    action: 'Action',
+    dedupMethods: 'Dedup methods',
+    minimumMatch: 'Minimum match',
+    introOutroMax: 'Intro/outro max',
+    ignoreIntroOutro: 'Ignore intro/outro',
+    sourceVideos: 'Source videos',
+    selectedCount: '{{count}} selected',
+    noVideoAssets: 'No video assets found. Import videos in Assets or Smart Slice first.',
+    currentPlan: 'Current plan',
+    videos: 'Videos',
+    methods: 'Methods',
+    min: 'Min',
+    duplicateGroups: 'Duplicate groups',
+    matches: 'Matches',
+    reclaimable: 'Reclaimable',
+    keep: 'Keep: {{name}}',
+    noDuplicateGroups: 'No duplicate groups found for the current settings.',
+    runAnalysisPrompt: 'Run analysis to generate duplicate groups, match confidence, evidence labels, and review actions.',
+    failedToLoadAssets: 'Failed to load video assets.',
+    analysisFailed: 'Video deduplication analysis failed.',
+    modes: {
+      'quick-scan': { label: 'Quick scan', detail: 'Fast library hygiene and exact-copy checks.' },
+      standard: { label: 'Standard', detail: 'Balanced visual, audio, transcript, and template review.' },
+      'deep-audit': { label: 'Deep audit', detail: 'Higher recall for commercial publishing risk review.' },
+      'publish-risk': { label: 'Publish risk', detail: 'Find likely reuse before public distribution.' },
+      'slice-result-dedup': { label: 'Slice result dedup', detail: 'Review duplicate clips after smart slicing.' },
+      'library-monitor': { label: 'Library monitor', detail: 'Ongoing asset-library duplicate monitoring.' },
+    },
+    sensitivities: {
+      low: 'Low false positives',
+      balanced: 'Balanced',
+      high: 'High recall',
+      forensic: 'Forensic',
+    },
+    actionModes: {
+      'report-only': 'Report only',
+      'review-before-action': 'Review before action',
+      'archive-duplicates': 'Archive confident duplicates',
+    },
+    strategies: {
+      'exact-file-hash': { name: 'Exact file signature', description: 'Detect identical source assets by stable metadata and file-size signature.' },
+      'container-normalized': { name: 'Container-normalized copy', description: 'Detect likely remuxed copies with matching normalized titles and close file sizes.' },
+      'visual-fingerprint': { name: 'Visual fingerprint', description: 'Detect near-duplicate picture content across cuts, exports, and light edits.' },
+      'temporal-video-copy': { name: 'Temporal partial copy', description: 'Detect partial video reuse after trimming, speed changes, or reordered clips.' },
+      'audio-fingerprint': { name: 'Audio fingerprint', description: 'Detect duplicate voice, music, or soundtrack reuse even when visuals differ.' },
+      'transcript-semantic': { name: 'Transcript semantic', description: 'Detect repeated speech topics and duplicate spoken content after STT.' },
+      'template-reuse': { name: 'Template reuse', description: 'Separate intro, outro, logo, and layout reuse from actual duplicate content.' },
+    },
+    groupReasons: {
+      noEvidence: 'No duplicate evidence found.',
+      exact: 'Exact duplicate signature found.',
+      sameAudio: 'Shared audio fingerprint evidence found.',
+      sameSpeech: 'Repeated transcript semantic evidence found.',
+      partialCopy: 'Partial temporal copy evidence found.',
+      templateOnly: 'Only template reuse was detected; keep for manual publishing review.',
+      nearDuplicate: 'Near-duplicate multi-strategy evidence found.',
+    },
+  },
+  slicerService: {
+    taskQueued: 'Task queued...',
+    sliceCompleted: 'Video slicing completed',
+    sliceCompletedDescription: 'Task "{{name}}" generated {{count}} video clips.',
+    viewTask: 'View task',
+    highlightClip: 'Highlight clip {{index}}',
+  },
+  errorBoundary: {
+    title: 'Something went wrong',
+    description: 'An unexpected error occurred while rendering this section. You can try reloading the page or retry below.',
+    retry: 'Retry',
   },
   settings: AUTOCUT_SETTINGS_EN_US_MESSAGES,
 } as const;

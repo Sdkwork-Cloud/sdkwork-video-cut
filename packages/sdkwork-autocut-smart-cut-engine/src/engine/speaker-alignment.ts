@@ -180,7 +180,6 @@ function shouldMergeIntoPreviousSpeakerTurn(
     lastTurn.speakerId !== alignedSegment.speakerId ||
     lastTurn.isBackchannel ||
     segmentLowInformation ||
-    lastTurn.isQuestion ||
     segmentQuestion
   ) {
     return false;
@@ -190,7 +189,7 @@ function shouldMergeIntoPreviousSpeakerTurn(
   if (gapMs < 0) {
     return true;
   }
-  if (gapMs <= maximumTurnMergeGapMs) {
+  if (gapMs <= maximumTurnMergeGapMs && !lastTurn.isQuestion) {
     return true;
   }
   if (gapMs > maximumConnectorBridgeGapMs) {
@@ -367,15 +366,13 @@ function isLowInformationText(text: string): boolean {
     return true;
   }
 
-  return normalized.length <= 6 &&
-    /^(?:ok|okay|yes|yeah|uh|um|hm|hmm|er|ah|[,.\s]|\u3002|\uFF0C|\uFF1B|\uFF01|\uFF1F)+$/iu.test(normalized);
+  return normalized.length <= 6 && /^(?:ok|okay|yes|yeah|uh|um|hm|hmm|er|ah|嗯|呃|啊|哦|唔|,|，|。|\.)+$/iu.test(normalized);
 }
 
 function isQuestionText(text: string): boolean {
   const normalized = normalizeText(text);
-  return /[?\uFF1F]\s*$/u.test(normalized) ||
-    /^(?:when|what|why|how|who|where|which)\s+(?:should|can|could|would|will|do|does|did|is|are|was|were|has|have|had)\b/iu.test(normalized) ||
-    /^(?:should|can|could|would|will|is|are|was|were|do|does|did|has|have|had)\b/iu.test(normalized);
+  return /[?？]\s*$/u.test(normalized) ||
+    /^(?:when|what|why|how|who|where|which|should|can|could|would|is|are|do|does)\b/iu.test(normalized);
 }
 
 function startsWithDanglingConnector(text: string): boolean {

@@ -23,7 +23,10 @@ export function createAutoCutStorageKey(key: AutoCutStorageKey): string {
 export function readAutoCutStorage<T>(key: AutoCutStorageKey, defaultValue: T): T {
   try {
     const value = localStorage.getItem(createAutoCutStorageKey(key));
-    return value ? (JSON.parse(value) as T) : defaultValue;
+    if (!value) return defaultValue;
+    const parsed = JSON.parse(value);
+    if (typeof parsed === 'undefined' || parsed === null) return defaultValue;
+    return parsed as T;
   } catch (error) {
     reportAutoCutDiagnostic('warning', 'storage', `localStorage get failed for ${key}`, error);
     return defaultValue;
@@ -35,6 +38,7 @@ export function writeAutoCutStorage<T>(key: AutoCutStorageKey, value: T): void {
     localStorage.setItem(createAutoCutStorageKey(key), JSON.stringify(value));
   } catch (error) {
     reportAutoCutDiagnostic('warning', 'storage', `localStorage set failed for ${key}`, error);
+    throw error;
   }
 }
 

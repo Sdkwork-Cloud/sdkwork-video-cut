@@ -247,7 +247,7 @@ const taskResumeHandlers = new Map<TaskType, AutoCutTaskResumeHandler>();
 const taskCancelHandlers = new Map<TaskType, AutoCutTaskCancelHandler>();
 const taskCancellationRequests = new Set<string>();
 const nativeTaskProgressProjectionStateByKey = new Map<string, NativeTaskProgressProjectionState>();
-const nativeTaskProgressEventUuidSeenBeforeStorage = new Map<string, true>();
+const nativeTaskProgressEventUuidSeenBeforeStorage = new Set<string>();
 
 export async function getTasks(): Promise<AppTask[]> {
   await randomDelay(20, 50);
@@ -360,16 +360,15 @@ export async function updateTaskSliceTranscript(
   update: readonly AutoCutTranscriptSegment[] | AutoCutTaskSliceTranscriptUpdate,
 ): Promise<AppTask> {
   const localTasks = readLocalTasks();
-  const visibleTasks = await getTasks();
-  const visibleTask = visibleTasks.find((task) => task.id === taskId);
-  if (!visibleTask) {
+  const localTask = localTasks.find((task) => task.id === taskId);
+  if (!localTask) {
     throw new Error('AutoCut task transcript edit failed because the task was not found.');
   }
-  if (visibleTask.type !== AUTOCUT_TASK_TYPE.videoSlice || !visibleTask.sliceResults?.length) {
+  if (localTask.type !== AUTOCUT_TASK_TYPE.videoSlice || !localTask.sliceResults?.length) {
     throw new Error('AutoCut task transcript edit requires a completed video slice task.');
   }
 
-  const sliceIndex = visibleTask.sliceResults.findIndex((slice) => slice.id === sliceId);
+  const sliceIndex = localTask.sliceResults.findIndex((slice) => slice.id === sliceId);
   if (sliceIndex < 0) {
     throw new Error('AutoCut task transcript edit failed because the slice was not found.');
   }
@@ -377,19 +376,16 @@ export async function updateTaskSliceTranscript(
   const transcriptUpdate = isTaskSliceTranscriptSegmentUpdate(update)
     ? { transcriptSegments: update }
     : update;
-  const currentSlice = visibleTask.sliceResults[sliceIndex];
+  const currentSlice = localTask.sliceResults[sliceIndex];
   if (!currentSlice) {
     throw new Error('AutoCut task transcript edit failed because the slice was not found.');
   }
   const updatedSlice = createUpdatedTaskSliceTranscript(currentSlice, transcriptUpdate);
   const updatedTask: AppTask = {
-    ...visibleTask,
-    sliceResults: visibleTask.sliceResults.map((slice, index) => (index === sliceIndex ? updatedSlice : slice)),
+    ...localTask,
+    sliceResults: localTask.sliceResults.map((slice, index) => (index === sliceIndex ? updatedSlice : slice)),
   };
-  const replacedLocalTask = localTasks.some((task) => task.id === taskId);
-  const nextLocalTasks = replacedLocalTask
-    ? localTasks.map((task) => (task.id === taskId ? updatedTask : task))
-    : [updatedTask, ...localTasks];
+  const nextLocalTasks = localTasks.map((task) => (task.id === taskId ? updatedTask : task));
 
   writeAutoCutStorage('tasks', nextLocalTasks);
   dispatchAutoCutEvent('taskUpdated', updatedTask);
@@ -1443,7 +1439,7 @@ function recordNativeTaskProgressEventUuidBeforeStorage(progress: AutoCutNativeT
     return;
   }
 
-  nativeTaskProgressEventUuidSeenBeforeStorage.set(eventUuid, true);
+  nativeTaskProgressEventUuidSeenBeforeStorage.add(eventUuid);
   trimNativeTaskProgressEventUuidState();
 }
 

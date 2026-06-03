@@ -132,15 +132,17 @@ function createQuestionAnswerCandidates(
   },
 ): readonly SmartCutCandidate[] {
   const candidates: SmartCutCandidate[] = [];
-  for (let index = 0; index < units.length; index += 1) {
+  for (let index = 0; index < units.length;) {
     const unit = units[index];
     const nextUnit = units[index + 1];
     if (unit === undefined || nextUnit === undefined) {
+      index += 1;
       continue;
     }
     const unitText = unit.text ?? '';
     const nextText = nextUnit.text ?? '';
     if (!isQuestionText(unitText) || isQuestionText(nextText)) {
+      index += 1;
       continue;
     }
     const mergedUnits = collectQuestionAnswerCandidateUnits(units, index, options.minimumDurationMs, options.maximumGapMs);
@@ -151,7 +153,7 @@ function createQuestionAnswerCandidates(
       reason: 'Complete question and answer semantic unit.',
       slicerId: 'dialogue-qa',
     }));
-    index += Math.max(1, mergedUnits.length - 1);
+    index += Math.max(1, mergedUnits.length);
   }
 
   if (candidates.length > 0) {
@@ -282,7 +284,7 @@ function normalizeSpeechSemanticText(text: string): string {
 
 function isQuestionText(text: string): boolean {
   const normalized = normalizeSpeechSemanticText(text);
-  return /[?\uFF1F\u7D35]\s*$/u.test(normalized) ||
+  return /[?\uFF1F]\s*$/u.test(normalized) ||
     /^(?:when|what|why|how|who|where|which|should|can|could|would|is|are|do|does)\b/iu.test(normalized);
 }
 

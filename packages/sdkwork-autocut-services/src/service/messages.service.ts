@@ -11,39 +11,61 @@ export async function getMessages(): Promise<AppMessage[]> {
   return sortAutoCutRecordsByCreatedAtDesc(readLocalMessages());
 }
 
+const messagesMutex = { locked: false, queue: [] as (() => void)[] };
+
+function withMessagesMutex<T>(fn: () => T): T {
+  if (messagesMutex.locked) {
+    throw new Error('AutoCut messages storage is busy.');
+  }
+  messagesMutex.locked = true;
+  try {
+    return fn();
+  } finally {
+    messagesMutex.locked = false;
+  }
+}
+
 export async function updateMessageRead(messageId: string, read: boolean): Promise<void> {
   await randomDelay(100, 200);
-  const messages = readLocalMessages();
-  writeAutoCutStorage(
-    'messages',
-    messages.map((message) => (message.id === messageId ? { ...message, read } : message)),
-  );
+  withMessagesMutex(() => {
+    const messages = readLocalMessages();
+    writeAutoCutStorage(
+      'messages',
+      messages.map((message) => (message.id === messageId ? { ...message, read } : message)),
+    );
+  });
   dispatchAutoCutEvent('messagesUpdated', undefined);
 }
 
 export async function markAllMessagesRead(): Promise<void> {
   await randomDelay(200, 400);
-  const messages = readLocalMessages();
-  writeAutoCutStorage(
-    'messages',
-    messages.map((message) => ({ ...message, read: true })),
-  );
+  withMessagesMutex(() => {
+    const messages = readLocalMessages();
+    writeAutoCutStorage(
+      'messages',
+      messages.map((message) => ({ ...message, read: true })),
+    );
+  });
   dispatchAutoCutEvent('messagesUpdated', undefined);
 }
 
 export async function clearReadMessages(): Promise<void> {
   await randomDelay(200, 400);
-  const messages = readLocalMessages();
-  writeAutoCutStorage(
-    'messages',
-    messages.filter((message) => !message.read),
-  );
+  withMessagesMutex(() => {
+    const messages = readLocalMessages();
+    writeAutoCutStorage(
+      'messages',
+      messages.filter((message) => !message.read),
+    );
+  });
   dispatchAutoCutEvent('messagesUpdated', undefined);
 }
 
 export async function addMessage(message: AppMessage): Promise<void> {
-  const messages = readLocalMessages();
-  writeAutoCutStorage('messages', [message, ...messages]);
+  withMessagesMutex(() => {
+    const messages = readLocalMessages();
+    writeAutoCutStorage('messages', [message, ...messages]);
+  });
   dispatchAutoCutEvent('messageAdded', message);
 }
 

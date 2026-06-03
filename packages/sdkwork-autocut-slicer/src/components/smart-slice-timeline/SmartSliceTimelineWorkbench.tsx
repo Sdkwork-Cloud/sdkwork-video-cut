@@ -31,6 +31,7 @@ export function SmartSliceTimelineWorkbench({
   onPreviewClip,
   onPreviewClipBoundaryDrag,
   onCommitClipBoundary,
+  onCancelClipBoundaryDrag,
   onSplitClipAtTime,
   isPlaying,
   onTogglePlay,
@@ -47,6 +48,7 @@ export function SmartSliceTimelineWorkbench({
     onPreviewClip,
     onPreviewClipBoundaryDrag,
     onAdjustClipBoundary: onCommitClipBoundary,
+    ...(onCancelClipBoundaryDrag ? { onCancelClipBoundaryDrag } : {}),
     onSplitClipAtTime,
   });
   const clipItems = useMemo(
@@ -54,7 +56,7 @@ export function SmartSliceTimelineWorkbench({
     [activeReviewSegmentId, reviewSegments, snapshot, viewport.pxPerMs],
   );
   const activeClip = useMemo(
-    () => clipItems.find((item) => currentTimeMs >= item.clip.startMs && currentTimeMs < item.clip.endMs) ?? clipItems.at(-1) ?? null,
+    () => clipItems.find((item) => currentTimeMs >= item.clip.startMs && currentTimeMs < item.clip.endMs) ?? null,
     [clipItems, currentTimeMs],
   );
   const canSplitActiveClip = canSplitSmartSliceTimelineClipAtTime(activeClip, currentTimeMs);

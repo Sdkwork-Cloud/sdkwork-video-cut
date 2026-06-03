@@ -1,5 +1,7 @@
 import { AUTOCUT_TASK_TYPE } from '@sdkwork/autocut-types';
-const AUTOCUT_TASK_DETAIL_REVIEW_RISK_ZH_CN_MESSAGES = {
+import { AUTOCUT_SLICER_SETTINGS_ZH_CN_MESSAGES } from './slicer-settings';
+import { AUTOCUT_TASK_DETAIL_ZH_CN_MESSAGES } from './task-detail';
+export const AUTOCUT_TASK_DETAIL_REVIEW_RISK_ZH_CN_MESSAGES = {
   title: '智能切片审阅提示',
   unknownLabel: '{{risk}}',
   unknownMessage: '智能切片报告了需要人工审阅的风险：{{risk}}。',
@@ -760,6 +762,7 @@ export const AUTOCUT_ZH_CN_MESSAGES = {
         preparing: '准备中',
       },
     },
+    settings: AUTOCUT_SLICER_SETTINGS_ZH_CN_MESSAGES,
   },
   tools: {
     page: {
@@ -790,149 +793,8 @@ export const AUTOCUT_ZH_CN_MESSAGES = {
     },
   },
   taskDetail: {
+    ...AUTOCUT_TASK_DETAIL_ZH_CN_MESSAGES,
     reviewRisk: AUTOCUT_TASK_DETAIL_REVIEW_RISK_ZH_CN_MESSAGES,
-    engineSteps: {
-      title: "处理步骤",
-      step: {
-        sourcePreparation: {
-          label: "准备源文件",
-          description: "确认源视频、媒体轨道、时长和输出位置。",
-        },
-        speechRecognition: {
-          label: "语音识别",
-          description: "创建结构化语音转录，使规划能跟随真实表达和语义边界。",
-        },
-        contentUnderstandingSegmentation: {
-          label: "内容理解分段",
-          description: "分析话题流动、完整想法和可发布性，生成自然的候选片段。",
-        },
-        speakerIdentification: {
-          label: "说话人识别",
-          description: "识别发言人角色和身份，使对话切片保持完整语境。",
-        },
-        qaUnitUnderstanding: {
-          label: "问答单元理解",
-          description: "识别问题和回答对，确保每个切片包含完整的问答上下文。",
-        },
-        speakerTopicIdentification: {
-          label: "说话人话题识别",
-          description: "识别每位发言人的话题和关注点。",
-        },
-        decisionActionSegmentation: {
-          label: "决策与行动分段",
-          description: "围绕议程项、决策、行动项和负责人组织会议切片。",
-        },
-        decisionContextBoundaryRefinement: {
-          label: "决策上下文边界优化",
-          description: "优化决策相关的切片边界。",
-        },
-        productSellingPointIdentification: {
-          label: "产品卖点识别",
-          description: "检测商品、痛点、优势、优惠和转化时机。",
-        },
-        conversionSegmentation: {
-          label: "转化分段",
-          description: "围绕销售转化点组织直播切片。",
-        },
-        salesScriptBoundaryRefinement: {
-          label: "销售话术边界优化",
-          description: "优化销售话术的切片边界。",
-        },
-        repeatedScriptDeduplication: {
-          label: "重复话术去重",
-          description: "合并或移除重复的销售话术片段。",
-        },
-        highlightMomentIdentification: {
-          label: "亮点时刻识别",
-          description: "识别情绪变化、转折和高价值时刻。",
-        },
-        momentBoundaryRefinement: {
-          label: "精彩时刻边界优化",
-          description: "优化精彩时刻的切片边界。",
-        },
-        visualEvidenceCheck: {
-          label: "视觉证据检查",
-          description: "确认镜头变化、屏幕信息和事件声音。",
-        },
-        speechAssistedRecognition: {
-          label: "语音辅助识别",
-          description: "通过语音辅助理解视觉内容。",
-        },
-        sceneUnderstandingSegmentation: {
-          label: "场景理解分段",
-          description: "围绕镜头和场景变化构建切片。",
-        },
-        sceneBoundaryRefinement: {
-          label: "场景边界优化",
-          description: "优化场景相关切片的边界。",
-        },
-        timelineRefinement: {
-          label: "时间轴精修",
-          description: "在源时间轴上预览和编辑切片边界。",
-        },
-        publishingReview: {
-          label: "发布审核",
-          description: "确认边界、标题、字幕、重复内容和发布风险。",
-        },
-        nativeRender: {
-          label: "原生渲染",
-          description: "使用 FFmpeg 渲染视频切片并生成可下载结果。",
-        },
-        artifactVerification: {
-          label: "产物验证",
-          description: "验证渲染文件、缩略图和字幕是否完整一致。",
-        },
-        legacySlicing: {
-          label: "基础切片",
-          description: "使用传统方法进行基础视频切片。",
-        },
-      },
-      evidence: {
-        title: "证据文件",
-        files: "{{present}}/{{total}} 个证据文件",
-        checkpointSteps: "{{completed}}/{{total}} 个检查点",
-        ready: "就绪",
-        missingStatus: "缺失",
-        pending: "待处理",
-        schema: "模式",
-        summary: "摘要",
-        size: "大小",
-        sha: "哈希",
-      },
-    },
-    slicingLogic: {
-      title: '切分逻辑',
-      summary: '智能切分按结构化转写语义窗口、内容弧完整度、主题连贯度、发布标准和音频活动边界生成候选切片。',
-      sliceCount: '切分个数',
-      reasonUnavailable: '该切片没有写入单独的 AI 选择原因，请结合下方语义、边界和风险证据复核。',
-    },
-    transcript: {
-      title: '语音转写',
-      segmentCount: '{{count}} 段转写',
-      exportTxt: '语音转写 TXT',
-      subtitle: '字幕',
-      copyTranscript: '复制转写',
-      copyTranscriptText: '复制转写文本',
-      copyAll: '全部复制',
-      copySegment: '复制片段',
-      copySegmentAria: '复制第 {{index}} 段转写',
-      editSegmentAria: '编辑第 {{index}} 段转写',
-      editTextAria: '编辑转写文本',
-      copied: '已复制',
-      segmentCopied: '片段已复制',
-      copyFailed: '复制失败',
-      save: '保存',
-      saving: '保存中',
-      saved: '已保存',
-      saveFailed: '保存失败',
-      saveEdits: '保存转写修改',
-      cancel: '取消',
-      cancelEdits: '取消转写修改',
-      edit: '编辑',
-      editTranscript: '编辑转写',
-      corrected: '已人工校正',
-      correctionCount: '{{count}} 处修正',
-    },
   },
   tool: {
     slicer: {
@@ -995,6 +857,84 @@ export const AUTOCUT_ZH_CN_MESSAGES = {
         description: '使用自定义 OpenAI 兼容转写端点并通过 STT provider bridge 转写。',
       },
     },
+  },
+  videoDedup: {
+    title: '视频去重',
+    description: '共享去重引擎，支持精确副本、近似视觉、相同音频、重复语音、部分复用和模板匹配检测。',
+    buttonAnalyzing: '分析中',
+    buttonConfigured: '已在工作流中配置',
+    buttonRun: '运行去重分析',
+    mode: '模式',
+    sensitivity: '灵敏度',
+    action: '操作',
+    dedupMethods: '去重方法',
+    minimumMatch: '最短匹配',
+    introOutroMax: '片头片尾上限',
+    ignoreIntroOutro: '忽略片头片尾',
+    sourceVideos: '源视频',
+    selectedCount: '已选 {{count}} 个',
+    noVideoAssets: '未找到视频资产。请先在资产或智能切片中导入视频。',
+    currentPlan: '当前计划',
+    videos: '视频',
+    methods: '方法',
+    min: '最短',
+    duplicateGroups: '重复组',
+    matches: '匹配',
+    reclaimable: '可回收',
+    keep: '保留：{{name}}',
+    noDuplicateGroups: '当前设置下未发现重复组。',
+    runAnalysisPrompt: '运行分析以生成重复组、匹配置信度、证据标签和审阅操作。',
+    failedToLoadAssets: '加载视频资产失败。',
+    analysisFailed: '视频去重分析失败。',
+    modes: {
+      'quick-scan': { label: '快速扫描', detail: '快速库内卫生和精确副本检查。' },
+      standard: { label: '标准', detail: '平衡视觉、音频、字幕和模板审阅。' },
+      'deep-audit': { label: '深度审计', detail: '更高召回率，适合商业发布风险审阅。' },
+      'publish-risk': { label: '发布风险', detail: '在公开发布前发现可能的复用。' },
+      'slice-result-dedup': { label: '切片结果去重', detail: '智能切片后审阅重复片段。' },
+      'library-monitor': { label: '库监控', detail: '持续的资产库重复监控。' },
+    },
+    sensitivities: {
+      low: '低误报',
+      balanced: '均衡',
+      high: '高召回',
+      forensic: '取证级',
+    },
+    actionModes: {
+      'report-only': '仅报告',
+      'review-before-action': '操作前审阅',
+      'archive-duplicates': '归档确认重复',
+    },
+    strategies: {
+      'exact-file-hash': { name: '精确文件签名', description: '通过稳定元数据和文件大小签名检测相同源资产。' },
+      'container-normalized': { name: '容器标准化副本', description: '通过标准化标题和相近文件大小检测可能的转封装副本。' },
+      'visual-fingerprint': { name: '视觉指纹', description: '检测跨剪辑、导出和轻度编辑的近似画面内容。' },
+      'temporal-video-copy': { name: '时序部分副本', description: '检测裁剪、变速或重排后的部分视频复用。' },
+      'audio-fingerprint': { name: '音频指纹', description: '检测重复语音、音乐或音轨复用，即使画面不同。' },
+      'transcript-semantic': { name: '字幕语义', description: 'STT 后检测重复语音话题和重复口语内容。' },
+      'template-reuse': { name: '模板复用', description: '区分片头、片尾、Logo 和布局复用与实际重复内容。' },
+    },
+    groupReasons: {
+      noEvidence: '未发现重复证据。',
+      exact: '发现精确重复签名。',
+      sameAudio: '发现共享音频指纹证据。',
+      sameSpeech: '发现重复字幕语义证据。',
+      partialCopy: '发现部分时序副本证据。',
+      templateOnly: '仅检测到模板复用；保留供人工发布审阅。',
+      nearDuplicate: '发现近似重复多策略证据。',
+    },
+  },
+  slicerService: {
+    taskQueued: '任务排队中...',
+    sliceCompleted: '视频切片完成',
+    sliceCompletedDescription: '任务 "{{name}}" 已生成 {{count}} 个视频片段。',
+    viewTask: '查看任务',
+    highlightClip: '高光片段 {{index}}',
+  },
+  errorBoundary: {
+    title: '页面出现异常',
+    description: '渲染此区域时发生了意外错误，你可以尝试重新加载页面或点击下方重试。',
+    retry: '重试',
   },
   settings: AUTOCUT_SETTINGS_ZH_CN_MESSAGES,
 } as const;

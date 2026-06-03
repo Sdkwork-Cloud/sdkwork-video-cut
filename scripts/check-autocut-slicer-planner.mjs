@@ -200,6 +200,22 @@ export function resolveAutoCutTimestampMs(timestamp) {
   }
   return 0;
 }
+export function getAutoCutI18nText(key, locale, defaultValue, options) {
+  if (typeof defaultValue === 'string' && defaultValue.length > 0) {
+    if (options && typeof options === 'object') {
+      try {
+        return defaultValue.replace(/\\{(\\\\w+)\\}/gu, (match, name) => {
+          const value = options[name];
+          return value === undefined || value === null ? match : String(value);
+        });
+      } catch {
+        return defaultValue;
+      }
+    }
+    return defaultValue;
+  }
+  return key;
+}
 `);
   const entryPath = path.join(process.cwd(), clipWorkflowSourcePath);
   for (const sourcePath of collectClipWorkflowModuleGraph(entryPath)) {
@@ -1574,7 +1590,7 @@ if (canonicalReviewMutationHelpersAvailable) {
     direction: 'previous',
   });
   assertRule(
-    mergeResult?.segment.id === 'segment-1-segment-2' &&
+    mergeResult?.segment.id === 'segment-1::segment-2' &&
       mergeResult.segment.title === 'Opening claim + Follow up proof' &&
       mergeResult.segment.startMs === 1_000 &&
       mergeResult.segment.endMs === 7_200 &&
@@ -1586,8 +1602,8 @@ if (canonicalReviewMutationHelpersAvailable) {
       mergeResult.segment.transcriptText === 'Opening claim with complete context. Follow up proof.' &&
       mergeResult.manualEdit.kind === 'merge' &&
       mergeResult.manualEdit.segmentIds.join(',') === 'segment-1,segment-2' &&
-      mergeResult.manualEdit.createdSegmentIds?.join(',') === 'segment-1-segment-2' &&
-      mergeResult.reviewSession.segments.map((segment) => segment.id).join(',') === 'segment-1-segment-2,segment-3',
+      mergeResult.manualEdit.createdSegmentIds?.join(',') === 'segment-1::segment-2' &&
+      mergeResult.reviewSession.segments.map((segment) => segment.id).join(',') === 'segment-1::segment-2,segment-3',
     'canonical merge replaces adjacent publishable review segments with one continuous WYSIWYG clip while preserving evidence',
   );
   assertRule(
@@ -9671,6 +9687,13 @@ assertRule(
     slicerServiceSource.includes('External LLM review was unavailable; deterministic ID-only review preserved Smart Cut Engine timestamps.') &&
     slicerServiceSource.includes('SmartCutEngineSlicePlanningError'),
   'slicerService.ts delegates plan-clips to the new Smart Cut Engine planner with optional approved ID-only LLM review and deterministic offline availability',
+);
+
+assertRule(
+  slicerServiceSource.includes('function createNativeRenderPlanClipFromRequest(') &&
+    slicerServiceSource.includes('nativeClips.map((nativeClip, index) =>') &&
+    /assertNativeSliceArtifactsMatchPlan\(\s*\n\s*nativeResult\.slices,\s*\n\s*nativeRenderPlanClips,/u.test(slicerServiceSource),
+  'slicerService.ts verifies native slice artifact timing against the actual native render clips, including STT-compacted sourceSegments created during render request projection',
 );
 
 assertRule(

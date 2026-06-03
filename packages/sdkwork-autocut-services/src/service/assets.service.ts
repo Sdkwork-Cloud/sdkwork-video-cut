@@ -28,10 +28,26 @@ export async function getAssets(): Promise<AppAsset[]> {
   return readLocalAssets();
 }
 
+const assetsMutex = { locked: false, queue: [] as (() => void)[] };
+
+function withAssetsMutex<T>(fn: () => T): T {
+  if (assetsMutex.locked) {
+    throw new Error('AutoCut assets storage is busy.');
+  }
+  assetsMutex.locked = true;
+  try {
+    return fn();
+  } finally {
+    assetsMutex.locked = false;
+  }
+}
+
 export async function addAsset(asset: AppAsset): Promise<void> {
   await randomDelay();
-  const assets = readLocalAssets();
-  writeAutoCutStorage('assets', [asset, ...assets]);
+  withAssetsMutex(() => {
+    const assets = readLocalAssets();
+    writeAutoCutStorage('assets', [asset, ...assets]);
+  });
   dispatchAutoCutEvent('assetAdded', asset);
 }
 
@@ -51,6 +67,18 @@ export async function importAssetFile(file: File): Promise<AppAsset> {
   return asset;
 }
 
+export function cleanupAutoCutStaleBlobUrls(): void {
+  const assets = readLocalAssets();
+  const cleanedAssets = assets.map((asset) => {
+    if (asset.url?.startsWith('blob:')) {
+      revokeAutoCutObjectUrl(asset.url);
+      return { ...asset, url: undefined };
+    }
+    return asset;
+  });
+  writeAutoCutStorage('assets', cleanedAssets);
+}
+
 export async function createAssetFolder(name: string): Promise<AppAsset> {
   const now = createAutoCutTimestamp();
   const folder: AppAsset = {
@@ -67,13 +95,15 @@ export async function createAssetFolder(name: string): Promise<AppAsset> {
 }
 
 export async function deleteAsset(assetId: string): Promise<void> {
-  const assets = readLocalAssets();
-  const deletedAsset = assets.find((asset) => asset.id === assetId);
-  if (deletedAsset?.url?.startsWith('blob:')) {
-    revokeAutoCutObjectUrl(deletedAsset.url);
-  }
+  withAssetsMutex(() => {
+    const assets = readLocalAssets();
+    const deletedAsset = assets.find((asset) => asset.id === assetId);
+    if (deletedAsset?.url?.startsWith('blob:')) {
+      revokeAutoCutObjectUrl(deletedAsset.url);
+    }
 
-  writeAutoCutStorage('assets', assets.filter((asset) => asset.id !== assetId));
+    writeAutoCutStorage('assets', assets.filter((asset) => asset.id !== assetId));
+  });
   dispatchAutoCutEvent('assetDeleted', { id: assetId });
 }
 

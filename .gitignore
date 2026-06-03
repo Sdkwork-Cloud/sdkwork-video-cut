@@ -14,3 +14,5 @@ packages/sdkwork-autocut-desktop/src-tauri/gen/
 *.tsbuildinfo
 .env*
 !.env.example
+C*failures*.txt
+failures*.txt

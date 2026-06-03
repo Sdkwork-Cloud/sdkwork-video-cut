@@ -1662,12 +1662,19 @@ pub fn open_autocut_artifact_in_folder(
     let artifact_path =
         ensure_existing_autocut_artifact_file_path(Path::new(&request.artifact_path))?;
     if let Some(task_output_dir) = request.task_output_dir.as_deref() {
-        let task_output_dir =
-            ensure_existing_autocut_preview_directory_path(Path::new(task_output_dir))?;
-        if !artifact_path.starts_with(&task_output_dir) {
+        if Path::new(task_output_dir).exists() {
+            let task_output_dir =
+                ensure_existing_autocut_preview_directory_path(Path::new(task_output_dir))?;
+            if !artifact_path.starts_with(&task_output_dir) {
+                return Err(format!(
+                    "AutoCut generated artifact path is outside its task output directory: {}",
+                    artifact_path.display()
+                ));
+            }
+        } else {
             return Err(format!(
-                "AutoCut generated artifact path is outside its task output directory: {}",
-                artifact_path.display()
+                "AutoCut task output directory does not exist: {}",
+                task_output_dir
             ));
         }
     }
@@ -8963,9 +8970,6 @@ fn write_json_atomic(path: &Path, value: &Value, label: &str) -> Result<(), Stri
     let _ = fs::remove_file(&temporary_path);
     fs::write(&temporary_path, serialized)
         .map_err(|error| format!("write {label} temp file failed: {error}"))?;
-    if path.exists() {
-        fs::remove_file(path).map_err(|error| format!("replace {label} failed: {error}"))?;
-    }
     fs::rename(&temporary_path, path).map_err(|error| {
         let _ = fs::remove_file(&temporary_path);
         format!("commit {label} failed: {error}")

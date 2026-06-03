@@ -112,9 +112,7 @@ type StoredAppSettings = Omit<Partial<AppSettings>, 'llm' | 'workspace'> & {
 
 function readSettings() {
   const storedSettings = readAutoCutStorage<StoredAppSettings>('settings', INITIAL_SETTINGS);
-  const settings = normalizeAutoCutSettings(storedSettings);
-  initializeAutoCutI18n(settings.workspace.language);
-  return settings;
+  return normalizeAutoCutSettings(storedSettings);
 }
 
 function writeSettings(settings: AppSettings) {
@@ -125,8 +123,36 @@ function writeSettings(settings: AppSettings) {
   return safeSettings;
 }
 
+const settingsMutex = { locked: false, queue: [] as (() => void)[] };
+
+async function withSettingsMutex<T>(fn: () => T): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const run = () => {
+      try {
+        const result = fn();
+        resolve(result);
+      } catch (error) {
+        reject(error);
+      } finally {
+        settingsMutex.locked = false;
+        const next = settingsMutex.queue.shift();
+        if (next) {
+          settingsMutex.locked = true;
+          next();
+        }
+      }
+    };
+    if (settingsMutex.locked) {
+      settingsMutex.queue.push(run);
+    } else {
+      settingsMutex.locked = true;
+      run();
+    }
+  });
+}
+
 function updateSettings(updater: (settings: AppSettings) => AppSettings) {
-  return writeSettings(updater(readSettings()));
+  return withSettingsMutex(() => writeSettings(updater(readSettings())));
 }
 
 export function markAutoCutSpeechTranscriptionProviderTested(probe: {
@@ -630,7 +656,7 @@ function normalizeAutoCutLlmMaxTokens(value: number | undefined, modelPreset: Au
 function maskAutoCutLlmApiKey(apiKey: string) {
   const normalized = apiKey.trim();
   if (normalized.length <= 8) {
-    return normalized.replace(/.(?=.{2})/gu, '*');
+    return `${normalized.slice(0, 2)}${'*'.repeat(Math.max(1, normalized.length - 4))}${normalized.slice(-2)}`;
   }
   return `${normalized.slice(0, 5)}*************${normalized.slice(-4)}`;
 }

@@ -22,7 +22,7 @@ export function VideoEnhancePage() {
       getTasks().then(tasks => {
         const t = tasks.find(x => x.id === activeTaskId);
         if (t) setActiveTask(t);
-      });
+      }).catch(() => {});
     };
     fetchTask();
         const handleUpdate = (task: AppTask) => {

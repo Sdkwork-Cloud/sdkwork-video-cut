@@ -68,6 +68,7 @@ import {
   type AutoCutVideoSliceClipRequest,
   type AutoCutVideoSliceRequest,
   type AutoCutVideoSliceArtifactResult,
+  getAutoCutI18nText,
 } from '@sdkwork/autocut-services';
 import {
   SMART_CUT_STANDARD_VERSION,
@@ -511,7 +512,10 @@ async function resolveSmartSliceExecutionParams(params: VideoSliceParams): Promi
       segmentationDensity: params.segmentationDensity ?? 'default',
       sttPresetId,
     };
-  } catch {
+  } catch (error) {
+    reportVideoSliceStageDiagnostic('LLM runtime config resolution failed, falling back to default segmentation agent', {
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
     return {
       ...params,
       segmentationAgentId: AUTOCUT_DEFAULT_SMART_SLICE_SEGMENTATION_AGENT_ID,
@@ -604,7 +608,7 @@ function createVideoSliceTask(params: VideoSliceParams): AppTask {
     type: AUTOCUT_TASK_TYPE.videoSlice,
     status: AUTOCUT_TASK_STATUS.pending,
     progress: 0,
-    progressMessage: '任务排队中...',
+    progressMessage: getAutoCutI18nText('slicerService.taskQueued'),
     createdAt,
     ...(params.fileId ? { sourceFileId: params.fileId } : {}),
   };
@@ -696,10 +700,10 @@ function createSmartSlicePlanningTranscriptDiagnostics(
   );
   const realContentSegmentCount = normalizedTexts.filter((text) => text.length > 0).length;
   const minStartMs = timingSegments.length > 0
-    ? Math.round(Math.min(...timingSegments.map((segment) => segment.startMs)))
+    ? Math.round(timingSegments.reduce((min, s) => Math.min(min, s.startMs), Infinity))
     : undefined;
   const maxEndMs = timingSegments.length > 0
-    ? Math.round(Math.max(...timingSegments.map((segment) => segment.endMs)))
+    ? Math.round(timingSegments.reduce((max, s) => Math.max(max, s.endMs), -Infinity))
     : undefined;
   const firstTranscriptSegment = transcriptSegments[0];
   const lastTranscriptSegment = transcriptSegments.at(-1);
@@ -724,8 +728,8 @@ function createSmartSlicePlanningTranscriptDiagnostics(
     ...(transcriptEndMs !== undefined ? { transcriptEndMs } : {}),
     ...(minStartMs !== undefined ? { minStartMs } : {}),
     ...(maxEndMs !== undefined ? { maxEndMs } : {}),
-    longestSegmentDurationMs: durations.length > 0 ? Math.max(...durations) : 0,
-    shortestSegmentDurationMs: durations.length > 0 ? Math.min(...durations) : 0,
+    longestSegmentDurationMs: durations.length > 0 ? durations.reduce((max, d) => Math.max(max, d), -Infinity) : 0,
+    shortestSegmentDurationMs: durations.length > 0 ? durations.reduce((min, d) => Math.min(min, d), Infinity) : 0,
     totalSpeechDurationMs,
     averageSegmentDurationMs: durations.length > 0 ? Math.round(totalSpeechDurationMs / durations.length) : 0,
     sampleSegments: transcriptSegments
@@ -1245,6 +1249,11 @@ function applyAutoCutSliceManualEdits(
         continue;
       }
       if (!keepSegment || duplicateSegmentIds.length === 0) {
+        reportVideoSliceStageDiagnostic('deleteDuplicate manual edit skipped', {
+          manualEditId: manualEdit.id,
+          keepSegmentId: keepSegmentId ?? null,
+          duplicateSegmentIdsCount: duplicateSegmentIds.length,
+        });
         continue;
       }
       const duplicateGroupId = `manual-duplicate-${manualEdit.id}`;
@@ -1271,6 +1280,13 @@ function applyAutoCutSliceManualEdits(
     } else if (manualEdit.kind === 'split') {
       const splitSegmentId = resolvedManualEdit.segmentIds[0];
       const splitSegment = splitSegmentId ? segments.find((segment) => segment.id === splitSegmentId) : undefined;
+      if (!splitSegmentId || !splitSegment) {
+        reportVideoSliceStageDiagnostic('split manual edit skipped', {
+          manualEditId: manualEdit.id,
+          splitSegmentId: splitSegmentId ?? null,
+        });
+        continue;
+      }
       const createdSegmentIds = resolveSmartSliceManualEditCreatedSegmentIds(resolvedManualEdit, splitSegmentId);
       segments = splitAutoCutSliceReviewSegments(segments, {
         ...resolvedManualEdit,
@@ -1687,8 +1703,8 @@ function mergeAutoCutSliceReviewSegments(
     return segments;
   }
 
-  const mergedStartMs = Math.min(...mergeSegments.map((segment) => segment.startMs));
-  const mergedEndMs = Math.max(...mergeSegments.map((segment) => segment.endMs));
+  const mergedStartMs = mergeSegments.reduce((min, s) => Math.min(min, s.startMs), Infinity);
+  const mergedEndMs = mergeSegments.reduce((max, s) => Math.max(max, s.endMs), -Infinity);
   const mergedTranscriptSegments = repairLightlyOverlappingVideoSliceTranscriptSegments(
     mergeSegments
       .flatMap((segment) => segment.transcriptSegments ?? [])
@@ -1708,14 +1724,14 @@ function mergeAutoCutSliceReviewSegments(
     mergedStartMs,
     Math.min(
       mergedEndMs,
-      Math.min(...mergeSegments.map((segment) => segment.speechStartMs ?? segment.startMs)),
+      mergeSegments.reduce((min, s) => Math.min(min, s.speechStartMs ?? s.startMs), Infinity),
     ),
   );
   const mergedSpeechEndMs = Math.max(
     mergedSpeechStartMs,
     Math.min(
       mergedEndMs,
-      Math.max(...mergeSegments.map((segment) => segment.speechEndMs ?? segment.endMs)),
+      mergeSegments.reduce((max, s) => Math.max(max, s.speechEndMs ?? s.endMs), -Infinity),
     ),
   );
 
@@ -1843,8 +1859,8 @@ function normalizeReviewedSmartSliceClipEvidence(
     delete normalizedClip.trailingSilenceMs;
   }
   if (hasTrustedSmartSliceAudioActivityEvidence(normalizedClip)) {
-    const audioActivityStartMs = Math.round(normalizedClip.audioActivityStartMs as number);
-    const audioActivityEndMs = Math.round(normalizedClip.audioActivityEndMs as number);
+    const audioActivityStartMs = Math.round(normalizedClip.audioActivityStartMs);
+    const audioActivityEndMs = Math.round(normalizedClip.audioActivityEndMs);
     const leadingSilenceMs = audioActivityStartMs - sourceStartMs;
     const trailingSilenceMs = sourceEndMs - audioActivityEndMs;
     if (
@@ -2060,9 +2076,12 @@ function resolveSmartSliceProductTargetCandidateCount(
     return undefined;
   }
 
-  const transcriptEndMs = Math.max(0, ...transcriptSegments.map((segment) =>
-    typeof segment.endMs === 'number' && Number.isFinite(segment.endMs) ? Math.round(segment.endMs) : 0,
-  ));
+  const transcriptEndMs = transcriptSegments.reduce(
+    (max, segment) => {
+      const endMs = typeof segment.endMs === 'number' && Number.isFinite(segment.endMs) ? Math.round(segment.endMs) : 0;
+      return Math.max(max, endMs);
+    }, 0,
+  );
   const planningDurationMs = sourceDurationMs ?? transcriptEndMs;
   if (planningDurationMs >= SMART_SLICE_LONG_SOURCE_TARGET_THRESHOLD_MS) {
     return SMART_SLICE_LONG_SOURCE_SINGLE_SHORT_TARGET_CANDIDATE_COUNT;
@@ -2108,7 +2127,6 @@ async function createIntelligentSlicePlanResult(
     });
     return fallbackPlanResult(
       error instanceof Error ? error.message : String(error),
-      [],
     );
   }
   if (transcriptSegments.length > 0 && !hasRealSmartSliceTranscriptContentEvidence(transcriptSegments)) {
@@ -2119,7 +2137,6 @@ async function createIntelligentSlicePlanResult(
     });
     return fallbackPlanResult(
       'speech-to-text returned only silence, filler, or low-information transcript segments',
-      [],
     );
   }
 
@@ -2174,6 +2191,7 @@ async function createIntelligentSlicePlanResult(
       planningParams,
       transcriptSegments,
       error instanceof Error ? error.message : String(error),
+      true,
     );
   }
 }
@@ -2182,6 +2200,7 @@ function createFallbackSmartSlicePlanResult(
   params: VideoSliceParams,
   transcriptSegments: readonly AutoCutSpeechTranscriptionSegment[],
   reason: string,
+  usedFallback = false,
 ): SmartCutEngineSlicePlanResult {
   const sourceDurationMs = resolveTrustedVideoSliceSourceDurationMs(params);
   const transcriptPlan = transcriptSegments.length > 0
@@ -2225,6 +2244,8 @@ function createFallbackSmartSlicePlanResult(
     transcriptEvidence: createFallbackSmartCutTranscriptEvidence(transcriptSegments),
     speakerEvidence: createFallbackSmartCutSpeakerEvidence(transcriptSegments),
     blockers: [],
+    usedFallback,
+    ...(usedFallback ? { fallbackReason: reason } : {}),
   };
 }
 
@@ -2471,9 +2492,10 @@ function readSmartSliceStringArray(value: unknown): string[] {
     .filter(Boolean);
 }
 
-function containsSmartSliceRawTimeRange(value: unknown): boolean {
+function containsSmartSliceRawTimeRange(value: unknown, maxDepth = 10): boolean {
+  if (maxDepth <= 0) return false;
   if (Array.isArray(value)) {
-    return value.some((item) => containsSmartSliceRawTimeRange(item));
+    return value.some((item) => containsSmartSliceRawTimeRange(item, maxDepth - 1));
   }
   if (!isSmartSliceRecord(value)) {
     return false;
@@ -2490,7 +2512,7 @@ function containsSmartSliceRawTimeRange(value: unknown): boolean {
   ) {
     return true;
   }
-  return Object.values(value).some((nestedValue) => containsSmartSliceRawTimeRange(nestedValue));
+  return Object.values(value).some((nestedValue) => containsSmartSliceRawTimeRange(nestedValue, maxDepth - 1));
 }
 
 function isSmartSliceRecord(value: unknown): value is Record<string, unknown> {
@@ -2678,10 +2700,10 @@ function shouldScaleSmartSliceTranscriptSecondsToMilliseconds(
     return false;
   }
 
-  const transcriptStartMs = Math.min(...timestampedSegments.map((segment) => segment.startMs));
-  const transcriptEndMs = Math.max(...timestampedSegments.map((segment) => segment.endMs));
-  const longestSegmentDurationMs = Math.max(
-    ...timestampedSegments.map((segment) => segment.endMs - segment.startMs),
+  const transcriptStartMs = timestampedSegments.reduce((min, s) => Math.min(min, s.startMs), Infinity);
+  const transcriptEndMs = timestampedSegments.reduce((max, s) => Math.max(max, s.endMs), -Infinity);
+  const longestSegmentDurationMs = timestampedSegments.reduce(
+    (max, s) => Math.max(max, s.endMs - s.startMs), -Infinity,
   );
   if (
     transcriptStartMs < 0 ||
@@ -2757,8 +2779,8 @@ function shouldScaleSmartSliceTranscriptSecondsToMillisecondsWithoutSourceDurati
 async function finishVideoSliceTask(newTask: AppTask, sliceResults: TaskSliceResult[]) {
   const timestamp = createAutoCutTimestamp();
 
-  for (const sliceResult of sliceResults) {
-    await addAsset({
+  const assetResults = await Promise.allSettled(sliceResults.map((sliceResult) =>
+    addAsset({
       id: sliceResult.id,
       name: sliceResult.name,
       type: 'video',
@@ -2771,18 +2793,29 @@ async function finishVideoSliceTask(newTask: AppTask, sliceResults: TaskSliceRes
       sourceTaskType: newTask.type,
       createdAt: timestamp,
       updatedAt: timestamp,
+    }),
+  ));
+  const failedCount = assetResults.filter((r) => r.status === 'rejected').length;
+  if (failedCount > 0) {
+    reportVideoSliceStageDiagnostic('addAsset partial failure', {
+      taskId: newTask.id,
+      totalSlices: sliceResults.length,
+      failedSlices: failedCount,
+      failureReasons: assetResults
+        .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+        .map((r) => String(r.reason)),
     });
   }
 
   await addMessage({
     id: createAutoCutId('msg'),
     type: 'success',
-    title: '视频切片完成',
-    description: `任务 "${newTask.name}" 已生成 ${sliceResults.length} 个视频片段。`,
+    title: getAutoCutI18nText('slicerService.sliceCompleted'),
+    description: getAutoCutI18nText('slicerService.sliceCompletedDescription', undefined, undefined, { name: newTask.name, count: sliceResults.length }),
     createdAt: createAutoCutTimestamp(),
     read: false,
     actionUrl: '/tasks/' + newTask.id,
-    actionLabel: '查看任务',
+    actionLabel: getAutoCutI18nText('slicerService.viewTask'),
   });
 
   return {
@@ -2919,7 +2952,7 @@ function createNativeSliceResult(
   const risks = mergeSmartSliceServiceRisks(plannedClip?.risks, nativeSlice.risks);
   const sliceResult = {
     id: nativeSlice.artifactUuid,
-    name: `${newTask.name}_${nativeSlice.label || `高光片段 ${index + 1}`}.mp4`,
+    name: `${newTask.name}_${nativeSlice.label || getAutoCutI18nText('slicerService.highlightClip', undefined, undefined, { index: index + 1 })}.mp4`,
     duration: Math.max(1, Math.round(renderedDurationMs / 1_000)),
     size: nativeSlice.byteSize,
     resolution: '1080P',
@@ -3517,8 +3550,8 @@ function isSmartSliceTimeRangeCoveredBySourceSegments(
   return coveredUntilMs >= normalizedEndMs - SMART_SLICE_TRANSCRIPT_BOUNDARY_TOLERANCE_MS;
 }
 
-function hasTrustedSmartSliceAudioActivityEvidence(
-  value: Pick<
+function hasTrustedSmartSliceAudioActivityEvidence<
+  T extends Pick<
     NormalizedSlicePlanClip | TaskSliceResult,
     | 'audioActivityStartMs'
     | 'audioActivityEndMs'
@@ -3526,7 +3559,9 @@ function hasTrustedSmartSliceAudioActivityEvidence(
     | 'audioActivityAnalysisFilter'
     | 'noiseReductionApplied'
   >,
-) {
+>(
+  value: T,
+): value is T & { audioActivityStartMs: number; audioActivityEndMs: number; audioActivityConfidence: number } {
   const expectedAnalysisFilter = typeof value.noiseReductionApplied === 'boolean'
     ? getSmartSliceRequiredAudioActivityAnalysisFilter(value.noiseReductionApplied)
     : undefined;
@@ -3753,8 +3788,8 @@ function canExpandSmartSliceSourceRangeToTranscriptBoundary(
     return true;
   }
 
-  const audioActivityStartMs = Math.round(clip.audioActivityStartMs as number);
-  const audioActivityEndMs = Math.round(clip.audioActivityEndMs as number);
+  const audioActivityStartMs = Math.round(clip.audioActivityStartMs);
+  const audioActivityEndMs = Math.round(clip.audioActivityEndMs);
   return audioActivityStartMs >= sourceStartMs &&
     audioActivityEndMs <= sourceEndMs &&
     audioActivityStartMs - sourceStartMs <= MAX_SMART_SLICE_LEADING_SILENCE_MS &&
@@ -3772,8 +3807,8 @@ function refreshTrustedSmartSliceAudioActivityPaddingEvidence<T extends Normaliz
   const sourceEndMs = typeof clip.sourceEndMs === 'number' && Number.isFinite(clip.sourceEndMs)
     ? Math.max(sourceStartMs, Math.round(clip.sourceEndMs))
     : Math.max(sourceStartMs, Math.round(clip.startMs + clip.durationMs));
-  const audioActivityStartMs = Math.round(clip.audioActivityStartMs as number);
-  const audioActivityEndMs = Math.round(clip.audioActivityEndMs as number);
+  const audioActivityStartMs = Math.round(clip.audioActivityStartMs);
+  const audioActivityEndMs = Math.round(clip.audioActivityEndMs);
   if (
     audioActivityStartMs < sourceStartMs ||
     audioActivityEndMs > sourceEndMs ||
@@ -3799,20 +3834,22 @@ function refreshTrustedSmartSliceAudioActivityPaddingEvidence<T extends Normaliz
 }
 
 function stripTrustedSmartSliceAudioActivityEvidence<T extends NormalizedSlicePlanClip>(clip: T): T {
-  const strippedClip = { ...clip };
-  delete strippedClip.audioCleanupProfile;
-  delete strippedClip.noiseReductionApplied;
-  delete strippedClip.boundaryDecisionSource;
-  delete strippedClip.audioActivityStartMs;
-  delete strippedClip.audioActivityEndMs;
-  delete strippedClip.audioActivityConfidence;
-  delete strippedClip.audioActivityAnalysisFilter;
-  delete strippedClip.leadingSilenceMs;
-  delete strippedClip.trailingSilenceMs;
-  delete strippedClip.leadingSilenceTrimMs;
-  delete strippedClip.trailingSilenceTrimMs;
-  delete strippedClip.tailTreatment;
-  return strippedClip;
+  const {
+    audioCleanupProfile,
+    noiseReductionApplied,
+    boundaryDecisionSource,
+    audioActivityStartMs,
+    audioActivityEndMs,
+    audioActivityConfidence,
+    audioActivityAnalysisFilter,
+    leadingSilenceMs,
+    trailingSilenceMs,
+    leadingSilenceTrimMs,
+    trailingSilenceTrimMs,
+    tailTreatment,
+    ...rest
+  } = clip;
+  return rest as T;
 }
 
 function repairTrustedSmartSliceAudioActivityPaddingForNativeRender(
@@ -3832,8 +3869,8 @@ function repairTrustedSmartSliceAudioActivityPaddingForNativeRender(
   const sourceEndMs = typeof clip.sourceEndMs === 'number' && Number.isFinite(clip.sourceEndMs)
     ? Math.max(sourceStartMs, Math.round(clip.sourceEndMs))
     : Math.max(sourceStartMs, currentEndMs);
-  const audioActivityStartMs = Math.round(clip.audioActivityStartMs as number);
-  const audioActivityEndMs = Math.round(clip.audioActivityEndMs as number);
+  const audioActivityStartMs = Math.round(clip.audioActivityStartMs);
+  const audioActivityEndMs = Math.round(clip.audioActivityEndMs);
   if (
     currentEndMs <= currentStartMs ||
     sourceEndMs <= sourceStartMs ||
@@ -3979,11 +4016,11 @@ function normalizeTrustedSmartSliceAudioActivityEvidenceForNativeRender(
     : Math.max(sourceStartMs + 1, Math.round(clip.startMs + clip.durationMs));
   const audioActivityStartMs = Math.max(
     sourceStartMs,
-    Math.min(Math.round(clip.audioActivityStartMs as number), sourceEndMs),
+    Math.min(Math.round(clip.audioActivityStartMs), sourceEndMs),
   );
   const audioActivityEndMs = Math.max(
     audioActivityStartMs,
-    Math.min(Math.round(clip.audioActivityEndMs as number), sourceEndMs),
+    Math.min(Math.round(clip.audioActivityEndMs), sourceEndMs),
   );
   if (audioActivityEndMs <= audioActivityStartMs) {
     return stripTrustedSmartSliceAudioActivityEvidence(clip);
@@ -5104,8 +5141,8 @@ function hasCompleteTrustedSmartSliceAudioActivityEvidence(
 
   const sourceStartMs = Math.round(value.sourceStartMs);
   const sourceEndMs = Math.round(value.sourceEndMs);
-  const audioActivityStartMs = Math.round(value.audioActivityStartMs as number);
-  const audioActivityEndMs = Math.round(value.audioActivityEndMs as number);
+  const audioActivityStartMs = Math.round(value.audioActivityStartMs);
+  const audioActivityEndMs = Math.round(value.audioActivityEndMs);
   return audioActivityStartMs >= sourceStartMs &&
     audioActivityEndMs <= sourceEndMs &&
     audioActivityEndMs > audioActivityStartMs &&
@@ -6039,6 +6076,7 @@ async function analyzeAndRefineSmartSliceAudioBoundariesWithDenoiseFallback(
       sourceAssetUuid,
       plannedClipCount: plannedClips.length,
       profile: SMART_SLICE_AUDIO_CLEANUP_PROFILE,
+      errorType: rawAnalysisError instanceof Error ? rawAnalysisError.constructor.name : typeof rawAnalysisError,
       errorMessage: rawAnalysisError instanceof Error ? rawAnalysisError.message : String(rawAnalysisError),
     });
     const denoisedAttempt = await analyzeAndRefineSmartSliceAudioBoundaries(
@@ -6093,6 +6131,7 @@ async function analyzeAndRefineSmartSliceAudioBoundariesWithDenoiseFallback(
       sourceAssetUuid,
       plannedClipCount: plannedClips.length,
       profile: SMART_SLICE_AUDIO_CLEANUP_PROFILE,
+      errorType: rawReadinessError instanceof Error ? rawReadinessError.constructor.name : typeof rawReadinessError,
       errorMessage: rawReadinessError instanceof Error ? rawReadinessError.message : String(rawReadinessError),
     });
     const denoisedAttempt = await analyzeAndRefineSmartSliceAudioBoundaries(
@@ -6503,6 +6542,18 @@ function createSmartSliceAudioAnalysisPlanClips(
   });
 }
 
+function createNativeRenderPlanClipFromRequest(
+  nativeClip: AutoCutVideoSliceClipRequest,
+  plannedClip: NormalizedSlicePlanClip | undefined,
+  index: number,
+): NormalizedSlicePlanClip {
+  return {
+    ...(plannedClip ?? {}),
+    ...nativeClip,
+    index,
+  };
+}
+
 function assertNativeSliceArtifactsMatchPlan(
   nativeSlices: readonly AutoCutVideoSliceArtifactResult[],
   plannedClips: readonly NormalizedSlicePlanClip[],
@@ -6803,9 +6854,9 @@ function assertNativeSlicePathInsideTaskOutputDir(
 ) {
   try {
     assertAutoCutNativeArtifactInsideTaskOutputDir({ artifactPath, taskOutputDir }, `slice artifact ${sliceNumber}`);
-  } catch {
+  } catch (assertionError) {
     throw new Error(
-      `AutoCut native video slicing slice artifact ${sliceNumber} ${fieldName} is outside its task output directory.`,
+      `AutoCut native video slicing slice artifact ${sliceNumber} ${fieldName} is outside its task output directory. ${assertionError instanceof Error ? assertionError.message : String(assertionError)}`,
     );
   }
 }
@@ -6896,14 +6947,14 @@ function mergeShortSmartSliceClips(
       label: previousClip.label,
     };
 
-    merged[merged.length - 1] = refreshSmartSlicePlanTranscriptEvidence(
-      [mergedClip],
-      transcriptSegments,
-      undefined,
-    )[0] ?? mergedClip;
+    merged[merged.length - 1] = mergedClip;
   }
 
-  return merged.map((clip, index) => ({ ...clip, index }));
+  return refreshSmartSlicePlanTranscriptEvidence(
+    merged.map((clip, index) => ({ ...clip, index })),
+    transcriptSegments,
+    undefined,
+  );
 }
 
 function canMergeAdjacentShortSmartSliceClips(
@@ -7632,42 +7683,12 @@ function createSmartSlicePlanningFailureDiagnostics(error: unknown) {
   ].join('\n');
 }
 
-function createVideoSliceStageDiagnosticPayload(stage: string, details: Record<string, unknown>) {
-  return { stage, ...details };
-}
-
-function writeSmartSliceConsoleDiagnostic(
-  level: 'info' | 'warn' | 'error',
-  message: string,
-  payload: Record<string, unknown>,
-) {
-  if (typeof console === 'undefined') {
-    return;
-  }
-
-  try {
-    const writer = level === 'error' ? console.error : level === 'warn' ? console.warn : console.info;
-    if (typeof writer === 'function') {
-      writer(message, payload);
-    }
-  } catch {
-    // Console diagnostics must never interrupt Smart Slice execution.
-  }
-}
-
 function reportVideoSliceStageDiagnostic(stage: string, details: Record<string, unknown> = {}) {
-  writeSmartSliceConsoleDiagnostic(
-    'info',
-    `[AutoCut:slicer.service] Smart Slice ${stage}`,
-    createVideoSliceStageDiagnosticPayload(stage, details),
-  );
+  reportAutoCutDiagnostic('warning', 'slicer.service', `Smart Slice ${stage}`, { stage, ...details });
 }
 
 function reportSmartSliceExecutionPlan(taskId: string, details: Record<string, unknown> = {}) {
-  writeSmartSliceConsoleDiagnostic(
-    'info',
-    '[AutoCut:slicer.service] Smart Slice execution plan',
-    {
+  reportAutoCutDiagnostic('warning', 'slicer.service', 'Smart Slice execution plan', {
       taskId,
       stage: 'execution plan',
       steps: SMART_SLICE_EXECUTION_STEPS.map((step, index) => ({
@@ -7717,7 +7738,11 @@ interface SmartSliceExecutionLogUpdateParams {
 async function readSmartSliceTaskExecutionState(taskId: string) {
   try {
     return (await getTasks()).find((task) => task.id === taskId);
-  } catch {
+  } catch (error) {
+    reportVideoSliceStageDiagnostic('task execution state read failed', {
+      taskId,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
     return undefined;
   }
 }
@@ -8008,7 +8033,13 @@ function startSmartSliceLongRunningStageProgressMonitor(
     }
     lastRecordedProgressValue = progressValue;
     lastRecordedPhase = progressPhase;
-    void recordSmartSliceLongRunningStageProgress(context, step, progress, elapsedMs);
+    recordSmartSliceLongRunningStageProgress(context, step, progress, elapsedMs).catch((error) => {
+      reportVideoSliceStageDiagnostic('long running stage progress recording failed', {
+        taskId: context.task.id,
+        stepId: step.id,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+    });
   });
 }
 
@@ -8292,7 +8323,30 @@ function restoreSmartSliceParamsFromCheckpoint(checkpoint: AutoCutTaskExecutionC
 function readSmartSliceCheckpointArtifacts(
   checkpoint: AutoCutTaskExecutionCheckpoint,
 ): SmartSliceCheckpointArtifacts {
-  return checkpoint.artifacts as unknown as SmartSliceCheckpointArtifacts;
+  const artifacts = checkpoint.artifacts;
+  if (typeof artifacts !== 'object' || artifacts === null) {
+    throw new Error('Smart Slice checkpoint artifacts are corrupted: expected an object.');
+  }
+  const typed = artifacts as Record<string, unknown>;
+  if ('prepare-source' in typed && typed['prepare-source'] !== undefined) {
+    const ps = typed['prepare-source'] as Record<string, unknown>;
+    if (!ps.sourceMedia || typeof (ps.sourceMedia as Record<string, unknown>)?.assetUuid !== 'string') {
+      throw new Error('Smart Slice checkpoint prepare-source artifact is corrupted: missing sourceMedia.assetUuid.');
+    }
+  }
+  if ('speech-to-text' in typed && typed['speech-to-text'] !== undefined) {
+    const stt = typed['speech-to-text'] as Record<string, unknown>;
+    if (!Array.isArray(stt.transcriptSegments)) {
+      throw new Error('Smart Slice checkpoint speech-to-text artifact is corrupted: transcriptSegments is not an array.');
+    }
+  }
+  if ('plan-clips' in typed && typed['plan-clips'] !== undefined) {
+    const pc = typed['plan-clips'] as Record<string, unknown>;
+    if (!Array.isArray(pc.plannedClips)) {
+      throw new Error('Smart Slice checkpoint plan-clips artifact is corrupted: plannedClips is not an array.');
+    }
+  }
+  return artifacts as unknown as SmartSliceCheckpointArtifacts;
 }
 
 function createSmartSliceCompletedCheckpoint(
@@ -8499,14 +8553,22 @@ async function runSmartSliceCheckpointedExecutionStep<TResult>(
     const result = await runSmartSliceExecutionStep(context, stepId, operation, details);
     await assertSmartSliceTaskNotCanceled(context, stepId);
     context.checkpoint = createSmartSliceCompletedCheckpoint(context.checkpoint, stepId, createArtifact(result));
-    await updateTask(context.task.id, { executionCheckpoint: context.checkpoint });
     return result;
   } catch (error) {
     if (!isAutoCutProcessingTaskCanceledError(error)) {
       context.checkpoint = createSmartSliceFailedCheckpoint(context.checkpoint, stepId);
-      await updateTask(context.task.id, { executionCheckpoint: context.checkpoint });
     }
     throw error;
+  } finally {
+    try {
+      await updateTask(context.task.id, { executionCheckpoint: context.checkpoint });
+    } catch (updateError) {
+      reportVideoSliceStageDiagnostic('checkpoint update failed in finally', {
+        taskId: context.task.id,
+        stepId,
+        errorMessage: updateError instanceof Error ? updateError.message : String(updateError),
+      });
+    }
   }
 }
 
@@ -8632,7 +8694,11 @@ function createSmartSliceRuntimeSourceAsset({
   if (artifactPath) {
     try {
       url = createAssetUrl(artifactPath);
-    } catch {
+    } catch (error) {
+      reportVideoSliceStageDiagnostic('asset URL creation failed', {
+        artifactPath,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
       url = undefined;
     }
   }
@@ -9550,7 +9616,8 @@ export async function renderVideoSlicePlan(
       task.studioClipTimeline?.processingOperations ?? [],
     ),
   });
-  return executeSmartSliceTask({
+  try {
+    return await executeSmartSliceTask({
     task: {
       ...task,
       status: AUTOCUT_TASK_STATUS.processing,
@@ -9566,6 +9633,10 @@ export async function renderVideoSlicePlan(
     reviewMode: 'auto-render',
     renderSelection: normalizedRenderSelection,
   });
+  } catch (renderError) {
+    await failAutoCutProcessingTask(task.id, renderError instanceof Error ? renderError.message : String(renderError));
+    throw renderError;
+  }
 }
 
 async function executeSmartSliceTask(
@@ -9819,10 +9890,6 @@ async function executeSmartSliceTask(
         },
       );
       transcriptSegments = speechToTextStepResult.transcriptSegments;
-      transcriptSegments = normalizeSmartSliceTranscriptTimelineForSourceDuration(
-        transcriptSegments,
-        sourceMedia.durationMs,
-      );
       await assertSmartSliceTaskNotCanceled(context, 'speech-to-text');
       const planningPolicy = getVideoSlicePlanningPolicy(params);
       const renderProfile = createVideoSliceRenderProfile(planningPolicy);
@@ -10223,6 +10290,9 @@ async function executeSmartSliceTask(
       const nativeClips = mergedPlannedClips.map((clip) =>
         toNativeSliceClipRequest(clip, mergedRenderTranscriptSegments, params)
       );
+      const nativeRenderPlanClips = nativeClips.map((nativeClip, index) =>
+        createNativeRenderPlanClipFromRequest(nativeClip, mergedPlannedClips[index], index)
+      );
       const subtitleRequest = createBestEffortVideoSliceSubtitleRequest(params, mergedRenderTranscriptSegments);
       const nativeResult = await runSmartSliceCheckpointedExecutionStep(
         context,
@@ -10309,7 +10379,7 @@ async function executeSmartSliceTask(
       );
       assertNativeSliceArtifactsMatchPlan(
         nativeResult.slices,
-        mergedPlannedClips,
+        nativeRenderPlanClips,
         nativeResult.taskOutputDir,
         subtitleRequest,
       );

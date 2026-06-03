@@ -1,5 +1,9 @@
+import { useMemo } from 'react';
 import type { SmartSliceTimelineViewportState } from './types';
 import { formatSmartSliceTimelineTime } from './timelineModel';
+
+const MAX_MINOR_TICKS = 200;
+const MAX_MAJOR_TICKS = 100;
 
 interface SmartSliceTimelineRulerProps {
   durationMs: number;
@@ -7,6 +11,8 @@ interface SmartSliceTimelineRulerProps {
   majorTickMs: number;
   minorTickMs: number;
   timeToX: (timeMs: number) => number;
+  scrollLeftPx?: number;
+  containerWidthPx?: number;
 }
 
 export function SmartSliceTimelineRuler({
@@ -15,18 +21,36 @@ export function SmartSliceTimelineRuler({
   majorTickMs,
   minorTickMs,
   timeToX,
+  scrollLeftPx = 0,
+  containerWidthPx = viewport.contentWidthPx,
 }: SmartSliceTimelineRulerProps) {
-  const majorTicks = [];
-  for (let timeMs = 0; timeMs <= durationMs; timeMs += majorTickMs) {
-    majorTicks.push(timeMs);
-  }
+  const visibleStartMs = Math.max(0, scrollLeftPx / Math.max(0.001, viewport.pxPerMs));
+  const visibleEndMs = Math.min(durationMs, (scrollLeftPx + containerWidthPx) / Math.max(0.001, viewport.pxPerMs));
+  const tickPaddingMs = majorTickMs * 2;
 
-  const minorTicks = [];
-  for (let timeMs = 0; timeMs <= durationMs; timeMs += minorTickMs) {
-    if (timeMs % majorTickMs !== 0) {
-      minorTicks.push(timeMs);
+  const { majorTicks, minorTicks } = useMemo(() => {
+    const major: number[] = [];
+    const majorStartMs = Math.max(0, Math.floor((visibleStartMs - tickPaddingMs) / majorTickMs) * majorTickMs);
+    const majorEndMs = Math.min(durationMs, visibleEndMs + tickPaddingMs);
+    if (majorTickMs > 0) {
+      for (let timeMs = majorStartMs; timeMs <= majorEndMs && major.length < MAX_MAJOR_TICKS; timeMs += majorTickMs) {
+        major.push(timeMs);
+      }
     }
-  }
+
+    const minor: number[] = [];
+    const minorStartMs = Math.max(0, Math.floor((visibleStartMs - tickPaddingMs) / minorTickMs) * minorTickMs);
+    const minorEndMs = Math.min(durationMs, visibleEndMs + tickPaddingMs);
+    if (minorTickMs > 0) {
+      for (let timeMs = minorStartMs; timeMs <= minorEndMs && minor.length < MAX_MINOR_TICKS; timeMs += minorTickMs) {
+        if (timeMs % majorTickMs !== 0) {
+          minor.push(timeMs);
+        }
+      }
+    }
+    return { majorTicks: major, minorTicks: minor };
+  }, [visibleStartMs, visibleEndMs, tickPaddingMs, majorTickMs, minorTickMs, durationMs]);
+
   const viewportDensityLabel = viewport.pxPerSecond >= 10
     ? viewport.pxPerSecond.toFixed(0)
     : viewport.pxPerSecond >= 1

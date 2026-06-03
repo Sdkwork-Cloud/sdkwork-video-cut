@@ -76,6 +76,10 @@ export function SmartSliceTimelineTrack({
       <div
         className="absolute inset-0 cursor-crosshair"
         onMouseDown={(event) => {
+          event.preventDefault();
+          if (durationMs <= 0) {
+            return;
+          }
           const rect = event.currentTarget.getBoundingClientRect();
           const nextMs = Math.round(
             Math.max(0, Math.min(1, rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0)) * durationMs,

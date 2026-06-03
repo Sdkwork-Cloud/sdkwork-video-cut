@@ -867,6 +867,9 @@ function hasReliableSpeakerTurnTranscriptOverlap(
 }
 
 function getSharedOverlapMs(ranges: readonly SmartCutTimeRange[]): number {
+  if (ranges.length === 0) {
+    return 0;
+  }
   const startMs = Math.max(...ranges.map((range) => range.startMs));
   const endMs = Math.min(...ranges.map((range) => range.endMs));
   return Math.max(0, endMs - startMs);

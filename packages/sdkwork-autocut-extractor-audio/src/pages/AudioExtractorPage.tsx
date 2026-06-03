@@ -22,7 +22,7 @@ export function AudioExtractorPage() {
       getTasks().then(tasks => {
         const t = tasks.find(x => x.id === activeTaskId);
         if (t) setActiveTask(t);
-      });
+      }).catch(() => {});
     };
     fetchTask();
         const handleUpdate = (task: AppTask) => {
@@ -34,6 +34,10 @@ export function AudioExtractorPage() {
   }, [activeTaskId]);
 
   const handleStartProcess = async () => {
+    if (!file) {
+      toast('需要上传音频素材', 'error');
+      return;
+    }
     toast('音频提取任务已创建', 'info');
     try {
       const res = await processAudioExtraction({ file, format, quality, channel: smartVolume ? 'smart-stereo' : 'stereo' });

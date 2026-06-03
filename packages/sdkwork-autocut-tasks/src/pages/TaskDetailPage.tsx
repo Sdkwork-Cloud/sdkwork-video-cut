@@ -624,7 +624,10 @@ export function TaskDetailPage() {
   const [activeFlowOutputTab, setActiveFlowOutputTab] = useState<TaskDetailOutputTab>('clips');
   const [isCancelingTask, setIsCancelingTask] = useState(false);
   const [resumingStepId, setResumingStepId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const lastExecutionTaskIdRef = useRef<string | null>(null);
+  const hasSetInitialPreviewRef = useRef(false);
+  const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const handleSlicePreviewSelect = (sliceId: string) => {
     setActivePreviewUrl(sliceId);
@@ -662,12 +665,13 @@ export function TaskDetailPage() {
       const t = tasks.find(x => x.id === taskId);
       setTask(t || null);
       const firstSlice = t?.sliceResults?.[0];
-      if (firstSlice && !activePreviewUrl) {
+      if (firstSlice && !hasSetInitialPreviewRef.current) {
+        hasSetInitialPreviewRef.current = true;
         setActivePreviewUrl(firstSlice.id);
       }
       return t || null;
-    });
-  }, [activePreviewUrl, taskId]);
+    }).finally(() => setIsLoading(false));
+  }, [taskId]);
 
   const handleCancelTask = async () => {
     if (!task || !isAutoCutTaskActiveStatus(task.status) || isCancelingTask) {
@@ -774,6 +778,8 @@ export function TaskDetailPage() {
     }
   }, [selectedExecutionStepId, task]);
 
+  useEffect(() => () => { if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current); }, []);
+
   const taskDetailEngine = useMemo(
     () => task ? inferSmartSliceTaskDetailEngine(task) : 'legacy-video-slice',
     [task],
@@ -783,6 +789,13 @@ export function TaskDetailPage() {
     [task, taskDetailEngine],
   );
   if (!task) {
+    if (isLoading) {
+      return (
+        <div className="w-full h-full flex flex-col items-center justify-center text-gray-400">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-700 border-t-blue-500" />
+        </div>
+      );
+    }
     return (
       <div className="w-full h-full p-10 flex flex-col items-center justify-center text-gray-400">
         <p>{t('taskDetail.missing.title')}</p>
@@ -899,7 +912,8 @@ export function TaskDetailPage() {
                const text = formatExtractedText(task);
                void writeAutoCutClipboardText(text);
                setCopied(true);
-               setTimeout(() => setCopied(false), 2000);
+               if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+               copiedTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
              }} variant="outline" className="text-xs">
                <Copy size={14} className="mr-2" /> {copied ? t('taskDetail.result.copied') : t('taskDetail.result.copyText')}
              </Button>
@@ -916,7 +930,7 @@ export function TaskDetailPage() {
                     <div className="absolute -left-16 top-1 text-[10px] font-mono text-gray-500">{item.time}</div>
                     <div className="flex items-start gap-4">
                       <div className="shrink-0 w-8 h-8 bg-purple-500/10 border border-purple-500/20 text-purple-400 rounded-full flex items-center justify-center font-bold text-[10px]">
-                        {item.speaker[0]}
+                        {item.speaker?.[0] || '?'}
                       </div>
                       <div className="flex-1">
                          <div className="text-[10px] text-gray-500 font-bold mb-1 uppercase tracking-wider">{item.speaker}</div>
@@ -992,7 +1006,8 @@ export function TaskDetailPage() {
                 <Button variant="outline" onClick={() => {
                   void writeAutoCutClipboardText(displayText);
                   setCopied(true);
-                  setTimeout(() => setCopied(false), 2000);
+                  if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+                  copiedTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
                 }}>
                   <Copy size={16} className="mr-2" /> {copied ? t('taskDetail.result.copied') : translationText ? t('taskDetail.result.copyTranslation') : t('taskDetail.result.copyTranscript')}
                 </Button>

@@ -62,5 +62,6 @@ export interface SmartSliceTimelineWorkbenchProps {
     side: SmartSliceTimelineBoundarySide,
     nextMs: number,
   ) => void;
+  onCancelClipBoundaryDrag?: () => void;
   onSplitClipAtTime: (segmentId: string, splitAtMs: number) => void;
 }

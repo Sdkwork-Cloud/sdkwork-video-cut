@@ -94,15 +94,17 @@ interface SmartSliceVideoPreviewProps {
   onPlayStateChange?: (isPlaying: boolean) => void;
 }
 
-const NativeSmartSliceVideoPreview = forwardRef<SmartSlicePlayerRef, SmartSliceVideoPreviewProps>(
+const NativeSmartSliceVideoPreview = React.memo(forwardRef<SmartSlicePlayerRef, SmartSliceVideoPreviewProps>(
   ({ videoSrc, aspectRatio, videoObjectFit = 'contain', onVideoLoaded, onTimeUpdate, onPlayStateChange }, ref) => {
     const videoRef = useRef<HTMLVideoElement | null>(null);
     const containerAspectRatio = aspectRatio && aspectRatio !== 'auto' ? aspectRatio.replace(':', ' / ') : undefined;
 
     useImperativeHandle(ref, () => ({
       play: () => {
-        void videoRef.current?.play();
-        onPlayStateChange?.(true);
+        const video = videoRef.current;
+        if (video) {
+          void video.play().then(() => onPlayStateChange?.(true)).catch(() => onPlayStateChange?.(false));
+        }
       },
       pause: () => {
         videoRef.current?.pause();
@@ -114,8 +116,7 @@ const NativeSmartSliceVideoPreview = forwardRef<SmartSlicePlayerRef, SmartSliceV
           return;
         }
         if (video.paused) {
-          void video.play();
-          onPlayStateChange?.(true);
+          void video.play().then(() => onPlayStateChange?.(true)).catch(() => onPlayStateChange?.(false));
         } else {
           video.pause();
           onPlayStateChange?.(false);
@@ -160,8 +161,7 @@ const NativeSmartSliceVideoPreview = forwardRef<SmartSlicePlayerRef, SmartSliceV
                 return;
               }
               if (video.paused) {
-                void video.play();
-                onPlayStateChange?.(true);
+                void video.play().then(() => onPlayStateChange?.(true)).catch(() => onPlayStateChange?.(false));
               } else {
                 video.pause();
                 onPlayStateChange?.(false);
@@ -172,7 +172,7 @@ const NativeSmartSliceVideoPreview = forwardRef<SmartSlicePlayerRef, SmartSliceV
       </div>
     );
   },
-);
+));
 
 NativeSmartSliceVideoPreview.displayName = 'NativeSmartSliceVideoPreview';
 
@@ -560,11 +560,16 @@ function normalizeSlicerNumberInput(
 }
 
 function formatSlicerTimelineTime(timeInSecs: number) {
-  if (!timeInSecs || Number.isNaN(timeInSecs)) {
+  if (!timeInSecs || timeInSecs < 0 || Number.isNaN(timeInSecs)) {
     return '00:00';
   }
-  const mins = Math.floor(timeInSecs / 60).toString().padStart(2, '0');
-  const secs = Math.floor(timeInSecs % 60).toString().padStart(2, '0');
+  const totalSeconds = Math.floor(timeInSecs);
+  const hours = Math.floor(totalSeconds / 3600);
+  const mins = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0');
+  const secs = (totalSeconds % 60).toString().padStart(2, '0');
+  if (hours > 0) {
+    return `${hours}:${mins}:${secs}`;
+  }
   return `${mins}:${secs}`;
 }
 
@@ -799,6 +804,144 @@ function waitForSmartSliceUiYield() {
   });
 }
 
+const TEXT_EFFECTS: TextEffectPreset[] = [
+  {
+    id: 'tiktok',
+    name: 'Viral red-blue',
+    text: 'Ready for the big reveal?',
+    styleConfig: {
+      fill: '#00ebff',
+      stroke: { color: '#ff0050', width: 4 },
+      dropShadow: { color: '#000000', blur: 4, angle: Math.PI/4, distance: 4, alpha: 1 },
+      fontFamily: 'system-ui', fontWeight: '900', letterSpacing: 2, fontSize: 48
+    }
+  },
+  {
+    id: 'variety',
+    name: 'Variety bold',
+    text: 'This is the key moment!',
+    styleConfig: {
+      fill: '#fffc00',
+      stroke: { color: '#ffffff', width: 4 },
+      dropShadow: { color: '#ff0000', blur: 0, angle: Math.PI/2, distance: 6, alpha: 1 },
+      fontFamily: 'system-ui', fontWeight: '900', letterSpacing: 1, fontSize: 52
+    }
+  },
+  {
+    id: 'gradient-cyan',
+    name: 'Cyan gradient',
+    text: 'Watch this result',
+    styleConfig: {
+      fill: ['#00FF87', '#60EFFF'],
+      fillGradientType: 1,
+      stroke: { color: '#000000', width: 6 },
+      dropShadow: { color: '#000000', blur: 6, angle: Math.PI/4, distance: 4, alpha: 0.8 },
+      fontFamily: 'system-ui', fontWeight: '900', letterSpacing: 2, fontSize: 50
+    }
+  },
+  {
+    id: 'fire',
+    name: 'Fire impact',
+    text: 'Limited-time offer',
+    styleConfig: {
+      fill: ['#FFD100', '#FF7A00', '#FF0000'],
+      fillGradientType: 0,
+      stroke: { color: '#FFFFFF', width: 4 },
+      dropShadow: { color: '#FF0000', blur: 10, angle: 0, distance: 0, alpha: 1 },
+      fontFamily: 'system-ui', fontWeight: '900', fontStyle: 'italic', fontSize: 54
+    }
+  },
+  {
+    id: 'neon',
+    name: 'Neon glow',
+    text: 'Link opens now',
+    styleConfig: {
+      fill: '#ffffff',
+      stroke: { color: '#d926ff', width: 2 },
+      dropShadow: { color: '#d926ff', blur: 15, angle: 0, distance: 0, alpha: 1 },
+      fontFamily: 'system-ui', fontWeight: 'bold', fontSize: 48
+    }
+  },
+  {
+    id: 'gold',
+    name: 'Gold premium',
+    text: 'Creator verified',
+    styleConfig: {
+      fill: ['#FFE066', '#D4AF37'],
+      fillGradientType: 0,
+      stroke: { color: '#000000', width: 6 },
+      dropShadow: { color: '#000000', blur: 8, angle: Math.PI/4, distance: 6, alpha: 1 },
+      fontFamily: 'system-ui', fontWeight: '900', fontStyle: 'italic', fontSize: 48
+    }
+  },
+  {
+    id: 'retro-pop',
+    name: 'Retro pop',
+    text: 'Oh My God!',
+    styleConfig: {
+      fill: '#FF00B2',
+      stroke: { color: '#000000', width: 5 },
+      dropShadow: { color: '#00FFFF', blur: 0, angle: Math.PI/4, distance: 6, alpha: 1 },
+      fontFamily: 'Impact, system-ui', fontWeight: '900', fontSize: 50, letterSpacing: 2
+    }
+  },
+  {
+    id: 'thick-border',
+    name: 'Thick outline',
+    text: 'Final 50 spots',
+    styleConfig: {
+      fill: '#FFF500',
+      stroke: { color: '#000000', width: 10 },
+      fontFamily: 'system-ui', fontWeight: '900', fontSize: 55, letterSpacing: 1
+    }
+  },
+  {
+    id: 'minimal',
+    name: 'Minimal white',
+    text: 'Clean key point',
+    styleConfig: {
+      fill: '#ffffff',
+      stroke: { color: '#000000', width: 3 },
+      dropShadow: { color: '#000000', blur: 8, angle: Math.PI/4, distance: 4, alpha: 0.8 },
+      fontFamily: 'system-ui', fontWeight: '600', fontSize: 44
+    }
+  },
+  {
+    id: 'title-retro',
+    name: 'Retro title',
+    text: 'Chapter highlight',
+    styleConfig: {
+      fill: ['#FF7E00', '#FFCD00'],
+      fillGradientType: 0,
+      stroke: { color: '#000000', width: 6 },
+      dropShadow: { color: '#FF0055', blur: 0, angle: Math.PI/4, distance: 8, alpha: 1 },
+      fontFamily: 'serif', fontWeight: '900', fontSize: 52
+    }
+  },
+  {
+    id: '3d-block',
+    name: '3D block',
+    text: 'New launch',
+    styleConfig: {
+      fill: '#FFFFFF',
+      stroke: { color: '#0055FF', width: 4 },
+      dropShadow: { color: '#0022AA', blur: 0, angle: Math.PI/2, distance: 10, alpha: 1 },
+      fontFamily: 'system-ui', fontWeight: '900', letterSpacing: 3, fontSize: 50
+    }
+  },
+  {
+    id: 'bubble-gum',
+    name: 'Bubble gum',
+    text: 'Sweet hook',
+    styleConfig: {
+      fill: '#FFB6C1',
+      stroke: { color: '#FF1493', width: 6 },
+      dropShadow: { color: '#FFFFFF', blur: 0, angle: Math.PI/4, distance: 4, alpha: 1 },
+      fontFamily: 'cursive, system-ui', fontWeight: '900', fontSize: 48, letterSpacing: 2
+    }
+  }
+];
+
 export function SlicerPage() {
   const commonLabels = useAutoCutCommonLabels();
   const { t } = useTranslation();
@@ -808,7 +951,8 @@ export function SlicerPage() {
   const { toast } = useToast();
   const playerRef = useRef<SmartSlicePlayerRef>(null);
   const replaceVideoInputRef = useRef<HTMLInputElement>(null);
-  const initialSourceUrl = searchParams.get('url')?.trim() ?? '';
+  const rawSourceUrl = searchParams.get('url')?.trim() ?? '';
+  const initialSourceUrl = rawSourceUrl && /^https?:\/\//i.test(rawSourceUrl) ? rawSourceUrl : '';
   const initialReviewTaskId = searchParams.get('reviewTaskId')?.trim() ?? '';
   const routeState = location.state as {
     initialFile?: File;
@@ -825,8 +969,9 @@ export function SlicerPage() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [file, setFile] = useState<File | null>(initialFile);
   const [fileId, setFileId] = useState<string>(initialFileId);
-  const [sourceUrl] = useState(initialSourceUrl);
+  const sourceUrl = initialSourceUrl;
   const [videoSrc, setVideoSrc] = useState<string>(initialSourceUrl);
+  const blobUrlRef = useRef<string>('');
   const [aspectRatio, setAspectRatio] = useState<SliceTargetAspectRatio>("auto");
   const [videoObjectFit, setVideoObjectFit] = useState<SliceVideoObjectFit>('contain');
   const [detectedRatio, setDetectedRatio] = useState<string>("16:9");
@@ -863,10 +1008,16 @@ export function SlicerPage() {
   const [speechSetupErrorMessage, setSpeechSetupErrorMessage] = useState('');
   const [isInspectingSpeechSetup, setIsInspectingSpeechSetup] = useState(false);
   const [isInitializingSpeechSetup, setIsInitializingSpeechSetup] = useState(false);
+  const isInitializingSpeechSetupRef = useRef(false);
   const [speechModelDownloadProgress, setSpeechModelDownloadProgress] = useState<AutoCutSpeechTranscriptionModelDownloadProgressEvent | null>(null);
   const [enableOverlayEditor, setEnableOverlayEditor] = useState(false);
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [duration, setDuration] = useState<number>(0);
+  const currentTimeRef = useRef(currentTime);
+  currentTimeRef.current = currentTime;
+  const durationRef = useRef(duration);
+  durationRef.current = duration;
+  const processingGenerationRef = useRef(0);
   const [videoProgress, setVideoProgress] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const webGlPlayerRef = playerRef as React.MutableRefObject<WebGLPlayerRef | null>;
@@ -915,7 +1066,7 @@ export function SlicerPage() {
     createDefaultAutoCutVideoDedupParams({ mode: 'slice-result-dedup' }),
   );
   const [latestVideoDedupReport, setLatestVideoDedupReport] = useState<VideoDedupReport | null>(null);
-  const speechGpuDiagnosticsText = speechSetupStatus?.gpu.diagnostics.join('\n') ?? '';
+  const speechGpuDiagnosticsText = speechSetupStatus?.gpu?.diagnostics?.join('\n') ?? '';
   const availableSttWorkflowPresets = useMemo<SmartSliceVisibleSttWorkflowPreset[]>(
     () => AUTOCUT_SPEECH_TRANSCRIPTION_WORKFLOW_PRESETS.filter((preset) => preset.available).map((preset) => {
       const gpuPresetWithoutRuntime =
@@ -967,7 +1118,7 @@ export function SlicerPage() {
       setSttPresetId(effectiveSttPresetId);
     }
   }, [effectiveSttPresetId, selectedSttWorkflowPresetDisabledReason, speechSetupStatus, sttPresetId]);
-  const smartCutExperience = createSmartCutEngineProductExperience({
+  const smartCutExperience = useMemo(() => createSmartCutEngineProductExperience({
     mode: selectedMode,
     targetPlatform: SMART_SLICE_DEFAULT_TARGET_PLATFORM,
     aspectRatio,
@@ -979,14 +1130,14 @@ export function SlicerPage() {
     noiseReduction,
     coughFilter,
     repeatFilter,
-  });
+  }), [selectedMode, aspectRatio, idealDuration, enableSubtitles, subtitleMode, minDuration, maxDuration, noiseReduction, coughFilter, repeatFilter]);
   const hasVideoSource = Boolean(file || fileId || sourceUrl || videoSrc);
   const strategyExecutionSupport = smartCutExperience.profile.executionSupport;
   const smartSliceSpeechReady =
     speechModelReadyForDisplay ||
     speechSetupStatus?.readiness === AUTOCUT_SPEECH_TRANSCRIPTION_SETUP_READINESS.ready;
   const smartSliceReadyForRun = hasVideoSource && strategyExecutionSupport.ready;
-  const smartSliceSettingsReadinessItems = [
+  const smartSliceSettingsReadinessItems = useMemo(() => [
     {
       id: 'source',
       label: t('slicer.settings.status.source'),
@@ -1005,7 +1156,7 @@ export function SlicerPage() {
       value: strategyExecutionSupport.ready ? t('slicer.settings.status.strategyReady') : t('slicer.settings.status.strategyBlocked'),
       ready: strategyExecutionSupport.ready,
     },
-  ];
+  ], [hasVideoSource, smartSliceSpeechReady, strategyExecutionSupport.ready, t]);
   const smartSliceRunModeOptions = [
     {
       id: 'review-before-render',
@@ -1018,7 +1169,7 @@ export function SlicerPage() {
       detail: t('slicer.settings.runMode.auto.detail'),
     },
   ] satisfies Array<{ id: SmartSliceRunMode; label: string; detail: string }>;
-  const smartSliceDurationControls = [
+  const smartSliceDurationControls = useMemo(() => [
     {
       id: 'min',
       label: t('slicer.settings.basic.minDuration'),
@@ -1043,19 +1194,19 @@ export function SlicerPage() {
       max: 600,
       update: setMaxDuration,
     },
-  ];
-  const smartSliceAspectRatioOptions = [
+  ], [minDuration, maxDuration, idealDuration, t]);
+  const smartSliceAspectRatioOptions = useMemo(() => [
     { value: 'auto', label: t('slicer.settings.basic.aspectAuto', { ratio: detectedRatio }) },
     { value: '16:9', label: '16:9' },
     { value: '9:16', label: '9:16' },
     { value: '1:1', label: '1:1' },
     { value: '4:3', label: '4:3' },
-  ] satisfies Array<{ value: SliceTargetAspectRatio; label: string }>;
+  ] satisfies Array<{ value: SliceTargetAspectRatio; label: string }>, [detectedRatio, t]);
   const smartSliceObjectFitOptions = [
     { value: 'contain', label: t('slicer.settings.basic.fitContain') },
     { value: 'cover', label: t('slicer.settings.basic.fitCover') },
   ] satisfies Array<{ value: SliceVideoObjectFit; label: string }>;
-  const smartSliceAudioCleanupControls = [
+  const smartSliceAudioCleanupControls = useMemo(() => [
     {
       id: 'noise',
       icon: <Waves size={12} />,
@@ -1077,7 +1228,7 @@ export function SlicerPage() {
       enabled: repeatFilter,
       toggle: () => setRepeatFilter((enabled) => !enabled),
     },
-  ];
+  ], [coughFilter, noiseReduction, repeatFilter, t]);
   const smartSliceContinuityOptions = [
     { value: 'standard', label: t('slicer.settings.advanced.continuityStandard') },
     { value: 'strict', label: t('slicer.settings.advanced.continuityStrict') },
@@ -1224,7 +1375,7 @@ export function SlicerPage() {
         : effectiveReviewSession
           ? t('slicer.settings.review.status.ready')
           : t('slicer.settings.review.status.noPlan');
-  const smartSliceReviewMetricItems = [
+  const smartSliceReviewMetricItems = useMemo(() => [
     {
       id: 'segments',
       label: t('slicer.settings.review.metric.segments'),
@@ -1255,8 +1406,8 @@ export function SlicerPage() {
       value: excludedReviewSegmentCount,
       valueClassName: 'text-gray-300',
     },
-  ];
-  const smartSliceReviewCorrectionFields = [
+  ], [duplicateReviewGroupCount, duplicateReviewSegmentCount, excludedReviewSegmentCount, reviewSegments.length, selectedReviewSegmentCount, smartDedupRiskSegmentCount, t]);
+  const smartSliceReviewCorrectionFields = useMemo(() => [
     {
       id: 'title',
       control: 'input',
@@ -1303,7 +1454,7 @@ export function SlicerPage() {
       placeholder: t('slicer.settings.review.correction.notesPlaceholder'),
       className: 'col-span-2 min-h-12 leading-4 text-gray-200',
     },
-  ] satisfies SmartSliceReviewCorrectionField[];
+  ] satisfies SmartSliceReviewCorrectionField[], [reviewCorrectionDraft, t]);
   const visibleReviewSegments = useMemo(() => {
     if (reviewVisibilityFilter === 'selected') {
       return reviewSegments.filter((segment) =>
@@ -1317,7 +1468,7 @@ export function SlicerPage() {
       return reviewSegments.filter((segment) => segment.status === 'excluded');
     }
     return reviewSegments;
-  }, [reviewSegments, reviewVisibilityFilter, selectedReviewSegmentIds]);
+  }, [reviewSegments, reviewVisibilityFilter]);
   const activeReviewSegment = useMemo(
     () => reviewSegments.find((segment) => segment.id === activeReviewSegmentId) ?? visibleReviewSegments[0] ?? reviewSegments[0],
     [activeReviewSegmentId, reviewSegments, visibleReviewSegments],
@@ -1351,146 +1502,12 @@ export function SlicerPage() {
       ).join(', '),
       manualNotes: activeReviewSegment.manualNotes ?? '',
     });
-  }, [activeReviewSegment?.id]);
-  const TEXT_EFFECTS: TextEffectPreset[] = [
-    {
-      id: 'tiktok',
-      name: 'Viral red-blue',
-      text: 'Ready for the big reveal?',
-      styleConfig: {
-        fill: '#00ebff',
-        stroke: { color: '#ff0050', width: 4 },
-        dropShadow: { color: '#000000', blur: 4, angle: Math.PI/4, distance: 4, alpha: 1 },
-        fontFamily: 'system-ui', fontWeight: '900', letterSpacing: 2, fontSize: 48
-      }
-    },
-    {
-      id: 'variety',
-      name: 'Variety bold',
-      text: 'This is the key moment!',
-      styleConfig: {
-        fill: '#fffc00',
-        stroke: { color: '#ffffff', width: 4 },
-        dropShadow: { color: '#ff0000', blur: 0, angle: Math.PI/2, distance: 6, alpha: 1 },
-        fontFamily: 'system-ui', fontWeight: '900', letterSpacing: 1, fontSize: 52
-      }
-    },
-    {
-      id: 'gradient-cyan',
-      name: 'Cyan gradient',
-      text: 'Watch this result',
-      styleConfig: {
-        fill: ['#00FF87', '#60EFFF'],
-        fillGradientType: 1,
-        stroke: { color: '#000000', width: 6 },
-        dropShadow: { color: '#000000', blur: 6, angle: Math.PI/4, distance: 4, alpha: 0.8 },
-        fontFamily: 'system-ui', fontWeight: '900', letterSpacing: 2, fontSize: 50
-      }
-    },
-    {
-      id: 'fire',
-      name: 'Fire impact',
-      text: 'Limited-time offer',
-      styleConfig: {
-        fill: ['#FFD100', '#FF7A00', '#FF0000'],
-        fillGradientType: 0,
-        stroke: { color: '#FFFFFF', width: 4 },
-        dropShadow: { color: '#FF0000', blur: 10, angle: 0, distance: 0, alpha: 1 },
-        fontFamily: 'system-ui', fontWeight: '900', fontStyle: 'italic', fontSize: 54
-      }
-    },
-    {
-      id: 'neon',
-      name: 'Neon glow',
-      text: 'Link opens now',
-      styleConfig: {
-        fill: '#ffffff',
-        stroke: { color: '#d926ff', width: 2 },
-        dropShadow: { color: '#d926ff', blur: 15, angle: 0, distance: 0, alpha: 1 },
-        fontFamily: 'system-ui', fontWeight: 'bold', fontSize: 48
-      }
-    },
-    {
-      id: 'gold',
-      name: 'Gold premium',
-      text: 'Creator verified',
-      styleConfig: {
-        fill: ['#FFE066', '#D4AF37'],
-        fillGradientType: 0,
-        stroke: { color: '#000000', width: 6 },
-        dropShadow: { color: '#000000', blur: 8, angle: Math.PI/4, distance: 6, alpha: 1 },
-        fontFamily: 'system-ui', fontWeight: '900', fontStyle: 'italic', fontSize: 48
-      }
-    },
-    {
-      id: 'retro-pop',
-      name: 'Retro pop',
-      text: 'Oh My God!',
-      styleConfig: {
-        fill: '#FF00B2',
-        stroke: { color: '#000000', width: 5 },
-        dropShadow: { color: '#00FFFF', blur: 0, angle: Math.PI/4, distance: 6, alpha: 1 },
-        fontFamily: 'Impact, system-ui', fontWeight: '900', fontSize: 50, letterSpacing: 2
-      }
-    },
-    {
-      id: 'thick-border',
-      name: 'Thick outline',
-      text: 'Final 50 spots',
-      styleConfig: {
-        fill: '#FFF500',
-        stroke: { color: '#000000', width: 10 },
-        fontFamily: 'system-ui', fontWeight: '900', fontSize: 55, letterSpacing: 1
-      }
-    },
-    {
-      id: 'minimal',
-      name: 'Minimal white',
-      text: 'Clean key point',
-      styleConfig: {
-        fill: '#ffffff',
-        stroke: { color: '#000000', width: 3 },
-        dropShadow: { color: '#000000', blur: 8, angle: Math.PI/4, distance: 4, alpha: 0.8 },
-        fontFamily: 'system-ui', fontWeight: '600', fontSize: 44
-      }
-    },
-    {
-      id: 'title-retro',
-      name: 'Retro title',
-      text: 'Chapter highlight',
-      styleConfig: {
-        fill: ['#FF7E00', '#FFCD00'],
-        fillGradientType: 0,
-        stroke: { color: '#000000', width: 6 },
-        dropShadow: { color: '#FF0055', blur: 0, angle: Math.PI/4, distance: 8, alpha: 1 },
-        fontFamily: 'serif', fontWeight: '900', fontSize: 52
-      }
-    },
-    {
-      id: '3d-block',
-      name: '3D block',
-      text: 'New launch',
-      styleConfig: {
-        fill: '#FFFFFF',
-        stroke: { color: '#0055FF', width: 4 },
-        dropShadow: { color: '#0022AA', blur: 0, angle: Math.PI/2, distance: 10, alpha: 1 },
-        fontFamily: 'system-ui', fontWeight: '900', letterSpacing: 3, fontSize: 50
-      }
-    },
-    {
-      id: 'bubble-gum',
-      name: 'Bubble gum',
-      text: 'Sweet hook',
-      styleConfig: {
-        fill: '#FFB6C1',
-        stroke: { color: '#FF1493', width: 6 },
-        dropShadow: { color: '#FFFFFF', blur: 0, angle: Math.PI/4, distance: 4, alpha: 1 },
-        fontFamily: 'cursive, system-ui', fontWeight: '900', fontSize: 48, letterSpacing: 2
-      }
-    }
-  ];
-
+  }, [activeReviewSegment]);
   useEffect(() => {
+    if (blobUrlRef.current) {
+      revokeAutoCutObjectUrl(blobUrlRef.current);
+      blobUrlRef.current = '';
+    }
     if (file) {
       const trustedSourcePath = resolveAutoCutTrustedSourcePath(file);
       if (trustedSourcePath) {
@@ -1500,19 +1517,27 @@ export function SlicerPage() {
           reportAutoCutDiagnostic('warning', 'slicer', 'Trusted desktop video preview failed', error);
           setVideoSrc('');
         }
-        return;
+        return () => {};
       }
 
       const url = createAutoCutObjectUrl(file);
+      blobUrlRef.current = url;
       setVideoSrc(url);
-      return () => revokeAutoCutObjectUrl(url);
+      return () => {
+        revokeAutoCutObjectUrl(url);
+        blobUrlRef.current = '';
+      };
     }
+    setVideoSrc('');
   }, [file]);
 
   useEffect(() => {
+    let cancelled = false;
     const fetchTasks = () => {
       getTasks().then(tasks => {
-        setSlicerTasks(tasks.filter(t => t.type === AUTOCUT_TASK_TYPE.videoSlice));
+        if (!cancelled) {
+          setSlicerTasks(tasks.filter(t => t.type === AUTOCUT_TASK_TYPE.videoSlice));
+        }
       });
     };
     const handleSlicerTaskUpdated = (updatedTask: AppTask) => {
@@ -1525,6 +1550,7 @@ export function SlicerPage() {
     const stopTaskUpdated = listenAutoCutEvent('taskUpdated', handleSlicerTaskUpdated);
     const stopTaskAdded = listenAutoCutEvent('taskAdded', handleSlicerTaskAdded);
     return () => {
+      cancelled = true;
       stopTaskUpdated();
       stopTaskAdded();
     };
@@ -1555,14 +1581,20 @@ export function SlicerPage() {
   }, [activeReviewTask?.id, activeReviewTask?.sliceReviewSession, activeReviewTaskId, reviewManualEdits.length, reviewSessionDraft?.id]);
 
   useEffect(() => {
+    let cancelled = false;
     resolveAutoCutLlmRuntimeConfig()
       .then((config) => {
+        if (cancelled) return;
         setActiveLlmRuntimeConfig(config);
         setActiveLlmRuntimeModelVendor(config.modelVendor);
         setLlmModel(resolveSmartSliceLlmModelForVendor(config.modelVendor, config.model));
         setSegmentationAgentId(config.defaultSegmentationAgentId);
       })
-      .catch((error) => reportAutoCutDiagnostic('warning', 'slicer', 'Load default LLM model failed', error));
+      .catch((error) => {
+        if (cancelled) return;
+        reportAutoCutDiagnostic('warning', 'slicer', 'Load default LLM model failed', error);
+      });
+    return () => { cancelled = true; };
   }, []);
 
   const activeLlmModelOptions = useMemo(
@@ -1590,8 +1622,10 @@ export function SlicerPage() {
   }, [activeLlmRuntimeModelVendor, llmModel, visibleLlmModelOptions]);
 
   useEffect(() => {
+    let cancelled = false;
     getAutoCutWorkflowPreferences()
       .then((preferences) => {
+        if (cancelled) return;
         const videoSlice = preferences.videoSlice;
         if (MODES.includes(videoSlice.mode as SliceMode)) {
           setSelectedMode(videoSlice.mode as SliceMode);
@@ -1615,7 +1649,11 @@ export function SlicerPage() {
         setEnableSmartDedup(videoSlice.enableSmartDedup);
         setVideoDedupParams(videoSlice.videoDedupParams);
       })
-      .catch((error) => reportAutoCutDiagnostic('warning', 'slicer', 'Load video slice parameter preferences failed', error));
+      .catch((error) => {
+        if (cancelled) return;
+        reportAutoCutDiagnostic('warning', 'slicer', 'Load video slice parameter preferences failed', error);
+      });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => listenAutoCutEvent('speechTranscriptionModelDownloadProgress', (progress) => {
@@ -1641,13 +1679,26 @@ export function SlicerPage() {
     };
   }, []);
 
+  const timelineSyncPreviewPlaybackRef = useRef<(currentSeconds: number, durationSeconds: number) => void>(() => {});
+
   const formatTime = formatSlicerTimelineTime;
-  const handleSmartSliceVideoTimeUpdate = (currentSeconds: number, durationSeconds: number) => {
-    setCurrentTime(currentSeconds);
-    setDuration(durationSeconds);
-    setVideoProgress(durationSeconds > 0 ? (currentSeconds / durationSeconds) * 100 : 0);
-    timelineController.syncPreviewPlayback(currentSeconds, durationSeconds);
-  };
+  const handleSmartSliceVideoTimeUpdate = useCallback((currentSeconds: number, durationSeconds: number) => {
+    const safeCurrent = Number.isFinite(currentSeconds) ? currentSeconds : 0;
+    const safeDuration = Number.isFinite(durationSeconds) ? durationSeconds : 0;
+    setCurrentTime(safeCurrent);
+    setDuration(safeDuration);
+    setVideoProgress(safeDuration > 0 ? Math.min(100, (safeCurrent / safeDuration) * 100) : 0);
+    timelineSyncPreviewPlaybackRef.current(safeCurrent, safeDuration);
+  }, []);
+  const handleSmartSliceVideoLoaded = useCallback((w: number, h: number) => {
+    const safeH = h > 0 ? h : 1;
+    const ratio = w / safeH;
+    if (ratio > 1.5) setDetectedRatio("16:9");
+    else if (ratio < 0.7) setDetectedRatio("9:16");
+    else if (Math.abs(ratio - 1) < 0.1) setDetectedRatio("1:1");
+    else if (Math.abs(ratio - 1.33) < 0.1) setDetectedRatio("4:3");
+    else setDetectedRatio(`${w}:${h}`);
+  }, []);
   const smartSliceReviewPreviewMetaItems = activeReviewSegment
     ? [
         {
@@ -1665,7 +1716,7 @@ export function SlicerPage() {
 
   const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
      const rect = e.currentTarget.getBoundingClientRect();
-     const percent = (e.clientX - rect.left) / rect.width;
+     const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / (rect.width || 1)));
      if (playerRef.current) {
         playerRef.current.seek(percent);
      }
@@ -1673,43 +1724,41 @@ export function SlicerPage() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-        // Only trigger if not editing text
         if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') {
             return;
         }
+
+        const currentDuration = durationRef.current;
+        const currentCurrentTime = currentTimeRef.current;
 
         if (e.code === 'Space' || e.code === 'KeyK') {
             e.preventDefault();
             playerRef.current?.togglePlay();
         } else if (e.code === 'KeyJ') {
-            // Rewind 5 seconds
-            if (playerRef.current && duration > 0) {
-               const newTime = Math.max(0, currentTime - 5);
-               playerRef.current.seek(newTime / duration);
+            if (playerRef.current && currentDuration > 0) {
+               const newTime = Math.max(0, currentCurrentTime - 5);
+               playerRef.current.seek(newTime / currentDuration);
             }
         } else if (e.code === 'KeyL') {
-            // Fast forward 5 seconds
-            if (playerRef.current && duration > 0) {
-               const newTime = Math.min(duration, currentTime + 5);
-               playerRef.current.seek(newTime / duration);
+            if (playerRef.current && currentDuration > 0) {
+               const newTime = Math.min(currentDuration, currentCurrentTime + 5);
+               playerRef.current.seek(newTime / currentDuration);
             }
         } else if (e.code === 'ArrowLeft') {
-            // Step back ~3 frames (0.1s)
-            if (playerRef.current && duration > 0) {
-              const newTime = Math.max(0, currentTime - 0.1);
-              playerRef.current.seek(newTime / duration);
+            if (playerRef.current && currentDuration > 0) {
+              const newTime = Math.max(0, currentCurrentTime - 0.1);
+              playerRef.current.seek(newTime / currentDuration);
             }
         } else if (e.code === 'ArrowRight') {
-            // Step forward ~3 frames (0.1s)
-            if (playerRef.current && duration > 0) {
-              const newTime = Math.min(duration, currentTime + 0.1);
-              playerRef.current.seek(newTime / duration);
+            if (playerRef.current && currentDuration > 0) {
+              const newTime = Math.min(currentDuration, currentCurrentTime + 0.1);
+              playerRef.current.seek(newTime / currentDuration);
             }
         }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentTime, duration]);
+  }, []);
 
   const refreshSmartSliceLocalSpeechTranscriptionSetup = async () => {
     setIsInspectingSpeechSetup(true);
@@ -1727,12 +1776,13 @@ export function SlicerPage() {
   };
 
   const runSmartSliceLocalSpeechTranscriptionInitialization = async () => {
-    if (isInitializingSpeechSetup) {
+    if (isInitializingSpeechSetupRef.current) {
       return false;
     }
 
     setSpeechSetupDialogOpen(true);
     setSpeechSetupErrorMessage('');
+    isInitializingSpeechSetupRef.current = true;
     setIsInitializingSpeechSetup(true);
     try {
       setSpeechModelDownloadProgress(null);
@@ -1766,6 +1816,7 @@ export function SlicerPage() {
       await refreshSmartSliceLocalSpeechTranscriptionSetup().catch(() => null);
       return false;
     } finally {
+      isInitializingSpeechSetupRef.current = false;
       setIsInitializingSpeechSetup(false);
     }
   };
@@ -1826,7 +1877,7 @@ export function SlicerPage() {
           }
         : {}),
     };
-    if (sourceUrl) {
+    if (sourceUrl && !file) {
       sliceParams.url = sourceUrl;
     }
     return sliceParams;
@@ -1861,7 +1912,7 @@ export function SlicerPage() {
     });
   };
 
-  const commitReviewSessionDraft = (
+  const commitReviewSessionDraft = useCallback((
     baseSession: AutoCutSliceReviewSession,
     segments: readonly AutoCutSliceReviewSegment[],
     manualEdit?: AutoCutSliceManualEdit,
@@ -1912,13 +1963,14 @@ export function SlicerPage() {
       .finally(() => {
         setIsSavingReviewDraft(false);
       });
-  };
+  }, [activeReviewTask, activeReviewTaskId, activeStudioClipTimelineSnapshot, reviewManualEdits, t]);
 
   const seekSmartSlicePreviewMs = useCallback((timeMs: number) => {
-    if (duration > 0) {
-      playerRef.current?.seek(Math.max(0, timeMs / 1_000) / duration);
+    const currentDuration = durationRef.current;
+    if (currentDuration > 0 && Number.isFinite(timeMs)) {
+      playerRef.current?.seek(Math.max(0, timeMs / 1_000) / currentDuration);
     }
-  }, [duration]);
+  }, []);
 
   const timelineController = useSmartSliceTimelineReviewController({
     reviewSession: effectiveReviewSession,
@@ -1928,6 +1980,7 @@ export function SlicerPage() {
     onSeekPreviewMs: seekSmartSlicePreviewMs,
     onCommitReviewSessionDraft: commitReviewSessionDraft,
   });
+  timelineSyncPreviewPlaybackRef.current = timelineController.syncPreviewPlayback;
 
   const handleSelectAllReviewSegments = () => {
     const baseSession = effectiveReviewSession;
@@ -2091,6 +2144,9 @@ export function SlicerPage() {
       toast(t('slicer.settings.review.toast.noSelection'), 'error');
       return;
     }
+    if (isRenderingReviewSelection) {
+      return;
+    }
     setIsRenderingReviewSelection(true);
     try {
       await renderVideoSlicePlan(taskId, {
@@ -2125,38 +2181,44 @@ export function SlicerPage() {
       return;
     }
     setIsProcessing(true);
+    const generation = ++processingGenerationRef.current;
     try {
       const speechReady = await ensureSmartSliceLocalSpeechTranscriptionReady();
-      if (!speechReady) {
+      if (!speechReady || processingGenerationRef.current !== generation) {
         return;
       }
       await waitForSmartSliceUiYield();
+      if (processingGenerationRef.current !== generation) return;
       toast(t('slicer.speechSetup.toast.submitCreated'), 'info');
       const sliceParams = createCurrentVideoSliceParams();
       reportAutoCutDiagnostic('warning', 'slicer.submit', 'Smart Slice submit params', createSmartSliceSubmissionDiagnostics(sliceParams));
       await saveCurrentVideoSlicePreferences();
+      if (processingGenerationRef.current !== generation) return;
       if (runMode === 'review-before-render') {
         resetSmartSliceReviewWorkbenchForNewPlan();
         const result = await analyzeVideoSlicePlan(sliceParams);
+        if (processingGenerationRef.current !== generation) return;
         setActiveReviewTaskId(result.taskId);
         toast(t('slicer.settings.review.toast.analyzeComplete'), 'success');
       } else {
         resetSmartSliceReviewWorkbenchForNewPlan();
         await processVideoSlice(sliceParams);
+        if (processingGenerationRef.current !== generation) return;
         toast(t('slicer.speechSetup.toast.submitted'), 'success');
       }
-      setIsProcessing(false);
       setActiveLeftTab("tasks");
     } catch (e) {
+      if (processingGenerationRef.current !== generation) return;
       const failedTaskId = getAutoCutProcessingTaskErrorTaskId(e);
       if (failedTaskId) {
         setActiveLeftTab("tasks");
       }
       reportAutoCutDiagnostic('error', 'slicer', 'Video slicing failed', e);
-      setIsProcessing(false);
       toast(createSmartSliceFailureToastMessage(e, t), 'error');
     } finally {
-      setIsProcessing(false);
+      if (processingGenerationRef.current === generation) {
+        setIsProcessing(false);
+      }
     }
   };
 
@@ -2195,6 +2257,8 @@ export function SlicerPage() {
   const handleReplaceVideoFallbackSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = event.target.files?.[0] ?? null;
     if (selectedFile) {
+      processingGenerationRef.current += 1;
+      setIsProcessing(false);
       resetSmartSliceReviewWorkbenchForSourceChange();
       setFile(selectedFile);
       setFileId('');
@@ -2207,6 +2271,8 @@ export function SlicerPage() {
   };
 
   const handleReplaceVideo = async () => {
+    processingGenerationRef.current += 1;
+    setIsProcessing(false);
     try {
       const selectedVideo = await selectAutoCutTrustedLocalVideoFile();
       if (!selectedVideo) {
@@ -2414,17 +2480,8 @@ export function SlicerPage() {
                           videoSrc={videoSrc}
                           aspectRatio={aspectRatio}
                           videoObjectFit={videoObjectFit}
-                          onVideoLoaded={(w, h) => {
-                             const ratio = w / h;
-                             if (ratio > 1.5) setDetectedRatio("16:9");
-                             else if (ratio < 0.7) setDetectedRatio("9:16");
-                             else if (Math.abs(ratio - 1) < 0.1) setDetectedRatio("1:1");
-                             else if (Math.abs(ratio - 1.33) < 0.1) setDetectedRatio("4:3");
-                             else setDetectedRatio(`${w}:${h}`);
-                          }}
-                          onTimeUpdate={(c, d) => {
-                              handleSmartSliceVideoTimeUpdate(c, d);
-                          }}
+                          onVideoLoaded={handleSmartSliceVideoLoaded}
+                          onTimeUpdate={handleSmartSliceVideoTimeUpdate}
                           onPlayStateChange={setIsPlaying}
                         />
                       }
@@ -2435,17 +2492,8 @@ export function SlicerPage() {
                         aspectRatio={aspectRatio}
                         videoObjectFit={videoObjectFit}
                         onSelectText={setSelectedTextInfo}
-                        onVideoLoaded={(w, h) => {
-                           const ratio = w / h;
-                           if (ratio > 1.5) setDetectedRatio("16:9");
-                           else if (ratio < 0.7) setDetectedRatio("9:16");
-                           else if (Math.abs(ratio - 1) < 0.1) setDetectedRatio("1:1");
-                           else if (Math.abs(ratio - 1.33) < 0.1) setDetectedRatio("4:3");
-                           else setDetectedRatio(`${w}:${h}`);
-                        }}
-                        onTimeUpdate={(c, d) => {
-                            handleSmartSliceVideoTimeUpdate(c, d);
-                        }}
+                        onVideoLoaded={handleSmartSliceVideoLoaded}
+                        onTimeUpdate={handleSmartSliceVideoTimeUpdate}
                         onPlayStateChange={setIsPlaying}
                      />
                    </Suspense>
@@ -2455,17 +2503,8 @@ export function SlicerPage() {
                       videoSrc={videoSrc}
                       aspectRatio={aspectRatio}
                       videoObjectFit={videoObjectFit}
-                      onVideoLoaded={(w, h) => {
-                         const ratio = w / h;
-                         if (ratio > 1.5) setDetectedRatio("16:9");
-                         else if (ratio < 0.7) setDetectedRatio("9:16");
-                         else if (Math.abs(ratio - 1) < 0.1) setDetectedRatio("1:1");
-                         else if (Math.abs(ratio - 1.33) < 0.1) setDetectedRatio("4:3");
-                         else setDetectedRatio(`${w}:${h}`);
-                      }}
-                      onTimeUpdate={(c, d) => {
-                          handleSmartSliceVideoTimeUpdate(c, d);
-                      }}
+                      onVideoLoaded={handleSmartSliceVideoLoaded}
+                      onTimeUpdate={handleSmartSliceVideoTimeUpdate}
                       onPlayStateChange={setIsPlaying}
                    />
                  )
@@ -2565,6 +2604,7 @@ export function SlicerPage() {
                       onPreviewClip={timelineController.previewClip}
                       onPreviewClipBoundaryDrag={timelineController.previewClipBoundaryDrag}
                       onCommitClipBoundary={timelineController.commitClipBoundary}
+                      onCancelClipBoundaryDrag={timelineController.cancelBoundaryPreview}
                       onSplitClipAtTime={timelineController.splitClipAtTime}
                     />
                   </div>

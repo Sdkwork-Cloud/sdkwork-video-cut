@@ -129,8 +129,11 @@ export function downloadAutoCutUrl(url: string | undefined, filename: string) {
   anchor.href = url;
   anchor.download = filename;
   document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
+  try {
+    anchor.click();
+  } finally {
+    document.body.removeChild(anchor);
+  }
 }
 
 function formatTranscriptTimestamp(milliseconds: number) {

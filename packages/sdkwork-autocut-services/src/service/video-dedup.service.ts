@@ -21,6 +21,7 @@ import {
 } from './native-host-client.service';
 import { readAutoCutStorage, writeAutoCutStorage } from './storage.service';
 import { randomDelay } from './timing';
+import { getAutoCutI18nText } from './i18n.service';
 
 export interface AutoCutVideoDedupStrategyDefinition {
   id: VideoDedupStrategyId;
@@ -662,23 +663,23 @@ function createVideoDuplicateGroups(
 function createVideoDuplicateGroupReason(matches: readonly VideoDuplicateMatch[]) {
   const strongest = [...matches].sort((left, right) => right.confidence - left.confidence)[0];
   if (!strongest) {
-    return 'No duplicate evidence found.';
+    return getAutoCutI18nText('videoDedup.groupReasons.noEvidence');
   }
 
   switch (strongest.matchKind) {
     case 'exact':
-      return 'Exact duplicate signature found.';
+      return getAutoCutI18nText('videoDedup.groupReasons.exact');
     case 'same-audio':
-      return 'Shared audio fingerprint evidence found.';
+      return getAutoCutI18nText('videoDedup.groupReasons.sameAudio');
     case 'same-speech':
-      return 'Repeated transcript semantic evidence found.';
+      return getAutoCutI18nText('videoDedup.groupReasons.sameSpeech');
     case 'partial-copy':
-      return 'Partial temporal copy evidence found.';
+      return getAutoCutI18nText('videoDedup.groupReasons.partialCopy');
     case 'template-only':
-      return 'Only template reuse was detected; keep for manual publishing review.';
+      return getAutoCutI18nText('videoDedup.groupReasons.templateOnly');
     case 'near-duplicate':
     default:
-      return 'Near-duplicate multi-strategy evidence found.';
+      return getAutoCutI18nText('videoDedup.groupReasons.nearDuplicate');
   }
 }
 

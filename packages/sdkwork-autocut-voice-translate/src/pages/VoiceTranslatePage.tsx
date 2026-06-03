@@ -85,7 +85,7 @@ export function VoiceTranslatePage() {
   const isProcessing = Boolean(activeTaskId) && (!activeTask || isAutoCutTaskActiveStatus(activeTask.status));
 
   const handleDownload = () => {
-    downloadAutoCutUrl(activeTask?.subtitleUrl, `${activeTask?.name ?? 'voice-translation'}.srt`);
+    downloadAutoCutUrl(activeTask?.subtitleUrl, `${activeTask?.name ?? 'voice-translation'}.${activeTask?.subtitleFormat || 'srt'}`);
   };
 
   return (

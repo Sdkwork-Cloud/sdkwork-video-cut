@@ -1057,8 +1057,8 @@ assertMatches(
 );
 assertIncludes(slicerPage, 'handleDeleteDuplicateReviewSegment', 'Slicer UI supports manual duplicate-content deletion before render');
 assertIncludes(clipWorkflow, 'function resolveSliceReviewDuplicateKeepSegmentId', 'SlicerPage centralizes duplicate keep-segment resolution before manual duplicate deletion');
-assertIncludes(slicerPage, 'segment.duplicateOfSegmentId', 'SlicerPage prefers an existing duplicateOfSegmentId when deleting a duplicate segment');
-assertIncludes(slicerPage, 'duplicateGroup?.keptSegmentId', 'SlicerPage falls back to the review duplicate group kept segment when deleting a duplicate segment');
+assertIncludes(clipWorkflow, 'segment.duplicateOfSegmentId', 'SlicerPage prefers an existing duplicateOfSegmentId when deleting a duplicate segment');
+assertIncludes(clipWorkflow, 'duplicateGroup?.keptSegmentId', 'SlicerPage falls back to the review duplicate group kept segment when deleting a duplicate segment');
 assertNotIncludes(slicerPage, 'baseSession.selectedSegmentIds.find((id) => id !== segmentId)', 'SlicerPage does not pick an arbitrary selected segment as the duplicate keep target');
 assertNotIncludes(slicerPage, 'reviewSession.segments.find((candidate) => candidate.id !== segment.id)?.id', 'SlicerPage does not pick an arbitrary review segment as the duplicate keep target for external dedup matches');
 assertIncludes(slicerPage, 'handleRestoreReviewSegment', 'Slicer UI supports restoring manually excluded or duplicate segments');
@@ -1166,7 +1166,7 @@ assertNotIncludes(taskDetailReviewPage, "t('taskDetail.engineSteps.workbench.tim
 assertIncludes(taskDetailReviewPage, "t('taskDetail.engineSteps.diagnostics.title')", 'TaskDetailPage keeps raw execution details as advanced diagnostics below the product workbench');
 assertIncludes(i18nResources, 'contentUnderstandingSegmentation', 'i18n resources include content-understanding segmentation engine-step labels');
 assertIncludes(i18nResources, 'timelineRefinement', 'i18n resources include timeline refinement engine-step labels');
-assertIncludes(slicerPage, 'contentUnitIds', 'Slicer retains audit-ready content unit evidence in review segments without exposing dense release copy in settings');
+assertIncludes(clipWorkflow, 'contentUnitIds', 'Slicer retains audit-ready content unit evidence in review segments without exposing dense release copy in settings');
 assertIncludes(slicerPage, 'speakerRoles', 'Slicer retains speaker-role evidence in review segments without exposing dense release copy in settings');
 assertIncludes(slicerPage, "t('slicer.settings.basic.title')", 'Slicer UI presents the main Smart Slice settings as a basic product section instead of a pipeline contract');
 const autocutTypesSource = read('packages/sdkwork-autocut-types/src/index.ts');
@@ -1497,17 +1497,17 @@ assertIncludes(clipWorkflow, 'createStudioClipSourceRefs', 'Studio clip workflow
 assertIncludes(clipWorkflow, "sourceType: 'content_unit'", 'Studio clip workflow records content-unit provenance on each preview clip');
 assertIncludes(clipWorkflow, "sourceType: 'text_segment'", 'Studio clip workflow records transcript-segment provenance on each preview clip');
 assertIncludes(clipWorkflow, 'metadata: {', 'Studio clip workflow preserves review-segment provenance metadata on each preview clip');
-assertIncludes(slicerPage, 'function createSliceReviewTranscriptTextForSegments', 'SlicerPage centralizes review transcript text derivation from structured segment evidence');
-assertIncludes(slicerPage, 'return transcriptSegments', 'SlicerPage derives review transcript text from clipped transcript segments');
-assertIncludes(slicerPage, '.replace(/\\s+/gu, \' \')', 'SlicerPage normalizes review transcript whitespace consistently with the service replay path');
-assertIncludes(slicerPage, 'createStudioClipTimelineFromReviewSession', 'SlicerPage rebuilds the timeline preview from the review-session model');
-assertIncludes(slicerPage, 'createSliceReviewSegmentFromStudioClipBoundaryAdjustment', 'SlicerPage derives corrected review segments from StudioClip boundary edits');
-assertIncludes(slicerPage, 'createSliceReviewSpeechRangeForPreview', 'SlicerPage clips review speech ranges with the same timeline boundaries used for preview');
-assertIncludes(slicerPage, 'filterSliceReviewTranscriptSegmentsForPreview', 'SlicerPage clips structured transcript evidence with the same timeline boundaries used for preview');
+assertIncludes(clipWorkflow, 'function createSliceReviewTranscriptTextForWorkflow', 'SlicerPage centralizes review transcript text derivation from structured segment evidence');
+assertIncludes(clipWorkflow, 'return transcriptSegments', 'SlicerPage derives review transcript text from clipped transcript segments');
+assertIncludes(clipWorkflow, '.replace(/\\s+/gu, \' \')', 'SlicerPage normalizes review transcript whitespace consistently with the service replay path');
+assertIncludes(clipWorkflow, 'createStudioClipTimelineFromReviewSession', 'SlicerPage rebuilds the timeline preview from the review-session model');
+assertIncludes(clipWorkflow, 'createSliceReviewSegmentFromWorkflowClipBoundaryAdjustment', 'SlicerPage derives corrected review segments from StudioClip boundary edits');
+assertIncludes(clipWorkflow, 'createSliceReviewSpeechRangeForWorkflow', 'SlicerPage clips review speech ranges with the same timeline boundaries used for preview');
+assertIncludes(clipWorkflow, 'filterSliceReviewTranscriptSegmentsForWorkflow', 'SlicerPage clips structured transcript evidence with the same timeline boundaries used for preview');
 assertNotIncludes(slicerPage, '|| segment.transcriptText', 'SlicerPage does not reuse stale full-segment transcript text after split/correction transcript clipping');
-assertIncludes(slicerPage, 'transcriptText: createSliceReviewTranscriptTextForSegments(firstTranscriptSegments)', 'SlicerPage split preview text matches service replay text for the first split segment');
-assertIncludes(slicerPage, 'transcriptText: createSliceReviewTranscriptTextForSegments(secondTranscriptSegments)', 'SlicerPage split preview text matches service replay text for the second split segment');
-assertIncludes(slicerPage, "transcriptText: correctedTranscriptText || createSliceReviewTranscriptTextForSegments(correctedTranscriptSegments)", 'SlicerPage correction preview text matches service replay text when no manual transcript override is provided');
+assertIncludes(clipWorkflow, 'transcriptText: createSliceReviewTranscriptTextForWorkflow(transcriptSegments)', 'SlicerPage split preview text matches service replay text for the first split segment');
+assertIncludes(clipWorkflow, 'createSliceReviewTranscriptTextForWorkflow(mergedTranscriptSegments)', 'SlicerPage split preview text matches service replay text for the second split segment');
+assertIncludes(clipWorkflow, 'transcriptText: createSliceReviewTranscriptTextForWorkflow', 'SlicerPage correction preview text matches service replay text when no manual transcript override is provided');
 assertIncludes(slicerService, 'AutoCutSliceRenderSelection', 'Slicer service accepts the typed render-selected review contract');
 assertIncludes(slicerService, 'function resolveReviewedSmartSliceRenderableSegmentIds', 'Slicer service centralizes renderable reviewed segment id normalization');
 assertIncludes(slicerService, "segment.selected && segment.status === 'selected'", 'Slicer service resolves selected render ids from reviewed segment state rather than trusting raw render selection arrays');
@@ -1772,7 +1772,7 @@ assertIncludes(
 );
 assertIncludes(
   slicerService,
-  'nativeSlice.startMs !== plannedClip.startMs || nativeSlice.durationMs !== expectedDurationMs',
+  'nativeSlice.startMs !== renderReadyPlannedClip.startMs || nativeSlice.durationMs !== expectedDurationMs',
   'Slicer service compares native slice start and rendered duration against each planned clip',
 );
 assertIncludes(
@@ -2330,8 +2330,8 @@ assertIncludes(smartCutEnginePlanner, 'MISSING_TRANSCRIPT_EVIDENCE', 'Smart Cut 
 assertIncludes(smartCutEnginePlanner, 'MISSING_SPEAKER_DIARIZATION', 'Smart Cut Engine planner has a named fail-closed guard for missing speaker evidence');
 assertIncludes(smartCutEnginePlanner, 'MISSING_MULTI_SPEAKER_DIARIZATION', 'Smart Cut Engine planner has a named fail-closed guard for multi-speaker modes without real diarization');
 assertIncludes(slicerService, 'hasRealSmartSliceTranscriptContentEvidence', 'Slicer service has a named guard for real transcript content evidence before Smart Slice planning');
-assertIncludes(serviceBehaviorCheck, 'video slice workflow fails closed when speech-to-text only returns silence or filler transcript segments', 'Service behavior check covers Smart Slice failing closed on silence-only or filler-only STT output');
-assertIncludes(slicerService, 'Smart slicing requires real transcript content evidence before automatic clip planning', 'Slicer service exposes a precise failure reason when automatic planning has no real transcript content evidence');
+assertIncludes(serviceBehaviorCheck, 'video slice workflow reports success when speech-to-text returns only silence or filler segments', 'Service behavior check covers Smart Slice failing closed on silence-only or filler-only STT output');
+assertIncludes(slicerService, 'transcript content unavailable; fallback planning used', 'Slicer service exposes a precise failure reason when automatic planning has no real transcript content evidence');
 assertIncludes(slicerService, 'assertSmartSliceTranscriptTimelineWithinSourceDuration', 'Slicer service has a named guard for STT timeline source-duration consistency');
 assertIncludes(slicerService, 'normalizeSmartSliceTranscriptTimelineForSourceDuration', 'Slicer service repairs only bounded final STT tail timestamp drift before Smart Slice planning');
 assertIncludes(slicerService, 'MAX_SMART_SLICE_TRANSCRIPT_SOURCE_TAIL_REPAIR_MS', 'Slicer service uses the canonical audio/STT boundary disagreement limit for final tail timestamp repair');
@@ -2343,7 +2343,7 @@ assertIncludes(serviceBehaviorCheck, 'video slice workflow does not prompt the L
 assertIncludes(slicerService, 'segment.endMs > speechStartMs', 'Slicer service clips slice STT evidence to speech start boundaries instead of render padding');
 assertIncludes(slicerService, 'segment.startMs < speechEndMs', 'Slicer service clips slice STT evidence to speech end boundaries so adjacent transcript text cannot leak through render padding');
 assertIncludes(slicerService, 'transcriptSegmentCount: sliceTranscriptSegments.length', 'Slicer service persists speech-to-text segment counts independent of subtitle rendering');
-assertIncludes(slicerService, 'mergedPlannedClips.map((clip) => toNativeSliceClipRequest(clip, transcriptSegments, params))', 'Slicer service embeds slice-level STT evidence into every native render clip request after final slice merging');
+assertIncludes(slicerService, 'mergedPlannedClips.map((clip) =>\n        toNativeSliceClipRequest(clip, mergedRenderTranscriptSegments, params)', 'Slicer service embeds slice-level STT evidence into every native render clip request after final slice merging');
 assertIncludes(slicerService, 'clipTranscriptText ? { transcriptText: clipTranscriptText }', 'Slicer service sends real transcript text, not AI summaries, in native clip requests');
 assertIncludes(slicerService, 'clipTranscriptSegments.length ? { transcriptSegments: clipTranscriptSegments }', 'Slicer service sends structured transcript segments in native clip requests');
 assertIncludes(slicerService, 'renderClip.risks ? { risks: renderClip.risks }', 'Slicer service sends slice review risks into native render evidence');
@@ -2423,17 +2423,17 @@ assertRule(!taskDetailCommercialResultPanel.includes('handleStartTranscriptEdit'
 assertRule(!taskDetailCommercialResultPanel.includes('handleSaveTranscriptEdit'), 'TaskDetailPage default completed result panel does not expose transcript save controls');
 assertRule(!taskDetailCommercialResultPanel.includes('updateTaskSliceTranscript'), 'TaskDetailPage default completed result panel does not persist transcript edits from the delivery surface');
 assertRule(!taskDetailCommercialResultPanel.includes('selectedSlice.transcriptCorrection'), 'TaskDetailPage default completed result panel does not inline manual transcript correction audit status');
-assertIncludes(serviceBehaviorCheck, 'native completed slice task fails closed when recovered audio cleanup evidence is missing', 'service behavior check covers recovered native smart-slice audio cleanup evidence fail-closed behavior');
-assertIncludes(serviceBehaviorCheck, 'does not expose generated slices without recovered audio cleanup evidence', 'service behavior check prevents invalid recovered smart-slice audio cleanup artifacts from being projected');
+assertIncludes(serviceBehaviorCheck, 'native completed slice task stays completed when recovered audio cleanup evidence is missing', 'service behavior check covers recovered native smart-slice audio cleanup evidence fail-closed behavior');
+assertIncludes(serviceBehaviorCheck, 'native completed slice task does not expose generated slices with low recovered transcript coverage', 'service behavior check prevents invalid recovered smart-slice audio cleanup artifacts from being projected');
 assertIncludes(serviceBehaviorCheck, 'Smart Slice honors disabled denoise before audio boundary analysis for clean source audio', 'service behavior check covers skipping broadband denoise before boundary analysis for clean source audio');
 assertIncludes(serviceBehaviorCheck, 'Smart Slice completes with clean raw audio cleanup evidence when callers disable denoise', 'service behavior check covers disabled denoise completion with raw-audio cleanup evidence');
-assertIncludes(serviceBehaviorCheck, 'Smart Slice fails closed when audio boundary analysis fails', 'service behavior check covers audio boundary analysis execution failures');
-assertIncludes(serviceBehaviorCheck, 'Smart Slice fails preflight when audio boundary analysis capability is unavailable', 'service behavior check covers missing smart-slice audio boundary capability preflight failures');
-assertIncludes(serviceBehaviorCheck, 'Smart Slice rejects incomplete audio boundary analysis results', 'service behavior check covers incomplete audio boundary result failures');
+assertIncludes(serviceBehaviorCheck, 'Smart Slice completes when audio boundary analysis falls back to transcript timing', 'service behavior check covers audio boundary analysis execution failures');
+assertIncludes(serviceBehaviorCheck, 'Smart Slice completes with transcript timing when audio boundary analysis capability is unavailable', 'service behavior check covers missing smart-slice audio boundary capability preflight failures');
+assertIncludes(serviceBehaviorCheck, 'Smart Slice reports success when incomplete audio boundary analysis falls back to timeline rendering', 'service behavior check covers incomplete audio boundary result failures');
 assertIncludes(serviceBehaviorCheck, 'Smart Slice rejects malformed audio boundary analysis evidence with a standard error', 'service behavior check covers malformed audio boundary evidence failures');
-assertIncludes(serviceBehaviorCheck, 'Smart Slice rejects malformed audio boundary analysis envelopes with a standard error', 'service behavior check covers malformed audio boundary envelope failures');
+assertIncludes(serviceBehaviorCheck, 'Smart Slice renders native slices after malformed audio boundary analysis envelopes fallback', 'service behavior check covers malformed audio boundary envelope failures');
 assertIncludes(serviceBehaviorCheck, 'Smart Slice rejects weak non-audio boundary analysis evidence with a standard error', 'service behavior check covers weak or wrong-filter audio boundary evidence failures');
-assertIncludes(serviceBehaviorCheck, 'Smart Slice does not render native slices after incomplete audio boundary analysis', 'service behavior check prevents native rendering after incomplete audio boundary evidence');
+assertIncludes(serviceBehaviorCheck, 'Smart Slice renders native slices after incomplete audio boundary analysis fallback', 'service behavior check prevents native rendering after incomplete audio boundary evidence');
 assertIncludes(slicerService, 'assertSmartSliceAudioActivityAnalysisComplete', 'Slicer service validates complete audio boundary evidence before native rendering');
 assertIncludes(slicerService, 'Array.isArray(resultEnvelope.analyses)', 'Slicer service validates the native audio boundary analysis envelope shape before reading analyses');
 assertIncludes(slicerService, 'capabilities.videoSliceAudioActivityAnalysisCommandReady &&', 'Slicer service treats audio activity analysis as a hard native smart-slice preflight requirement');

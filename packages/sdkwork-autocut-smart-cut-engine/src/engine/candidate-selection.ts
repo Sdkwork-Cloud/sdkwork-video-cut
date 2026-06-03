@@ -71,6 +71,13 @@ export function selectSmartCutCandidates(
       message: `Unknown smart cut product preset: ${input.presetId}.`,
       remediation: 'Select candidates against a registered smart cut product preset.',
     });
+    return {
+      ready: false,
+      selectedCandidates: [],
+      rejectedCandidates,
+      blockers,
+      metrics: createEmptyCandidateSelectionMetrics(input.candidates.length),
+    };
   }
 
   if (input.candidates.length === 0) {
@@ -138,6 +145,15 @@ function normalizeTargetCount(value: number | undefined): number | undefined {
     return undefined;
   }
   return Math.max(1, Math.floor(value));
+}
+
+function createEmptyCandidateSelectionMetrics(inputCount: number): SmartCutCandidateSelectionMetrics {
+  return {
+    inputCount,
+    selectedCount: 0,
+    rejectedCount: 0,
+    llmRankedCandidateCount: 0,
+  };
 }
 
 interface ScoredCandidate {

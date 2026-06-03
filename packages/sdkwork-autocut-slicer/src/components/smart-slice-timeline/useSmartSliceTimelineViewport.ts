@@ -19,12 +19,13 @@ export function useSmartSliceTimelineViewport(
   durationMs: number,
   { viewportRef }: UseSmartSliceTimelineViewportOptions = {},
 ) {
+  const safeDurationMs = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 1;
   const [viewportWidthPx, setViewportWidthPx] = useState(SMART_SLICE_TIMELINE_DEFAULT_VIEWPORT_WIDTH_PX);
   const [zoomScale, setZoomScale] = useState(1);
 
   const measureViewportWidth = useCallback(() => {
     const nextViewportWidthPx = viewportRef?.current?.clientWidth;
-    if (nextViewportWidthPx && Number.isFinite(nextViewportWidthPx)) {
+    if (nextViewportWidthPx !== undefined && nextViewportWidthPx !== null && Number.isFinite(nextViewportWidthPx) && nextViewportWidthPx > 0) {
       setViewportWidthPx(Math.max(1, Math.round(nextViewportWidthPx)));
     }
   }, [viewportRef]);
@@ -48,15 +49,15 @@ export function useSmartSliceTimelineViewport(
 
   useLayoutEffect(() => {
     setZoomScale(1);
-  }, [durationMs]);
+  }, [safeDurationMs]);
 
   const fitPxPerSecond = useMemo(
     () => resolveSmartSliceTimelineFitPxPerSecond({
-      durationMs,
+      durationMs: safeDurationMs,
       viewportWidthPx,
       maxPxPerSecond: SMART_SLICE_TIMELINE_MAX_PX_PER_SECOND,
     }),
-    [durationMs, viewportWidthPx],
+    [safeDurationMs, viewportWidthPx],
   );
   const maxZoomScale = Math.max(1, SMART_SLICE_TIMELINE_MAX_PX_PER_SECOND / Math.max(fitPxPerSecond, 0.001));
 
@@ -67,7 +68,7 @@ export function useSmartSliceTimelineViewport(
       Math.max(fitPxPerSecond, fitPxPerSecond * normalizedZoomScale),
     );
     const pxPerMs = normalizedPxPerSecond / 1_000;
-    const contentWidthPx = Math.max(durationMs * pxPerMs, 1);
+    const contentWidthPx = Math.max(safeDurationMs * pxPerMs, 1);
     return {
       pxPerMs,
       pxPerSecond: normalizedPxPerSecond,
@@ -77,11 +78,11 @@ export function useSmartSliceTimelineViewport(
       canZoomIn: normalizedPxPerSecond < SMART_SLICE_TIMELINE_MAX_PX_PER_SECOND,
       canZoomOut: normalizedZoomScale > 1,
     };
-  }, [durationMs, fitPxPerSecond, maxZoomScale, zoomScale]);
+  }, [safeDurationMs, fitPxPerSecond, maxZoomScale, zoomScale]);
 
-  const timeToX = (timeMs: number) => clampSmartSliceTimelineMs(timeMs, durationMs) * viewport.pxPerMs;
-  const xToTime = (xPx: number) => clampSmartSliceTimelineMs(xPx / viewport.pxPerMs, durationMs);
-  const setPxPerSecond = (nextPxPerSecond: number | ((currentPxPerSecond: number) => number)) => {
+  const timeToX = useCallback((timeMs: number) => clampSmartSliceTimelineMs(timeMs, safeDurationMs) * viewport.pxPerMs, [safeDurationMs, viewport.pxPerMs]);
+  const xToTime = useCallback((xPx: number) => clampSmartSliceTimelineMs(xPx / viewport.pxPerMs, safeDurationMs), [safeDurationMs, viewport.pxPerMs]);
+  const setPxPerSecond = useCallback((nextPxPerSecond: number | ((currentPxPerSecond: number) => number)) => {
     setZoomScale((currentZoomScale) => {
       const currentPxPerSecond = Math.min(
         SMART_SLICE_TIMELINE_MAX_PX_PER_SECOND,
@@ -92,17 +93,22 @@ export function useSmartSliceTimelineViewport(
         : nextPxPerSecond;
       return Math.max(1, Math.min(maxZoomScale, resolvedPxPerSecond / Math.max(fitPxPerSecond, 0.001)));
     });
-  };
-  const zoomIn = () => setZoomScale((current) => Math.min(maxZoomScale, current * 1.25));
-  const zoomOut = () => setZoomScale((current) => Math.max(1, current / 1.25));
-  const fitToDuration = () => {
+  }, [fitPxPerSecond, maxZoomScale]);
+  const zoomIn = useCallback(() => setZoomScale((current) => Math.min(maxZoomScale, current * 1.25)), [maxZoomScale]);
+  const zoomOut = useCallback(() => setZoomScale((current) => Math.max(1, current / 1.25)), []);
+  const fitToDuration = useCallback(() => {
     measureViewportWidth();
     setZoomScale(1);
-  };
+  }, [measureViewportWidth]);
+
+  const tickConfiguration = useMemo(
+    () => resolveSmartSliceTimelineTickConfiguration(viewport.pxPerMs),
+    [viewport.pxPerMs],
+  );
 
   return {
     viewport,
-    tickConfiguration: resolveSmartSliceTimelineTickConfiguration(viewport.pxPerMs),
+    tickConfiguration,
     timeToX,
     xToTime,
     setPxPerSecond,

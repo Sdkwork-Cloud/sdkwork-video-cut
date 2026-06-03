@@ -183,6 +183,8 @@ const allowedScriptFiles = new Set([
   'scripts/write-autocut-native-release-smoke.test.mjs',
   'scripts/write-autocut-release-evidence.mjs',
   'scripts/write-autocut-release-evidence.test.mjs',
+  'scripts/typescript-loader.mjs',
+  'scripts/run-slicer-planner-with-loader.mjs',
 ]);
 const allowedDocs = new Set([
   'docs/architecture/16-autocut-frontend-module-standard.md',
@@ -1446,7 +1448,7 @@ for (const scriptName of ['dev', 'build', 'typecheck', 'test', 'tauri:before-dev
   assertRule(Boolean(rootPackage.scripts?.[scriptName]), `root package.json defines script ${scriptName}`);
 }
 assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-feature-workflows.mjs'), 'root test runs the AutoCut feature workflow governance check');
-assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-slicer-planner.mjs'), 'root test runs the AutoCut slicer planner contract');
+assertRule(rootPackage.scripts?.test?.includes('node scripts/run-slicer-planner-with-loader.mjs'), 'root test runs the AutoCut slicer planner contract');
 assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-slicer-timeline-workbench.mjs'), 'root test runs the AutoCut slicer timeline workbench contract');
 assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-service-behavior.mjs'), 'root test runs the AutoCut service behavior contract');
 assertRule(rootPackage.scripts?.test?.includes('node scripts/autocut-cli-args.test.mjs'), 'root test runs the AutoCut CLI argument normalization contract');

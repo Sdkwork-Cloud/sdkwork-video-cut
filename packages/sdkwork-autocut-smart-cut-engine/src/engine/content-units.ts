@@ -132,9 +132,14 @@ function normalizeBuiltContentUnits(
 ): readonly SmartCutContentUnit[] {
   return units.map((unit) => {
     if (isDialoguePreset(presetId) && (isQuestionUnit(unit) || isAnswerUnit(unit))) {
+      const text = unit.text ?? '';
+      const lowInformation = isLowInformationText(text);
       return {
         ...unit,
         unitKind: 'qa-pair',
+        completenessScore: scoreContentUnitCompleteness(text, lowInformation),
+        continuityScore: scoreContentUnitContinuity(text, lowInformation),
+        publishabilityScore: scoreContentUnitPublishability(text, lowInformation),
       };
     }
 
@@ -517,7 +522,7 @@ function isDialoguePreset(presetId: SmartCutProductPresetId): boolean {
 
 function isQuestionUnit(unit: SmartCutContentUnit): boolean {
   const text = unit.text ?? '';
-  return unit.unitKind === 'qa-pair' && /[?？]\s*$/u.test(text) ||
+  return /[?？]\s*$/u.test(text) ||
     /^(?:when|what|why|how|who|where|which|should|can|could|would|is|are|do|does)\b/iu.test(text);
 }
 

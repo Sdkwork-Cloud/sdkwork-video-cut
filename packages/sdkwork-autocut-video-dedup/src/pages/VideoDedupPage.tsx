@@ -5,7 +5,7 @@ export function VideoDedupPage() {
 
   return (
     <div className="flex h-full w-full flex-col overflow-y-auto p-6 md:p-10">
-      <VideoDedupWorkbench title="Video deduplication workbench" />
+      <VideoDedupWorkbench />
     </div>
   );
 }

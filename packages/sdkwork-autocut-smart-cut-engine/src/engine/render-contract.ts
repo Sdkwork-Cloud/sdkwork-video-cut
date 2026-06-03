@@ -319,5 +319,29 @@ function orderedValuesEqual<T extends string | number | boolean>(
 }
 
 function objectsEqual(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  return deepEqual(left, right);
+}
+
+function deepEqual(left: unknown, right: unknown): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left === null || right === null || typeof left !== 'object' || typeof right !== 'object') {
+    return false;
+  }
+  if (Array.isArray(left) !== Array.isArray(right)) {
+    return false;
+  }
+  if (Array.isArray(left) && Array.isArray(right)) {
+    if (left.length !== right.length) {
+      return false;
+    }
+    return left.every((value, index) => deepEqual(value, right[index]));
+  }
+  const leftKeys = Object.keys(left as Record<string, unknown>).sort();
+  const rightKeys = Object.keys(right as Record<string, unknown>).sort();
+  if (leftKeys.length !== rightKeys.length || !leftKeys.every((key, index) => key === rightKeys[index])) {
+    return false;
+  }
+  return leftKeys.every((key) => deepEqual((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key]));
 }

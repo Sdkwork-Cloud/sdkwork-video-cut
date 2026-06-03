@@ -384,19 +384,28 @@ export function SettingsPage() {
 
   const handleWorkspacePreferenceChange = (workspace: AppSettings['workspace']) => {
     if (!settings) return;
+    const previousSettings = settings;
     const nextSettings = { ...settings, workspace };
     setSettings(nextSettings);
-    void saveAutoCutWorkspaceSettings(workspace).then(updateSettingsState);
+    void saveAutoCutWorkspaceSettings(workspace).then(updateSettingsState).catch(() => {
+      setSettings(previousSettings);
+      toast('保存设置失败', 'error');
+    });
   };
 
   const handleWorkspaceLanguageChange = (language: string) => {
     if (!settings) return;
+    const previousSettings = settings;
     const normalizedLanguage: AutoCutAppLocale = normalizeAutoCutLocale(language);
     const workspace = { ...settings.workspace, language: normalizedLanguage };
     const nextSettings = { ...settings, workspace };
     setSettings(nextSettings);
     void i18n.changeLanguage(normalizedLanguage);
-    void saveAutoCutWorkspaceSettings(workspace).then(updateSettingsState);
+    void saveAutoCutWorkspaceSettings(workspace).then(updateSettingsState).catch(() => {
+      setSettings(previousSettings);
+      void i18n.changeLanguage(previousSettings.workspace.language);
+      toast('保存设置失败', 'error');
+    });
   };
 
   const handleSaveNotifications = async () => {
@@ -407,8 +416,12 @@ export function SettingsPage() {
 
   const handleNotificationPreferenceChange = (notifications: AppSettings['notifications']) => {
     if (!settings) return;
+    const previousSettings = settings;
     setSettings({ ...settings, notifications });
-    void saveAutoCutNotificationSettings(notifications).then(updateSettingsState);
+    void saveAutoCutNotificationSettings(notifications).then(updateSettingsState).catch(() => {
+      setSettings(previousSettings);
+      toast('保存设置失败', 'error');
+    });
   };
 
   const handleChangeAvatar = async () => {
@@ -423,6 +436,7 @@ export function SettingsPage() {
 
   const handleLlmVendorChange = (modelVendor: ModelVendor) => {
     if (!settings) return;
+    const previousSettings = settings;
     const preset = AUTOCUT_MODEL_VENDOR_PRESETS[modelVendor];
     const nextLlm: AutoCutLlmSettings = {
       ...settings.llm,
@@ -431,7 +445,10 @@ export function SettingsPage() {
       model: modelVendor === 'custom' ? settings.llm.model : preset.defaultModel,
     };
     handleLlmSettingsChange(nextLlm);
-    void saveAutoCutLlmSettings(nextLlm).then(updateSettingsState);
+    void saveAutoCutLlmSettings(nextLlm).then(updateSettingsState).catch(() => {
+      setSettings(previousSettings);
+      toast('保存设置失败', 'error');
+    });
   };
 
   const handleSaveLlmSettings = async () => {

@@ -496,9 +496,7 @@ async function inspectAutoCutLocalSpeechTranscriptionSetupStatus():
   const preset = resolveAutoCutRecommendedLocalSpeechTranscriptionModelPreset(inspectedProviderId);
   const nativeHostClient = getAutoCutNativeHostClient();
   const capabilities = await nativeHostClient.getCapabilities();
-  const executableDownloadReady = false;
   const capabilityStatus = createAutoCutLocalSpeechTranscriptionCapabilityStatus(capabilities);
-  capabilityStatus.executableDownloadReady = executableDownloadReady;
   let defaultPaths = await createAutoCutLocalSpeechTranscriptionDefaultPaths(preset);
   const diagnostics: string[] = [];
 
@@ -1354,7 +1352,6 @@ async function isAutoCutLocalSpeechTranscriptionSetupStatusCompatibleWithRuntime
   const nativeHostClient = getAutoCutNativeHostClient();
   const capabilities = await nativeHostClient.getCapabilities();
   const currentCapabilities = createAutoCutLocalSpeechTranscriptionCapabilityStatus(capabilities);
-  currentCapabilities.executableDownloadReady = false;
 
   return areAutoCutLocalSpeechTranscriptionSetupCapabilitiesEqual(
     status.capabilities,

@@ -198,6 +198,5 @@ export function findSmartSliceTimelineClipItemAtTime(
   currentTimeMs: number,
 ) {
   return clipItems.find((item) => currentTimeMs >= item.clip.startMs && currentTimeMs < item.clip.endMs) ??
-    clipItems.at(-1) ??
     null;
 }

@@ -8,6 +8,7 @@ import type {
   AutoCutSpeechTranscriptionSegment,
   AutoCutVideoSliceClipRequest,
 } from '@sdkwork/autocut-services';
+import { getAutoCutI18nText } from '@sdkwork/autocut-services';
 
 export const MIN_SLICE_DURATION_MS = 5_000;
 export const MIN_TRANSCRIPT_ALIGNED_SLICE_DURATION_MS = 1_000;
@@ -1013,32 +1014,34 @@ export function refineSmartSlicePlanWithAudioActivityBoundaries(
 
     const useAudioBoundary = audioRangeReady && (Boolean(conflictRisks) || !combinedRangeReady);
     if (useAudioBoundary) {
-      const audioBoundaryRenderDurationMs = Math.min(
+      const combinedBoundaryRenderDurationMs = Math.min(
         renderEndMs,
-        audioActivityEndMs + TRANSCRIPT_BOUNDARY_PADDING_AFTER_MS,
+        combinedBoundaryEndMs + TRANSCRIPT_BOUNDARY_PADDING_AFTER_MS,
       ) - Math.max(
         renderStartMs,
-        audioActivityStartMs - TRANSCRIPT_BOUNDARY_PADDING_BEFORE_MS,
+        combinedBoundaryStartMs - TRANSCRIPT_BOUNDARY_PADDING_BEFORE_MS,
       );
+      const isMicroConflict =
+        combinedBoundaryRenderDurationMs < MIN_TRANSCRIPT_ALIGNED_SLICE_DURATION_MS;
       const audioBoundaryRisks = mergePlanRisks(
         conflictRisks,
-        audioBoundaryRenderDurationMs < MIN_TRANSCRIPT_ALIGNED_SLICE_DURATION_MS
-          ? ['audio-only-boundary-too-short']
-          : undefined,
+        isMicroConflict
+          ? ['audio-only-boundary-too-short', 'combined-boundary-on-conflict']
+          : ['combined-boundary-on-conflict'],
       );
 
       return createAudioActivityRefinedClip(
         clip,
         renderStartMs,
         renderEndMs,
-        audioActivityStartMs,
-        audioActivityEndMs,
-        'audio',
+        combinedBoundaryStartMs,
+        combinedBoundaryEndMs,
+        'combined',
         audioActivityEvidence,
         noiseReductionApplied,
         {
-          speechStartMs: audioActivityStartMs,
-          speechEndMs: audioActivityEndMs,
+          speechStartMs: combinedBoundaryStartMs,
+          speechEndMs: combinedBoundaryEndMs,
         },
         audioBoundaryRisks,
       );
@@ -1869,7 +1872,9 @@ function getClipTimelineGapMs(
 
   const firstEndMs = firstClip.startMs + firstClip.durationMs;
   const secondEndMs = secondClip.startMs + secondClip.durationMs;
-  return Math.max(0, Math.max(firstClip.startMs, secondClip.startMs) - Math.min(firstEndMs, secondEndMs));
+  const earlierEndMs = Math.min(firstEndMs, secondEndMs);
+  const laterStartMs = Math.max(firstClip.startMs, secondClip.startMs);
+  return Math.max(0, laterStartMs - earlierEndMs);
 }
 
 function isSemanticStoryMergeCandidate(candidate: Partial<NormalizedSlicePlanClip>) {
@@ -1919,11 +1924,10 @@ function filterRepeatedTranscriptCandidates(
         };
       } else {
         const mergedRisks = mergePlanRisks(repeatedCandidate.risks, ['transcript-repeat-filtered']);
-        if (mergedRisks) {
-          repeatedCandidate.risks = mergedRisks;
-        } else {
-          delete repeatedCandidate.risks;
-        }
+        selectedCandidates[repeatedCandidateIndex] = {
+          ...repeatedCandidate,
+          ...(mergedRisks ? { risks: mergedRisks } : {}),
+        };
       }
       continue;
     }
@@ -2091,13 +2095,18 @@ function selectContentDerivedCandidateOutputPool(
 
   const prunedById = new Map(prunedCandidates.map((candidate) => [candidate.candidateId, candidate]));
   for (const storyCandidate of strongSemanticStoryCandidates) {
-    prunedById.set(storyCandidate.candidateId, storyCandidate);
+    if (!prunedById.has(storyCandidate.candidateId)) {
+      prunedById.set(storyCandidate.candidateId, storyCandidate);
+    }
   }
   for (const topicCandidate of topicSegmentCandidates) {
-    prunedById.set(topicCandidate.candidateId, topicCandidate);
+    if (!prunedById.has(topicCandidate.candidateId)) {
+      prunedById.set(topicCandidate.candidateId, topicCandidate);
+    }
   }
 
-  return sortTranscriptSliceCandidatesByScore([...prunedById.values()]);
+  const allCandidates = sortTranscriptSliceCandidatesByScore([...prunedById.values()]);
+  return allCandidates;
 }
 
 function shouldPreferRepeatedTranscriptCandidate(
@@ -2182,7 +2191,7 @@ function pruneTranscriptSliceCandidatePool(
   const distributionSlots = Math.max(0, candidatePoolLimit - selectedById.size);
   if (distributionSlots > 0 && remainingCandidates.length > 0) {
     const sourceDurationMs = policy.sourceDurationMs
-      ?? Math.max(...candidates.map((candidate) => candidate.endMs));
+      ?? Math.max(0, ...candidates.map((candidate) => candidate.endMs).filter(Number.isFinite));
     const bucketDurationMs = Math.max(1, Math.ceil(sourceDurationMs / distributionSlots));
     const bestByBucket = new Map<number, TranscriptSliceCandidate>();
     for (const candidate of remainingCandidates) {
@@ -3687,7 +3696,7 @@ function createTranscriptSliceLabel(segments: readonly AutoCutSpeechTranscriptio
     /^(然后|所以|但是|不过|而且|接着|其次|最后|因此|同时|另外|那么|那其实|其实|并且)\s*/u,
     '',
   );
-  return (cleanedAnchorText || anchorText || `高光片段 ${anchorIndex + 1}`).slice(0, 48);
+  return (cleanedAnchorText || anchorText || getAutoCutI18nText('slicerService.highlightClip', undefined, undefined, { index: anchorIndex + 1 })).slice(0, 48);
 }
 
 function createPlannerSliceLabel(index: number) {
@@ -7321,8 +7330,45 @@ export function buildTranscriptSliceCandidates(
 }
 
 export function createDeterministicSlicePlan(params: VideoSliceParams): NormalizedSlicePlanClip[] {
-  void params;
-  return [];
+  const sourceDurationMs = normalizeSourceDurationMs(params.sourceDurationMs);
+  if (sourceDurationMs === undefined || sourceDurationMs <= 0) {
+    return [];
+  }
+  const { minDurationMs, maxDurationMs } = getVideoSliceDurationBounds(params);
+  if (maxDurationMs <= 0) {
+    return [];
+  }
+  const clipDurationMs = Math.max(minDurationMs, 1);
+  const maxClipDurationMs = Math.max(clipDurationMs, maxDurationMs);
+  const clips: NormalizedSlicePlanClip[] = [];
+  let cursorMs = 0;
+  let clipIndex = 0;
+  while (cursorMs < sourceDurationMs) {
+    const remainingMs = sourceDurationMs - cursorMs;
+    const durationMs = Math.min(maxClipDurationMs, remainingMs);
+    if (durationMs < clipDurationMs && clips.length > 0) {
+      break;
+    }
+    const startMs = cursorMs;
+    const endMs = startMs + durationMs;
+    clips.push({
+      index: clipIndex,
+      startMs,
+      durationMs,
+      label: getAutoCutI18nText(
+        'slicerService.fallbackClip',
+        undefined,
+        `Fallback clip ${clipIndex + 1}`,
+        { index: clipIndex + 1 },
+      ),
+      risks: ['deterministic-no-transcript-fallback'],
+      sourceStartMs: startMs,
+      sourceEndMs: endMs,
+    });
+    cursorMs = endMs;
+    clipIndex += 1;
+  }
+  return clips;
 }
 
 export function createTranscriptAssistedSlicePlan(
@@ -8026,21 +8072,38 @@ export function repairSmartSliceClipTimingForNativeRender(
   const safeDurationMs = Math.max(1, Math.round(clip.durationMs));
   const safeEndMs = Math.min(safeStartMs + safeDurationMs, policy.maxDurationMs);
 
-  const sourceStartMs = clip.sourceStartMs !== undefined ? Math.round(clip.sourceStartMs) : safeStartMs;
-  const sourceEndMs = clip.sourceEndMs !== undefined ? Math.round(clip.sourceEndMs) : safeEndMs;
+  let sourceStartMs = clip.sourceStartMs !== undefined ? Math.round(clip.sourceStartMs) : safeStartMs;
+  let sourceEndMs = clip.sourceEndMs !== undefined ? Math.round(clip.sourceEndMs) : safeEndMs;
 
   const speechStartMs = clip.speechStartMs !== undefined ? Math.round(clip.speechStartMs) : undefined;
   const speechEndMs = clip.speechEndMs !== undefined ? Math.round(clip.speechEndMs) : undefined;
 
-  const renderedDurationMs = sourceEndMs - sourceStartMs;
+  const risks: string[] = [...(clip.risks ?? [])];
+  const trailingSilenceLimitMs = MAX_RENDER_TRAILING_SILENCE_MS;
+  if (
+    speechEndMs !== undefined &&
+    sourceEndMs > speechEndMs + trailingSilenceLimitMs &&
+    (clip.transcriptCoverageScore ?? 0) >= MIN_TRANSCRIPT_RENDER_SPEECH_COVERAGE_SCORE
+  ) {
+    const trimmedEndMs = Math.min(sourceEndMs, speechEndMs + trailingSilenceLimitMs);
+    if (trimmedEndMs < sourceEndMs) {
+      sourceEndMs = trimmedEndMs;
+      if (!risks.includes('excess-trailing-silence-trimmed')) {
+        risks.push('excess-trailing-silence-trimmed');
+      }
+    }
+  }
+
+  const renderedDurationMs = Math.max(1, sourceEndMs - sourceStartMs);
 
   return {
     ...clip,
+    risks,
     startMs: safeStartMs,
-    durationMs: Math.max(renderedDurationMs, safeDurationMs),
+    durationMs: renderedDurationMs,
     sourceStartMs,
     sourceEndMs,
-    renderedDurationMs: Math.max(1, renderedDurationMs),
+    renderedDurationMs,
     ...(speechStartMs !== undefined ? { speechStartMs: Math.max(sourceStartMs, speechStartMs) } : {}),
     ...(speechEndMs !== undefined ? { speechEndMs: Math.min(sourceEndMs, speechEndMs) } : {}),
   };

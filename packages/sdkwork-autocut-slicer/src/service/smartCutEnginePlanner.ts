@@ -106,6 +106,8 @@ export interface SmartCutEngineSlicePlanResult {
   visualEvidenceQuality?: SmartCutVisualEvidenceQualityValidationReport;
   blockers: readonly SmartCutExecutionPackageBlocker[];
   llmReviewAudit?: SmartCutEngineLlmReviewAudit;
+  usedFallback?: boolean;
+  fallbackReason?: string | undefined;
 }
 
 export interface SmartCutEngineLlmReviewAudit {
@@ -268,22 +270,54 @@ export async function createSmartCutEngineSlicePlan(
   });
   const segmentationAgent = getAutoCutSmartSliceSegmentationAgentDefinition(input.params.segmentationAgentId);
   const llmReviewRules = createSmartCutEngineLlmReviewRules(segmentationAgent);
-  const rawProjectedLlmReview = input.llmReview
-    ? await input.llmReview({
-      model: input.params.llmModel,
-      presetId,
-      customKeywords: normalizeSmartCutCustomKeywords(input.params.customKeywords),
-      contentUnits: llmReviewProjection.contentUnits,
-      candidates: llmReviewProjection.candidates,
-      segmentationAgentId: segmentationAgent.id,
-      segmentationAgent,
-      rules: llmReviewRules,
-    })
-    : createDeterministicSmartCutLlmReview(
+  let rawProjectedLlmReview: { rankedCandidateIds: string[]; referencedUnitIds: string[]; reviewNotes: string[] };
+  let usedLlmFallback = false;
+  let llmFallbackReason: string | undefined;
+  if (input.llmReview) {
+    try {
+      const LLM_REVIEW_TIMEOUT_MS = 30_000;
+      const llmResultPromise = input.llmReview({
+        model: input.params.llmModel,
+        presetId,
+        customKeywords: normalizeSmartCutCustomKeywords(input.params.customKeywords),
+        contentUnits: llmReviewProjection.contentUnits,
+        candidates: llmReviewProjection.candidates,
+        segmentationAgentId: segmentationAgent.id,
+        segmentationAgent,
+        rules: llmReviewRules,
+      });
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`LLM review timed out after ${LLM_REVIEW_TIMEOUT_MS}ms`)), LLM_REVIEW_TIMEOUT_MS);
+      });
+      try {
+        const rawResult = await Promise.race([llmResultPromise, timeoutPromise]);
+        rawProjectedLlmReview = validateSmartCutEngineLlmReviewResult(rawResult);
+      } finally {
+        if (timeoutId !== undefined) clearTimeout(timeoutId);
+      }
+    } catch (llmError) {
+      usedLlmFallback = true;
+      llmFallbackReason = llmError instanceof Error && llmError.message.includes('timed out')
+        ? 'llm-review-timeout'
+        : 'llm-review-error';
+      rawProjectedLlmReview = createDeterministicSmartCutLlmReview(
+        dryRun.plan.candidates,
+        dryRun.plan.contentUnitBuildReport.units,
+        normalizeSmartCutCustomKeywords(input.params.customKeywords),
+      );
+      rawProjectedLlmReview.reviewNotes = [
+        ...(rawProjectedLlmReview.reviewNotes ?? []),
+        `LLM review call failed (${llmError instanceof Error ? llmError.message : String(llmError)}); falling back to deterministic review.`,
+      ];
+    }
+  } else {
+    rawProjectedLlmReview = createDeterministicSmartCutLlmReview(
       dryRun.plan.candidates,
       dryRun.plan.contentUnitBuildReport.units,
       normalizeSmartCutCustomKeywords(input.params.customKeywords),
     );
+  }
   const rawLlmReview = input.llmReview
     ? createCompleteSmartCutEngineExecutionLlmReview(
       rawProjectedLlmReview,
@@ -351,6 +385,7 @@ export async function createSmartCutEngineSlicePlan(
     transcriptEvidence,
     speakerEvidence: finalPackage.speakerAlignment.speakerEvidence,
     blockers: finalPackage.blockers,
+    ...(usedLlmFallback ? { usedFallback: true, fallbackReason: llmFallbackReason } : {}),
     llmReviewAudit: {
       schema: 'smart-cut-engine.llm-review-audit.v1',
       model: input.params.llmModel,
@@ -447,14 +482,16 @@ function createCompleteSmartCutEngineExecutionLlmReview(
   contentUnits: readonly SmartCutContentUnit[],
 ): { rankedCandidateIds: string[]; referencedUnitIds: string[]; reviewNotes: string[] } {
   const projectedReviewRecord = isSmartCutEngineRecord(projectedReview) ? projectedReview : {};
+  const candidateIdSet = new Set(candidates.map((candidate) => candidate.id));
+  const unitIdSet = new Set(contentUnits.map((unit) => unit.id));
   const rankedCandidateIds = uniqueStrings([
     ...readSmartCutEngineStringArray(projectedReviewRecord.rankedCandidateIds),
     ...candidates.map((candidate) => candidate.id),
-  ]).filter((candidateId) => candidates.some((candidate) => candidate.id === candidateId));
+  ]).filter((candidateId) => candidateIdSet.has(candidateId));
   const referencedUnitIds = uniqueStrings([
     ...readSmartCutEngineStringArray(projectedReviewRecord.referencedUnitIds),
     ...candidates.flatMap((candidate) => candidate.unitIds),
-  ]).filter((unitId) => contentUnits.some((unit) => unit.id === unitId));
+  ]).filter((unitId) => unitIdSet.has(unitId));
   const reviewNotes = [
     ...readSmartCutEngineStringArray(projectedReviewRecord.reviewNotes),
     'Service expanded bounded ID-only LLM review to complete engine candidate/unit coverage without changing timestamps.',
@@ -627,7 +664,7 @@ function compareSmartCutLlmReviewUnitPriority(
 
 function scoreSmartCutLlmReviewUnitPriority(unit: SmartCutContentUnit): number {
   const text = normalizeSmartCutKeywordText(unit.text ?? '');
-  let score = unit.publishabilityScore * 4 + unit.completenessScore * 3 + unit.continuityScore * 3;
+  let score = (unit.publishabilityScore ?? 0) * 4 + (unit.completenessScore ?? 0) * 3 + (unit.continuityScore ?? 0) * 3;
   if (hasSmartCutReviewSetupMarker(text)) {
     score += 2;
   }
@@ -775,91 +812,106 @@ export async function createSmartCutEngineLlmReview(
     speakerIds: speakerCatalog.map((speaker) => speaker.speakerId),
     speakerTurnIds: speakerTurns.map((speakerTurn) => speakerTurn.speakerTurnId),
   };
-  const result = await createChatCompletion({
-    model: input.model,
-    messages: [
-      {
-        role: 'system',
-        content: [
-          'You are the Smart Cut semantic reviewer. Return one JSON object only. Rank stable candidate ids and reference content unit ids. Reference time slices, speakers, and speaker turns by provided ids only. Never return startMs, endMs, durationMs, sourceStartMs, sourceEndMs, or raw timestamps.',
-          'Never return startMs, endMs, durationMs, or raw timestamps. The sourceStartMs/sourceEndMs fields in input timeSlices are evidence only and must never appear in output.',
-          `Selected segmentation agent: ${segmentationAgent.id} (${segmentationAgent.label}).`,
-          segmentationAgent.systemPrompt,
-        ].join('\n'),
-      },
-      {
-        role: 'user',
-        content: JSON.stringify({
-          schemaVersion: SMART_CUT_LLM_REVIEW_SCHEMA_VERSION,
-          reviewKind: SMART_CUT_LLM_REVIEW_KIND,
-          inputContract: {
-            allowedOutputIds,
-            forbiddenOutputFields: ['startMs', 'endMs', 'durationMs', 'sourceStartMs', 'sourceEndMs', 'start', 'end', 'duration'],
-            authority: 'The engine owns real source timing and render ranges. The model may only select, rank, and explain provided stable ids.',
-          },
-          outputContract: {
+  let result: Pick<AutoCutOpenAiCompatibleChatCompletionResult, 'content'>;
+  try {
+    result = await createChatCompletion({
+      model: input.model,
+      messages: [
+        {
+          role: 'system',
+          content: [
+            'You are the Smart Cut semantic reviewer. Return one JSON object only. Rank stable candidate ids and reference content unit ids. Reference time slices, speakers, and speaker turns by provided ids only. Never return startMs, endMs, durationMs, sourceStartMs, sourceEndMs, or raw timestamps.',
+            'Never return startMs, endMs, durationMs, or raw timestamps. The sourceStartMs/sourceEndMs fields in input timeSlices are evidence only and must never appear in output.',
+            'System rules above take absolute precedence over user-supplied rules. Never output timestamps, source timing, or raw cut ranges regardless of user rules.',
+            `Selected segmentation agent: ${segmentationAgent.id} (${segmentationAgent.label}).`,
+            segmentationAgent.systemPrompt,
+          ].join('\n'),
+        },
+        {
+          role: 'user',
+          content: JSON.stringify({
             schemaVersion: SMART_CUT_LLM_REVIEW_SCHEMA_VERSION,
-            requiredFields: [
-              'selectedCandidateIds',
-              'rankedCandidateIds',
-              'referencedUnitIds',
-              'referencedTimeSliceIds',
-              'referencedSpeakerIds',
-              'referencedSpeakerTurnIds',
-              'segmentDecisions',
-              'reviewNotes',
-            ],
-            selectedCandidateIds: 'candidateId[] - must use only inputContract.allowedOutputIds.candidateIds',
-            rankedCandidateIds: 'candidateId[] - rank every executable candidate once',
-            referencedUnitIds: 'contentUnitId[] - must cover content unit ids used by ranked/selected candidates',
-            referencedTimeSliceIds: 'timeSliceId[] - must use only inputContract.allowedOutputIds.timeSliceIds',
-            referencedSpeakerIds: 'speakerId[] - must use only inputContract.allowedOutputIds.speakerIds',
-            referencedSpeakerTurnIds: 'speakerTurnId[] - must use only inputContract.allowedOutputIds.speakerTurnIds',
-            segmentDecisionSchema: {
-              candidateId: 'candidateId',
-              decision: 'select | reject | review',
-              reasonCode: 'short stable reason code',
-              referencedUnitIds: 'contentUnitId[]',
-              referencedTimeSliceIds: 'timeSliceId[]',
-              referencedSpeakerIds: 'speakerId[]',
-              referencedSpeakerTurnIds: 'speakerTurnId[]',
+            reviewKind: SMART_CUT_LLM_REVIEW_KIND,
+            inputContract: {
+              allowedOutputIds,
+              forbiddenOutputFields: ['startMs', 'endMs', 'durationMs', 'sourceStartMs', 'sourceEndMs', 'start', 'end', 'duration'],
+              authority: 'The engine owns real source timing and render ranges. The model may only select, rank, and explain provided stable ids.',
             },
-            reviewNotes: 'string[]',
-          },
-          presetId: input.presetId,
-          customKeywords: input.customKeywords,
-          segmentationAgent: {
-            id: segmentationAgent.id,
-            label: segmentationAgent.label,
-            description: segmentationAgent.description,
-            systemPrompt: segmentationAgent.systemPrompt,
-          },
-          candidates: input.candidates.map((candidate) =>
-            createSmartCutEngineLlmReviewCandidatePayload(candidate, contentUnitById)
-          ),
-          contentUnits: input.contentUnits.map((unit) => ({
-            id: unit.id,
-            text: unit.text,
-            timeSliceIds: timeSliceIdsByContentUnitId.get(unit.id) ?? [],
-            speakerIds: unit.speakerIds ?? [],
-            speakerTurnIds: unit.speakerTurnIds ?? [],
-            speakerRoles: unit.speakerRoles ?? [],
-            speakerConfidence: unit.speakerConfidence,
-            overlapGroupIds: unit.overlapGroupIds ?? [],
-            completenessScore: unit.completenessScore,
-            continuityScore: unit.continuityScore,
-            publishabilityScore: unit.publishabilityScore,
-          })),
-          timeSlices,
-          speakerCatalog,
-          speakerTurns,
-          rules,
-        }),
-      },
-    ],
-  });
+            outputContract: {
+              schemaVersion: SMART_CUT_LLM_REVIEW_SCHEMA_VERSION,
+              requiredFields: [
+                'selectedCandidateIds',
+                'rankedCandidateIds',
+                'referencedUnitIds',
+                'referencedTimeSliceIds',
+                'referencedSpeakerIds',
+                'referencedSpeakerTurnIds',
+                'segmentDecisions',
+                'reviewNotes',
+              ],
+              selectedCandidateIds: 'candidateId[] - must use only inputContract.allowedOutputIds.candidateIds',
+              rankedCandidateIds: 'candidateId[] - rank every executable candidate once',
+              referencedUnitIds: 'contentUnitId[] - must cover content unit ids used by ranked/selected candidates',
+              referencedTimeSliceIds: 'timeSliceId[] - must use only inputContract.allowedOutputIds.timeSliceIds',
+              referencedSpeakerIds: 'speakerId[] - must use only inputContract.allowedOutputIds.speakerIds',
+              referencedSpeakerTurnIds: 'speakerTurnId[] - must use only inputContract.allowedOutputIds.speakerTurnIds',
+              segmentDecisionSchema: {
+                candidateId: 'candidateId',
+                decision: 'select | reject | review',
+                reasonCode: 'short stable reason code',
+                referencedUnitIds: 'contentUnitId[]',
+                referencedTimeSliceIds: 'timeSliceId[]',
+                referencedSpeakerIds: 'speakerId[]',
+                referencedSpeakerTurnIds: 'speakerTurnId[]',
+              },
+              reviewNotes: 'string[]',
+            },
+            presetId: input.presetId,
+            customKeywords: input.customKeywords,
+            segmentationAgent: {
+              id: segmentationAgent.id,
+              label: segmentationAgent.label,
+              description: segmentationAgent.description,
+              systemPrompt: segmentationAgent.systemPrompt,
+            },
+            candidates: input.candidates.map((candidate) =>
+              createSmartCutEngineLlmReviewCandidatePayload(candidate, contentUnitById)
+            ),
+            contentUnits: input.contentUnits.map((unit) => ({
+              id: unit.id,
+              text: unit.text,
+              timeSliceIds: timeSliceIdsByContentUnitId.get(unit.id) ?? [],
+              speakerIds: unit.speakerIds ?? [],
+              speakerTurnIds: unit.speakerTurnIds ?? [],
+              speakerRoles: unit.speakerRoles ?? [],
+              speakerConfidence: unit.speakerConfidence,
+              overlapGroupIds: unit.overlapGroupIds ?? [],
+              completenessScore: unit.completenessScore,
+              continuityScore: unit.continuityScore,
+              publishabilityScore: unit.publishabilityScore,
+            })),
+            timeSlices,
+            speakerCatalog,
+            speakerTurns,
+            rules,
+          }),
+        },
+      ],
+    });
+  } catch (chatCompletionError) {
+    throw new Error(
+      `LLM chat completion failed: ${chatCompletionError instanceof Error ? chatCompletionError.message : String(chatCompletionError)}`,
+    );
+  }
 
-  return parseSmartCutEngineLlmReviewJson(result.content);
+  const content = typeof result.content === 'string' ? result.content : JSON.stringify(result.content);
+  try {
+    return parseSmartCutEngineLlmReviewJson(content);
+  } catch (parseError) {
+    throw new Error(
+      `LLM review JSON parsing failed: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
+    );
+  }
 }
 
 function createSmartCutEngineLlmReviewCandidatePayload(
@@ -951,14 +1003,23 @@ function createSmartCutEngineLlmReviewSpeakerCatalog(
   }>();
 
   for (const unit of contentUnits) {
-    for (const speakerId of unit.speakerIds ?? []) {
+    const speakerIds = unit.speakerIds ?? [];
+    const speakerRoles = unit.speakerRoles ?? [];
+    for (let speakerIndex = 0; speakerIndex < speakerIds.length; speakerIndex += 1) {
+      const speakerId = speakerIds[speakerIndex];
+      if (speakerId === undefined) {
+        continue;
+      }
+      const role = speakerRoles[speakerIndex];
       const entry = speakers.get(speakerId) ?? {
         roles: [],
         contentUnitIds: [],
         timeSliceIds: [],
         speakerTurnIds: [],
       };
-      entry.roles.push(...(unit.speakerRoles ?? []));
+      if (role !== undefined && !entry.roles.includes(role)) {
+        entry.roles.push(role);
+      }
       entry.contentUnitIds.push(unit.id);
       entry.timeSliceIds.push(...(timeSliceIdsByContentUnitId.get(unit.id) ?? []));
       entry.speakerTurnIds.push(...(unit.speakerTurnIds ?? []));
@@ -1004,8 +1065,13 @@ function createSmartCutEngineLlmReviewSpeakerTurns(
 
   for (const unit of contentUnits) {
     for (const speakerTurnId of unit.speakerTurnIds ?? []) {
-      const speakerId = unit.speakerIds?.[0] ?? 'unknown-speaker';
-      const speakerRole = unit.speakerRoles?.[0] ?? 'unknown';
+      const turnIndex = unit.speakerTurnIds?.indexOf(speakerTurnId) ?? -1;
+      const speakerId = (turnIndex >= 0 && unit.speakerIds?.[turnIndex] !== undefined)
+        ? unit.speakerIds[turnIndex]
+        : unit.speakerIds?.[0] ?? 'unknown-speaker';
+      const speakerRole = (turnIndex >= 0 && unit.speakerRoles?.[turnIndex] !== undefined)
+        ? unit.speakerRoles[turnIndex]
+        : unit.speakerRoles?.[0] ?? 'unknown';
       const existing = turns.get(speakerTurnId);
       if (existing === undefined) {
         turns.set(speakerTurnId, {
@@ -1206,6 +1272,10 @@ function resolveDialogueSpeakerRoles(
     questionCountsBySpeaker.set(speakerId, (questionCountsBySpeaker.get(speakerId) ?? 0) + 1);
   }
 
+  if (speakerIds.length === 0) {
+    return new Map();
+  }
+
   const interviewerId = [...speakerIds].sort((leftSpeakerId, rightSpeakerId) => {
     const questionDelta = (questionCountsBySpeaker.get(rightSpeakerId) ?? 0) -
       (questionCountsBySpeaker.get(leftSpeakerId) ?? 0);
@@ -1326,8 +1396,9 @@ function createSmartCutEngineSliceClip({
   transcriptEvidence: SmartCutTranscriptEvidence;
   params: VideoSliceParams;
 }): NormalizedSlicePlanClip {
+  const contentUnitById = new Map(contentUnits.map((unit) => [unit.id, unit]));
   const candidateUnits = candidate.unitIds
-    .map((unitId) => contentUnits.find((unit) => unit.id === unitId))
+    .map((unitId) => contentUnitById.get(unitId))
     .filter((unit): unit is SmartCutContentUnit => unit !== undefined);
   const transcriptSegmentIds = new Set(candidateUnits.flatMap((unit) => unit.transcriptSegmentIds));
   const rawTranscriptSegments = transcriptEvidence.segments.filter((segment) => transcriptSegmentIds.has(segment.id));
@@ -1440,8 +1511,9 @@ function createSmartCutEngineVisualSceneClip({
   contentUnits: readonly SmartCutContentUnit[];
   visualEvidence: SmartCutVisualEvidence;
 }): NormalizedSlicePlanClip {
+  const contentUnitById = new Map(contentUnits.map((unit) => [unit.id, unit]));
   const candidateUnits = candidate.unitIds
-    .map((unitId) => contentUnits.find((unit) => unit.id === unitId))
+    .map((unitId) => contentUnitById.get(unitId))
     .filter((unit): unit is SmartCutContentUnit => unit !== undefined);
   const sourceStartMs = Math.max(0, Math.round(candidate.startMs));
   const sourceEndMs = Math.max(sourceStartMs + 1, Math.round(candidate.endMs));
@@ -1603,7 +1675,7 @@ function resolvePublishableTakeEndMs(
 }
 
 function findGlobalRetakeTailStartMs(transcriptEvidence: SmartCutTranscriptEvidence): number | undefined {
-  const segments = [...transcriptEvidence.segments].sort(compareTimeRanges);
+  const segments = transcriptEvidence.segments;
   if (segments.length === 0) {
     return undefined;
   }
@@ -1684,7 +1756,7 @@ function applySmartCutTranscriptPostSliceFilters(
     transcriptSegmentCount: retainedTranscriptSegments.length,
     transcriptCoverageScore: roundScore(Math.min(
       1,
-      Math.max(0, lastRetainedSegment.endMs - (clip.speechStartMs ?? sourceStartMs)) / Math.max(1, sourceEndMs - sourceStartMs),
+      Math.max(0, lastRetainedSegment.endMs - (typeof clip.speechStartMs === 'number' && Number.isFinite(clip.speechStartMs) ? clip.speechStartMs : sourceStartMs)) / Math.max(1, sourceEndMs - sourceStartMs),
     )),
     risks,
     publishabilityIssues: uniqueStrings([
@@ -1737,13 +1809,17 @@ function createDeterministicSmartCutLlmReview(
     }))
     .sort((left, right) =>
       right.keywordScore - left.keywordScore ||
+        (right.candidate.confidence ?? 0) - (left.candidate.confidence ?? 0) ||
         left.index - right.index ||
         left.candidate.id.localeCompare(right.candidate.id)
     )
     .map((entry) => entry.candidate);
+  const topCandidateUnitIds = uniqueStrings(
+    rankedCandidates.flatMap((candidate) => candidate.unitIds ?? []),
+  );
   return {
     rankedCandidateIds: rankedCandidates.map((candidate) => candidate.id),
-    referencedUnitIds: uniqueStrings(contentUnits.map((unit) => unit.id)),
+    referencedUnitIds: topCandidateUnitIds,
     reviewNotes: [
       customKeywords.length > 0
         ? 'Deterministic ID-only review ranked candidates with customKeywords while preserving engine-owned timestamps.'
@@ -1776,7 +1852,7 @@ function normalizeSmartCutCustomKeywords(value: readonly string[] | undefined): 
   return uniqueStrings(
     value
       .map((keyword) => normalizeSmartCutKeywordText(keyword))
-      .filter(Boolean),
+      .filter((keyword) => keyword.length > 0 && keyword.length <= 64 && !/[{}"\\]/.test(keyword)),
   ).slice(0, 24);
 }
 
@@ -1808,6 +1884,7 @@ function validateSmartCutEnginePlannerEvidence({
   transcriptEvidence,
   speakerEvidence,
   presetId,
+  visualEvidence: _visualEvidence,
 }: {
   transcriptEvidence: SmartCutTranscriptEvidence;
   speakerEvidence: SmartCutSpeakerEvidence;
@@ -1993,7 +2070,9 @@ function resolveSourceDurationMs(input: CreateSmartCutEngineSlicePlanInput): num
   if (typeof explicitDurationMs === 'number' && Number.isFinite(explicitDurationMs) && explicitDurationMs > 0) {
     return Math.round(explicitDurationMs);
   }
-  const transcriptEndMs = Math.max(0, ...input.transcriptSegments.map((segment) => Number(segment.endMs) || 0));
+  const transcriptEndMs = input.transcriptSegments.reduce(
+    (max, segment) => Math.max(max, Number(segment.endMs) || 0), 0,
+  );
   return Math.max(minimumSourceDurationMs, Math.round(transcriptEndMs));
 }
 
@@ -2007,25 +2086,93 @@ function createSmartCutRunId(input: CreateSmartCutEngineSlicePlanInput, suffix: 
   return `smart-cut-engine-${input.sourceAssetUuid?.trim() || 'source'}-${suffix}`;
 }
 
+function validateSmartCutEngineLlmReviewResult(raw: unknown): { rankedCandidateIds: string[]; referencedUnitIds: string[]; reviewNotes: string[] } {
+  if (typeof raw !== 'object' || raw === null) {
+    throw new Error('LLM review result is not an object');
+  }
+  if (Array.isArray(raw)) {
+    throw new Error('LLM review result is an array, expected an object');
+  }
+  const obj = raw as Record<string, unknown>;
+  const rankedCandidateIds = Array.isArray(obj.rankedCandidateIds)
+    ? obj.rankedCandidateIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+    : [];
+  const referencedUnitIds = Array.isArray(obj.referencedUnitIds)
+    ? obj.referencedUnitIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+    : [];
+  const reviewNotes = Array.isArray(obj.reviewNotes)
+    ? obj.reviewNotes.filter((note): note is string => typeof note === 'string')
+    : [];
+  if (rankedCandidateIds.length === 0 && Array.isArray(obj.rankedCandidateIds) && obj.rankedCandidateIds.length > 0) {
+    reviewNotes.push('LLM review rankedCandidateIds contained no valid non-empty string IDs after validation.');
+  }
+  return { rankedCandidateIds, referencedUnitIds, reviewNotes };
+}
+
 function parseSmartCutEngineLlmReviewJson(content: string): unknown {
-  const objectStart = content.indexOf('{');
-  const objectEnd = content.lastIndexOf('}');
-  if (objectStart < 0 || objectEnd <= objectStart) {
-    return {
-      rankedCandidateIds: [],
-      referencedUnitIds: [],
-      reviewNotes: ['LLM reviewer returned no JSON object; Smart Cut Engine will block if review coverage is incomplete.'],
-    };
-  }
   try {
-    return JSON.parse(content.slice(objectStart, objectEnd + 1));
+    const parsed = JSON.parse(content);
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      return parsed;
+    }
   } catch {
-    return {
-      rankedCandidateIds: [],
-      referencedUnitIds: [],
-      reviewNotes: ['LLM reviewer returned invalid JSON; Smart Cut Engine will block if review coverage is incomplete.'],
-    };
+    // fall through to code block extraction
   }
+  const jsonBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (jsonBlockMatch?.[1]) {
+    try {
+      const parsed = JSON.parse(jsonBlockMatch[1]);
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // fall through to brace-matching strategy
+    }
+  }
+  let depth = 0;
+  let objectStart = -1;
+  let inString = false;
+  let escapeNext = false;
+  for (let index = 0; index < content.length; index += 1) {
+    const ch = content[index];
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+    if (ch === '\\' && inString) {
+      escapeNext = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === '{') {
+      if (depth === 0) {
+        objectStart = index;
+      }
+      depth += 1;
+    } else if (ch === '}') {
+      depth = Math.max(0, depth - 1);
+      if (depth === 0 && objectStart >= 0) {
+        try {
+          const parsed = JSON.parse(content.slice(objectStart, index + 1));
+          if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+            return parsed;
+          }
+          objectStart = -1;
+        } catch {
+          objectStart = -1;
+        }
+      }
+    }
+  }
+  return {
+    rankedCandidateIds: [],
+    referencedUnitIds: [],
+    reviewNotes: ['LLM reviewer returned invalid JSON; Smart Cut Engine will block if review coverage is incomplete.'],
+  };
 }
 
 function normalizeIntegerMs(value: unknown): number | undefined {
@@ -2066,7 +2213,11 @@ function averageScore(values: readonly number[]): number {
   if (values.length === 0) {
     return 0;
   }
-  return roundScore(values.reduce((sum, value) => sum + value, 0) / values.length);
+  const finiteValues = values.filter(Number.isFinite);
+  if (finiteValues.length === 0) {
+    return 0;
+  }
+  return roundScore(finiteValues.reduce((sum, value) => sum + value, 0) / finiteValues.length);
 }
 
 function scoreToPublishabilityGrade(score: number): NonNullable<NormalizedSlicePlanClip['publishabilityGrade']> {
@@ -2121,8 +2272,10 @@ function uniqueStrings(values: readonly string[]): string[] {
 }
 
 function compareTimeRanges(
-  left: { startMs: number; endMs: number },
-  right: { startMs: number; endMs: number },
+  left: { startMs: number; endMs: number; id?: string },
+  right: { startMs: number; endMs: number; id?: string },
 ): number {
-  return left.startMs - right.startMs || left.endMs - right.endMs;
+  return left.startMs - right.startMs ||
+    left.endMs - right.endMs ||
+    (left.id !== undefined && right.id !== undefined ? left.id.localeCompare(right.id) : 0);
 }

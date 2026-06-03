@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react';
 import * as PIXI from 'pixi.js';
 import { reportAutoCutDiagnostic } from '@sdkwork/autocut-services';
 
@@ -47,7 +47,10 @@ const DEFAULT_TEXT_EFFECT_STYLE: TextEffectStyle = {
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const hasViewUpdate = (node: PIXI.Text): boolean =>
+  typeof (node as unknown as Record<string, unknown>).onViewUpdate === 'function';
 
 const isTextEffectDragPayload = (value: unknown): value is TextEffectDragPayload =>
   isRecord(value) &&
@@ -101,6 +104,17 @@ export interface WebGLPlayerRef {
 
 export const WebGLPlayerDragState: { currentEffect: TextEffectDragPayload | null } = { currentEffect: null };
 
+let textIdCounter = 0;
+
+const BORDER_COLOR = 0x3b82f6;
+const BORDER_PADDING = 16;
+const HANDLE_SIZE = 12;
+const ROT_HANDLE_DISTANCE = 32;
+const MIN_SCALE = 0.1;
+const SNAP_THRESHOLD = Math.PI / 36;
+const MAX_DPI = 2;
+const MAX_TEXT_LENGTH = 1000;
+
 interface WebGLPlayerProps {
   videoSrc: string;
   aspectRatio?: string;
@@ -117,6 +131,41 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
   const appRef = useRef<PIXI.Application | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
+  const onTimeUpdateRef = useRef(onTimeUpdate);
+  onTimeUpdateRef.current = onTimeUpdate;
+  const onPlayStateChangeRef = useRef(onPlayStateChange);
+  onPlayStateChangeRef.current = onPlayStateChange;
+  const onVideoLoadedRef = useRef(onVideoLoaded);
+  onVideoLoadedRef.current = onVideoLoaded;
+  const onSelectTextRef = useRef(onSelectText);
+  onSelectTextRef.current = onSelectText;
+
+  const [videoState, setVideoState] = useState<'loading' | 'ready' | 'error'>('loading');
+
+  const notifyTextSelected = useCallback((wrapper: PIXI.Container) => {
+    const textNode = findTextChild(wrapper, 'text');
+    if (!textNode) return;
+    onSelectTextRef.current?.({
+      id: wrapper.label,
+      text: textNode.text,
+      fontSize: Math.round((Number(textNode.style.fontSize) || 32) * wrapper.scale.x),
+      fill: Array.isArray(textNode.style.fill) ? String(textNode.style.fill[0]) : String(textNode.style.fill),
+      x: Math.round(wrapper.x),
+      y: Math.round(wrapper.y),
+      rotation: wrapper.rotation,
+      scale: wrapper.scale.x,
+    });
+  }, []);
+
+  const clientToPixi = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
+    if (!appRef.current?.canvas) return null;
+    const canvas = appRef.current.canvas;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = appRef.current.screen.width / rect.width;
+    const scaleY = appRef.current.screen.height / rect.height;
+    return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+  }, []);
+
   const objectFitRef = useRef(videoObjectFit);
   useEffect(() => {
      objectFitRef.current = videoObjectFit;
@@ -127,6 +176,7 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
 
   const textsRef = useRef<PIXI.Container[]>([]);
   const selectedTextRef = useRef<PIXI.Container | null>(null);
+  const activeWindowListenersRef = useRef<{move: ((e: PointerEvent) => void) | null, up: ((e: PointerEvent) => void) | null}>({move: null, up: null});
   const dragPreviewRef = useRef<PIXI.Text | null>(null);
   const [editingInfo, setEditingInfo] = useState<{
     wrapper: PIXI.Container,
@@ -141,7 +191,7 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
     fontSize: number
   } | null>(null);
   const editingInfoRef = useRef(editingInfo);
-  useEffect(() => { editingInfoRef.current = editingInfo; }, [editingInfo]);
+  editingInfoRef.current = editingInfo;
 
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const [videoDim, setVideoDim] = useState({ w: 16, h: 9 });
@@ -157,10 +207,15 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
 
        cancelAnimationFrame(animationFrameId);
        animationFrameId = requestAnimationFrame(() => {
-           let targetRatioVal = videoDim.w / videoDim.h;
+           const safeDimW = videoDim.w > 0 ? videoDim.w : 16;
+           const safeDimH = videoDim.h > 0 ? videoDim.h : 9;
+           let targetRatioVal = safeDimW / safeDimH;
            if (aspectRatio && aspectRatio !== 'auto') {
                const parts = aspectRatio.split(':');
-               if (parts.length === 2) targetRatioVal = Number(parts[0]) / Number(parts[1]);
+               if (parts.length === 2) {
+                 const parsedRatio = Number(parts[0]) / Number(parts[1]);
+                 if (Number.isFinite(parsedRatio) && parsedRatio > 0) targetRatioVal = parsedRatio;
+               }
            }
 
            let w = rect.width;
@@ -184,23 +239,35 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
     };
   }, [aspectRatio, videoDim]);
 
+  const togglePlay = useCallback(() => {
+    if (videoRef.current) {
+      if (videoRef.current.paused) {
+        videoRef.current.play();
+        onPlayStateChangeRef.current?.(true);
+      } else {
+        videoRef.current.pause();
+        onPlayStateChangeRef.current?.(false);
+      }
+    }
+  }, []);
+
   useImperativeHandle(ref, () => ({
     play: () => {
       if (videoRef.current) {
         videoRef.current.play();
-        onPlayStateChange?.(true);
+        onPlayStateChangeRef.current?.(true);
       }
     },
     pause: () => {
       if (videoRef.current) {
         videoRef.current.pause();
-        onPlayStateChange?.(false);
+        onPlayStateChangeRef.current?.(false);
       }
     },
     togglePlay,
     seek: (percent: number) => {
-      if (videoRef.current && videoRef.current.duration) {
-         videoRef.current.currentTime = videoRef.current.duration * percent;
+      if (videoRef.current && videoRef.current.duration && Number.isFinite(percent)) {
+         videoRef.current.currentTime = videoRef.current.duration * Math.max(0, Math.min(1, percent));
       }
     },
     updateSelectedText: (props: Partial<{ text: string, fontSize: number, fill: string }>) => {
@@ -210,51 +277,73 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
          if (!t) return;
          if (props.text !== undefined) t.text = props.text;
          if (props.fontSize !== undefined) {
-             t.style.fontSize = props.fontSize;
-             wrapper.scale.set(1);
+             const currentVisualSize = (Number(t.style.fontSize) || 32) * wrapper.scale.x;
+             const targetVisualSize = props.fontSize;
+             const newScale = currentVisualSize > 0 ? wrapper.scale.x * (targetVisualSize / currentVisualSize) : wrapper.scale.x;
+             const baseFontSize = newScale > 0 ? targetVisualSize / newScale : props.fontSize;
+             t.style.fontSize = baseFontSize;
+             wrapper.scale.set(newScale);
          }
          if (props.fill !== undefined) t.style.fill = props.fill;
          updateBorder(wrapper);
-
-         // Fire callback to ensure UI is in sync
-         if (onSelectText) {
-            onSelectText({
-                id: wrapper.label,
-                text: t.text,
-                fontSize: Math.round((Number(t.style.fontSize) || 32) * wrapper.scale.x),
-                fill: Array.isArray(t.style.fill) ? String(t.style.fill[0]) : String(t.style.fill),
-                x: Math.round(wrapper.x),
-                y: Math.round(wrapper.y),
-                rotation: wrapper.rotation,
-                scale: wrapper.scale.x
-            });
-         }
+         notifyTextSelected(wrapper);
       }
     }
-  }));
+  }), [togglePlay]);
 
   useEffect(() => {
-    let app: PIXI.Application;
-    let video: HTMLVideoElement;
+    let app: PIXI.Application | null = null;
+    let video: HTMLVideoElement | null = null;
+    let cancelled = false;
+    setVideoState('loading');
+    let handleVideoError: (() => void) | null = null;
+    let handleLoadedMetadata: (() => void) | null = null;
+    let handleTimeUpdate: (() => void) | null = null;
+    let handleContextLost: ((e: Event) => void) | null = null;
+    let handleRendererResize: (() => void) | null = null;
+    let tickerFn: (() => void) | null = null;
+    let handleStagePointerDown: ((e: PIXI.FederatedPointerEvent) => void) | null = null;
 
     const initPixi = async () => {
       const containerElement = containerRef.current;
-      if (!containerElement) return;
-      app = new PIXI.Application();
-      await app.init({
-        resizeTo: containerElement,
-        backgroundColor: 0x050505,
-        resolution: window.devicePixelRatio || 1,
-        autoDensity: true,
-      });
+      if (!containerElement || cancelled) return;
+      try {
+        app = new PIXI.Application();
+        await app.init({
+          resizeTo: containerElement,
+          backgroundColor: 0x050505,
+          resolution: Math.min(window.devicePixelRatio || 1, MAX_DPI),
+          autoDensity: true,
+        });
+      } catch (err) {
+        reportAutoCutDiagnostic('error', 'slicer.webgl.init', 'PIXI Application init failed', err);
+        if (app) { try { app.destroy(true, { children: true, texture: true }); } catch {} app = null; }
+        if (!cancelled) setVideoState('error');
+        return;
+      }
 
-      app.canvas.style.position = 'absolute';
-      app.canvas.style.left = '0';
-      app.canvas.style.top = '0';
-      app.canvas.style.width = '100%';
-      app.canvas.style.height = '100%';
-      containerElement.appendChild(app.canvas);
-      appRef.current = app;
+      if (cancelled) {
+        try { app.destroy(true, { children: true, texture: true }); } catch {}
+        return;
+      }
+
+      const appInstance = app;
+      appInstance.canvas.style.position = 'absolute';
+      appInstance.canvas.style.left = '0';
+      appInstance.canvas.style.top = '0';
+      appInstance.canvas.style.width = '100%';
+      appInstance.canvas.style.height = '100%';
+      containerElement.appendChild(appInstance.canvas);
+      appRef.current = appInstance;
+
+      handleContextLost = (e: Event) => {
+        e.preventDefault();
+        if (!cancelled) {
+          setVideoState('error');
+          reportAutoCutDiagnostic('error', 'slicer.webgl.context', 'WebGL context lost');
+        }
+      };
+      appInstance.canvas.addEventListener('webglcontextlost', handleContextLost);
 
       video = document.createElement('video');
       video.src = videoSrc;
@@ -262,27 +351,38 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
       video.loop = true;
       video.muted = true;
       videoRef.current = video;
+      const videoElement = video;
 
       containerElement.tabIndex = 0;
 
-      video.addEventListener('loadedmetadata', () => {
-        setVideoDim({ w: video.videoWidth, h: video.videoHeight });
-        if (onVideoLoaded) {
-            onVideoLoaded(video.videoWidth, video.videoHeight);
-        }
+      handleVideoError = () => {
+         if (cancelled) return;
+         if (!videoElement) return;
+         reportAutoCutDiagnostic('error', 'slicer.webgl.video', 'Video load failed', videoElement.error);
+         setVideoState('error');
+       };
 
-        const texture = PIXI.Texture.from(video);
+       handleLoadedMetadata = () => {
+        if (cancelled) return;
+        if (!videoElement) return;
+        setVideoState('ready');
+        const vw = videoElement.videoWidth || 16;
+        const vh = videoElement.videoHeight || 9;
+        setVideoDim(prev => (prev.w === vw && prev.h === vh) ? prev : { w: vw, h: vh });
+        onVideoLoadedRef.current?.(vw, vh);
+
+        const texture = PIXI.Texture.from(videoElement);
         const videoSprite = new PIXI.Sprite(texture);
 
         videoSprite.anchor.set(0.5);
-        videoSprite.x = app.screen.width / 2;
-        videoSprite.y = app.screen.height / 2;
+        videoSprite.x = appInstance.screen.width / 2;
+        videoSprite.y = appInstance.screen.height / 2;
 
-        const lastScreenRef = { width: app.screen.width, height: app.screen.height };
+        const lastScreenRef = { width: appInstance.screen.width, height: appInstance.screen.height };
 
         const updateScale = () => {
-          const scaleX = app.screen.width / video.videoWidth;
-          const scaleY = app.screen.height / video.videoHeight;
+          const scaleX = appInstance.screen.width / vw;
+          const scaleY = appInstance.screen.height / vh;
           const newScale = objectFitRef.current === 'cover' ? Math.max(scaleX, scaleY) : Math.min(scaleX, scaleY);
 
           if (isFinite(newScale) && newScale > 0) {
@@ -290,11 +390,11 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
             const ratio = newScale / oldScale;
             videoSprite.scale.set(newScale);
 
-            if (isFinite(ratio) && ratio > 0 && ratio !== 1) {
+            if (isFinite(ratio) && ratio > 0 && Math.abs(ratio - 1) > 1e-6) {
               const oldCenterX = lastScreenRef.width / 2;
               const oldCenterY = lastScreenRef.height / 2;
-              const newCenterX = app.screen.width / 2;
-              const newCenterY = app.screen.height / 2;
+              const newCenterX = appInstance.screen.width / 2;
+              const newCenterY = appInstance.screen.height / 2;
 
               textsRef.current.forEach(wrapper => {
                  const dx = wrapper.x - oldCenterX;
@@ -305,79 +405,100 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
                  updateBorder(wrapper);
               });
             }
-            lastScreenRef.width = app.screen.width;
-            lastScreenRef.height = app.screen.height;
+            lastScreenRef.width = appInstance.screen.width;
+            lastScreenRef.height = appInstance.screen.height;
           }
         };
         updateScale();
 
-        app.renderer.on('resize', () => {
-          if (app) {
-            videoSprite.x = app.screen.width / 2;
-            videoSprite.y = app.screen.height / 2;
-            app.stage.hitArea = new PIXI.Rectangle(0, 0, app.screen.width, app.screen.height);
+        handleRendererResize = () => {
+          if (appInstance && !cancelled) {
+            videoSprite.x = appInstance.screen.width / 2;
+            videoSprite.y = appInstance.screen.height / 2;
+            appInstance.stage.hitArea = new PIXI.Rectangle(0, 0, appInstance.screen.width, appInstance.screen.height);
             updateScale();
           }
-        });
+        };
+        appInstance.renderer.on('resize', handleRendererResize);
 
-        app.stage.addChild(videoSprite);
-        app.stage.eventMode = 'dynamic';
-        app.stage.hitArea = new PIXI.Rectangle(0, 0, app.screen.width, app.screen.height);
-        app.stage.sortableChildren = true;
+        appInstance.stage.addChild(videoSprite);
+        appInstance.stage.eventMode = 'dynamic';
+        appInstance.stage.hitArea = new PIXI.Rectangle(0, 0, appInstance.screen.width, appInstance.screen.height);
+        appInstance.stage.sortableChildren = true;
 
         let lastTime = -1;
-        app.ticker.add(() => {
-           if(video.readyState >= 2) {
-               if (video.currentTime !== lastTime) {
+        tickerFn = () => {
+           if(videoElement.readyState >= 2) {
+               if (videoElement.currentTime !== lastTime) {
                    if (videoSprite.texture.source) {
                        videoSprite.texture.source.update();
                    } else {
                        videoSprite.texture.update();
                    }
-                   lastTime = video.currentTime;
+                   lastTime = videoElement.currentTime;
                }
            }
-        });
+        };
+        appInstance.ticker.add(tickerFn);
 
-        app.stage.on('pointerdown', (e) => {
-           if (e.target === app.stage || e.target === videoSprite) {
+        handleStagePointerDown = (e: PIXI.FederatedPointerEvent) => {
+           if (cancelled) return;
+           if (e.target === appInstance.stage || e.target === videoSprite) {
                 if (selectedTextRef.current) {
                     const border = findContainerChild(selectedTextRef.current, 'border');
                     if (border) border.visible = false;
                     selectedTextRef.current = null;
-                    if (onSelectText) onSelectText(null);
+                    onSelectTextRef.current?.(null);
                 } else {
                     if (videoRef.current) {
                         if (videoRef.current.paused) {
                             videoRef.current.play();
-                            onPlayStateChange?.(true);
+                            onPlayStateChangeRef.current?.(true);
                         } else {
                             videoRef.current.pause();
-                            onPlayStateChange?.(false);
+                            onPlayStateChangeRef.current?.(false);
                         }
                     }
                 }
            }
-        });
-      });
+        };
+        appInstance.stage.on('pointerdown', handleStagePointerDown);
+      };
 
-      video.addEventListener('timeupdate', () => {
-        if(video.duration > 0 && onTimeUpdate) {
-            onTimeUpdate(video.currentTime, video.duration);
+      handleTimeUpdate = () => {
+        if (cancelled) return;
+        if (!videoElement) return;
+        if(videoElement.duration > 0) {
+            onTimeUpdateRef.current?.(videoElement.currentTime, videoElement.duration);
         }
-      });
+      };
+
+      video.addEventListener('error', handleVideoError);
+      video.addEventListener('loadedmetadata', handleLoadedMetadata);
+      video.addEventListener('timeupdate', handleTimeUpdate);
     };
 
     initPixi();
 
     const handleKeyDown = (e: KeyboardEvent) => {
        if (editingInfoRef.current) return;
+       if (e.key === 'Escape' && selectedTextRef.current) {
+           const border = findContainerChild(selectedTextRef.current, 'border');
+           if (border) border.visible = false;
+           selectedTextRef.current = null;
+           onSelectTextRef.current?.(null);
+           return;
+       }
        if ((e.key === 'Backspace' || e.key === 'Delete') && selectedTextRef.current) {
+           const listeners = activeWindowListenersRef.current;
+           if (listeners.move) window.removeEventListener('pointermove', listeners.move);
+           if (listeners.up) window.removeEventListener('pointerup', listeners.up);
+           activeWindowListenersRef.current = {move: null, up: null};
            const idx = textsRef.current.indexOf(selectedTextRef.current);
            if (idx !== -1) textsRef.current.splice(idx, 1);
            selectedTextRef.current.destroy();
            selectedTextRef.current = null;
-           if (onSelectText) onSelectText(null);
+           onSelectTextRef.current?.(null);
        }
     };
 
@@ -386,36 +507,39 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
     }
 
     return () => {
+      cancelled = true;
+      const listeners = activeWindowListenersRef.current;
+      if (listeners.move) window.removeEventListener('pointermove', listeners.move);
+      if (listeners.up) window.removeEventListener('pointerup', listeners.up);
+      activeWindowListenersRef.current = { move: null, up: null };
       if (containerRef.current) {
          containerRef.current.removeEventListener('keydown', handleKeyDown);
       }
       if (video) {
         video.pause();
-        video.src = '';
+        if (handleVideoError) video.removeEventListener('error', handleVideoError);
+        if (handleLoadedMetadata) video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+        if (handleTimeUpdate) video.removeEventListener('timeupdate', handleTimeUpdate);
+        video.removeAttribute('src');
         video.load();
         videoRef.current = null;
       }
       if (appRef.current) {
+        if (handleContextLost) appRef.current.canvas.removeEventListener('webglcontextlost', handleContextLost);
+        if (handleRendererResize) appRef.current.renderer.off('resize', handleRendererResize);
+        if (tickerFn) appRef.current.ticker.remove(tickerFn);
+        if (handleStagePointerDown) appRef.current.stage.off('pointerdown', handleStagePointerDown);
         appRef.current.destroy(true, { children: true, texture: true });
         appRef.current = null;
       }
+      app = null;
+      video = null;
       textsRef.current = [];
       selectedTextRef.current = null;
       if (dragPreviewRef.current) dragPreviewRef.current = null;
+      setEditingInfo(null);
     };
-  }, []);
-
-  const togglePlay = () => {
-    if (videoRef.current) {
-      if (videoRef.current.paused) {
-        videoRef.current.play();
-        onPlayStateChange?.(true);
-      } else {
-        videoRef.current.pause();
-        onPlayStateChange?.(false);
-      }
-    }
-  };
+  }, [videoSrc]);
 
   const addBorderToText = (wrapper: PIXI.Container) => {
       let border = new PIXI.Container();
@@ -442,16 +566,13 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
           let initialDist = 1;
 
           const onHandleMove = (e: PointerEvent) => {
-              if (handleDragging && appRef.current?.canvas) {
-                  const canvas = appRef.current.canvas;
-                  const rect = canvas.getBoundingClientRect();
-                  const scaleX = appRef.current.screen.width / rect.width;
-                  const scaleY = appRef.current.screen.height / rect.height;
-                  const pt = { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY };
+              if (handleDragging) {
+                  const pt = clientToPixi(e.clientX, e.clientY);
+                  if (!pt) return;
 
                   const dist = Math.hypot(pt.x - wrapper.x, pt.y - wrapper.y);
                   const ratio = dist / initialDist;
-                  wrapper.scale.set(Math.max(0.1, initialScale * ratio));
+                  wrapper.scale.set(Math.max(MIN_SCALE, initialScale * ratio));
                   updateBorder(wrapper);
               }
           };
@@ -461,21 +582,8 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
                   handleDragging = false;
                   window.removeEventListener('pointermove', onHandleMove);
                   window.removeEventListener('pointerup', onHandleUp);
-                  if (onSelectText) {
-                      const textNode = wrapper.children.find((c) => c.label === 'text') as PIXI.Text;
-                      if (textNode) {
-                          onSelectText({
-                              id: wrapper.label,
-                              text: textNode.text,
-                              fontSize: Math.round((Number(textNode.style.fontSize) || 32) * wrapper.scale.x),
-                              fill: Array.isArray(textNode.style.fill) ? String(textNode.style.fill[0]) : String(textNode.style.fill),
-                              x: Math.round(wrapper.x),
-                              y: Math.round(wrapper.y),
-                              rotation: wrapper.rotation,
-                              scale: wrapper.scale.x
-                          });
-                      }
-                  }
+                  activeWindowListenersRef.current = {move: null, up: null};
+                  notifyTextSelected(wrapper);
               }
           };
 
@@ -485,8 +593,12 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
               initialScale = wrapper.scale.x;
               const pt = e.global;
               initialDist = Math.hypot(pt.x - wrapper.x, pt.y - wrapper.y);
+              const prev = activeWindowListenersRef.current;
+              if (prev.move) window.removeEventListener('pointermove', prev.move);
+              if (prev.up) window.removeEventListener('pointerup', prev.up);
               window.addEventListener('pointermove', onHandleMove);
               window.addEventListener('pointerup', onHandleUp);
+              activeWindowListenersRef.current = {move: onHandleMove, up: onHandleUp};
           });
       });
 
@@ -498,17 +610,13 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
       let initialAngle = 0;
 
       const onRotMove = (e: PointerEvent) => {
-          if (rotDragging && appRef.current?.canvas) {
-              const canvas = appRef.current.canvas;
-              const rect = canvas.getBoundingClientRect();
-              const scaleX = appRef.current.screen.width / rect.width;
-              const scaleY = appRef.current.screen.height / rect.height;
-              const pt = { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY };
+          if (rotDragging) {
+              const pt = clientToPixi(e.clientX, e.clientY);
+              if (!pt) return;
 
               const currentAngle = Math.atan2(pt.y - wrapper.y, pt.x - wrapper.x);
               let newRot = initialRotation + (currentAngle - initialAngle);
-              // Snap to 0, 90, 180, 270 degrees if within 5 degrees
-              const snapThresh = Math.PI / 36; // 5 degrees
+              const snapThresh = SNAP_THRESHOLD;
               const snapPoints = [0, Math.PI/2, Math.PI, -Math.PI/2, -Math.PI];
               for(const snap of snapPoints) {
                   if (Math.abs(newRot - snap) < snapThresh) {
@@ -525,21 +633,8 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
               rotDragging = false;
               window.removeEventListener('pointermove', onRotMove);
               window.removeEventListener('pointerup', onRotUp);
-              if (onSelectText) {
-                   const textNode = findTextChild(wrapper, 'text');
-                   if (textNode) {
-                       onSelectText({
-                           id: wrapper.label,
-                           text: textNode.text,
-                           fontSize: Math.round((Number(textNode.style.fontSize) || 32) * wrapper.scale.x),
-                           fill: Array.isArray(textNode.style.fill) ? String(textNode.style.fill[0]) : String(textNode.style.fill),
-                           x: Math.round(wrapper.x),
-                           y: Math.round(wrapper.y),
-                           rotation: wrapper.rotation,
-                           scale: wrapper.scale.x
-                       });
-                   }
-               }
+              activeWindowListenersRef.current = {move: null, up: null};
+              notifyTextSelected(wrapper);
           }
       };
 
@@ -549,8 +644,12 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
           initialRotation = wrapper.rotation;
           const pt = e.global;
           initialAngle = Math.atan2(pt.y - wrapper.y, pt.x - wrapper.x);
+          const prev2 = activeWindowListenersRef.current;
+          if (prev2.move) window.removeEventListener('pointermove', prev2.move);
+          if (prev2.up) window.removeEventListener('pointerup', prev2.up);
           window.addEventListener('pointermove', onRotMove);
           window.addEventListener('pointerup', onRotUp);
+          activeWindowListenersRef.current = {move: onRotMove, up: onRotUp};
       });
 
       updateBorder(wrapper);
@@ -574,11 +673,15 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
       bg.clear(); tl.clear(); tr.clear(); bl.clear(); br.clear(); rotLine.clear(); rotHandle.clear();
 
       // Update text to make sure texture width/height are correct
-      text.onViewUpdate();
+      if (hasViewUpdate(text)) {
+        ((text as unknown as Record<string, unknown>).onViewUpdate as () => void)();
+      }
 
-      const padding = 16 / wrapper.scale.x;
-      const tW = text.width / text.scale.x || 1;
-      const tH = text.height / text.scale.y || 1;
+      const padding = BORDER_PADDING / wrapper.scale.x;
+      const rawTW = text.scale.x !== 0 ? text.width / text.scale.x : text.width;
+      const rawTH = text.scale.y !== 0 ? text.height / text.scale.y : text.height;
+      const tW = isFinite(rawTW) && rawTW > 0 ? rawTW : 1;
+      const tH = isFinite(rawTH) && rawTH > 0 ? rawTH : 1;
 
       const w = tW + padding * 2;
       const h = tH + padding * 2;
@@ -586,9 +689,9 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
       const vy = -tH / 2 - padding;
 
       bg.rect(vx, vy, w, h);
-      bg.stroke({ width: 2 / wrapper.scale.x, color: 0x3b82f6 });
+      bg.stroke({ width: 2 / wrapper.scale.x, color: BORDER_COLOR });
 
-      const hn = 12 / wrapper.scale.x;
+      const hn = HANDLE_SIZE / wrapper.scale.x;
       const sw = 2 / wrapper.scale.x;
 
       [tl, tr, bl, br].forEach((hg, i) => {
@@ -597,17 +700,17 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
           if (i === 2 || i === 3) hy = vy + h;
           hg.circle(hx, hy, hn/2);
           hg.fill(0xffffff);
-          hg.stroke({ width: sw, color: 0x3b82f6 });
+          hg.stroke({ width: sw, color: BORDER_COLOR });
       });
 
-      const rotDist = 32 / wrapper.scale.x;
+      const rotDist = ROT_HANDLE_DISTANCE / wrapper.scale.x;
       rotLine.moveTo(0, vy);
       rotLine.lineTo(0, vy - rotDist);
-      rotLine.stroke({ width: sw, color: 0x3b82f6 });
+      rotLine.stroke({ width: sw, color: BORDER_COLOR });
 
       rotHandle.circle(0, vy - rotDist, hn/2);
       rotHandle.fill(0xffffff);
-      rotHandle.stroke({ width: sw, color: 0x3b82f6 });
+      rotHandle.stroke({ width: sw, color: BORDER_COLOR });
 
       const hitBox = findGraphicsChild(wrapper, 'hitBox');
       if (hitBox) {
@@ -628,33 +731,15 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
       if (newBorder) newBorder.visible = true;
       wrapper.zIndex = 20;
       appRef.current?.stage.sortChildren();
-
-      const textNode = findTextChild(wrapper, 'text');
-      if (onSelectText && textNode) {
-          onSelectText({
-              id: wrapper.label,
-              text: textNode.text,
-              fontSize: Math.round((Number(textNode.style.fontSize) || 32) * wrapper.scale.x),
-              fill: Array.isArray(textNode.style.fill) ? String(textNode.style.fill[0]) : String(textNode.style.fill),
-              x: Math.round(wrapper.x),
-              y: Math.round(wrapper.y),
-              rotation: wrapper.rotation,
-              scale: wrapper.scale.x
-          });
-      }
+      notifyTextSelected(wrapper);
   };
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     if (!appRef.current || !containerRef.current) return;
 
-    const canvas = appRef.current.canvas;
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = appRef.current.screen.width / rect.width;
-    const scaleY = appRef.current.screen.height / rect.height;
-
-    const x = (e.clientX - rect.left) * scaleX;
-    const y = (e.clientY - rect.top) * scaleY;
+    const pt = clientToPixi(e.clientX, e.clientY);
+    if (!pt) return;
 
     if (WebGLPlayerDragState.currentEffect) {
         if (!dragPreviewRef.current) {
@@ -672,8 +757,8 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
         }
 
         if (dragPreviewRef.current) {
-            dragPreviewRef.current.x = x;
-            dragPreviewRef.current.y = y;
+            dragPreviewRef.current.x = pt.x;
+            dragPreviewRef.current.y = pt.y;
         }
     }
   };
@@ -710,7 +795,7 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
         }
     } else {
         const plainData = e.dataTransfer.getData("text/plain");
-        if (plainData) {
+        if (plainData && plainData.length <= MAX_TEXT_LENGTH) {
             textContent = plainData;
         } else {
             return;
@@ -721,22 +806,17 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
 
     try {
       const app = appRef.current;
-      const canvas = app.canvas;
-      const rect = canvas.getBoundingClientRect();
-      const scaleX = app.screen.width / rect.width;
-      const scaleY = app.screen.height / rect.height;
-
-      const x = (e.clientX - rect.left) * scaleX;
-      const y = (e.clientY - rect.top) * scaleY;
+      const pt = clientToPixi(e.clientX, e.clientY);
+      if (!app || !pt) return;
 
       const style = new PIXI.TextStyle(
         toPixiTextStyleOptions(styleConfig, Math.max(app.screen.width * 0.04, 32)),
       );
 
       const wrapper = new PIXI.Container();
-      wrapper.label = Math.random().toString(36).substring(7); // ID
-      wrapper.x = x;
-      wrapper.y = y;
+      wrapper.label = `text-${++textIdCounter}-${Date.now()}`;
+      wrapper.x = pt.x;
+      wrapper.y = pt.y;
 
       const hitBox = new PIXI.Graphics();
       hitBox.label = 'hitBox';
@@ -759,17 +839,12 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
       let dragOffset = { x: 0, y: 0 };
 
       const onWindowMove = (e: PointerEvent) => {
-        if (dragging && appRef.current && appRef.current.canvas) {
-            const canvas = appRef.current.canvas;
-            const rect = canvas.getBoundingClientRect();
-            const scaleX = appRef.current.screen.width / rect.width;
-            const scaleY = appRef.current.screen.height / rect.height;
+        if (dragging) {
+            const pt = clientToPixi(e.clientX, e.clientY);
+            if (!pt) return;
 
-            const ptX = (e.clientX - rect.left) * scaleX;
-            const ptY = (e.clientY - rect.top) * scaleY;
-
-            wrapper.x = ptX - dragOffset.x;
-            wrapper.y = ptY - dragOffset.y;
+            wrapper.x = pt.x - dragOffset.x;
+            wrapper.y = pt.y - dragOffset.y;
         }
       };
 
@@ -780,21 +855,8 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
             wrapper.alpha = 1;
             window.removeEventListener('pointermove', onWindowMove);
             window.removeEventListener('pointerup', onWindowUp);
-            if (onSelectText) {
-                 const textNode = findTextChild(wrapper, 'text');
-                 if (textNode) {
-                     onSelectText({
-                         id: wrapper.label,
-                         text: textNode.text,
-                         fontSize: Math.round((Number(textNode.style.fontSize) || 32) * wrapper.scale.x),
-                         fill: Array.isArray(textNode.style.fill) ? String(textNode.style.fill[0]) : String(textNode.style.fill),
-                         x: Math.round(wrapper.x),
-                         y: Math.round(wrapper.y),
-                         rotation: wrapper.rotation,
-                         scale: wrapper.scale.x
-                     });
-                 }
-             }
+            activeWindowListenersRef.current = {move: null, up: null};
+            notifyTextSelected(wrapper);
         }
       };
 
@@ -829,8 +891,12 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
         const localPt = event.global;
         dragOffset = { x: localPt.x - wrapper.x, y: localPt.y - wrapper.y };
 
+        const prev3 = activeWindowListenersRef.current;
+        if (prev3.move) window.removeEventListener('pointermove', prev3.move);
+        if (prev3.up) window.removeEventListener('pointerup', prev3.up);
         window.addEventListener('pointermove', onWindowMove);
         window.addEventListener('pointerup', onWindowUp);
+        activeWindowListenersRef.current = {move: onWindowMove, up: onWindowUp};
       });
 
       app.stage.addChild(wrapper);
@@ -845,25 +911,15 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
   const commitEdit = () => {
     if (editingInfoRef.current) {
       const currentEditingInfo = editingInfoRef.current;
-      currentEditingInfo.textNode.text = currentEditingInfo.text;
+      const trimmedText = currentEditingInfo.text.trim();
+      currentEditingInfo.textNode.text = trimmedText || ' ';
       currentEditingInfo.textNode.alpha = 1;
 
       updateBorder(currentEditingInfo.wrapper);
       const border = findContainerChild(currentEditingInfo.wrapper, 'border');
       if (border) border.visible = true;
 
-      if (onSelectText) {
-          onSelectText({
-              id: currentEditingInfo.wrapper.label,
-              text: currentEditingInfo.textNode.text,
-              fontSize: Math.round((Number(currentEditingInfo.textNode.style.fontSize) || 32) * currentEditingInfo.wrapper.scale.x),
-              fill: Array.isArray(currentEditingInfo.textNode.style.fill) ? String(currentEditingInfo.textNode.style.fill[0]) : String(currentEditingInfo.textNode.style.fill),
-              x: Math.round(currentEditingInfo.wrapper.x),
-              y: Math.round(currentEditingInfo.wrapper.y),
-              rotation: currentEditingInfo.wrapper.rotation,
-              scale: currentEditingInfo.wrapper.scale.x
-          });
-      }
+      notifyTextSelected(currentEditingInfo.wrapper);
 
       setEditingInfo(null);
     }
@@ -882,6 +938,19 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
+      {videoState === 'loading' && (
+        <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+          <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+        </div>
+      )}
+      {videoState === 'error' && (
+        <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+          <div className="text-red-400 text-sm text-center px-4">
+            <svg className="w-8 h-8 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" /></svg>
+            <span>Video failed to load</span>
+          </div>
+        </div>
+      )}
       {editingInfo && (
         <textarea
            autoFocus
@@ -895,9 +964,12 @@ export const WebGLPlayer = forwardRef<WebGLPlayerRef, WebGLPlayerProps>(({ video
               }
            }}
            onChange={(e) => {
-              setEditingInfo({ ...editingInfo, text: e.target.value });
-              editingInfo.textNode.text = e.target.value;
-              updateBorder(editingInfo.wrapper);
+              const newText = e.target.value;
+              setEditingInfo(prev => prev ? { ...prev, text: newText } : null);
+              if (editingInfoRef.current) {
+                editingInfoRef.current.textNode.text = newText;
+                updateBorder(editingInfoRef.current.wrapper);
+              }
            }}
            onBlur={commitEdit}
            onKeyDown={(e) => {

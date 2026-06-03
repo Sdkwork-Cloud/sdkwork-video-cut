@@ -728,14 +728,14 @@ function createExecutionPackageVisualEvidenceQualityReport(
   input: SmartCutExecutionPackageInput,
   presetId: SmartCutProductPresetId,
 ): SmartCutVisualEvidenceQualityValidationReport | undefined {
-  if (presetId !== 'film-scene-index' && input.visualEvidence === undefined) {
+  if (input.visualEvidence === undefined) {
     return undefined;
   }
 
   return validateSmartCutVisualEvidenceQuality({
     presetId,
     sourceMedia: input.sourceMedia,
-    visualEvidence: input.visualEvidence as SmartCutVisualEvidence,
+    visualEvidence: input.visualEvidence,
   });
 }
 

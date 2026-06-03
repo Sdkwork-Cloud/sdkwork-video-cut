@@ -73,12 +73,15 @@ fn send_autocut_llm_http_request_with_client(
         status: status.as_u16(),
         status_text,
         headers,
-        body_text: String::from_utf8_lossy(&body_bytes).to_string(),
+        body_text,
     })
 }
 
 fn validate_autocut_llm_http_request(request: &AutoCutLlmHttpRequest) -> Result<(), String> {
-    if !request.url.starts_with("https://") {
+    let parsed_url = url::Url::parse(&request.url).map_err(|error| {
+        format!("AutoCut LLM HTTP bridge received an invalid URL: {error}")
+    })?;
+    if parsed_url.scheme() != "https" {
         return Err("AutoCut LLM HTTP bridge only allows https:// endpoints.".to_string());
     }
 

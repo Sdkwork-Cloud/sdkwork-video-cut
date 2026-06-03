@@ -162,11 +162,12 @@ export function TasksPage() {
   const [typeFilter, setTypeFilter] = useState<TaskTypeFilter>('all');
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
   const [packagingTaskIds, setPackagingTaskIds] = useState<string[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const getTaskTypeLabel = (taskType: TaskType) =>
     t(createAutoCutTaskTypeI18nKey(taskType), { defaultValue: taskType });
 
   useEffect(() => {
-    const fetchTasks = () => getTasks().then(setTasks);
+    const fetchTasks = () => getTasks().then(setTasks).finally(() => setIsLoading(false));
     const handleTaskUpdated = (updatedTask: AppTask) => {
       setTasks((currentTasks) => mergeTaskQueueUpdate(currentTasks, updatedTask));
     };
@@ -499,7 +500,11 @@ export function TasksPage() {
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          {filteredTasks.length === 0 ? (
+          {isLoading ? (
+            <div className="flex flex-col items-center justify-center p-20 text-gray-500 bg-[#0A0A0A] border border-[#222] border-dashed rounded-xl">
+              <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-700 border-t-blue-500" />
+            </div>
+          ) : filteredTasks.length === 0 ? (
             <div className="flex flex-col items-center justify-center p-20 text-gray-500 bg-[#0A0A0A] border border-[#222] border-dashed rounded-xl">
               <AlertCircle size={48} className="mb-4 opacity-30" />
               <p className="text-sm">No matching tasks</p>

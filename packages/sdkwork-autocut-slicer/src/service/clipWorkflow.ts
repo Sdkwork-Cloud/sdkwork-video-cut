@@ -419,7 +419,7 @@ export function createStudioClipTimelineFromReviewSession(
     ...(reviewSession.sourceAssetUuid ? { sourceAssetUuid: reviewSession.sourceAssetUuid } : {}),
     status: resolveStudioTimelineStatus(reviewSession),
     timelineType: 'slice_review',
-    durationMs: Math.max(0, Math.round(reviewSession.sourceDurationMs ?? resolveReviewSessionEndMs(reviewSession))),
+    durationMs: Math.max(1, Math.round(reviewSession.sourceDurationMs ?? resolveReviewSessionEndMs(reviewSession))),
     createdAt: reviewSession.createdAt,
     updatedAt: timestamp,
     metadata: {
@@ -961,7 +961,7 @@ function createMergedSliceReviewSegmentForWorkflow(
   );
   return {
     ...firstSegment,
-    id: [firstSegment.id, secondSegment.id].join('-'),
+    id: [firstSegment.id, secondSegment.id].sort().join('::'),
     title: `${firstSegment.title} + ${secondSegment.title}`,
     ...(firstSegment.summary || secondSegment.summary
       ? { summary: [firstSegment.summary, secondSegment.summary].filter(Boolean).join(' ').trim() }
@@ -1153,7 +1153,9 @@ export function mergeStudioClipTimelineSnapshotProcessingOperationHistory({
     }
   }
   for (const operation of snapshot.processingOperations) {
-    operationById.set(operation.id, operation);
+    if (snapshotClipIds.has(operation.clipId)) {
+      operationById.set(operation.id, operation);
+    }
   }
   const orderedProcessingOperations = Array.from(operationById.values()).sort((firstOperation, secondOperation) =>
     firstOperation.clipId.localeCompare(secondOperation.clipId) ||
@@ -1549,6 +1551,9 @@ function resolveStudioClipProcessingOperationDurationMs(
   }
   const startedAtMs = resolveAutoCutTimestampMs(operation.startedAt);
   const completedAtMs = resolveAutoCutTimestampMs(completedAt);
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(completedAtMs)) {
+    return 0;
+  }
   return Math.max(0, completedAtMs - startedAtMs);
 }
 
@@ -1586,9 +1591,9 @@ function createStudioClipFromReviewSegment(
     ...(segment.speechEndMs !== undefined ? { speechEndMs: segment.speechEndMs } : {}),
     ...(segment.transcriptText ? { transcriptTextSnapshot: segment.transcriptText } : {}),
     sourceRefs,
-    contentUnitIds: [...segment.contentUnitIds],
-    speakerIds: [...segment.speakerIds],
-    speakerRoles: [...segment.speakerRoles],
+    contentUnitIds: [...(segment.contentUnitIds ?? [])],
+    speakerIds: [...(segment.speakerIds ?? [])],
+    speakerRoles: [...(segment.speakerRoles ?? [])],
     processingPlan: createDefaultClipProcessingPlanForEngine(engineId),
     quality: {
       ...(segment.qualityScore !== undefined ? { qualityScore: segment.qualityScore } : {}),
