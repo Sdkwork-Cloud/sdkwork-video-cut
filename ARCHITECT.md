@@ -558,11 +558,13 @@ Required invariants:
   `UNSIGNED_INSTALLERS_ACCEPTED_FOR_PREVIEW` warnings instead of commercial
   release blockers.
   Phase 1 multiplatform preview distribution is standardized by
-  `.github/workflows/autocut-desktop-release.yml` and
-  `scripts/check-autocut-multiplatform-release-readiness.mjs`. The workflow must
-  build on native runners for Windows x86_64, Ubuntu/Linux x86_64, macOS Intel,
-  and macOS Apple Silicon. Before invoking Tauri packaging, each runner must
-  prepare platform-native sidecars with the same manifest contract:
+  `sdkwork.workflow.json`, the thin `.github/workflows/package.yml` reusable
+  workflow entrypoint, and
+  `scripts/check-autocut-multiplatform-release-readiness.mjs`. The workflow
+  lifecycle must build on native runners for Windows x86_64, Ubuntu/Linux
+  x86_64, macOS Intel, and macOS Apple Silicon. Before invoking Tauri packaging,
+  each runner must prepare platform-native sidecars with the same manifest
+  contract:
   Windows re-verifies the approved Git LFS FFmpeg and `whisper-cli` resources,
   while Linux and macOS use `scripts/prepare-autocut-release-sidecars.mjs` to
   fetch or build the approved runner-native FFmpeg and Whisper CLI tools and

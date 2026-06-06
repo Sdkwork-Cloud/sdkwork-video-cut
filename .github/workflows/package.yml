@@ -1,0 +1,66 @@
+name: Package Application
+
+on:
+  push:
+    tags:
+      - v*
+      - '*.*.*'
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag or source ref to package.
+        required: true
+        default: v0.1.8
+      package_version:
+        description: Package version used in artifact names and manifests.
+        required: false
+        default: 0.1.8
+      platform:
+        description: Platform filter.
+        required: true
+        default: all
+      architecture:
+        description: CPU architecture filter.
+        required: true
+        default: all
+      profile:
+        description: Runtime profile filter.
+        required: true
+        default: all
+      format:
+        description: Package format filter.
+        required: true
+        default: all
+      deploy:
+        description: Run configured deployment environments after packaging.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  actions: read
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+jobs:
+  package:
+    uses: Sdkwork-Cloud/sdkwork-github-workflow/.github/workflows/sdkwork-package.yml@b0829529b9277a3da32b90c2d36ff34ff09fa832
+    with:
+      config_path: sdkwork.workflow.json
+      tag: ${{ github.event.inputs.tag || github.event.release.tag_name || github.ref_name }}
+      package_version: ${{ github.event.inputs.package_version || '' }}
+      platform: ${{ github.event.inputs.platform || 'all' }}
+      architecture: ${{ github.event.inputs.architecture || 'all' }}
+      profile: ${{ github.event.inputs.profile || 'all' }}
+      format: ${{ github.event.inputs.format || 'all' }}
+      publish_release: true
+      upload_artifact: true
+      deploy: ${{ github.event.inputs.deploy == 'true' || github.event_name == 'release' }}
+      retention_days: 30
+      framework_ref: b0829529b9277a3da32b90c2d36ff34ff09fa832
+    secrets: inherit

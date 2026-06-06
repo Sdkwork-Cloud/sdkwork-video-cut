@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -18,12 +18,12 @@ const desktopPackageRelativePath = 'packages/sdkwork-autocut-desktop';
 const desktopCargoRelativePath = `${desktopPackageRelativePath}/src-tauri`;
 const rootComponentType = 'application';
 const packageSpecs = [
-  { packageId: 'desktop-windows-msi', platform: 'windows-x86_64', architecture: 'x64', installerKind: 'msi' },
-  { packageId: 'desktop-windows-nsis', platform: 'windows-x86_64', architecture: 'x64', installerKind: 'nsis' },
-  { packageId: 'desktop-linux-deb', platform: 'linux-x86_64', architecture: 'x64', installerKind: 'deb' },
-  { packageId: 'desktop-linux-appimage', platform: 'linux-x86_64', architecture: 'x64', installerKind: 'appimage' },
-  { packageId: 'desktop-macos-x64-dmg', platform: 'macos-x86_64', architecture: 'x64', installerKind: 'dmg' },
-  { packageId: 'desktop-macos-aarch64-dmg', platform: 'macos-aarch64', architecture: 'aarch64', installerKind: 'dmg' },
+  { packageId: 'windows-x64-desktop-msi', platform: 'windows-x86_64', architecture: 'x64', installerKind: 'msi' },
+  { packageId: 'windows-x64-desktop-exe', platform: 'windows-x86_64', architecture: 'x64', installerKind: 'nsis' },
+  { packageId: 'linux-debian-x64-desktop-deb', platform: 'linux-x86_64', architecture: 'x64', installerKind: 'deb' },
+  { packageId: 'linux-x64-desktop-appimage', platform: 'linux-x86_64', architecture: 'x64', installerKind: 'appimage' },
+  { packageId: 'macos-x64-desktop-dmg', platform: 'macos-x86_64', architecture: 'x64', installerKind: 'dmg' },
+  { packageId: 'macos-arm64-desktop-dmg', platform: 'macos-aarch64', architecture: 'arm64', installerKind: 'dmg' },
 ];
 
 export function createAutoCutPackageSbom({

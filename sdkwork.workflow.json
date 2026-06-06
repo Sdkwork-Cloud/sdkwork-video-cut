@@ -1,0 +1,172 @@
+{
+  "$schema": "https://sdkwork.com/schemas/sdkwork-workflow.schema.json",
+  "schemaVersion": "2026-06-06.sdkwork.workflow.v1",
+  "app": {
+    "id": "sdkwork-video-cut",
+    "name": "SDKWork Video Cut",
+    "repository": "Sdkwork-Cloud/sdkwork-video-cut",
+    "sourcePath": ".",
+    "configPath": "sdkwork.app.config.json"
+  },
+  "release": {
+    "artifactPrefix": "sdkwork-video-cut",
+    "defaultVersion": "0.1.8",
+    "changelog": {
+      "source": "auto",
+      "maxCommitSubjects": 50
+    }
+  },
+  "toolchains": {
+    "node": "22",
+    "pnpm": "10.30.2",
+    "rust": "1.90.0"
+  },
+  "lifecycle": {
+    "preflight": [
+      {
+        "name": "Install native release prerequisites",
+        "shell": "pwsh",
+        "run": "$ErrorActionPreference = \"Stop\"\n$PSNativeCommandUseErrorActionPreference = $true\nif ($env:SDKWORK_PACKAGE_PLATFORM -eq \"linux\") {\n  sudo apt-get update\n  sudo apt-get install -y build-essential curl file libayatana-appindicator3-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev ffmpeg cmake patchelf wget xdg-utils\n  rustup target add x86_64-unknown-linux-gnu\n} elseif ($env:SDKWORK_PACKAGE_PLATFORM -eq \"windows\") {\n  choco install ffmpeg -y --no-progress\n  rustup target add x86_64-pc-windows-msvc\n} elseif ($env:SDKWORK_PACKAGE_PLATFORM -eq \"macos\") {\n  & brew list ffmpeg *> $null\n  if ($LASTEXITCODE -ne 0) {\n    & brew install ffmpeg\n  }\n  if ($env:SDKWORK_PACKAGE_ARCHITECTURE -eq \"arm64\") {\n    rustup target add aarch64-apple-darwin\n  } else {\n    rustup target add x86_64-apple-darwin\n  }\n}"
+      }
+    ],
+    "install": [
+      {
+        "name": "Install workspace dependencies",
+        "run": "pnpm install --frozen-lockfile"
+      }
+    ],
+    "build": [
+      {
+        "name": "Verify workspace",
+        "run": "pnpm test"
+      },
+      {
+        "name": "Prepare release sidecars",
+        "shell": "pwsh",
+        "run": "$ErrorActionPreference = \"Stop\"\n$PSNativeCommandUseErrorActionPreference = $true\n$platform = switch ($env:SDKWORK_PACKAGE_PLATFORM) {\n  \"windows\" { \"windows-x86_64\" }\n  \"linux\" { \"linux-x86_64\" }\n  \"macos\" {\n    if ($env:SDKWORK_PACKAGE_ARCHITECTURE -eq \"arm64\") { \"macos-aarch64\" } else { \"macos-x86_64\" }\n  }\n  default { throw \"Unsupported AutoCut release platform: $env:SDKWORK_PACKAGE_PLATFORM\" }\n}\npnpm prepare:release-sidecars -- --platform $platform --accept-license"
+      },
+      {
+        "name": "Build desktop bundle",
+        "shell": "pwsh",
+        "run": "$ErrorActionPreference = \"Stop\"\n$PSNativeCommandUseErrorActionPreference = $true\nif ($env:SDKWORK_PACKAGE_PLATFORM -eq \"windows\") {\n  pnpm tauri:build\n} elseif ($env:SDKWORK_PACKAGE_PLATFORM -eq \"linux\") {\n  pnpm tauri:build --target x86_64-unknown-linux-gnu\n} elseif ($env:SDKWORK_PACKAGE_PLATFORM -eq \"macos\") {\n  $rustTarget = if ($env:SDKWORK_PACKAGE_ARCHITECTURE -eq \"arm64\") { \"aarch64-apple-darwin\" } else { \"x86_64-apple-darwin\" }\n  $appArch = if ($env:SDKWORK_PACKAGE_ARCHITECTURE -eq \"arm64\") { \"aarch64\" } else { \"x64\" }\n  pnpm tauri:build --target $rustTarget\n  $appBundle = \"packages/sdkwork-autocut-desktop/src-tauri/target/$rustTarget/release/bundle/macos/SDKWork Video Cut.app\"\n  if (-not (Test-Path -LiteralPath $appBundle -PathType Container)) {\n    throw \"missing macOS app bundle: $appBundle\"\n  }\n  $bundleDir = Split-Path -Parent $appBundle\n  Remove-Item -LiteralPath (Join-Path $bundleDir \"*.app.tar.gz\") -Force -ErrorAction SilentlyContinue\n  $appArchive = Join-Path $bundleDir \"SDKWork Video Cut_$($env:SDKWORK_PACKAGE_VERSION)_$appArch.app.tar.gz\"\n  tar -C $bundleDir -czf $appArchive (Split-Path -Leaf $appBundle)\n  if (-not (Test-Path -LiteralPath $appArchive -PathType Leaf)) {\n    throw \"missing macOS app archive: $appArchive\"\n  }\n} else {\n  throw \"Unsupported AutoCut release platform: $env:SDKWORK_PACKAGE_PLATFORM\"\n}"
+      }
+    ],
+    "sign": [
+      {
+        "name": "Write installer signature evidence",
+        "shell": "pwsh",
+        "run": "$ErrorActionPreference = \"Stop\"\n$PSNativeCommandUseErrorActionPreference = $true\n$platform = switch ($env:SDKWORK_PACKAGE_PLATFORM) {\n  \"windows\" { \"windows-x86_64\" }\n  \"linux\" { \"linux-x86_64\" }\n  \"macos\" {\n    if ($env:SDKWORK_PACKAGE_ARCHITECTURE -eq \"arm64\") { \"macos-aarch64\" } else { \"macos-x86_64\" }\n  }\n  default { throw \"Unsupported AutoCut release platform: $env:SDKWORK_PACKAGE_PLATFORM\" }\n}\npnpm release:installer-signature -- --platform $platform"
+      }
+    ],
+    "sbom": [
+      {
+        "name": "Write package SBOM",
+        "shell": "pwsh",
+        "run": "$ErrorActionPreference = \"Stop\"\n$PSNativeCommandUseErrorActionPreference = $true\npnpm release:package-sbom -- --package-id $env:SDKWORK_PACKAGE_ID"
+      }
+    ],
+    "validate": [
+      {
+        "name": "Write package release evidence",
+        "shell": "pwsh",
+        "env": {
+          "SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE": "false"
+        },
+        "run": "$ErrorActionPreference = \"Stop\"\n$PSNativeCommandUseErrorActionPreference = $true\n$platform = switch ($env:SDKWORK_PACKAGE_PLATFORM) {\n  \"windows\" { \"windows-x86_64\" }\n  \"linux\" { \"linux-x86_64\" }\n  \"macos\" {\n    if ($env:SDKWORK_PACKAGE_ARCHITECTURE -eq \"arm64\") { \"macos-aarch64\" } else { \"macos-x86_64\" }\n  }\n  default { throw \"Unsupported AutoCut release platform: $env:SDKWORK_PACKAGE_PLATFORM\" }\n}\nif ($env:SDKWORK_PACKAGE_PLATFORM -eq \"windows\") {\n  $env:SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE = \"true\"\n}\npnpm release:smoke-preflight -- --platform $platform --require-bundled\nif ($env:SDKWORK_PACKAGE_PLATFORM -eq \"windows\") {\n  pnpm release:native-smoke -- --run-real-llm-secret-smoke\n} else {\n  pnpm release:native-smoke\n}\npnpm release:smart-slice-sample -- --platform $platform\npnpm release:evidence -- --platform $platform --output \"artifacts/release/autocut-release-evidence-$platform.json\"\n$expectedEvidence = \"artifacts/release/autocut-release-evidence-$platform.json\"\nif (-not (Test-Path -LiteralPath $expectedEvidence -PathType Leaf)) {\n  throw \"missing release evidence artifact: $expectedEvidence\"\n}"
+      }
+    ]
+  },
+  "targets": [
+    {
+      "id": "windows-x64-desktop-msi",
+      "profile": "desktop",
+      "platform": "windows",
+      "architecture": "x64",
+      "formats": ["msi"],
+      "runner": "windows-latest",
+      "outputGlobs": [
+        "packages/sdkwork-autocut-desktop/src-tauri/target/release/bundle/msi/*.msi",
+        "artifacts/release/autocut-release-evidence-windows-x86_64.json",
+        "artifacts/release/sbom/windows-x64-desktop-msi.cdx.json"
+      ]
+    },
+    {
+      "id": "windows-x64-desktop-exe",
+      "profile": "desktop",
+      "platform": "windows",
+      "architecture": "x64",
+      "formats": ["exe"],
+      "runner": "windows-latest",
+      "outputGlobs": [
+        "packages/sdkwork-autocut-desktop/src-tauri/target/release/bundle/nsis/*.exe",
+        "artifacts/release/autocut-release-evidence-windows-x86_64.json",
+        "artifacts/release/sbom/windows-x64-desktop-exe.cdx.json"
+      ]
+    },
+    {
+      "id": "linux-debian-x64-desktop-deb",
+      "profile": "desktop",
+      "platform": "linux",
+      "distribution": "debian",
+      "architecture": "x64",
+      "formats": ["deb"],
+      "runner": "ubuntu-22.04",
+      "outputGlobs": [
+        "packages/sdkwork-autocut-desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb",
+        "artifacts/release/autocut-release-evidence-linux-x86_64.json",
+        "artifacts/release/sbom/linux-debian-x64-desktop-deb.cdx.json"
+      ]
+    },
+    {
+      "id": "linux-x64-desktop-appimage",
+      "profile": "desktop",
+      "platform": "linux",
+      "architecture": "x64",
+      "formats": ["appimage"],
+      "runner": "ubuntu-22.04",
+      "outputGlobs": [
+        "packages/sdkwork-autocut-desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage",
+        "artifacts/release/autocut-release-evidence-linux-x86_64.json",
+        "artifacts/release/sbom/linux-x64-desktop-appimage.cdx.json"
+      ]
+    },
+    {
+      "id": "macos-x64-desktop-dmg",
+      "profile": "desktop",
+      "platform": "macos",
+      "architecture": "x64",
+      "formats": ["dmg"],
+      "runner": "macos-15-intel",
+      "outputGlobs": [
+        "packages/sdkwork-autocut-desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg",
+        "packages/sdkwork-autocut-desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz",
+        "artifacts/release/autocut-release-evidence-macos-x86_64.json",
+        "artifacts/release/sbom/macos-x64-desktop-dmg.cdx.json"
+      ]
+    },
+    {
+      "id": "macos-arm64-desktop-dmg",
+      "profile": "desktop",
+      "platform": "macos",
+      "architecture": "arm64",
+      "formats": ["dmg"],
+      "runner": "macos-latest",
+      "outputGlobs": [
+        "packages/sdkwork-autocut-desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg",
+        "packages/sdkwork-autocut-desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz",
+        "artifacts/release/autocut-release-evidence-macos-aarch64.json",
+        "artifacts/release/sbom/macos-arm64-desktop-dmg.cdx.json"
+      ]
+    }
+  ],
+  "security": {
+    "artifactAttestations": true,
+    "sbomRequired": true,
+    "signingRequired": false
+  },
+  "publish": {
+    "workflowArtifact": true,
+    "githubRelease": true,
+    "retentionDays": 30
+  }
+}

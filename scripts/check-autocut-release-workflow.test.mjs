@@ -5,274 +5,81 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 
-const workflowPath = path.join(process.cwd(), '.github', 'workflows', 'autocut-desktop-release.yml');
-assert.equal(fs.existsSync(workflowPath), true, 'AutoCut desktop release workflow exists');
+const frameworkRef = 'b0829529b9277a3da32b90c2d36ff34ff09fa832';
+const workflowConfigPath = path.join(process.cwd(), 'sdkwork.workflow.json');
+const packageWorkflowPath = path.join(process.cwd(), '.github', 'workflows', 'package.yml');
+const legacyWorkflowPath = path.join(process.cwd(), '.github', 'workflows', 'autocut-desktop-release.yml');
 
-const workflow = fs.readFileSync(workflowPath, 'utf8');
+assert.equal(fs.existsSync(legacyWorkflowPath), false, 'legacy AutoCut desktop release workflow is removed');
+assert.equal(fs.existsSync(workflowConfigPath), true, 'sdkwork.workflow.json exists');
+assert.equal(fs.existsSync(packageWorkflowPath), true, 'standard package workflow entrypoint exists');
 
-function workflowJobBody(jobName, source = workflow) {
-  const normalizedSource = source.replace(/\r\n?/gu, '\n');
-  const pattern = new RegExp(`\\n  ${jobName}:\\n(?<body>[\\s\\S]*?)(?=\\n  [a-zA-Z0-9_-]+:\\n|\\n*$)`, 'u');
-  return normalizedSource.match(pattern)?.groups?.body ?? '';
+const workflowConfig = JSON.parse(fs.readFileSync(workflowConfigPath, 'utf8'));
+const packageWorkflow = fs.readFileSync(packageWorkflowPath, 'utf8');
+
+assert.equal(workflowConfig.schemaVersion, '2026-06-06.sdkwork.workflow.v1');
+assert.deepEqual(workflowConfig.app, {
+  id: 'sdkwork-video-cut',
+  name: 'SDKWork Video Cut',
+  repository: 'Sdkwork-Cloud/sdkwork-video-cut',
+  sourcePath: '.',
+  configPath: 'sdkwork.app.config.json',
+});
+assert.equal(workflowConfig.release.artifactPrefix, 'sdkwork-video-cut');
+assert.equal(workflowConfig.release.changelog.source, 'auto');
+assert.equal(workflowConfig.security.sbomRequired, true);
+assert.equal(workflowConfig.publish.githubRelease, true);
+
+const targetIds = workflowConfig.targets.map((target) => target.id).sort();
+assert.deepEqual(targetIds, [
+  'linux-debian-x64-desktop-deb',
+  'linux-x64-desktop-appimage',
+  'macos-arm64-desktop-dmg',
+  'macos-x64-desktop-dmg',
+  'windows-x64-desktop-exe',
+  'windows-x64-desktop-msi',
+]);
+
+const targetById = new Map(workflowConfig.targets.map((target) => [target.id, target]));
+assert.equal(targetById.get('linux-debian-x64-desktop-deb').distribution, 'debian');
+assert.equal(targetById.get('windows-x64-desktop-exe').formats[0], 'exe');
+assert.equal(targetById.get('macos-arm64-desktop-dmg').architecture, 'arm64');
+assert.ok(
+  targetById.get('macos-arm64-desktop-dmg').outputGlobs.includes(
+    'packages/sdkwork-autocut-desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz',
+  ),
+  'macOS Apple Silicon target still publishes the app archive as supporting release asset',
+);
+
+const lifecycleText = JSON.stringify(workflowConfig.lifecycle);
+for (const marker of [
+  'pnpm test',
+  'prepare:release-sidecars',
+  'pnpm tauri:build --target x86_64-unknown-linux-gnu',
+  'pnpm tauri:build --target $rustTarget',
+  'release:installer-signature',
+  'release:package-sbom -- --package-id $env:SDKWORK_PACKAGE_ID',
+  'release:smoke-preflight',
+  'release:native-smoke -- --run-real-llm-secret-smoke',
+  'release:smart-slice-sample',
+  'release:evidence -- --platform $platform',
+]) {
+  assert.ok(lifecycleText.includes(marker), `workflow config lifecycle contains ${marker}`);
 }
-
-const linuxJob = workflowJobBody('build-linux');
-const macosJob = workflowJobBody('build-macos');
-const macosJobFromCrlfCheckout = workflowJobBody('build-macos', workflow.replace(/\n/gu, '\r\n'));
 
 for (const marker of [
-  'name: AutoCut Desktop Multiplatform Release',
+  'name: Package Application',
   'workflow_dispatch:',
-  'release_tag:',
-  'build-windows',
-  'build-linux',
-  'build-macos',
-  'windows-latest',
-  'ubuntu-22.04',
-  'macos-latest',
-  'macos-15-intel',
-  'x86_64-apple-darwin',
-  'aarch64-apple-darwin',
-  'app_arch: x64',
-  'app_arch: aarch64',
-  'libwebkit2gtk-4.1-dev',
-  'libayatana-appindicator3-dev',
-  'librsvg2-dev',
-  'pnpm/action-setup',
-  'Install CI FFmpeg',
-  'Prepare release sidecars',
-  'prepare:release-sidecars',
-  'release:smoke-preflight',
-  'release:native-smoke',
-  'release:smart-slice-sample',
-  'release:installer-signature -- --platform windows-x86_64',
-  'release:installer-signature -- --platform linux-x86_64',
-  'release:installer-signature -- --platform ${{ matrix.platform }}',
-  'release:evidence',
-  'release:package-sbom -- --platform windows-x86_64',
-  'release:package-sbom -- --platform linux-x86_64',
-  'release:package-sbom -- --platform ${{ matrix.platform }}',
-  'release:sbom-evidence -- --release-tag "${{ inputs.release_tag }}" --allow-blocked',
-  'release:sync-app-manifest -- --dry-run --allow-blocked',
-  'release:app-manifest-ready',
-  'release:evidence-status -- --release-tag "${{ inputs.release_tag }}"',
-  'autocut-release-evidence-windows-x86_64.json',
-  'autocut-release-evidence-linux-x86_64.json',
-  'autocut-release-evidence-${{ matrix.platform }}.json',
-  'artifacts/release/sbom/*.cdx.json',
-  'autocut-sbom-evidence.json',
-  'autocut-app-manifest-release-readiness.txt',
-  'autocut-app-manifest-release-evidence-sync.txt',
-  'autocut-release-evidence-status.json',
-  'actions/upload-artifact',
-  'gh release upload',
-  'SDKWORK_AUTOCUT_RUN_REAL_LLM_SECRET_SMOKE',
-  'MACOS_SIGNING_CERTIFICATE',
-  'APPLE_ID',
+  'config_path: sdkwork.workflow.json',
+  `Sdkwork-Cloud/sdkwork-github-workflow/.github/workflows/sdkwork-package.yml@${frameworkRef}`,
+  `framework_ref: ${frameworkRef}`,
+  "package_version: ${{ github.event.inputs.package_version || '' }}",
+  'secrets: inherit',
 ]) {
-  assert.ok(workflow.includes(marker), `workflow contains ${marker}`);
+  assert.ok(packageWorkflow.includes(marker), `package workflow contains ${marker}`);
 }
 
-assert.match(
-  workflow,
-  /release:smoke-preflight -- --platform \$\{\{ matrix\.platform \}\} --require-bundled/u,
-  'workflow runs platform-specific bundled FFmpeg smoke preflight',
-);
-assert.match(
-  workflow,
-  /prepare:release-sidecars -- --platform windows-x86_64 --accept-license/u,
-  'workflow prepares approved Windows release sidecars without requiring GitHub Actions to fetch Git LFS objects',
-);
-assert.match(
-  workflow,
-  /Install CI FFmpeg[\s\S]*choco install ffmpeg -y --no-progress[\s\S]*Verify workspace/u,
-  'Windows release verification installs CI FFmpeg before pnpm test so Smart Slice real-media e2e does not depend on runner PATH state',
-);
-assert.match(
-  workflow,
-  /Install Linux Tauri dependencies[\s\S]*ffmpeg[\s\S]*Verify workspace/u,
-  'Linux release verification installs FFmpeg before pnpm test so Smart Slice real-media e2e can run in a clean runner',
-);
-assert.match(
-  workflow,
-  /Install CI FFmpeg[\s\S]*brew install ffmpeg[\s\S]*Verify workspace/u,
-  'macOS release verification installs CI FFmpeg before pnpm test so Smart Slice real-media e2e can run in a clean runner',
-);
-assert.equal(
-  linuxJob.includes('brew install ffmpeg'),
-  false,
-  'Linux release job must not call Homebrew when installing FFmpeg',
-);
-assert.match(
-  macosJob,
-  /Install CI FFmpeg[\s\S]*brew list ffmpeg[\s\S]*brew install ffmpeg[\s\S]*Verify workspace/u,
-  'macOS release job installs FFmpeg with Homebrew before pnpm test',
-);
-assert.match(
-  macosJobFromCrlfCheckout,
-  /Install CI FFmpeg[\s\S]*brew list ffmpeg[\s\S]*brew install ffmpeg[\s\S]*Verify workspace/u,
-  'macOS release job extraction works with CRLF workflow checkouts on Windows runners',
-);
-assert.match(
-  workflow,
-  /pnpm tauri:build --target x86_64-unknown-linux-gnu/u,
-  'workflow builds Linux from the repository-root pnpm Tauri command',
-);
-assert.match(
-  workflow,
-  /pnpm tauri:build --target \$\{\{ matrix\.rust_target \}\}/u,
-  'workflow builds macOS matrix targets from the repository-root pnpm Tauri command',
-);
-assert.match(
-  workflow,
-  /releaseVersion="\$\{\{ inputs\.release_tag \}\}"[\s\S]*releaseVersion="\$\{releaseVersion#v\}"[\s\S]*SDKWork Video Cut_\$\{releaseVersion\}_\$\{\{ matrix\.app_arch \}\}\.app\.tar\.gz/u,
-  'workflow archives macOS app bundles with release-tag-derived architecture-specific asset names',
-);
-assert.match(
-  workflow,
-  /rm -f "\$\(dirname "\$appBundle"\)"\/\*\.app\.tar\.gz/u,
-  'workflow removes stale macOS app archives before uploading architecture-specific bundles',
-);
-assert.equal(
-  workflow.includes('pnpm tauri:build -- --target'),
-  false,
-  'workflow passes release target triples to the Tauri CLI instead of cargo runner args',
-);
-assert.equal(
-  workflow.includes('tauri-apps/tauri-action'),
-  false,
-  'workflow avoids package-path Tauri action builds so release sidecar checks and workspace scripts stay consistent',
-);
-assert.equal(
-  workflow.includes('lfs: true'),
-  false,
-  'workflow does not fetch Git LFS objects during checkout so release builds are not blocked by LFS bandwidth quota',
-);
-assert.match(
-  workflow,
-  /lfs: false/u,
-  'workflow explicitly disables Git LFS checkout for native release jobs',
-);
-const releaseTagCheckoutCount = (workflow.match(/ref: \$\{\{ inputs\.release_tag \}\}/gu) ?? []).length;
-assert.equal(
-  releaseTagCheckoutCount,
-  4,
-  'workflow checks out the requested release tag in every release job so uploaded assets match the GitHub Release tag',
-);
-assert.match(
-  workflow,
-  /\$PSNativeCommandUseErrorActionPreference = \$true[\s\S]*pnpm release:native-smoke -- --run-real-llm-secret-smoke/u,
-  'Windows release evidence step fails immediately when native smoke exits nonzero',
-);
-assert.match(
-  workflow,
-  /if \(-not \(Test-Path -LiteralPath "artifacts\/release\/autocut-release-evidence-windows-x86_64\.json"\)\)/u,
-  'workflow validates the expected Windows release evidence file before uploading assets',
-);
-assert.equal(
-  workflow.includes('Copy-Item -LiteralPath packages/sdkwork-autocut-desktop/src-tauri/binaries/windows-x86_64/*'),
-  false,
-  'workflow does not use -LiteralPath with a wildcard when staging Windows sidecars',
-);
-assert.equal(
-  workflow.includes('prepare:speech-sidecar -- --platform windows_x86_64'),
-  false,
-  'workflow never uses misspelled Windows platform spelling for speech sidecars',
-);
-assert.match(
-  workflow,
-  /prepare:release-sidecars -- --platform linux-x86_64 --accept-license/u,
-  'workflow prepares approved Linux release sidecars before native packaging',
-);
-assert.match(
-  workflow,
-  /prepare:release-sidecars -- --platform \$\{\{ matrix\.platform \}\} --accept-license/u,
-  'workflow prepares approved macOS release sidecars for the matrix platform before native packaging',
-);
-assert.match(
-  workflow,
-  /release:evidence -- --platform \$\{\{ matrix\.platform \}\} --output artifacts\/release\/autocut-release-evidence-\$\{\{ matrix\.platform \}\}\.json/u,
-  'workflow writes platform-specific release evidence',
-);
-assert.match(
-  workflow,
-  /release:package-sbom -- --platform windows-x86_64/u,
-  'workflow writes Windows per-package CycloneDX SBOM files',
-);
-assert.match(
-  workflow,
-  /release:package-sbom -- --platform linux-x86_64/u,
-  'workflow writes Linux per-package CycloneDX SBOM files',
-);
-assert.match(
-  workflow,
-  /release:package-sbom -- --platform \$\{\{ matrix\.platform \}\}/u,
-  'workflow writes macOS per-package CycloneDX SBOM files',
-);
-assert.match(
-  workflow,
-  /release:multiplatform-ready/u,
-  'workflow verifies aggregate multiplatform preview readiness',
-);
-assert.match(
-  workflow,
-  /release:app-manifest-ready/u,
-  'workflow verifies app manifest release readiness before uploading aggregate release evidence',
-);
-assert.match(
-  workflow,
-  /find artifacts\/downloaded-release \\\( -name '\*\.cdx\.json' -o -name '\*\.cyclonedx\.json' -o -name '\*\.spdx\.json' -o -name '\*\.sbom\.json' \\\) -exec cp \{\} artifacts\/release\/sbom\/ \\;/u,
-  'workflow collects SBOM files before writing aggregate SBOM evidence',
-);
-assert.match(
-  workflow,
-  /release:sbom-evidence -- --release-tag "\$\{\{ inputs\.release_tag \}\}" --allow-blocked/u,
-  'workflow writes aggregate SBOM evidence before app manifest synchronization',
-);
-assert.match(
-  workflow,
-  /release:sync-app-manifest -- --dry-run --allow-blocked/u,
-  'workflow dry-runs release evidence to app manifest synchronization before aggregate readiness upload without blocking unsigned preview releases',
-);
-assert.match(
-  workflow,
-  /release:evidence-status -- --release-tag "\$\{\{ inputs\.release_tag \}\}" --allow-dirty --skip-windows-installer-service --allow-blocked/u,
-  'workflow writes an aggregate release evidence status report without bypassing commercial gates',
-);
-assert.match(
-  workflow,
-  /node scripts\/check-autocut-release-evidence-status\.mjs --release-tag "\$\{\{ inputs\.release_tag \}\}" --allow-dirty --skip-windows-installer-service --allow-blocked --json > artifacts\/release\/autocut-release-evidence-status\.json/u,
-  'workflow writes machine-readable aggregate release evidence status JSON without pnpm script banner output',
-);
-assert.equal(
-  workflow.includes('pnpm release:evidence-status -- --release-tag "${{ inputs.release_tag }}" --allow-dirty --skip-windows-installer-service --allow-blocked --json > artifacts/release/autocut-release-evidence-status.json'),
-  false,
-  'workflow never redirects pnpm release:evidence-status --json output into the uploaded JSON artifact',
-);
-assert.equal(
-  workflow.includes('autocut-release-evidence-windows_x86_64.json'),
-  false,
-  'workflow never uploads a misspelled Windows release evidence filename',
-);
-assert.match(
-  workflow,
-  /release:installer-signature -- --platform windows-x86_64/u,
-  'workflow writes Windows platform-specific installer signature evidence',
-);
-assert.match(
-  workflow,
-  /release:installer-signature -- --platform linux-x86_64/u,
-  'workflow writes Linux platform-specific installer signature evidence',
-);
-assert.match(
-  workflow,
-  /release:installer-signature -- --platform \$\{\{ matrix\.platform \}\}/u,
-  'workflow writes macOS platform-specific installer signature evidence',
-);
-assert.match(
-  workflow,
-  /runs-on: \$\{\{ matrix\.runner \}\}[\s\S]*platform: macos-x86_64[\s\S]*runner: macos-15-intel[\s\S]*platform: macos-aarch64[\s\S]*runner: macos-latest/u,
-  'workflow selects Intel and Apple Silicon macOS runners explicitly',
-);
+assert.equal(packageWorkflow.includes('gh release upload'), false, 'package workflow delegates Release upload to the reusable framework');
+assert.equal(packageWorkflow.includes('actions/upload-artifact'), false, 'package workflow delegates artifact upload to the reusable framework');
 
-console.log('ok - autocut desktop release workflow contract');
+console.log('ok - autocut standard release workflow contract');

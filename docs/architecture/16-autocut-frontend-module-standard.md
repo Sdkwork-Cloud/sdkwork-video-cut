@@ -497,11 +497,11 @@ commercial release gate. The default gate must stay blocked until every platform
 has sidecar integrity, executable smoke, native smoke, smart slice quality/media
 evidence, installer signature, aggregate release smoke, and
 `ffmpegExecutionReady` all true.
-Phase 1 multiplatform preview release is standardized by
-`.github/workflows/autocut-desktop-release.yml` and
-`scripts/check-autocut-multiplatform-release-readiness.mjs`. The workflow builds
-Windows x86_64 on `windows-latest`, Ubuntu/Linux x86_64 on `ubuntu-22.04`, and
-macOS Intel plus Apple Silicon on `macos-latest` using
+Phase 1 multiplatform preview release is standardized by `sdkwork.workflow.json`,
+the thin `.github/workflows/package.yml` reusable workflow entrypoint, and
+`scripts/check-autocut-multiplatform-release-readiness.mjs`. The lifecycle builds
+Windows x86_64 on `windows-latest`, Ubuntu/Linux x86_64 on `ubuntu-22.04`, macOS
+Intel on `macos-15-intel`, and macOS Apple Silicon on `macos-latest` using
 `x86_64-apple-darwin` and `aarch64-apple-darwin`. It must upload platform
 evidence files named `autocut-release-evidence-windows-x86_64.json`,
 `autocut-release-evidence-linux-x86_64.json`,

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -13,12 +13,12 @@ import {
 } from './write-autocut-sbom-evidence.mjs';
 
 const packageIds = [
-  'desktop-windows-msi',
-  'desktop-windows-nsis',
-  'desktop-linux-deb',
-  'desktop-linux-appimage',
-  'desktop-macos-x64-dmg',
-  'desktop-macos-aarch64-dmg',
+  'windows-x64-desktop-msi',
+  'windows-x64-desktop-exe',
+  'linux-debian-x64-desktop-deb',
+  'linux-x64-desktop-appimage',
+  'macos-x64-desktop-dmg',
+  'macos-arm64-desktop-dmg',
 ];
 
 function tempRoot(name) {
@@ -130,16 +130,16 @@ assert.equal(
 
 const blockedRoot = tempRoot('autocut-sbom-evidence-blocked');
 const blockedSbomDir = path.join(blockedRoot, 'artifacts', 'release', 'sbom');
-writeJson(path.join(blockedSbomDir, 'desktop-windows-msi.cdx.json'), {
+writeJson(path.join(blockedSbomDir, 'windows-x64-desktop-msi.cdx.json'), {
   bomFormat: 'CycloneDX',
   specVersion: '1.6',
   components: [],
 });
-writeText(path.join(blockedSbomDir, 'desktop-windows-nsis.cdx.json'), '');
-writeJson(path.join(blockedSbomDir, 'desktop-linux-deb.spdx.json'), {
+writeText(path.join(blockedSbomDir, 'windows-x64-desktop-exe.cdx.json'), '');
+writeJson(path.join(blockedSbomDir, 'linux-debian-x64-desktop-deb.spdx.json'), {
   name: 'not an SPDX document',
 });
-writeText(path.join(blockedSbomDir, 'desktop-linux-appimage.sbom.json'), '{ invalid json');
+writeText(path.join(blockedSbomDir, 'linux-x64-desktop-appimage.sbom.json'), '{ invalid json');
 writeJson(path.join(blockedSbomDir, 'desktop-web.cdx.json'), {
   bomFormat: 'CycloneDX',
   specVersion: '1.6',
@@ -175,12 +175,12 @@ assert.ok(
 
 const duplicateRoot = tempRoot('autocut-sbom-evidence-duplicate');
 const duplicateSbomDir = path.join(duplicateRoot, 'artifacts', 'release', 'sbom');
-writeJson(path.join(duplicateSbomDir, 'desktop-windows-msi.cdx.json'), {
+writeJson(path.join(duplicateSbomDir, 'windows-x64-desktop-msi.cdx.json'), {
   bomFormat: 'CycloneDX',
   specVersion: '1.6',
   components: [],
 });
-writeJson(path.join(duplicateSbomDir, 'desktop-windows-msi.spdx.json'), {
+writeJson(path.join(duplicateSbomDir, 'windows-x64-desktop-msi.spdx.json'), {
   spdxVersion: 'SPDX-2.3',
   SPDXID: 'SPDXRef-Duplicate',
   packages: [],
@@ -202,7 +202,7 @@ assert.ok(
   duplicateEvidence.blockers.some(
     (blocker) =>
       blocker.code === 'PACKAGE_SBOM_MULTIPLE_CANDIDATES' &&
-      blocker.packageId === 'desktop-windows-msi',
+      blocker.packageId === 'windows-x64-desktop-msi',
   ),
 );
 assert.equal(

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -19,12 +19,12 @@ const defaultOutputRelativePath = 'artifacts/release/autocut-sbom-evidence.json'
 const defaultReleaseRepositoryUrl = 'https://github.com/Sdkwork-Cloud/sdkwork-video-cut';
 const sbomFileSuffixes = ['.cdx.json', '.cyclonedx.json', '.spdx.json', '.sbom.json'];
 const packageIds = [
-  'desktop-windows-msi',
-  'desktop-windows-nsis',
-  'desktop-linux-deb',
-  'desktop-linux-appimage',
-  'desktop-macos-x64-dmg',
-  'desktop-macos-aarch64-dmg',
+  'windows-x64-desktop-msi',
+  'windows-x64-desktop-exe',
+  'linux-debian-x64-desktop-deb',
+  'linux-x64-desktop-appimage',
+  'macos-x64-desktop-dmg',
+  'macos-arm64-desktop-dmg',
 ];
 
 export function createAutoCutSbomEvidence({

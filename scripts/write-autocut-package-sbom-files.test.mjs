@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -13,12 +13,12 @@ import {
 import { createAutoCutSbomEvidence } from './write-autocut-sbom-evidence.mjs';
 
 const allPackageIds = [
-  'desktop-windows-msi',
-  'desktop-windows-nsis',
-  'desktop-linux-deb',
-  'desktop-linux-appimage',
-  'desktop-macos-x64-dmg',
-  'desktop-macos-aarch64-dmg',
+  'windows-x64-desktop-msi',
+  'windows-x64-desktop-exe',
+  'linux-debian-x64-desktop-deb',
+  'linux-x64-desktop-appimage',
+  'macos-x64-desktop-dmg',
+  'macos-arm64-desktop-dmg',
 ];
 
 function tempRoot(name) {
@@ -216,15 +216,15 @@ assert.equal(
   `ok - autocut package SBOM files ${path.join(completeRoot, 'artifacts', 'release', 'sbom')} packages=6 components=80`,
 );
 
-const windowsSbom = readJson(path.join(completeRoot, 'artifacts', 'release', 'sbom', 'desktop-windows-msi.cdx.json'));
+const windowsSbom = readJson(path.join(completeRoot, 'artifacts', 'release', 'sbom', 'windows-x64-desktop-msi.cdx.json'));
 assert.equal(windowsSbom.bomFormat, 'CycloneDX');
 assert.equal(windowsSbom.specVersion, '1.6');
-assert.equal(windowsSbom.metadata.component.name, 'SDKWork Video Cut desktop-windows-msi');
+assert.equal(windowsSbom.metadata.component.name, 'SDKWork Video Cut windows-x64-desktop-msi');
 assert.equal(windowsSbom.metadata.component.version, '9.8.7');
 assert.ok(windowsSbom.serialNumber.startsWith('urn:uuid:'));
 assert.ok(
   windowsSbom.metadata.properties.some(
-    (property) => property.name === 'sdkwork:autocut:packageId' && property.value === 'desktop-windows-msi',
+    (property) => property.name === 'sdkwork:autocut:packageId' && property.value === 'windows-x64-desktop-msi',
   ),
 );
 assert.ok(
@@ -296,12 +296,12 @@ assert.ok(
 assert.ok(
   windowsSbom.dependencies.some(
     (entry) =>
-      entry.ref === 'pkg:generic/sdkwork-video-cut@9.8.7?package-id=desktop-windows-msi' &&
+      entry.ref === 'pkg:generic/sdkwork-video-cut@9.8.7?package-id=windows-x64-desktop-msi' &&
       entry.dependsOn.length > 0,
   ),
 );
 
-const linuxSbom = readJson(path.join(completeRoot, 'artifacts', 'release', 'sbom', 'desktop-linux-deb.cdx.json'));
+const linuxSbom = readJson(path.join(completeRoot, 'artifacts', 'release', 'sbom', 'linux-debian-x64-desktop-deb.cdx.json'));
 assert.equal(
   linuxSbom.components.some((component) => component.name === 'windows-native-keyring-store'),
   false,
@@ -324,18 +324,18 @@ const platformWritten = writeAutoCutPackageSbomFiles({
 });
 assert.deepEqual(
   platformWritten.files.map((file) => file.packageId),
-  ['desktop-linux-deb', 'desktop-linux-appimage'],
+  ['linux-debian-x64-desktop-deb', 'linux-x64-desktop-appimage'],
 );
 
 const singleSbom = createAutoCutPackageSbom({
   rootDir: completeRoot,
-  packageId: 'desktop-macos-aarch64-dmg',
+  packageId: 'macos-arm64-desktop-dmg',
   generatedAt: '2026-05-08T00:00:00.000Z',
 });
-assert.equal(singleSbom.metadata.component.name, 'SDKWork Video Cut desktop-macos-aarch64-dmg');
+assert.equal(singleSbom.metadata.component.name, 'SDKWork Video Cut macos-arm64-desktop-dmg');
 assert.ok(
   singleSbom.metadata.properties.some(
-    (property) => property.name === 'sdkwork:autocut:architecture' && property.value === 'aarch64',
+    (property) => property.name === 'sdkwork:autocut:architecture' && property.value === 'arm64',
   ),
 );
 

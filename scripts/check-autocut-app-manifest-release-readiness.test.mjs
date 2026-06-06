@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -29,9 +29,9 @@ function writeManifest(root, overrides = {}) {
       },
       artifacts: {
         installConfig: {
-          defaultPackageId: 'desktop-windows-msi',
+          defaultPackageId: 'windows-x64-desktop-msi',
           packages: [
-            packageFixture('desktop-windows-msi', {
+            packageFixture('windows-x64-desktop-msi', {
               platform: 'DESKTOP_WINDOWS',
               packageFormat: 'MSI',
               architecture: 'x64',
@@ -41,7 +41,7 @@ function writeManifest(root, overrides = {}) {
                   'Enable only after GitHub Release asset digest, Authenticode signature evidence, and SBOM evidence are recorded.',
               },
             }),
-            packageFixture('desktop-linux-appimage', {
+            packageFixture('linux-x64-desktop-appimage', {
               platform: 'DESKTOP_LINUX',
               packageFormat: 'APPIMAGE',
               architecture: 'x64',
@@ -186,7 +186,7 @@ writeManifest(previewMissingActivationRoot, {
   artifacts: {
     installConfig: {
       packages: [
-        packageFixture('desktop-windows-msi', {
+        packageFixture('windows-x64-desktop-msi', {
           metadata: {
             releaseAsset: true,
           },
@@ -227,7 +227,7 @@ writeManifest(activeMissingChecksumRoot, {
   artifacts: {
     installConfig: {
       packages: [
-        commercialPackageFixture('desktop-windows-msi', {
+        commercialPackageFixture('windows-x64-desktop-msi', {
           checksum: '',
           checksumAlgorithm: '',
         }),
@@ -253,7 +253,7 @@ writeManifest(activePlaceholderEvidenceRoot, {
   artifacts: {
     installConfig: {
       packages: [
-        commercialPackageFixture('desktop-windows-msi', {
+        commercialPackageFixture('windows-x64-desktop-msi', {
           checksum: '0'.repeat(64),
           metadata: {
             generatedPlaceholder: true,
@@ -294,8 +294,8 @@ writeManifest(activeReadyRoot, {
   artifacts: {
     installConfig: {
       packages: [
-        commercialPackageFixture('desktop-windows-msi'),
-        commercialPackageFixture('desktop-linux-appimage', {
+        commercialPackageFixture('windows-x64-desktop-msi'),
+        commercialPackageFixture('linux-x64-desktop-appimage', {
           platform: 'DESKTOP_LINUX',
           packageFormat: 'APPIMAGE',
           metadata: {

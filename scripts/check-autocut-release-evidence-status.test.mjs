@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -47,12 +47,12 @@ function writeManifest(root) {
     artifacts: {
       installConfig: {
         packages: [
-          disabledPackage('desktop-windows-msi', 'DESKTOP_WINDOWS', 'MSI'),
-          disabledPackage('desktop-windows-nsis', 'DESKTOP_WINDOWS', 'NSIS'),
-          disabledPackage('desktop-linux-deb', 'DESKTOP_LINUX', 'DEB'),
-          disabledPackage('desktop-linux-appimage', 'DESKTOP_LINUX', 'APPIMAGE'),
-          disabledPackage('desktop-macos-x64-dmg', 'DESKTOP_MACOS', 'DMG'),
-          disabledPackage('desktop-macos-aarch64-dmg', 'DESKTOP_MACOS', 'DMG'),
+          disabledPackage('windows-x64-desktop-msi', 'DESKTOP_WINDOWS', 'MSI'),
+          disabledPackage('windows-x64-desktop-exe', 'DESKTOP_WINDOWS', 'NSIS'),
+          disabledPackage('linux-debian-x64-desktop-deb', 'DESKTOP_LINUX', 'DEB'),
+          disabledPackage('linux-x64-desktop-appimage', 'DESKTOP_LINUX', 'APPIMAGE'),
+          disabledPackage('macos-x64-desktop-dmg', 'DESKTOP_MACOS', 'DMG'),
+          disabledPackage('macos-arm64-desktop-dmg', 'DESKTOP_MACOS', 'DMG'),
         ],
       },
     },
@@ -164,12 +164,12 @@ function installersForPlatform(platform) {
 
 function writeSbomEvidence(root, overrides = {}) {
   const packages = [
-    ['desktop-windows-msi', 'CycloneDX', 'desktop-windows-msi.cdx.json', '4'.repeat(64)],
-    ['desktop-windows-nsis', 'CycloneDX', 'desktop-windows-nsis.cdx.json', '5'.repeat(64)],
-    ['desktop-linux-deb', 'CycloneDX', 'desktop-linux-deb.cdx.json', '6'.repeat(64)],
-    ['desktop-linux-appimage', 'CycloneDX', 'desktop-linux-appimage.cdx.json', '7'.repeat(64)],
-    ['desktop-macos-x64-dmg', 'CycloneDX', 'desktop-macos-x64-dmg.cdx.json', '8'.repeat(64)],
-    ['desktop-macos-aarch64-dmg', 'CycloneDX', 'desktop-macos-aarch64-dmg.cdx.json', '9'.repeat(64)],
+    ['windows-x64-desktop-msi', 'CycloneDX', 'windows-x64-desktop-msi.cdx.json', '4'.repeat(64)],
+    ['windows-x64-desktop-exe', 'CycloneDX', 'windows-x64-desktop-exe.cdx.json', '5'.repeat(64)],
+    ['linux-debian-x64-desktop-deb', 'CycloneDX', 'linux-debian-x64-desktop-deb.cdx.json', '6'.repeat(64)],
+    ['linux-x64-desktop-appimage', 'CycloneDX', 'linux-x64-desktop-appimage.cdx.json', '7'.repeat(64)],
+    ['macos-x64-desktop-dmg', 'CycloneDX', 'macos-x64-desktop-dmg.cdx.json', '8'.repeat(64)],
+    ['macos-arm64-desktop-dmg', 'CycloneDX', 'macos-arm64-desktop-dmg.cdx.json', '9'.repeat(64)],
   ].map(([packageId, format, fileName, sha256]) => ({
     packageId,
     format,
@@ -264,9 +264,9 @@ writeSbomEvidence(blockedRoot, {
   },
   blockers: [
     {
-      packageId: 'desktop-linux-deb',
+      packageId: 'linux-debian-x64-desktop-deb',
       code: 'PACKAGE_SBOM_MISSING',
-      message: 'Missing SBOM file for desktop-linux-deb.',
+      message: 'Missing SBOM file for linux-debian-x64-desktop-deb.',
     },
   ],
 });
@@ -317,7 +317,7 @@ assert.ok(
   blockedReport.blockers.some(
     (blocker) =>
       blocker.domain === 'sbom-evidence' &&
-      blocker.packageId === 'desktop-linux-deb' &&
+      blocker.packageId === 'linux-debian-x64-desktop-deb' &&
       blocker.code === 'PACKAGE_SBOM_MISSING',
   ),
 );

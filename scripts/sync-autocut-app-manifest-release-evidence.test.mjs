@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -14,12 +14,12 @@ import {
 } from './check-autocut-app-manifest-release-readiness.mjs';
 
 const packageSpecs = [
-  ['desktop-windows-msi', 'DESKTOP_WINDOWS', 'MSI', 'x64', 'windows-x86_64', 'msi', 'Valid', 'not-applicable'],
-  ['desktop-windows-nsis', 'DESKTOP_WINDOWS', 'EXE', 'x64', 'windows-x86_64', 'nsis', 'Valid', 'not-applicable'],
-  ['desktop-linux-deb', 'DESKTOP_LINUX', 'DEB', 'x64', 'linux-x86_64', 'deb', 'verified', 'not-applicable'],
-  ['desktop-linux-appimage', 'DESKTOP_LINUX', 'APPIMAGE', 'x64', 'linux-x86_64', 'appimage', 'verified', 'not-applicable'],
-  ['desktop-macos-x64-dmg', 'DESKTOP_MACOS', 'DMG', 'x64', 'macos-x86_64', 'dmg', 'valid', 'notarized'],
-  ['desktop-macos-aarch64-dmg', 'DESKTOP_MACOS', 'DMG', 'aarch64', 'macos-aarch64', 'dmg', 'valid', 'notarized'],
+  ['windows-x64-desktop-msi', 'DESKTOP_WINDOWS', 'MSI', 'x64', 'windows-x86_64', 'msi', 'Valid', 'not-applicable'],
+  ['windows-x64-desktop-exe', 'DESKTOP_WINDOWS', 'EXE', 'x64', 'windows-x86_64', 'nsis', 'Valid', 'not-applicable'],
+  ['linux-debian-x64-desktop-deb', 'DESKTOP_LINUX', 'DEB', 'x64', 'linux-x86_64', 'deb', 'verified', 'not-applicable'],
+  ['linux-x64-desktop-appimage', 'DESKTOP_LINUX', 'APPIMAGE', 'x64', 'linux-x86_64', 'appimage', 'verified', 'not-applicable'],
+  ['macos-x64-desktop-dmg', 'DESKTOP_MACOS', 'DMG', 'x64', 'macos-x86_64', 'dmg', 'valid', 'notarized'],
+  ['macos-arm64-desktop-dmg', 'DESKTOP_MACOS', 'DMG', 'arm64', 'macos-aarch64', 'dmg', 'valid', 'notarized'],
 ];
 
 function tempRoot(name) {
@@ -45,11 +45,11 @@ function writeManifest(root) {
     },
     publish: {
       status: 'INACTIVE',
-      defaultPackageId: 'desktop-windows-msi',
+      defaultPackageId: 'windows-x64-desktop-msi',
     },
     artifacts: {
       installConfig: {
-        defaultPackageId: 'desktop-windows-msi',
+        defaultPackageId: 'windows-x64-desktop-msi',
         packages: packageSpecs.map(([id, platform, packageFormat, architecture]) => ({
           id,
           name: `SDKWork Video Cut ${id}`,
@@ -256,7 +256,7 @@ assert.equal(
 const missingSbomRoot = tempRoot('autocut-manifest-sync-missing-sbom');
 writeManifest(missingSbomRoot);
 writeReleaseEvidenceSet(missingSbomRoot);
-writeSbomEvidence(missingSbomRoot, { missingPackageId: 'desktop-linux-deb' });
+writeSbomEvidence(missingSbomRoot, { missingPackageId: 'linux-debian-x64-desktop-deb' });
 const missingSbomResult = syncAutoCutAppManifestReleaseEvidence({
   rootDir: missingSbomRoot,
   activateCommercial: true,
@@ -266,7 +266,7 @@ assert.equal(missingSbomResult.commercialActivationReady, false);
 assert.equal(missingSbomResult.manifestWritten, false);
 assert.deepEqual(
   missingSbomResult.blockers.map((blocker) => `${blocker.packageId}:${blocker.code}`),
-  ['desktop-linux-deb:PACKAGE_SBOM_EVIDENCE_MISSING'],
+  ['linux-debian-x64-desktop-deb:PACKAGE_SBOM_EVIDENCE_MISSING'],
 );
 assert.equal(readJson(path.join(missingSbomRoot, 'sdkwork.app.config.json')).publish.status, 'INACTIVE');
 
@@ -314,7 +314,7 @@ const missingSignatureRoot = tempRoot('autocut-manifest-sync-missing-signature')
 writeManifest(missingSignatureRoot);
 writeReleaseEvidenceSet(missingSignatureRoot, {
   signatureReady: false,
-  signaturePackageId: 'desktop-windows-msi',
+  signaturePackageId: 'windows-x64-desktop-msi',
 });
 writeSbomEvidence(missingSignatureRoot);
 const missingSignatureResult = syncAutoCutAppManifestReleaseEvidence({

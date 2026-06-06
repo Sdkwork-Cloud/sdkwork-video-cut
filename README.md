@@ -1,4 +1,4 @@
-# SDKWork Video Cut
+﻿# SDKWork Video Cut
 
 SDKWork Video Cut is a Tauri desktop shell for the AutoCut frontend modules in
 `packages/sdkwork-autocut-*`.
@@ -150,14 +150,16 @@ pnpm release:smoke-preflight -- --platform macos-aarch64 --require-bundled
 pnpm release:multiplatform-ready
 ```
 
-The GitHub workflow `.github/workflows/autocut-desktop-release.yml` builds the
-desktop app on native hosted runners: `windows-latest`, `ubuntu-22.04`, and
-`macos-latest` for both `x86_64-apple-darwin` and `aarch64-apple-darwin`.
-Before each native package build, the workflow prepares platform sidecars:
-Windows re-verifies the approved Git LFS FFmpeg and `whisper-cli` resources,
-and Linux/macOS run `pnpm prepare:release-sidecars` to fetch or build the
-approved platform-native FFmpeg and Whisper CLI tools, then write the same
-integrity manifests used by local packaging.
+GitHub packaging is standardized through `sdkwork.workflow.json` and the thin
+`.github/workflows/package.yml` entrypoint, which calls
+`sdkwork-github-workflow`. The standard package targets build the desktop app on
+native hosted runners: `windows-latest`, `ubuntu-22.04`, `macos-15-intel`, and
+`macos-latest` for `x86_64-apple-darwin` and `aarch64-apple-darwin`. Before each
+native package build, the lifecycle prepares platform sidecars: Windows
+re-verifies the approved Git LFS FFmpeg and `whisper-cli` resources, and
+Linux/macOS run `pnpm prepare:release-sidecars` to fetch or build the approved
+platform-native FFmpeg and Whisper CLI tools, then write the same integrity
+manifests used by local packaging.
 Each runner writes a platform release evidence file under `artifacts/release/`:
 `autocut-release-evidence-windows-x86_64.json`,
 `autocut-release-evidence-linux-x86_64.json`,
@@ -275,8 +277,8 @@ must never enter a release SBOM.
 `artifacts/release/sbom/` into `artifacts/release/autocut-sbom-evidence.json`.
 Each desktop release package must have exactly one CycloneDX JSON
 (`*.cdx.json` or `*.cyclonedx.json`) or SPDX JSON (`*.spdx.json`) file named
-after the package id, for example `desktop-windows-msi.cdx.json` or
-`desktop-linux-deb.spdx.json`. The command computes byte size and SHA-256 from
+after the package id, for example `windows-x64-desktop-msi.cdx.json` or
+`linux-debian-x64-desktop-deb.spdx.json`. The command computes byte size and SHA-256 from
 the file contents and fails closed for missing, empty, invalid, unknown, or
 duplicate SBOM files. Use `--release-tag <tag>` to bind the evidence URLs to the
 GitHub Release tag; unsigned preview CI may add `--allow-blocked` to publish the

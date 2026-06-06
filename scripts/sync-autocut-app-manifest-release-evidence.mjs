@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -18,12 +18,12 @@ const defaultSbomEvidenceRelativePath = 'artifacts/release/autocut-sbom-evidence
 const requiredPlatforms = ['windows-x86_64', 'linux-x86_64', 'macos-x86_64', 'macos-aarch64'];
 const sha256Pattern = /^[a-f0-9]{64}$/u;
 const packageMappings = [
-  { packageId: 'desktop-windows-msi', platform: 'windows-x86_64', kind: 'msi' },
-  { packageId: 'desktop-windows-nsis', platform: 'windows-x86_64', kind: 'nsis' },
-  { packageId: 'desktop-linux-deb', platform: 'linux-x86_64', kind: 'deb' },
-  { packageId: 'desktop-linux-appimage', platform: 'linux-x86_64', kind: 'appimage' },
-  { packageId: 'desktop-macos-x64-dmg', platform: 'macos-x86_64', kind: 'dmg' },
-  { packageId: 'desktop-macos-aarch64-dmg', platform: 'macos-aarch64', kind: 'dmg' },
+  { packageId: 'windows-x64-desktop-msi', platform: 'windows-x86_64', kind: 'msi' },
+  { packageId: 'windows-x64-desktop-exe', platform: 'windows-x86_64', kind: 'nsis' },
+  { packageId: 'linux-debian-x64-desktop-deb', platform: 'linux-x86_64', kind: 'deb' },
+  { packageId: 'linux-x64-desktop-appimage', platform: 'linux-x86_64', kind: 'appimage' },
+  { packageId: 'macos-x64-desktop-dmg', platform: 'macos-x86_64', kind: 'dmg' },
+  { packageId: 'macos-arm64-desktop-dmg', platform: 'macos-aarch64', kind: 'dmg' },
 ];
 
 export function syncAutoCutAppManifestReleaseEvidence({

@@ -1406,8 +1406,11 @@ const multiplatformReleaseReadinessSource = fs.existsSync(path.join(rootDir, 'sc
 const commercialReleaseReadinessSource = fs.existsSync(path.join(rootDir, 'scripts/check-autocut-commercial-release-readiness.mjs'))
   ? fs.readFileSync(path.join(rootDir, 'scripts/check-autocut-commercial-release-readiness.mjs'), 'utf8')
   : '';
-const desktopReleaseWorkflowSource = fs.existsSync(path.join(rootDir, '.github/workflows/autocut-desktop-release.yml'))
-  ? fs.readFileSync(path.join(rootDir, '.github/workflows/autocut-desktop-release.yml'), 'utf8')
+const sdkworkWorkflowConfigSource = fs.existsSync(path.join(rootDir, 'sdkwork.workflow.json'))
+  ? fs.readFileSync(path.join(rootDir, 'sdkwork.workflow.json'), 'utf8')
+  : '';
+const packageWorkflowSource = fs.existsSync(path.join(rootDir, '.github/workflows/package.yml'))
+  ? fs.readFileSync(path.join(rootDir, '.github/workflows/package.yml'), 'utf8')
   : '';
 const nativeSqliteBaselineSource = fs.existsSync(path.join(rootDir, requiredNativeSqliteBaselinePath))
   ? fs.readFileSync(path.join(rootDir, requiredNativeSqliteBaselinePath), 'utf8')
@@ -3039,9 +3042,9 @@ assertRule(
     packageSbomSource.includes('unresolved AutoCut npm runtime dependency versions') &&
     packageSbomSource.includes('--platform') &&
     packageSbomSource.includes('--package-id') &&
-    packageSbomSource.includes('desktop-windows-msi') &&
-    packageSbomSource.includes('desktop-linux-appimage') &&
-    packageSbomSource.includes('desktop-macos-aarch64-dmg'),
+    packageSbomSource.includes('windows-x64-desktop-msi') &&
+    packageSbomSource.includes('linux-x64-desktop-appimage') &&
+    packageSbomSource.includes('macos-arm64-desktop-dmg'),
   'per-package SBOM writer creates deterministic CycloneDX SBOMs from locked recursive npm and Cargo runtime dependency metadata without unresolved versions',
 );
 assertRule(
@@ -3051,12 +3054,12 @@ assertRule(
 assertRule(
   sbomEvidenceSource.includes('2026-05-08.autocut-sbom-evidence.v1') &&
     sbomEvidenceSource.includes('artifacts/release/sbom') &&
-    sbomEvidenceSource.includes('desktop-windows-msi') &&
-    sbomEvidenceSource.includes('desktop-windows-nsis') &&
-    sbomEvidenceSource.includes('desktop-linux-deb') &&
-    sbomEvidenceSource.includes('desktop-linux-appimage') &&
-    sbomEvidenceSource.includes('desktop-macos-x64-dmg') &&
-    sbomEvidenceSource.includes('desktop-macos-aarch64-dmg') &&
+    sbomEvidenceSource.includes('windows-x64-desktop-msi') &&
+    sbomEvidenceSource.includes('windows-x64-desktop-exe') &&
+    sbomEvidenceSource.includes('linux-debian-x64-desktop-deb') &&
+    sbomEvidenceSource.includes('linux-x64-desktop-appimage') &&
+    sbomEvidenceSource.includes('macos-x64-desktop-dmg') &&
+    sbomEvidenceSource.includes('macos-arm64-desktop-dmg') &&
     sbomEvidenceSource.includes('crypto.createHash(\'sha256\')') &&
     sbomEvidenceSource.includes('PACKAGE_SBOM_MISSING') &&
     sbomEvidenceSource.includes('PACKAGE_SBOM_FILE_EMPTY') &&
@@ -3196,39 +3199,30 @@ assertRule(
   'preview and commercial release readiness gates fail closed when the approved local Whisper sidecar is missing or unverifiable',
 );
 assertRule(
-  desktopReleaseWorkflowSource.includes('name: AutoCut Desktop Multiplatform Release') &&
-    desktopReleaseWorkflowSource.includes('build-windows') &&
-    desktopReleaseWorkflowSource.includes('build-linux') &&
-    desktopReleaseWorkflowSource.includes('build-macos') &&
-    desktopReleaseWorkflowSource.includes('windows-latest') &&
-    desktopReleaseWorkflowSource.includes('ubuntu-22.04') &&
-    desktopReleaseWorkflowSource.includes('macos-latest') &&
-    desktopReleaseWorkflowSource.includes('pnpm tauri:build --target x86_64-unknown-linux-gnu') &&
-    desktopReleaseWorkflowSource.includes('pnpm tauri:build --target ${{ matrix.rust_target }}') &&
-    !desktopReleaseWorkflowSource.includes('pnpm tauri:build -- --target') &&
-    !desktopReleaseWorkflowSource.includes('tauri-apps/tauri-action') &&
-    desktopReleaseWorkflowSource.includes('pnpm release:package-sbom -- --platform windows-x86_64') &&
-    desktopReleaseWorkflowSource.includes('pnpm release:package-sbom -- --platform linux-x86_64') &&
-    desktopReleaseWorkflowSource.includes('pnpm release:package-sbom -- --platform ${{ matrix.platform }}') &&
-    desktopReleaseWorkflowSource.includes('artifacts/release/sbom') &&
-    desktopReleaseWorkflowSource.includes('pnpm release:sbom-evidence -- --release-tag "${{ inputs.release_tag }}" --allow-blocked') &&
-    desktopReleaseWorkflowSource.includes('pnpm release:sync-app-manifest -- --dry-run --allow-blocked') &&
-    desktopReleaseWorkflowSource.includes('pnpm release:app-manifest-ready') &&
-    desktopReleaseWorkflowSource.includes('pnpm release:multiplatform-ready') &&
-    desktopReleaseWorkflowSource.includes('pnpm release:evidence-status -- --release-tag "${{ inputs.release_tag }}" --allow-dirty --skip-windows-installer-service --allow-blocked') &&
-    desktopReleaseWorkflowSource.includes('release:installer-signature -- --platform ${{ matrix.platform }}') &&
-    desktopReleaseWorkflowSource.includes('autocut-sbom-evidence.json') &&
-    desktopReleaseWorkflowSource.includes('autocut-app-manifest-release-evidence-sync.txt') &&
-    desktopReleaseWorkflowSource.includes('autocut-app-manifest-release-readiness.txt') &&
-    desktopReleaseWorkflowSource.includes('autocut-release-evidence-status.json') &&
-    desktopReleaseWorkflowSource.includes('node scripts/check-autocut-release-evidence-status.mjs --release-tag "${{ inputs.release_tag }}" --allow-dirty --skip-windows-installer-service --allow-blocked --json > artifacts/release/autocut-release-evidence-status.json') &&
-    !desktopReleaseWorkflowSource.includes('pnpm release:evidence-status -- --release-tag "${{ inputs.release_tag }}" --allow-dirty --skip-windows-installer-service --allow-blocked --json > artifacts/release/autocut-release-evidence-status.json') &&
-    desktopReleaseWorkflowSource.includes('releaseVersion="${{ inputs.release_tag }}"') &&
-    desktopReleaseWorkflowSource.includes('releaseVersion="${releaseVersion#v}"') &&
-    desktopReleaseWorkflowSource.includes('SDKWork Video Cut_${releaseVersion}_${{ matrix.app_arch }}.app.tar.gz') &&
-    (desktopReleaseWorkflowSource.match(/ref: \$\{\{ inputs\.release_tag \}\}/gu) ?? []).length === 4 &&
-    desktopReleaseWorkflowSource.includes('artifacts/release/autocut-release-evidence-${{ matrix.platform }}.json'),
-  'GitHub workflow builds native Windows, Linux, Intel macOS, and Apple Silicon macOS desktop release artifacts with app manifest and aggregate readiness evidence without clobbering macOS app archives',
+  !fs.existsSync(path.join(rootDir, '.github/workflows/autocut-desktop-release.yml')) &&
+    packageWorkflowSource.includes('name: Package Application') &&
+    packageWorkflowSource.includes('Sdkwork-Cloud/sdkwork-github-workflow/.github/workflows/sdkwork-package.yml@b0829529b9277a3da32b90c2d36ff34ff09fa832') &&
+    packageWorkflowSource.includes('framework_ref: b0829529b9277a3da32b90c2d36ff34ff09fa832') &&
+    packageWorkflowSource.includes('config_path: sdkwork.workflow.json') &&
+    !packageWorkflowSource.includes('gh release upload') &&
+    !packageWorkflowSource.includes('actions/upload-artifact') &&
+    sdkworkWorkflowConfigSource.includes('"windows-x64-desktop-msi"') &&
+    sdkworkWorkflowConfigSource.includes('"windows-x64-desktop-exe"') &&
+    sdkworkWorkflowConfigSource.includes('"linux-debian-x64-desktop-deb"') &&
+    sdkworkWorkflowConfigSource.includes('"linux-x64-desktop-appimage"') &&
+    sdkworkWorkflowConfigSource.includes('"macos-x64-desktop-dmg"') &&
+    sdkworkWorkflowConfigSource.includes('"macos-arm64-desktop-dmg"') &&
+    sdkworkWorkflowConfigSource.includes('"distribution": "debian"') &&
+    sdkworkWorkflowConfigSource.includes('"architecture": "arm64"') &&
+    sdkworkWorkflowConfigSource.includes('pnpm tauri:build --target x86_64-unknown-linux-gnu') &&
+    sdkworkWorkflowConfigSource.includes('pnpm tauri:build --target $rustTarget') &&
+    !sdkworkWorkflowConfigSource.includes('pnpm tauri:build -- --target') &&
+    !sdkworkWorkflowConfigSource.includes('tauri-apps/tauri-action') &&
+    sdkworkWorkflowConfigSource.includes('release:package-sbom -- --package-id $env:SDKWORK_PACKAGE_ID') &&
+    sdkworkWorkflowConfigSource.includes('release:installer-signature -- --platform $platform') &&
+    sdkworkWorkflowConfigSource.includes('SDKWork Video Cut_$($env:SDKWORK_PACKAGE_VERSION)_$appArch.app.tar.gz') &&
+    sdkworkWorkflowConfigSource.includes('artifacts/release/autocut-release-evidence-$platform.json'),
+  'GitHub packaging uses sdkwork-github-workflow with standard package ids while preserving native release evidence, SBOM, and macOS app archive handling',
 );
 assertRule(
   rootPackage.scripts?.['release:commercial-ready'] === 'node scripts/check-autocut-commercial-release-readiness.mjs',
