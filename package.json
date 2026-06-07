@@ -73,7 +73,8 @@
     "tauri:build": "pnpm --filter @sdkwork/autocut-desktop tauri:build"
   },
   "dependencies": {
-    "@sdkwork/autocut-desktop": "workspace:*"
+    "@sdkwork/autocut-desktop": "workspace:*",
+    "@sdkwork/drive-app-sdk": "workspace:*"
   },
   "devDependencies": {
     "@tailwindcss/vite": "catalog:",
