@@ -78,85 +78,109 @@
   },
   "targets": [
     {
-      "id": "windows-x64-desktop-msi",
+      "id": "windows-x64-standalone-desktop-msi",
       "profile": "desktop",
       "platform": "windows",
       "architecture": "x64",
-      "formats": ["msi"],
+      "formats": [
+        "msi"
+      ],
       "runner": "windows-latest",
       "outputGlobs": [
         "packages/sdkwork-autocut-desktop/src-tauri/target/release/bundle/msi/*.msi",
         "artifacts/release/autocut-release-evidence-windows-x86_64.json",
-        "artifacts/release/sbom/windows-x64-desktop-msi.cdx.json"
-      ]
+        "artifacts/release/sbom/windows-x64-standalone-desktop-msi.cdx.json"
+      ],
+      "deploymentProfile": "standalone",
+      "runtimeTarget": "desktop"
     },
     {
-      "id": "windows-x64-desktop-exe",
+      "id": "windows-x64-standalone-desktop-exe",
       "profile": "desktop",
       "platform": "windows",
       "architecture": "x64",
-      "formats": ["exe"],
+      "formats": [
+        "exe"
+      ],
       "runner": "windows-latest",
       "outputGlobs": [
         "packages/sdkwork-autocut-desktop/src-tauri/target/release/bundle/nsis/*.exe",
         "artifacts/release/autocut-release-evidence-windows-x86_64.json",
-        "artifacts/release/sbom/windows-x64-desktop-exe.cdx.json"
-      ]
+        "artifacts/release/sbom/windows-x64-standalone-desktop-exe.cdx.json"
+      ],
+      "deploymentProfile": "standalone",
+      "runtimeTarget": "desktop"
     },
     {
-      "id": "linux-debian-x64-desktop-deb",
+      "id": "linux-debian-x64-standalone-desktop-deb",
       "profile": "desktop",
       "platform": "linux",
       "distribution": "debian",
       "architecture": "x64",
-      "formats": ["deb"],
+      "formats": [
+        "deb"
+      ],
       "runner": "ubuntu-22.04",
       "outputGlobs": [
         "packages/sdkwork-autocut-desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb",
         "artifacts/release/autocut-release-evidence-linux-x86_64.json",
-        "artifacts/release/sbom/linux-debian-x64-desktop-deb.cdx.json"
-      ]
+        "artifacts/release/sbom/linux-debian-x64-standalone-desktop-deb.cdx.json"
+      ],
+      "deploymentProfile": "standalone",
+      "runtimeTarget": "desktop"
     },
     {
-      "id": "linux-x64-desktop-appimage",
+      "id": "linux-x64-standalone-desktop-appimage",
       "profile": "desktop",
       "platform": "linux",
       "architecture": "x64",
-      "formats": ["appimage"],
+      "formats": [
+        "appimage"
+      ],
       "runner": "ubuntu-22.04",
       "outputGlobs": [
         "packages/sdkwork-autocut-desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage",
         "artifacts/release/autocut-release-evidence-linux-x86_64.json",
-        "artifacts/release/sbom/linux-x64-desktop-appimage.cdx.json"
-      ]
+        "artifacts/release/sbom/linux-x64-standalone-desktop-appimage.cdx.json"
+      ],
+      "deploymentProfile": "standalone",
+      "runtimeTarget": "desktop"
     },
     {
-      "id": "macos-x64-desktop-dmg",
+      "id": "macos-x64-standalone-desktop-dmg",
       "profile": "desktop",
       "platform": "macos",
       "architecture": "x64",
-      "formats": ["dmg"],
+      "formats": [
+        "dmg"
+      ],
       "runner": "macos-15-intel",
       "outputGlobs": [
         "packages/sdkwork-autocut-desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg",
         "packages/sdkwork-autocut-desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz",
         "artifacts/release/autocut-release-evidence-macos-x86_64.json",
-        "artifacts/release/sbom/macos-x64-desktop-dmg.cdx.json"
-      ]
+        "artifacts/release/sbom/macos-x64-standalone-desktop-dmg.cdx.json"
+      ],
+      "deploymentProfile": "standalone",
+      "runtimeTarget": "desktop"
     },
     {
-      "id": "macos-arm64-desktop-dmg",
+      "id": "macos-arm64-standalone-desktop-dmg",
       "profile": "desktop",
       "platform": "macos",
       "architecture": "arm64",
-      "formats": ["dmg"],
+      "formats": [
+        "dmg"
+      ],
       "runner": "macos-latest",
       "outputGlobs": [
         "packages/sdkwork-autocut-desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg",
         "packages/sdkwork-autocut-desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz",
         "artifacts/release/autocut-release-evidence-macos-aarch64.json",
-        "artifacts/release/sbom/macos-arm64-desktop-dmg.cdx.json"
-      ]
+        "artifacts/release/sbom/macos-arm64-standalone-desktop-dmg.cdx.json"
+      ],
+      "deploymentProfile": "standalone",
+      "runtimeTarget": "desktop"
     }
   ],
   "security": {

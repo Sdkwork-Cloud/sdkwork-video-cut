@@ -1,4 +1,4 @@
-﻿{
+{
   "schemaVersion": 3,
   "kind": "sdkwork.app",
   "app": {
@@ -27,7 +27,6 @@
     "grantMode": "current",
     "platform": "WEB",
     "appId": null,
-    "tenantId": "20001",
     "organizationId": null
   },
   "runtime": {
@@ -40,7 +39,11 @@
       "DIRECT_DOWNLOAD"
     ],
     "defaultPlatform": "DESKTOP_WINDOWS",
-    "defaultArchitecture": "x64"
+    "defaultArchitecture": "x64",
+    "supportedDeploymentProfiles": [
+      "standalone"
+    ],
+    "defaultDeploymentProfile": "standalone"
   },
   "media": {
     "icons": {
@@ -134,7 +137,7 @@
       "DESKTOP_MACOS",
       "DESKTOP_LINUX"
     ],
-    "defaultPackageId": "windows-x64-desktop-msi",
+    "defaultPackageId": "windows-x64-standalone-desktop-msi",
     "storeUrl": "https://sdkwork.com/apps/sdkwork-video-cut",
     "stores": [],
     "config": {
@@ -162,13 +165,13 @@
   },
   "artifacts": {
     "installConfig": {
-      "defaultPackageId": "windows-x64-desktop-msi",
+      "defaultPackageId": "windows-x64-standalone-desktop-msi",
       "installCommand": "sdkwork install sdkwork-video-cut",
       "launchCommand": "sdkwork open sdkwork-video-cut",
       "uninstallCommand": "sdkwork uninstall sdkwork-video-cut",
       "packages": [
         {
-          "id": "windows-x64-desktop-msi",
+          "id": "windows-x64-standalone-desktop-msi",
           "name": "SDKWork Video Cut Windows MSI Installer",
           "sourceType": "BINARY_URL",
           "packageFormat": "MSI",
@@ -179,10 +182,12 @@
             "releaseAsset": true,
             "commercialActivationRequired": "Enable only after GitHub Release asset digest, Authenticode signature evidence, and SBOM evidence are recorded."
           },
-          "architecture": "x64"
+          "architecture": "x64",
+          "deploymentProfile": "standalone",
+          "runtimeTarget": "desktop"
         },
         {
-          "id": "windows-x64-desktop-exe",
+          "id": "windows-x64-standalone-desktop-exe",
           "name": "SDKWork Video Cut Windows NSIS Installer",
           "sourceType": "BINARY_URL",
           "packageFormat": "EXE",
@@ -193,10 +198,12 @@
             "releaseAsset": true,
             "commercialActivationRequired": "Enable only after GitHub Release asset digest, Authenticode signature evidence, and SBOM evidence are recorded."
           },
-          "architecture": "x64"
+          "architecture": "x64",
+          "deploymentProfile": "standalone",
+          "runtimeTarget": "desktop"
         },
         {
-          "id": "linux-debian-x64-desktop-deb",
+          "id": "linux-debian-x64-standalone-desktop-deb",
           "name": "SDKWork Video Cut Linux DEB Package",
           "sourceType": "BINARY_URL",
           "packageFormat": "DEB",
@@ -210,10 +217,12 @@
               "distro": "debian-compatible"
             }
           },
-          "architecture": "x64"
+          "architecture": "x64",
+          "deploymentProfile": "standalone",
+          "runtimeTarget": "desktop"
         },
         {
-          "id": "linux-x64-desktop-appimage",
+          "id": "linux-x64-standalone-desktop-appimage",
           "name": "SDKWork Video Cut Linux AppImage",
           "sourceType": "BINARY_URL",
           "packageFormat": "APPIMAGE",
@@ -227,10 +236,12 @@
               "distro": "generic"
             }
           },
-          "architecture": "x64"
+          "architecture": "x64",
+          "deploymentProfile": "standalone",
+          "runtimeTarget": "desktop"
         },
         {
-          "id": "macos-x64-desktop-dmg",
+          "id": "macos-x64-standalone-desktop-dmg",
           "name": "SDKWork Video Cut macOS Intel DMG",
           "sourceType": "BINARY_URL",
           "packageFormat": "DMG",
@@ -241,10 +252,12 @@
             "releaseAsset": true,
             "commercialActivationRequired": "Enable only after GitHub Release asset digest, Developer ID signing, notarization, and SBOM evidence are recorded."
           },
-          "architecture": "x64"
+          "architecture": "x64",
+          "deploymentProfile": "standalone",
+          "runtimeTarget": "desktop"
         },
         {
-          "id": "macos-arm64-desktop-dmg",
+          "id": "macos-arm64-standalone-desktop-dmg",
           "name": "SDKWork Video Cut macOS Apple Silicon DMG",
           "sourceType": "BINARY_URL",
           "packageFormat": "DMG",
@@ -255,7 +268,9 @@
             "releaseAsset": true,
             "commercialActivationRequired": "Enable only after GitHub Release asset digest, Developer ID signing, notarization, and SBOM evidence are recorded."
           },
-          "architecture": "arm64"
+          "architecture": "arm64",
+          "deploymentProfile": "standalone",
+          "runtimeTarget": "desktop"
         }
       ],
       "metadata": {
@@ -287,12 +302,12 @@
           "Commercial release activation remains blocked until signature, notarization, package trust, checksum, and SBOM evidence is complete"
         ],
         "packageIds": [
-          "windows-x64-desktop-msi",
-          "windows-x64-desktop-exe",
-          "linux-debian-x64-desktop-deb",
-          "linux-x64-desktop-appimage",
-          "macos-x64-desktop-dmg",
-          "macos-arm64-desktop-dmg"
+          "windows-x64-standalone-desktop-msi",
+          "windows-x64-standalone-desktop-exe",
+          "linux-debian-x64-standalone-desktop-deb",
+          "linux-x64-standalone-desktop-appimage",
+          "macos-x64-standalone-desktop-dmg",
+          "macos-arm64-standalone-desktop-dmg"
         ],
         "publishedAt": "2026-05-17T00:00:00Z",
         "current": true,
@@ -325,12 +340,12 @@
           "Commercial release activation remains blocked until signature, notarization, package trust, checksum, and SBOM evidence is complete"
         ],
         "packageIds": [
-          "windows-x64-desktop-msi",
-          "windows-x64-desktop-exe",
-          "linux-debian-x64-desktop-deb",
-          "linux-x64-desktop-appimage",
-          "macos-x64-desktop-dmg",
-          "macos-arm64-desktop-dmg"
+          "windows-x64-standalone-desktop-msi",
+          "windows-x64-standalone-desktop-exe",
+          "linux-debian-x64-standalone-desktop-deb",
+          "linux-x64-standalone-desktop-appimage",
+          "macos-x64-standalone-desktop-dmg",
+          "macos-arm64-standalone-desktop-dmg"
         ],
         "publishedAt": "2026-05-17T00:00:00Z",
         "current": false,
@@ -363,12 +378,12 @@
           "Large-media and STT performance checks cover audio-first extraction, chunked processing, GPU runtime preparation, and cloud-ready execution policy"
         ],
         "packageIds": [
-          "windows-x64-desktop-msi",
-          "windows-x64-desktop-exe",
-          "linux-debian-x64-desktop-deb",
-          "linux-x64-desktop-appimage",
-          "macos-x64-desktop-dmg",
-          "macos-arm64-desktop-dmg"
+          "windows-x64-standalone-desktop-msi",
+          "windows-x64-standalone-desktop-exe",
+          "linux-debian-x64-standalone-desktop-deb",
+          "linux-x64-standalone-desktop-appimage",
+          "macos-x64-standalone-desktop-dmg",
+          "macos-arm64-standalone-desktop-dmg"
         ],
         "publishedAt": "2026-05-17T00:00:00Z",
         "current": false,
@@ -401,12 +416,12 @@
           "Commercial release policy requires checksums, installer signatures, and SBOM evidence"
         ],
         "packageIds": [
-          "windows-x64-desktop-msi",
-          "windows-x64-desktop-exe",
-          "linux-debian-x64-desktop-deb",
-          "linux-x64-desktop-appimage",
-          "macos-x64-desktop-dmg",
-          "macos-arm64-desktop-dmg"
+          "windows-x64-standalone-desktop-msi",
+          "windows-x64-standalone-desktop-exe",
+          "linux-debian-x64-standalone-desktop-deb",
+          "linux-x64-standalone-desktop-appimage",
+          "macos-x64-standalone-desktop-dmg",
+          "macos-arm64-standalone-desktop-dmg"
         ],
         "publishedAt": "2026-05-09T00:00:00Z",
         "current": false,
