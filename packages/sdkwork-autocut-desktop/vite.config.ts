@@ -1,7 +1,10 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
-import { defineConfig } from 'vite';
+import { fileURLToPath } from 'node:url';
+import { defineConfig, loadEnv } from 'vite';
+
+const appRoot = path.dirname(fileURLToPath(import.meta.url));
 
 function createAutoCutManualChunk(id: string): string | undefined {
   if (id.includes('/node_modules/react/') || id.includes('/node_modules/react-dom/') || id.includes('/node_modules/react-router-dom/')) {
@@ -32,8 +35,12 @@ function createAutoCutManualChunk(id: string): string | undefined {
   return undefined;
 }
 
-export default defineConfig(() => {
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, appRoot, '');
   return {
+    define: {
+      'process.env.SDKWORK_ACCESS_TOKEN': JSON.stringify(env.SDKWORK_ACCESS_TOKEN ?? ''),
+    },
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: [
