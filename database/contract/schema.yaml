@@ -1,0 +1,11 @@
+schema_version: 1
+kind: sdkwork.database.schema
+module_id: videocut
+contract_version: 0.1.0
+owner_team: video-cut-platform
+compliance_level: L2
+engines:
+  - postgres
+  - sqlite
+table_prefix: videocut_
+tables: []
