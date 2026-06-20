@@ -1,5 +1,21 @@
 {
   "schemaVersion": 1,
   "kind": "sdkwork.database.prefix-registry",
-  "prefixes": []
+  "prefixes": [
+    {
+      "prefix": "media_",
+      "owner": "video-cut-platform",
+      "domain": "videocut"
+    },
+    {
+      "prefix": "ops_",
+      "owner": "video-cut-platform",
+      "domain": "videocut"
+    },
+    {
+      "prefix": "studio_",
+      "owner": "video-cut-platform",
+      "domain": "videocut"
+    }
+  ]
 }

@@ -5,9 +5,13 @@ use rusqlite::{Connection, params};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use crate::database_contract::{AUTOCUT_DATABASE_CONTRACT_VERSION, autocut_database_contract};
+use crate::database_contract::autocut_database_contract;
 
-pub const AUTOCUT_SQLITE_BASELINE_MIGRATION_ID: &str = "2026-05-05.001_baseline";
+pub const LEGACY_SQLITE_BASELINE_MIGRATION_ID: &str = "2026-05-05.001_baseline";
+pub const AUTOCUT_SQLITE_BASELINE_MIGRATION_ID: &str =
+    env!("VIDEOCUT_FRAMEWORK_BASELINE_MIGRATION_ID");
+pub const VIDEOCUT_FRAMEWORK_CONTRACT_VERSION: &str = env!("VIDEOCUT_FRAMEWORK_CONTRACT_VERSION");
+pub const VIDEOCUT_FRAMEWORK_MODULE_ID: &str = env!("VIDEOCUT_FRAMEWORK_MODULE_ID");
 pub const AUTOCUT_SQLITE_BASELINE_SQL: &str =
     include_str!("../database/schema/sqlite/001_baseline.sql");
 
@@ -118,7 +122,7 @@ fn record_baseline_migration(connection: &Connection) -> Result<(), String> {
                 'applied',
                 datetime('now'),
                 ?4,
-                '{}',
+                ?5,
                 datetime('now'),
                 datetime('now'),
                 0
@@ -128,8 +132,9 @@ fn record_baseline_migration(connection: &Connection) -> Result<(), String> {
             params![
                 baseline_migration_uuid(),
                 AUTOCUT_SQLITE_BASELINE_MIGRATION_ID,
-                AUTOCUT_DATABASE_CONTRACT_VERSION,
+                VIDEOCUT_FRAMEWORK_CONTRACT_VERSION,
                 baseline_sql_checksum(),
+                baseline_migration_diagnostics_json(),
             ],
         )
         .map_err(|error| format!("record AutoCut sqlite baseline migration failed: {error}"))?;
@@ -169,10 +174,7 @@ pub fn verify_autocut_database_schema(
     }
 
     let applied_migrations = read_applied_migrations(connection)?;
-    if !applied_migrations
-        .iter()
-        .any(|migration_id| migration_id == AUTOCUT_SQLITE_BASELINE_MIGRATION_ID)
-    {
+    if !baseline_migration_recorded(&applied_migrations) {
         diagnostics.push(format!(
             "missing migration history {}",
             AUTOCUT_SQLITE_BASELINE_MIGRATION_ID
@@ -257,6 +259,20 @@ fn read_applied_migrations(connection: &Connection) -> Result<Vec<String>, Strin
     Ok(migration_ids)
 }
 
+fn baseline_migration_recorded(applied_migrations: &[String]) -> bool {
+    applied_migrations.iter().any(|migration_id| {
+        migration_id == AUTOCUT_SQLITE_BASELINE_MIGRATION_ID
+            || migration_id == LEGACY_SQLITE_BASELINE_MIGRATION_ID
+    })
+}
+
+fn baseline_migration_diagnostics_json() -> String {
+    format!(
+        r#"{{"frameworkModuleId":"{}","frameworkContractVersion":"{}"}}"#,
+        VIDEOCUT_FRAMEWORK_MODULE_ID, VIDEOCUT_FRAMEWORK_CONTRACT_VERSION
+    )
+}
+
 fn baseline_migration_uuid() -> &'static str {
     "00000000-0000-7000-8000-000000000001"
 }
@@ -313,6 +329,8 @@ mod tests {
             health.applied_migrations,
             vec![AUTOCUT_SQLITE_BASELINE_MIGRATION_ID.to_string()]
         );
+        assert_eq!(VIDEOCUT_FRAMEWORK_MODULE_ID, "videocut");
+        assert_eq!(VIDEOCUT_FRAMEWORK_CONTRACT_VERSION, "1.0.0");
 
         for table_name in [
             "media_asset",

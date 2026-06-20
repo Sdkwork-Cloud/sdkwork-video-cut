@@ -10,11 +10,11 @@
   ],
   "defaultEngine": "sqlite",
   "tablePrefix": "videocut_",
-  "contractVersion": "0.1.0",
+  "contractVersion": "1.0.0",
   "baselineStrategy": "baseline-plus-migrations",
   "modules": [],
   "lifecycle": {
-    "autoMigrate": false,
+    "autoMigrate": true,
     "seedOnBoot": false,
     "defaultSeedLocale": "zh-CN",
     "defaultSeedProfile": "standard",

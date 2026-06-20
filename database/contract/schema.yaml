@@ -1,11 +1,64 @@
 schema_version: 1
 kind: sdkwork.database.schema
 module_id: videocut
-contract_version: 0.1.0
+contract_version: 1.0.0
 owner_team: video-cut-platform
 compliance_level: L2
 engines:
-  - postgres
   - sqlite
-table_prefix: videocut_
-tables: []
+table_prefix: media_
+tables:
+  - name: ops_schema_migration
+    lifecycle_status: active
+    owner: video-cut-platform
+  - name: media_asset
+    lifecycle_status: active
+    owner: video-cut-platform
+  - name: media_artifact
+    lifecycle_status: active
+    owner: video-cut-platform
+  - name: ops_task
+    lifecycle_status: active
+    owner: video-cut-platform
+  - name: ops_task_event
+    lifecycle_status: active
+    owner: video-cut-platform
+  - name: ops_stage_run
+    lifecycle_status: active
+    owner: video-cut-platform
+  - name: ops_worker_lease
+    lifecycle_status: active
+    owner: video-cut-platform
+  - name: ops_workflow_run
+    lifecycle_status: active
+    owner: video-cut-platform
+  - name: ops_step_run
+    lifecycle_status: active
+    owner: video-cut-platform
+  - name: ops_step_item_run
+    lifecycle_status: active
+    owner: video-cut-platform
+  - name: media_text_track
+    lifecycle_status: active
+    owner: video-cut-platform
+  - name: media_text_segment
+    lifecycle_status: active
+    owner: video-cut-platform
+  - name: media_content_unit
+    lifecycle_status: active
+    owner: video-cut-platform
+  - name: studio_timeline
+    lifecycle_status: active
+    owner: video-cut-platform
+  - name: studio_clip
+    lifecycle_status: active
+    owner: video-cut-platform
+  - name: studio_clip_source_ref
+    lifecycle_status: active
+    owner: video-cut-platform
+  - name: studio_clip_processing_operation
+    lifecycle_status: active
+    owner: video-cut-platform
+  - name: studio_clip_event
+    lifecycle_status: active
+    owner: video-cut-platform

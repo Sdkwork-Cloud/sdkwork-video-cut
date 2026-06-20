@@ -1,5 +1,114 @@
 {
   "schemaVersion": 1,
   "kind": "sdkwork.database.table-registry",
-  "tables": []
+  "tables": [
+    {
+      "table_name": "ops_schema_migration",
+      "owner": "video-cut-platform",
+      "compliance_level": "L2",
+      "lifecycle_status": "active"
+    },
+    {
+      "table_name": "media_asset",
+      "owner": "video-cut-platform",
+      "compliance_level": "L2",
+      "lifecycle_status": "active"
+    },
+    {
+      "table_name": "media_artifact",
+      "owner": "video-cut-platform",
+      "compliance_level": "L2",
+      "lifecycle_status": "active"
+    },
+    {
+      "table_name": "ops_task",
+      "owner": "video-cut-platform",
+      "compliance_level": "L2",
+      "lifecycle_status": "active"
+    },
+    {
+      "table_name": "ops_task_event",
+      "owner": "video-cut-platform",
+      "compliance_level": "L2",
+      "lifecycle_status": "active"
+    },
+    {
+      "table_name": "ops_stage_run",
+      "owner": "video-cut-platform",
+      "compliance_level": "L2",
+      "lifecycle_status": "active"
+    },
+    {
+      "table_name": "ops_worker_lease",
+      "owner": "video-cut-platform",
+      "compliance_level": "L2",
+      "lifecycle_status": "active"
+    },
+    {
+      "table_name": "ops_workflow_run",
+      "owner": "video-cut-platform",
+      "compliance_level": "L2",
+      "lifecycle_status": "active"
+    },
+    {
+      "table_name": "ops_step_run",
+      "owner": "video-cut-platform",
+      "compliance_level": "L2",
+      "lifecycle_status": "active"
+    },
+    {
+      "table_name": "ops_step_item_run",
+      "owner": "video-cut-platform",
+      "compliance_level": "L2",
+      "lifecycle_status": "active"
+    },
+    {
+      "table_name": "media_text_track",
+      "owner": "video-cut-platform",
+      "compliance_level": "L2",
+      "lifecycle_status": "active"
+    },
+    {
+      "table_name": "media_text_segment",
+      "owner": "video-cut-platform",
+      "compliance_level": "L2",
+      "lifecycle_status": "active"
+    },
+    {
+      "table_name": "media_content_unit",
+      "owner": "video-cut-platform",
+      "compliance_level": "L2",
+      "lifecycle_status": "active"
+    },
+    {
+      "table_name": "studio_timeline",
+      "owner": "video-cut-platform",
+      "compliance_level": "L2",
+      "lifecycle_status": "active"
+    },
+    {
+      "table_name": "studio_clip",
+      "owner": "video-cut-platform",
+      "compliance_level": "L2",
+      "lifecycle_status": "active"
+    },
+    {
+      "table_name": "studio_clip_source_ref",
+      "owner": "video-cut-platform",
+      "compliance_level": "L2",
+      "lifecycle_status": "active"
+    },
+    {
+      "table_name": "studio_clip_processing_operation",
+      "owner": "video-cut-platform",
+      "compliance_level": "L2",
+      "lifecycle_status": "active"
+    },
+    {
+      "table_name": "studio_clip_event",
+      "owner": "video-cut-platform",
+      "compliance_level": "L2",
+      "lifecycle_status": "active"
+    }
+  ]
 }

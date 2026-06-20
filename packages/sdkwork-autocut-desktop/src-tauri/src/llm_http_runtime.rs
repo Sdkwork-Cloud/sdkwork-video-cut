@@ -69,6 +69,9 @@ fn send_autocut_llm_http_request_with_client(
         return Err("AutoCut LLM HTTP response body is too large.".to_string());
     }
 
+    let body_text = String::from_utf8(body_bytes.to_vec())
+        .map_err(|error| format!("AutoCut LLM HTTP response body is not valid UTF-8: {error}"))?;
+
     Ok(AutoCutLlmHttpResponse {
         status: status.as_u16(),
         status_text,
@@ -78,7 +81,7 @@ fn send_autocut_llm_http_request_with_client(
 }
 
 fn validate_autocut_llm_http_request(request: &AutoCutLlmHttpRequest) -> Result<(), String> {
-    let parsed_url = url::Url::parse(&request.url).map_err(|error| {
+    let parsed_url = reqwest::Url::parse(&request.url).map_err(|error| {
         format!("AutoCut LLM HTTP bridge received an invalid URL: {error}")
     })?;
     if parsed_url.scheme() != "https" {
