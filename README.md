@@ -1,3 +1,5 @@
+repository-kind: application
+
 ﻿# SDKWork Video Cut
 
 SDKWork Video Cut is a Tauri desktop shell for the AutoCut frontend modules in

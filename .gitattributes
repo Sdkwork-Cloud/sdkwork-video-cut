@@ -5,3 +5,10 @@ packages/sdkwork-autocut-desktop/src-tauri/binaries/**/whisper-cli.exe filter=lf
 packages/sdkwork-autocut-desktop/src-tauri/binaries/**/*.dll filter=lfs diff=lfs merge=lfs -text
 packages/sdkwork-autocut-desktop/src-tauri/binaries/**/*.so filter=lfs diff=lfs merge=lfs -text
 packages/sdkwork-autocut-desktop/src-tauri/binaries/**/*.dylib filter=lfs diff=lfs merge=lfs -text
+apps/sdkwork-video-cut-pc/packages/sdkwork-autocut-desktop/src-tauri/binaries/**/ffmpeg filter=lfs diff=lfs merge=lfs -text
+apps/sdkwork-video-cut-pc/packages/sdkwork-autocut-desktop/src-tauri/binaries/**/ffmpeg.exe filter=lfs diff=lfs merge=lfs -text
+apps/sdkwork-video-cut-pc/packages/sdkwork-autocut-desktop/src-tauri/binaries/**/whisper-cli filter=lfs diff=lfs merge=lfs -text
+apps/sdkwork-video-cut-pc/packages/sdkwork-autocut-desktop/src-tauri/binaries/**/whisper-cli.exe filter=lfs diff=lfs merge=lfs -text
+apps/sdkwork-video-cut-pc/packages/sdkwork-autocut-desktop/src-tauri/binaries/**/*.dll filter=lfs diff=lfs merge=lfs -text
+apps/sdkwork-video-cut-pc/packages/sdkwork-autocut-desktop/src-tauri/binaries/**/*.so filter=lfs diff=lfs merge=lfs -text
+apps/sdkwork-video-cut-pc/packages/sdkwork-autocut-desktop/src-tauri/binaries/**/*.dylib filter=lfs diff=lfs merge=lfs -text

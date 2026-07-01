@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const source = path.join(root, 'database/ddl/baseline/sqlite/0001_videocut_legacy_baseline.sql');
+const source = path.join(root, 'database/ddl/baseline/sqlite/0001_videocut_baseline.sql');
 const target = path.join(
   root,
   'packages/sdkwork-autocut-desktop/src-tauri/database/schema/sqlite/001_baseline.sql',

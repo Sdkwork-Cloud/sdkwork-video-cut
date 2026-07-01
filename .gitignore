@@ -9,6 +9,8 @@ coverage/
 packages/sdkwork-autocut-desktop/dist/
 packages/sdkwork-autocut-desktop/src-tauri/target/
 packages/sdkwork-autocut-desktop/src-tauri/gen/
+apps/sdkwork-video-cut-pc/packages/sdkwork-autocut-desktop/src-tauri/gen/
+apps/sdkwork-video-cut-pc/packages/sdkwork-autocut-desktop/src-tauri/target/
 .DS_Store
 *.log
 *.tsbuildinfo
@@ -30,3 +32,22 @@ config/*.local.toml
 # SDKWork local runtime state
 .runtime/
 **/.runtime/
+**/node_modules/
+**/target/
+.env.*
+!.env.*.example
+!.env.postgres.example
+**/dist/
+**/.pnpm-store/
+Thumbs.db
+.idea/
+.vscode/
+**/.sdkwork/local/
+**/.sdkwork/secrets/
+**/.sdkwork/cache/
+**/.sdkwork/tmp/
+**/.sdkwork/dart/pub-cache/
+**/.sdkwork/manual-backups/
+**/.sdkwork/sdkwork-generator-changes.json
+**/.sdkwork/sdkwork-generator-manifest.json
+**/.sdkwork/sdkwork-generator-report.json

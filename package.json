@@ -4,10 +4,8 @@
   "version": "0.1.8",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
-  "packageManager": "pnpm@10.30.2",
-  "workspaces": [
-    "packages/*"
-  ],
+  "packageManager": "pnpm@10.33.0",
+  "workspaces": [],
   "scripts": {
     "dev": "pnpm --filter @sdkwork/autocut-desktop dev",
     "dev:tauri-web": "pnpm --filter @sdkwork/autocut-desktop dev:tauri-web",
@@ -71,7 +69,7 @@
     "tauri:before-dev": "pnpm --filter @sdkwork/autocut-desktop tauri:before-dev",
     "tauri:dev": "pnpm --filter @sdkwork/autocut-desktop tauri:dev",
     "tauri:build": "pnpm --filter @sdkwork/autocut-desktop tauri:build",
-    "db:materialize:contract": "node ../sdkwork-specs/tools/materialize-database-contract-from-baseline.mjs --root . --baseline database/ddl/baseline/sqlite/0001_videocut_legacy_baseline.sql --module-id videocut --owner video-cut-platform --prefixes videocut_ --engines sqlite",
+    "db:materialize:contract": "node ../sdkwork-specs/tools/materialize-database-contract-from-baseline.mjs --root . --baseline database/ddl/baseline/sqlite/0001_videocut_baseline.sql --module-id videocut --owner video-cut-platform --prefixes videocut_ --engines sqlite",
     "db:validate": "node ../sdkwork-specs/tools/check-database-framework-standard.mjs --root .",
     "db:plan": "cargo run --manifest-path ../sdkwork-database/Cargo.toml -p sdkwork-database-cli -- --app-root . plan",
     "db:init": "cargo run --manifest-path ../sdkwork-database/Cargo.toml -p sdkwork-database-cli -- --app-root . init",
@@ -81,7 +79,8 @@
     "db:drift": "cargo run --manifest-path ../sdkwork-database/Cargo.toml -p sdkwork-database-cli -- --app-root . drift",
     "db:drift:check": "cargo run --manifest-path ../sdkwork-database/Cargo.toml -p sdkwork-database-cli -- --app-root . drift-check",
     "db:bootstrap": "cargo run --manifest-path ../sdkwork-database/Cargo.toml -p sdkwork-database-cli -- --app-root . bootstrap",
-    "test:contract:database": "node ../sdkwork-specs/tools/check-database-framework-standard.mjs --root ."
+    "test:contract:database": "node ../sdkwork-specs/tools/check-database-framework-standard.mjs --root .",
+    "check:app-composition": "node ../sdkwork-specs/tools/verify-repo.mjs --root ."
   },
   "dependencies": {
     "@sdkwork/autocut-desktop": "workspace:*",

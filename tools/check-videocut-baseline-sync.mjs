@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const frameworkBaseline = path.join(
   root,
-  'database/ddl/baseline/sqlite/0001_videocut_legacy_baseline.sql',
+  'database/ddl/baseline/sqlite/0001_videocut_baseline.sql',
 );
 const tauriBaseline = path.join(
   root,

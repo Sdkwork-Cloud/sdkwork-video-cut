@@ -13,7 +13,7 @@ fn emit_framework_contract_env() {
     let baseline_path = manifest_path
         .parent()
         .expect("database dir")
-        .join("ddl/baseline/sqlite/0001_videocut_legacy_baseline.sql");
+        .join("ddl/baseline/sqlite/0001_videocut_baseline.sql");
 
     println!("cargo:rerun-if-changed={}", manifest_path.display());
     println!("cargo:rerun-if-changed={}", baseline_path.display());
@@ -26,7 +26,7 @@ fn emit_framework_contract_env() {
 
     println!("cargo:rustc-env=VIDEOCUT_FRAMEWORK_CONTRACT_VERSION={contract_version}");
     println!("cargo:rustc-env=VIDEOCUT_FRAMEWORK_MODULE_ID={module_id}");
-    println!("cargo:rustc-env=VIDEOCUT_FRAMEWORK_BASELINE_MIGRATION_ID=0001_videocut_legacy_baseline");
+    println!("cargo:rustc-env=VIDEOCUT_FRAMEWORK_BASELINE_MIGRATION_ID=0001_videocut_baseline");
 }
 
 fn read_manifest_string_field(manifest_raw: &str, field_name: &str) -> Option<String> {
