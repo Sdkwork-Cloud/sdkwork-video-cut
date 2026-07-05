@@ -58,7 +58,7 @@ export default defineConfig(({ mode }) => {
         },
         {
           find: /^@sdkwork\/autocut-([^/]+)$/,
-          replacement: path.resolve(__dirname, '../sdkwork-autocut-$1/src/index.ts'),
+          replacement: path.resolve(__dirname, '../sdkwork-autocut-undefined'),
         },
       ],
     },
