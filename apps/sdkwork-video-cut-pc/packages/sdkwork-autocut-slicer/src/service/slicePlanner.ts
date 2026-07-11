@@ -3258,12 +3258,12 @@ function clampTranscriptBoundaryPaddingToMaxDuration(
 
 function createTranscriptBoundaryTiming(
   segments: readonly AutoCutSpeechTranscriptionSegment[],
-  startIndex: number,
+  fromIdx: number,
   endIndex: number,
   policy: VideoSlicePlanningPolicy,
   maxDurationMs: number,
 ) {
-  const startSegment = segments[startIndex];
+  const startSegment = segments[fromIdx];
   const endSegment = segments[endIndex];
   if (!startSegment || !endSegment) {
     return undefined;
@@ -3282,7 +3282,7 @@ function createTranscriptBoundaryTiming(
     return undefined;
   }
 
-  const previousSegment = segments[startIndex - 1];
+  const previousSegment = segments[fromIdx - 1];
   const nextSegment = segments[endIndex + 1];
   const previousGapMs = previousSegment ? Math.max(0, speechStartMs - previousSegment.endMs) : speechStartMs;
   const nextGapMs = nextSegment ? Math.max(0, nextSegment.startMs - speechEndMs) : Number.POSITIVE_INFINITY;
@@ -3369,17 +3369,17 @@ function createTranscriptBoundaryTiming(
 
 function createSilenceCompactedTranscriptBoundaryTiming(
   segments: readonly TranscriptPlanningSegment[],
-  startIndex: number,
+  fromIdx: number,
   endIndex: number,
   policy: VideoSlicePlanningPolicy,
   maxDurationMs: number,
 ) {
-  const timing = createTranscriptBoundaryTiming(segments, startIndex, endIndex, policy, maxDurationMs);
+  const timing = createTranscriptBoundaryTiming(segments, fromIdx, endIndex, policy, maxDurationMs);
   if (!timing) {
     return undefined;
   }
 
-  const candidateSegments = segments.slice(startIndex, endIndex + 1);
+  const candidateSegments = segments.slice(fromIdx, endIndex + 1);
   const sourceSegments = createSmartSliceSpeechSourceSegments(timing, candidateSegments);
   if (sourceSegments.length <= 1) {
     return undefined;
@@ -3725,9 +3725,9 @@ function splitTranscriptTextAtInlineContentOpenings(text: string) {
   for (let matchIndex = 0; matchIndex < matches.length; matchIndex += 1) {
     const match = matches[matchIndex];
     const nextMatch = matches[matchIndex + 1];
-    const startIndex = match?.index ?? 0;
+    const fromIdx = match?.index ?? 0;
     const endIndex = nextMatch?.index ?? text.length;
-    const rawPart = text.slice(startIndex, endIndex).trim();
+    const rawPart = text.slice(fromIdx, endIndex).trim();
     const part = rawPart && !endsWithTerminalPunctuation(rawPart) ? `${rawPart}.` : rawPart;
     if (part) {
       parts.push(part);
@@ -4337,33 +4337,33 @@ function shouldStartNewContentTopicBlock(
 
 function canFormFollowingContentTopicBlock(
   segments: readonly TranscriptPlanningSegment[],
-  startIndex: number,
+  fromIdx: number,
   policy: VideoSlicePlanningPolicy,
   maxDurationMs: number,
 ) {
-  const startSegment = segments[startIndex];
+  const startSegment = segments[fromIdx];
   if (!startSegment) {
     return false;
   }
 
-  let endIndex = startIndex;
-  while (endIndex + 1 < segments.length && endIndex + 1 < startIndex + MAX_SEMANTIC_STORY_MERGE_SEGMENTS) {
+  let endIndex = fromIdx;
+  while (endIndex + 1 < segments.length && endIndex + 1 < fromIdx + MAX_SEMANTIC_STORY_MERGE_SEGMENTS) {
     const currentSegment = segments[endIndex];
     const nextSegment = segments[endIndex + 1];
     if (!currentSegment || !nextSegment || !canJoinTranscriptSegments(currentSegment, nextSegment, policy)) {
       break;
     }
-    const timing = createTranscriptBoundaryTiming(segments, startIndex, endIndex + 1, policy, maxDurationMs);
+    const timing = createTranscriptBoundaryTiming(segments, fromIdx, endIndex + 1, policy, maxDurationMs);
     if (!timing) {
       break;
     }
     endIndex += 1;
-    if (endIndex >= startIndex + MIN_CONTENT_TOPIC_SEGMENT_COUNT - 1) {
+    if (endIndex >= fromIdx + MIN_CONTENT_TOPIC_SEGMENT_COUNT - 1) {
       return true;
     }
   }
 
-  return endIndex >= startIndex + MIN_CONTENT_TOPIC_SEGMENT_COUNT - 1;
+  return endIndex >= fromIdx + MIN_CONTENT_TOPIC_SEGMENT_COUNT - 1;
 }
 
 function createTopicCoherenceMetadataFromTexts(texts: readonly string[]) {
@@ -6061,15 +6061,15 @@ function createSemanticStoryMergeCandidates(
   const candidates: TranscriptSliceCandidate[] = [];
   const seenRanges = new Set<string>();
 
-  for (let startIndex = 0; startIndex < segments.length; startIndex += 1) {
-    const startSegment = segments[startIndex];
+  for (let fromIdx = 0; fromIdx < segments.length; fromIdx += 1) {
+    const startSegment = segments[fromIdx];
     if (!startSegment) {
       continue;
     }
 
     for (
-      let endIndex = startIndex + MIN_SEMANTIC_STORY_MERGE_SEGMENTS - 1;
-      endIndex < Math.min(segments.length, startIndex + MAX_SEMANTIC_STORY_MERGE_SEGMENTS);
+      let endIndex = fromIdx + MIN_SEMANTIC_STORY_MERGE_SEGMENTS - 1;
+      endIndex < Math.min(segments.length, fromIdx + MAX_SEMANTIC_STORY_MERGE_SEGMENTS);
       endIndex += 1
     ) {
       const endSegment = segments[endIndex];
@@ -6078,7 +6078,7 @@ function createSemanticStoryMergeCandidates(
       }
 
       let contiguous = true;
-      for (let index = startIndex; index < endIndex; index += 1) {
+      for (let index = fromIdx; index < endIndex; index += 1) {
         const currentSegment = segments[index];
         const nextSegment = segments[index + 1];
         if (!currentSegment || !nextSegment || !canJoinTranscriptSegments(currentSegment, nextSegment, policy)) {
@@ -6090,16 +6090,16 @@ function createSemanticStoryMergeCandidates(
         break;
       }
 
-      if (hasFreshSemanticStoryBoundaryInsideWindow(segments, startIndex, endIndex)) {
+      if (hasFreshSemanticStoryBoundaryInsideWindow(segments, fromIdx, endIndex)) {
         continue;
       }
 
-      const timing = createTranscriptBoundaryTiming(segments, startIndex, endIndex, policy, maxDurationMs);
+      const timing = createTranscriptBoundaryTiming(segments, fromIdx, endIndex, policy, maxDurationMs);
       if (!timing || timing.durationMs < MIN_TRANSCRIPT_ALIGNED_SLICE_DURATION_MS) {
         continue;
       }
 
-      const candidateSegments = segments.slice(startIndex, endIndex + 1);
+      const candidateSegments = segments.slice(fromIdx, endIndex + 1);
       const transcriptTexts = candidateSegments.map((segment) => segment.text);
       const text = transcriptTexts.join(' ').trim();
       const contentArcMetadata = createContentArcMetadata(text);
@@ -6114,7 +6114,7 @@ function createSemanticStoryMergeCandidates(
 
       const hasIncompleteOverlap = candidatesHaveIncompleteSemanticOverlap(
         segments,
-        startIndex,
+        fromIdx,
         endIndex,
         contentArcMetadata.contentArcStages,
       );
@@ -6147,7 +6147,7 @@ function createSemanticStoryMergeCandidates(
           contentArcMetadata.contentArcScore * 0.08 +
           topicCoherenceMetadata.topicCoherenceScore * 0.05,
       );
-      const label = createTranscriptSliceLabel(segments, startIndex);
+      const label = createTranscriptSliceLabel(segments, fromIdx);
       const hasInternalRepeatedMeaning = hasTranscriptInternalRepeatedMeaning(transcriptTexts);
       const risks = [
         'semantic-story-merged',
@@ -6162,9 +6162,9 @@ function createSemanticStoryMergeCandidates(
       ];
 
       candidates.push({
-        candidateId: `semantic-story-${startIndex + 1}-${endIndex + 1}`,
+        candidateId: `semantic-story-${fromIdx + 1}-${endIndex + 1}`,
         index: existingCandidateCount + candidates.length,
-        anchorSegmentIndex: startIndex,
+        anchorSegmentIndex: fromIdx,
         startMs: timing.startMs,
         endMs: timing.endMs,
         durationMs: timing.durationMs,
@@ -6247,10 +6247,10 @@ function isCompleteSemanticStoryText(texts: readonly string[]) {
 
 function hasFreshSemanticStoryBoundaryInsideWindow(
   segments: readonly TranscriptPlanningSegment[],
-  startIndex: number,
+  fromIdx: number,
   endIndex: number,
 ) {
-  for (let splitIndex = startIndex + 1; splitIndex <= endIndex; splitIndex += 1) {
+  for (let splitIndex = fromIdx + 1; splitIndex <= endIndex; splitIndex += 1) {
     const currentSegment = segments[splitIndex];
     if (!currentSegment) {
       continue;
@@ -6258,7 +6258,7 @@ function hasFreshSemanticStoryBoundaryInsideWindow(
 
     if (
       hasExplicitContentSectionOpening(currentSegment.text) &&
-      !hasExplicitContentSectionOpening(segments[startIndex]?.text ?? '')
+      !hasExplicitContentSectionOpening(segments[fromIdx]?.text ?? '')
     ) {
       return true;
     }
@@ -6268,7 +6268,7 @@ function hasFreshSemanticStoryBoundaryInsideWindow(
     }
 
     const previousTexts = segments
-      .slice(startIndex, splitIndex)
+      .slice(fromIdx, splitIndex)
       .map((segment) => segment.text);
     if (isCompleteSemanticStoryText(previousTexts)) {
       return true;
@@ -6289,21 +6289,21 @@ function createContentTopicSegmentCandidates(
   const candidates: TranscriptSliceCandidate[] = [];
   const seenRanges = new Set<string>();
 
-  let startIndex = 0;
-  while (startIndex < segments.length) {
-    const startSegment = segments[startIndex];
+  let fromIdx = 0;
+  while (fromIdx < segments.length) {
+    const startSegment = segments[fromIdx];
     if (!startSegment) {
-      startIndex += 1;
+      fromIdx += 1;
       continue;
     }
     if (isCompleteSemanticStoryText([startSegment.text])) {
-      startIndex += 1;
+      fromIdx += 1;
       continue;
     }
 
-    let endIndex = startIndex;
+    let endIndex = fromIdx;
     const topicTexts = [startSegment.text];
-    while (endIndex + 1 < segments.length && endIndex + 1 < startIndex + MAX_SEMANTIC_STORY_MERGE_SEGMENTS) {
+    while (endIndex + 1 < segments.length && endIndex + 1 < fromIdx + MAX_SEMANTIC_STORY_MERGE_SEGMENTS) {
       const currentSegment = segments[endIndex];
       const nextSegment = segments[endIndex + 1];
       if (!currentSegment || !nextSegment || !canJoinTranscriptSegments(currentSegment, nextSegment, policy)) {
@@ -6317,7 +6317,7 @@ function createContentTopicSegmentCandidates(
         break;
       }
 
-      const proposedTiming = createTranscriptBoundaryTiming(segments, startIndex, endIndex + 1, policy, maxDurationMs);
+      const proposedTiming = createTranscriptBoundaryTiming(segments, fromIdx, endIndex + 1, policy, maxDurationMs);
       if (!proposedTiming || proposedTiming.speechEndMs - proposedTiming.speechStartMs > maxDurationMs) {
         break;
       }
@@ -6326,30 +6326,30 @@ function createContentTopicSegmentCandidates(
       topicTexts.push(nextSegment.text);
     }
 
-    if (endIndex < startIndex + MIN_CONTENT_TOPIC_SEGMENT_COUNT - 1) {
-      startIndex = Math.max(endIndex + 1, startIndex + 1);
+    if (endIndex < fromIdx + MIN_CONTENT_TOPIC_SEGMENT_COUNT - 1) {
+      fromIdx = Math.max(endIndex + 1, fromIdx + 1);
       continue;
     }
 
-    const timing = createTranscriptBoundaryTiming(segments, startIndex, endIndex, policy, maxDurationMs);
+    const timing = createTranscriptBoundaryTiming(segments, fromIdx, endIndex, policy, maxDurationMs);
     if (!timing) {
-      startIndex = Math.max(endIndex + 1, startIndex + 1);
+      fromIdx = Math.max(endIndex + 1, fromIdx + 1);
       continue;
     }
 
     const rangeKey = `${timing.speechStartMs}:${timing.speechEndMs}`;
     if (seenRanges.has(rangeKey)) {
-      startIndex = Math.max(endIndex + 1, startIndex + 1);
+      fromIdx = Math.max(endIndex + 1, fromIdx + 1);
       continue;
     }
     seenRanges.add(rangeKey);
 
-    const candidateSegments = segments.slice(startIndex, endIndex + 1);
+    const candidateSegments = segments.slice(fromIdx, endIndex + 1);
     const transcriptTexts = candidateSegments.map((segment) => segment.text);
     const text = transcriptTexts.join(' ').trim();
     const topicCoherenceMetadata = createTopicCoherenceMetadataFromTexts(transcriptTexts);
     if (topicCoherenceMetadata.topicCoherenceGrade === 'weak') {
-      startIndex = Math.max(endIndex + 1, startIndex + 1);
+      fromIdx = Math.max(endIndex + 1, fromIdx + 1);
       continue;
     }
 
@@ -6368,7 +6368,7 @@ function createContentTopicSegmentCandidates(
     );
     const hasInternalRepeatedMeaning = hasTranscriptInternalRepeatedMeaning(transcriptTexts);
     if (hasInternalRepeatedMeaning) {
-      startIndex = Math.max(endIndex + 1, startIndex + 1);
+      fromIdx = Math.max(endIndex + 1, fromIdx + 1);
       continue;
     }
     const topicScore = clampSlicePlannerScore(
@@ -6377,7 +6377,7 @@ function createContentTopicSegmentCandidates(
         topicCoherenceMetadata.topicCoherenceScore * 0.08 +
         Math.min(0.1, candidateSegments.length * 0.025),
     );
-    const label = createTranscriptSliceLabel(segments, startIndex);
+    const label = createTranscriptSliceLabel(segments, fromIdx);
     const risks = [
       CONTENT_TOPIC_SEGMENT_RISK,
       ...(candidateSegments.slice(1).some((segment) => startsWithWeakConnector(segment.text))
@@ -6407,9 +6407,9 @@ function createContentTopicSegmentCandidates(
     const contentArcMetadata = createContentArcMetadata(text);
 
     candidates.push({
-      candidateId: `content-topic-${startIndex + 1}-${endIndex + 1}`,
+      candidateId: `content-topic-${fromIdx + 1}-${endIndex + 1}`,
       index: existingCandidateCount + candidates.length,
-      anchorSegmentIndex: startIndex,
+      anchorSegmentIndex: fromIdx,
       startMs: timing.startMs,
       endMs: timing.endMs,
       durationMs: timing.durationMs,
@@ -6421,7 +6421,7 @@ function createContentTopicSegmentCandidates(
       ...topicCoherenceMetadata,
     });
 
-    startIndex = endIndex + 1;
+    fromIdx = endIndex + 1;
   }
 
   return candidates;
@@ -6438,16 +6438,16 @@ function createSilenceCompactedTopicCandidates(
   const candidates: TranscriptSliceCandidate[] = [];
   const seenRanges = new Set<string>();
 
-  for (let startIndex = 0; startIndex < segments.length; startIndex += 1) {
-    const startSegment = segments[startIndex];
+  for (let fromIdx = 0; fromIdx < segments.length; fromIdx += 1) {
+    const startSegment = segments[fromIdx];
     if (!startSegment || isCompleteSemanticStoryText([startSegment.text])) {
       continue;
     }
 
     const topicTexts = [startSegment.text];
     for (
-      let endIndex = startIndex + 1;
-      endIndex < Math.min(segments.length, startIndex + MAX_SEMANTIC_STORY_MERGE_SEGMENTS);
+      let endIndex = fromIdx + 1;
+      endIndex < Math.min(segments.length, fromIdx + MAX_SEMANTIC_STORY_MERGE_SEGMENTS);
       endIndex += 1
     ) {
       const previousSegment = segments[endIndex - 1];
@@ -6474,7 +6474,7 @@ function createSilenceCompactedTopicCandidates(
 
       const timing = createSilenceCompactedTranscriptBoundaryTiming(
         segments,
-        startIndex,
+        fromIdx,
         endIndex,
         policy,
         maxDurationMs,
@@ -6483,7 +6483,7 @@ function createSilenceCompactedTopicCandidates(
         continue;
       }
 
-      const candidateSegments = segments.slice(startIndex, endIndex + 1);
+      const candidateSegments = segments.slice(fromIdx, endIndex + 1);
       const transcriptTexts = candidateSegments.map((segment) => segment.text);
       const text = transcriptTexts.join(' ').trim();
       const topicCoherenceMetadata = createTopicCoherenceMetadataFromTexts(transcriptTexts);
@@ -6533,7 +6533,7 @@ function createSilenceCompactedTopicCandidates(
           topicCoherenceMetadata.topicCoherenceScore * 0.08 +
           Math.min(0.1, candidateSegments.length * 0.025),
       );
-      const label = createTranscriptSliceLabel(segments, startIndex);
+      const label = createTranscriptSliceLabel(segments, fromIdx);
       const risks = [
         CONTENT_TOPIC_SEGMENT_RISK,
         'internal-silence-trimmed',
@@ -6562,9 +6562,9 @@ function createSilenceCompactedTopicCandidates(
       );
 
       candidates.push({
-        candidateId: `silence-topic-${startIndex + 1}-${endIndex + 1}`,
+        candidateId: `silence-topic-${fromIdx + 1}-${endIndex + 1}`,
         index: existingCandidateCount + candidates.length,
-        anchorSegmentIndex: startIndex,
+        anchorSegmentIndex: fromIdx,
         startMs: timing.startMs,
         endMs: timing.endMs,
         durationMs: timing.durationMs,
@@ -6587,10 +6587,10 @@ function createSilenceCompactedTopicCandidates(
 
 function hasStructuredSemanticStoryContinuation(
   segments: readonly TranscriptPlanningSegment[],
-  startIndex: number,
+  fromIdx: number,
   endIndex: number,
 ) {
-  const startSegment = segments[startIndex];
+  const startSegment = segments[fromIdx];
   if (!startSegment) {
     return false;
   }
@@ -6602,7 +6602,7 @@ function hasStructuredSemanticStoryContinuation(
     return false;
   }
 
-  for (let index = startIndex + 1; index <= endIndex; index += 1) {
+  for (let index = fromIdx + 1; index <= endIndex; index += 1) {
     const segment = segments[index];
     if (!segment) {
       continue;
@@ -6631,7 +6631,7 @@ function hasStructuredSemanticStoryContinuation(
 
 function candidatesHaveIncompleteSemanticOverlap(
   segments: readonly TranscriptPlanningSegment[],
-  startIndex: number,
+  fromIdx: number,
   endIndex: number,
   mergedStages: readonly SliceContentArcStage[],
 ) {
@@ -6640,7 +6640,7 @@ function candidatesHaveIncompleteSemanticOverlap(
   let incompleteSegmentCount = 0;
   let fragmentSegmentCount = 0;
 
-  for (let index = startIndex; index <= endIndex; index += 1) {
+  for (let index = fromIdx; index <= endIndex; index += 1) {
     const segment = segments[index];
     if (!segment) {
       continue;
@@ -6661,7 +6661,7 @@ function candidatesHaveIncompleteSemanticOverlap(
   const hasIncompleteSemanticOverlap =
     incompleteSegmentCount > 0 &&
     singleSegmentCompleteCount < fragmentSegmentCount;
-  const hasStructuredContinuation = hasStructuredSemanticStoryContinuation(segments, startIndex, endIndex);
+  const hasStructuredContinuation = hasStructuredSemanticStoryContinuation(segments, fromIdx, endIndex);
 
   return fragmentSegmentCount >= MIN_SEMANTIC_STORY_MERGE_SEGMENTS &&
     (hasIncompleteSemanticOverlap || hasStructuredContinuation) &&
@@ -7102,7 +7102,7 @@ export function buildTranscriptSliceCandidates(
       continue;
     }
 
-    let startIndex = anchorIndex;
+    let fromIdx = anchorIndex;
     const previousAnchorSegment = segments[anchorIndex - 1];
     if (
       previousAnchorSegment &&
@@ -7110,10 +7110,10 @@ export function buildTranscriptSliceCandidates(
       canJoinTranscriptSegments(previousAnchorSegment, anchorSegment, policy) &&
       anchorSegment.endMs - previousAnchorSegment.startMs <= maxDurationMs
     ) {
-      startIndex = anchorIndex - 1;
-      while (startIndex > 0) {
-        const currentStartSegment = segments[startIndex];
-        const previousStartSegment = segments[startIndex - 1];
+      fromIdx = anchorIndex - 1;
+      while (fromIdx > 0) {
+        const currentStartSegment = segments[fromIdx];
+        const previousStartSegment = segments[fromIdx - 1];
         if (
           !currentStartSegment ||
           !previousStartSegment ||
@@ -7124,16 +7124,16 @@ export function buildTranscriptSliceCandidates(
           break;
         }
 
-        startIndex -= 1;
+        fromIdx -= 1;
       }
     }
-    const repairedConnectorStart = startIndex !== anchorIndex;
+    const repairedConnectorStart = fromIdx !== anchorIndex;
 
     let endIndex = anchorIndex;
     while (endIndex + 1 < segments.length) {
       const currentEndSegment = segments[endIndex];
       const nextSegment = segments[endIndex + 1];
-      const startSegment = segments[startIndex];
+      const startSegment = segments[fromIdx];
       if (
         !currentEndSegment ||
         !nextSegment ||
@@ -7153,7 +7153,7 @@ export function buildTranscriptSliceCandidates(
     while (endIndex + 1 < segments.length) {
       const currentEndSegment = segments[endIndex];
       const nextSegment = segments[endIndex + 1];
-      const startSegment = segments[startIndex];
+      const startSegment = segments[fromIdx];
       const currentDurationMs = currentEndSegment && startSegment
         ? currentEndSegment.endMs - startSegment.startMs
         : 0;
@@ -7182,9 +7182,9 @@ export function buildTranscriptSliceCandidates(
       endIndex += 1;
     }
 
-    while (startIndex > 0) {
-      const currentStartSegment = segments[startIndex];
-      const previousSegment = segments[startIndex - 1];
+    while (fromIdx > 0) {
+      const currentStartSegment = segments[fromIdx];
+      const previousSegment = segments[fromIdx - 1];
       const endSegment = segments[endIndex];
       if (
         !currentStartSegment ||
@@ -7197,10 +7197,10 @@ export function buildTranscriptSliceCandidates(
         break;
       }
 
-      startIndex -= 1;
+      fromIdx -= 1;
     }
 
-    const startSegment = segments[startIndex];
+    const startSegment = segments[fromIdx];
     const endSegment = segments[endIndex];
     if (!startSegment || !endSegment) {
       continue;
@@ -7208,7 +7208,7 @@ export function buildTranscriptSliceCandidates(
 
     const timing = createTranscriptBoundaryTiming(
       segments,
-      startIndex,
+      fromIdx,
       endIndex,
       policy,
       maxDurationMs,
@@ -7218,11 +7218,11 @@ export function buildTranscriptSliceCandidates(
     }
 
     const text = segments
-      .slice(startIndex, endIndex + 1)
+      .slice(fromIdx, endIndex + 1)
       .map((segment) => segment.text)
       .join(' ')
       .trim();
-    const candidateSegments = segments.slice(startIndex, endIndex + 1);
+    const candidateSegments = segments.slice(fromIdx, endIndex + 1);
     const transcriptSpeechDurationMs = candidateSegments.reduce(
       (durationSumMs, segment) => durationSumMs + Math.max(0, segment.endMs - segment.startMs),
       0,
