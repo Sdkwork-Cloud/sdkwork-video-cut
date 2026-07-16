@@ -7,7 +7,7 @@
   "packageManager": "pnpm@10.33.0",
   "workspaces": [],
   "scripts": {
-    "dev": "pnpm --filter @sdkwork/autocut-desktop dev",
+    "stop": "node ../sdkwork-specs/tools/stop-sdkwork-workspace-processes.mjs --workspace .",    "dev": "pnpm --filter @sdkwork/autocut-desktop dev",
     "dev:tauri-web": "pnpm --filter @sdkwork/autocut-desktop dev:tauri-web",
     "build": "pnpm -r --filter \"./packages/*\" --filter \"!@sdkwork/autocut-desktop\" build && pnpm --filter @sdkwork/autocut-desktop build",
     "preview": "pnpm --filter @sdkwork/autocut-desktop preview",
