@@ -99,7 +99,7 @@ function createPreviewReleaseBlockers(evidence, readiness) {
     blockers.push({
       code: 'FFMPEG_SIDECAR_NOT_BUNDLED',
       message: 'Approved FFmpeg sidecar is not bundled with verified integrity.',
-      remediation: 'Run prepare:ffmpeg-sidecar with an approved binary, then release:smoke-preflight --require-bundled.',
+      remediation: 'Run build:sidecar:ffmpeg with an approved binary, then release:smoke-preflight --require-bundled.',
     });
   }
 
@@ -112,7 +112,7 @@ function createPreviewReleaseBlockers(evidence, readiness) {
     blockers.push({
       code: 'SPEECH_SIDECAR_NOT_BUNDLED',
       message: 'Approved local Whisper speech-to-text sidecar is not bundled with verified integrity.',
-      remediation: 'Run prepare:speech-sidecar with an approved whisper-cli binary for the target platform, then regenerate release:evidence.',
+      remediation: 'Run build:sidecar:speech with an approved whisper-cli binary for the target platform, then regenerate release:evidence.',
     });
   }
 
@@ -168,7 +168,7 @@ function createPreviewReleaseBlockers(evidence, readiness) {
     blockers.push({
       code: 'INSTALLER_ARTIFACTS_NOT_READY',
       message: 'Preview release installers are missing, empty, or missing SHA-256 digests.',
-      remediation: 'Run pnpm tauri:build and regenerate release:evidence after installers are produced.',
+      remediation: 'Run pnpm build:desktop and regenerate release:evidence after installers are produced.',
     });
   }
 

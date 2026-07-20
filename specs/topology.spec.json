@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 5,
+  "kind": "sdkwork.app.topology",
+  "appId": "sdkwork-video-cut",
+  "archetype": "client-only",
+  "profileRoot": "etc/topology",
+  "profilePattern": "{deploymentProfile}.{environment}.env",
+  "vocabulary": {
+    "environment": { "allowed": ["development", "production"] },
+    "connectivityPlane": { "allowed": ["application", "platform"] },
+    "deploymentProfile": { "allowed": ["standalone", "cloud"] }
+  },
+  "defaults": {
+    "developmentProfileId": "standalone.development",
+    "productionProfileId": "standalone.production",
+    "desktopBuildProfileId": "standalone.production"
+  },
+  "profileFiles": {
+    "standalone.development": "etc/topology/standalone.development.env",
+    "standalone.production": "etc/topology/standalone.production.env",
+    "cloud.development": "etc/topology/cloud.development.env",
+    "cloud.production": "etc/topology/cloud.production.env"
+  },
+  "envKeys": {
+    "deploymentProfile": "SDKWORK_VIDEO_CUT_DEPLOYMENT_PROFILE",
+    "environment": "SDKWORK_VIDEO_CUT_ENVIRONMENT",
+    "profileId": "SDKWORK_VIDEO_CUT_PROFILE_ID",
+    "clientDeploymentProfile": "VITE_SDKWORK_VIDEO_CUT_DEPLOYMENT_PROFILE"
+  },
+  "surfaces": {
+    "desktop.client": {
+      "connectivityPlane": "application",
+      "protocols": ["native"]
+    }
+  },
+  "orchestration": {
+    "profiles": {
+      "standalone.development": {
+        "processes": [{
+          "id": "desktop-client",
+          "package": "@sdkwork/autocut-desktop",
+          "script": "dev:desktop",
+          "required": true,
+          "role": "client"
+        }],
+        "healthSurfaces": []
+      },
+      "cloud.development": {
+        "processes": [{
+          "id": "desktop-client",
+          "package": "@sdkwork/autocut-desktop",
+          "script": "dev:desktop",
+          "required": true,
+          "role": "client"
+        }],
+        "healthSurfaces": []
+      },
+      "standalone.production": { "processes": [], "healthSurfaces": [] },
+      "cloud.production": { "processes": [], "healthSurfaces": [] }
+    }
+  },
+  "packaging": { "targets": [], "cloudConfigFiles": [] }
+}

@@ -3290,7 +3290,7 @@ assertRule(
   exists('scripts/check-autocut-baidunetdisk-real-media-slice.mjs'),
   'AutoCut provides a one-command BaiduNetdisk real-media Smart Slice acceptance check',
 );
-assertIncludes(rootPackageJson, 'acceptance:smart-slice-baidunetdisk', 'package.json exposes the BaiduNetdisk Smart Slice acceptance check as a first-class script');
+assertIncludes(rootPackageJson, 'test:acceptance:smart-slice-baidunetdisk', 'package.json exposes the BaiduNetdisk Smart Slice acceptance check as a first-class script');
 const smartSlicePerformanceBenchmark = read('scripts/check-autocut-smart-slice-performance-benchmark.mjs');
 const smartSlicePerformanceBenchmarkTest = read('scripts/check-autocut-smart-slice-performance-benchmark.test.mjs');
 const genericRealMediaSlice = read('scripts/check-autocut-generic-real-media-slice.mjs');
@@ -3303,7 +3303,7 @@ assertRule(
   exists('scripts/check-autocut-smart-slice-performance-benchmark.mjs'),
   'AutoCut provides a repeatable Smart Slice performance benchmark command',
 );
-assertIncludes(rootPackageJson, 'benchmark:smart-slice-performance', 'package.json exposes the Smart Slice performance benchmark as a first-class script');
+assertIncludes(rootPackageJson, 'perf:benchmark:smart-slice-performance', 'package.json exposes the Smart Slice performance benchmark as a first-class script');
 assertIncludes(smartSlicePerformanceBenchmark, 'smart-slice.performance-benchmark.v1', 'Smart Slice performance benchmark writes a versioned report schema');
 assertIncludes(smartSlicePerformanceBenchmark, 'byteSize: readFileByteSize(resolvedInputPath)', 'Smart Slice performance benchmark records source file size for large-file trend analysis');
 assertIncludes(smartSlicePerformanceBenchmark, 'totalElapsedMs', 'Smart Slice performance benchmark records total elapsed time');
@@ -3319,7 +3319,7 @@ assertRule(
   exists('scripts/check-autocut-generic-real-media-slice.mjs'),
   'AutoCut provides a generic same-source real-media Smart Slice runner for large files',
 );
-assertIncludes(rootPackageJson, 'baseline:generic-real-media-slice', 'package.json exposes the generic real-media Smart Slice runner as a first-class script');
+assertIncludes(rootPackageJson, 'perf:baseline:generic-real-media-slice', 'package.json exposes the generic real-media Smart Slice runner as a first-class script');
 assertIncludes(genericRealMediaSlice, '2026-05-16.autocut-generic-real-media-slice.v1', 'generic real-media runner writes a versioned report schema');
 assertIncludes(genericRealMediaSlice, 'createSmartCutEngineSlicePlan', 'generic real-media runner uses the Smart Cut Engine first');
 assertIncludes(genericRealMediaSlice, 'createTranscriptAssistedSlicePlan', 'generic real-media runner has a transcript-continuity fallback when strict evidence blocks');
@@ -3334,7 +3334,7 @@ assertRule(
   exists('scripts/check-autocut-large-media-baseline.mjs'),
   'AutoCut provides a same-source large media Smart Slice baseline command',
 );
-assertIncludes(rootPackageJson, 'baseline:large-media', 'package.json exposes the large-media baseline as a first-class script');
+assertIncludes(rootPackageJson, 'perf:baseline:large-media', 'package.json exposes the large-media baseline as a first-class script');
 assertIncludes(largeMediaBaseline, 'smart-slice.large-media-baseline.v1', 'large-media baseline writes a versioned report schema');
 assertIncludes(largeMediaBaseline, 'SMART_SLICE_LARGE_MEDIA_TRANSCRIPT_MISSING', 'large-media baseline blocks when same-source transcript evidence is missing');
 assertIncludes(largeMediaBaseline, 'runAutoCutSmartSlicePerformanceBenchmark', 'large-media baseline delegates ready transcript cases to the Smart Slice performance benchmark');
@@ -3347,7 +3347,7 @@ assertRule(
   exists('scripts/write-autocut-large-media-stt-baseline.mjs'),
   'AutoCut provides a large-media STT baseline command for generating same-source transcript evidence',
 );
-assertIncludes(rootPackageJson, 'baseline:large-media-stt', 'package.json exposes the large-media STT baseline as a first-class script');
+assertIncludes(rootPackageJson, 'perf:baseline:large-media-stt', 'package.json exposes the large-media STT baseline as a first-class script');
 assertIncludes(largeMediaSttBaseline, 'smart-slice.large-media-stt-baseline.v1', 'large-media STT baseline writes a versioned report schema');
 assertIncludes(largeMediaSttBaseline, 'SMART_SLICE_LARGE_MEDIA_AUDIO_EXTRACT_FAILED', 'large-media STT baseline blocks when FFmpeg audio extraction fails');
 assertIncludes(largeMediaSttBaseline, 'SMART_SLICE_LARGE_MEDIA_WHISPER_FAILED', 'large-media STT baseline blocks when local Whisper transcription fails');

@@ -61,8 +61,8 @@ pnpm build
 pnpm clean
 pnpm typecheck
 pnpm test
-pnpm tauri:dev
-pnpm tauri:build
+pnpm dev:desktop
+pnpm build:desktop
 pnpm check:autocut-architecture
 ```
 
@@ -185,8 +185,8 @@ Vite and Tauri desktop bundle:
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "test": "tsc --noEmit",
-    "tauri:dev": "pnpm exec tauri dev",
-    "tauri:build": "pnpm exec tauri build"
+    "dev:desktop": "pnpm exec tauri dev",
+    "build:desktop": "pnpm exec tauri build"
   }
 }
 ```
@@ -432,7 +432,7 @@ Required invariants:
   `bundledReady=false`; release preflight with `--require-bundled` requires both
   FFmpeg and speech-to-text sidecars before an installer can claim Smart Slice
   local STT readiness. The desktop
-  `tauri:build` script must also run
+  `build:desktop` script must also run
   `prepare-autocut-speech-sidecar.mjs --check --require-bundled`, so local
   installer builds cannot accidentally omit the packaged Whisper CLI sidecar.
   Whisper model files are acquired on demand instead of bundled into installers.
@@ -729,7 +729,7 @@ cargo +1.90.0 check --manifest-path packages/sdkwork-autocut-desktop/src-tauri/C
 ```
 
 When running through package scripts, `pnpm --filter @sdkwork/autocut-desktop
-tauri:build` and root `pnpm tauri:build` execute from the desktop package, so
+build:desktop` and root `pnpm build:desktop` execute from the desktop package, so
 rustup resolves the pinned package-local toolchain automatically.
 
 The Rust toolchain guard has its own executable contract test:

@@ -194,7 +194,7 @@ export function createAutoCutSpeechSidecarReadinessReport({
   }
   if (requireBundled && !platformBundledReady) {
     blockers.push(
-      `tauri build requires a bundled, integrity-verified whisper-cli sidecar for ${normalizedPlatform}; run pnpm prepare:speech-sidecar -- --platform ${normalizedPlatform} --source <path-to-whisper-cli> --accept-license before packaging.`,
+      `tauri build requires a bundled, integrity-verified whisper-cli sidecar for ${normalizedPlatform}; run pnpm build:sidecar:speech -- --platform ${normalizedPlatform} --source <path-to-whisper-cli> --accept-license before packaging.`,
     );
   }
 

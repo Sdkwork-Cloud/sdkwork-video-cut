@@ -425,7 +425,7 @@ standard registration path and must be called with `--platform`, `--source`, and
 `--accept-license`. Placeholder zero integrity may exist only when
 `bundledReady=false`; release preflight with `--require-bundled` requires the
 speech sidecar as well as FFmpeg before Smart Slice can claim local STT readiness.
-The desktop `tauri:build` script must run the same speech sidecar
+The desktop `build:desktop` script must run the same speech sidecar
 `--check --require-bundled` gate before packaging. Whisper model files remain
 on-demand downloads: presets may declare the official Hugging Face URL and
 vetted Hugging Face mirror URLs, and native validation must reject untrusted
@@ -587,7 +587,7 @@ It pins Rust `1.90.0` and the `x86_64-pc-windows-msvc` target so Tauri release
 builds do not depend on whatever global `stable` toolchain is active on the
 developer machine.
 
-Root `pnpm tauri:build` delegates to `@sdkwork/autocut-desktop`, so rustup
+Root `pnpm build:desktop` delegates to `@sdkwork/autocut-desktop`, so rustup
 resolves this package-local toolchain automatically. Direct Rust verification
 from the repository root MUST use:
 
@@ -930,16 +930,16 @@ Tauri 壳不得实现 AutoCut 业务逻辑。
 根命令必须代理到 desktop package：
 
 ```bash
-pnpm tauri:before-dev
-pnpm tauri:dev
-pnpm tauri:build
+pnpm install:desktop
+pnpm dev:desktop
+pnpm build:desktop
 ```
 
 desktop package 内命令必须从 `packages/sdkwork-autocut-desktop` 上下文执行：
 
 ```bash
-pnpm --filter @sdkwork/autocut-desktop tauri:dev
-pnpm --filter @sdkwork/autocut-desktop tauri:build
+pnpm --filter @sdkwork/autocut-desktop dev:desktop
+pnpm --filter @sdkwork/autocut-desktop build:desktop
 ```
 
 根 `package.json`、所有 `packages/*/package.json`、

@@ -83,8 +83,8 @@ executable path into settings.
 ## Desktop Commands
 
 ```bash
-pnpm tauri:dev
-pnpm tauri:build
+pnpm dev:desktop
+pnpm build:desktop
 ```
 
 ## FFmpeg Sidecar
@@ -97,7 +97,7 @@ To register an approved sidecar, use the package-local preparation command:
 
 ```bash
 git lfs install
-pnpm prepare:ffmpeg-sidecar -- --platform windows-x86_64 --source D:/tools/ffmpeg.exe --accept-license
+pnpm build:sidecar:ffmpeg -- --platform windows-x86_64 --source D:/tools/ffmpeg.exe --accept-license
 ```
 
 The command copies the binary into
@@ -117,8 +117,8 @@ To register an approved local STT sidecar, use:
 
 ```bash
 git lfs install
-pnpm prepare:speech-sidecar -- --platform windows-x86_64 --source D:/tools/whisper-cli.exe --accept-license
-pnpm prepare:speech-sidecar -- --platform windows-x86_64 --check --require-bundled
+pnpm build:sidecar:speech -- --platform windows-x86_64 --source D:/tools/whisper-cli.exe --accept-license
+pnpm build:sidecar:speech -- --platform windows-x86_64 --check --require-bundled
 ```
 
 The command copies `whisper-cli` into
@@ -126,8 +126,8 @@ The command copies `whisper-cli` into
 required sibling runtime libraries such as Windows `*.dll`, Linux `*.so`, and
 macOS `*.dylib` companion files from the same source directory, and rewrites
 `speech-transcription.toolchain.json` with exact `sha256`, `byteSize`,
-`companionFiles`, and `bundledReady` values. `pnpm tauri:build` runs the same
-`prepare:speech-sidecar -- --check --require-bundled` gate before creating an
+`companionFiles`, and `bundledReady` values. `pnpm build:desktop` runs the same
+`build:sidecar:speech -- --check --require-bundled` gate before creating an
 installer, so desktop packages cannot silently ship without a verified
 `whisper-cli` sidecar and its runtime companions. Release preflight with
 `--require-bundled` requires both the FFmpeg sidecar and the speech-to-text
@@ -159,7 +159,7 @@ native hosted runners: `windows-latest`, `ubuntu-22.04`, `macos-15-intel`, and
 `macos-latest` for `x86_64-apple-darwin` and `aarch64-apple-darwin`. Before each
 native package build, the lifecycle prepares platform sidecars: Windows
 re-verifies the approved Git LFS FFmpeg and `whisper-cli` resources, and
-Linux/macOS run `pnpm prepare:release-sidecars` to fetch or build the approved
+Linux/macOS run `pnpm build:sidecar:release` to fetch or build the approved
 platform-native FFmpeg and Whisper CLI tools, then write the same integrity
 manifests used by local packaging.
 Each runner writes a platform release evidence file under `artifacts/release/`:
@@ -363,7 +363,7 @@ pnpm typecheck
 pnpm test
 pnpm build
 cargo +1.90.0 check --manifest-path packages/sdkwork-autocut-desktop/src-tauri/Cargo.toml
-pnpm tauri:build
+pnpm build:desktop
 ```
 
 `pnpm test` runs the Rust toolchain guard contract before workspace package

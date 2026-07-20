@@ -50,7 +50,7 @@ pnpm typecheck
 pnpm test
 cargo check --manifest-path packages/sdkwork-autocut-desktop/src-tauri/Cargo.toml
 pnpm build
-pnpm tauri:build
+pnpm build:desktop
 ```
 
 ## Delivery Rule

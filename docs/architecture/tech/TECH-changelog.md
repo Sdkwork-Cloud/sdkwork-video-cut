@@ -189,7 +189,7 @@ GitHub Releases without complete assets.
 
 - Adds `.github/workflows/autocut-desktop-release.yml` as the native
   multiplatform desktop release workflow backed by repository-root `pnpm
-  tauri:build` commands so Linux and macOS builds use the same workspace
+  build:desktop` commands so Linux and macOS builds use the same workspace
   scripts and sidecar validation path as Windows, with target triples passed to
   the Tauri CLI instead of through the cargo runner argument separator.
 - Builds Windows x86_64 on `windows-latest`, Ubuntu/Linux x86_64 on
@@ -254,7 +254,7 @@ GitHub Releases without complete assets.
 - Bundles the approved Windows x86_64 `whisper-cli` sidecar through Git LFS
   for this release and records the required runtime DLL companion files with
   their own SHA-256 and byte-size integrity metadata.
-- Adds `pnpm prepare:release-sidecars` for CI-only native runner sidecar
+- Adds `pnpm build:sidecar:release` for CI-only native runner sidecar
   preparation so Linux and macOS installers can package platform-native local
   STT and FFmpeg tools without committing every platform binary into the
   Windows development checkout.
@@ -659,7 +659,7 @@ GitHub Release is created:
 - `pnpm test`
 - `cargo +1.90.0 test --manifest-path packages/sdkwork-autocut-desktop/src-tauri/Cargo.toml`
 - `pnpm build`
-- `pnpm tauri:build`
+- `pnpm build:desktop`
 - `pnpm release:smoke-preflight -- --platform windows-x86_64`
 - `pnpm release:native-smoke -- --run-real-llm-secret-smoke`
 - `pnpm release:smart-slice-sample`

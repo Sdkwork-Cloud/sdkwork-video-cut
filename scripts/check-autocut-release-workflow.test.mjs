@@ -54,9 +54,9 @@ assert.ok(
 const lifecycleText = JSON.stringify(workflowConfig.lifecycle);
 for (const marker of [
   'pnpm test',
-  'prepare:release-sidecars',
-  'pnpm tauri:build --target x86_64-unknown-linux-gnu',
-  'pnpm tauri:build --target $rustTarget',
+  'build:sidecar:release',
+  'pnpm build:desktop --target x86_64-unknown-linux-gnu',
+  'pnpm build:desktop --target $rustTarget',
   'release:installer-signature',
   'release:package-sbom -- --package-id $env:SDKWORK_PACKAGE_ID',
   'release:smoke-preflight',

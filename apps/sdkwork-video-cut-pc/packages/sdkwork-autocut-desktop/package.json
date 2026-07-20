@@ -6,14 +6,14 @@
   "type": "module",
   "scripts": {
     "dev": "node ../../scripts/run-autocut-vite.mjs --host 127.0.0.1 --port 3000 --strictPort",
-    "dev:tauri-web": "node ../../scripts/run-autocut-vite.mjs --host 127.0.0.1 --port 1420 --strictPort",
+    "dev:browser": "node ../../scripts/run-autocut-vite.mjs --host 127.0.0.1 --port 1420 --strictPort",
     "build": "node ../../scripts/run-autocut-vite.mjs build",
     "preview": "node ../../scripts/run-autocut-vite.mjs preview",
     "typecheck": "tsc --noEmit",
     "test": "tsc --noEmit",
-    "tauri:before-dev": "pnpm dev:tauri-web",
-    "tauri:dev": "node ../../scripts/ensure-autocut-tauri-rust-toolchain.mjs && pnpm exec tauri dev",
-    "tauri:build": "node ../../scripts/ensure-autocut-tauri-rust-toolchain.mjs && node ../../scripts/prepare-autocut-speech-sidecar.mjs --check --require-bundled && pnpm exec tauri build"
+    "install:desktop": "pnpm dev:browser",
+    "dev:desktop": "node ../../scripts/ensure-autocut-tauri-rust-toolchain.mjs && pnpm exec tauri dev",
+    "build:desktop": "node ../../scripts/ensure-autocut-tauri-rust-toolchain.mjs && node ../../scripts/prepare-autocut-speech-sidecar.mjs --check --require-bundled && pnpm exec tauri build"
   },
   "dependencies": {
     "@sdkwork/autocut-assets": "workspace:*",

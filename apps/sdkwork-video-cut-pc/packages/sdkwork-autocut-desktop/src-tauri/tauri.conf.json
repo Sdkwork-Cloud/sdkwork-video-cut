@@ -4,7 +4,7 @@
   "version": "0.1.8",
   "identifier": "com.sdkwork.video-cut",
   "build": {
-    "beforeDevCommand": "pnpm tauri:before-dev",
+    "beforeDevCommand": "pnpm install:desktop",
     "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"

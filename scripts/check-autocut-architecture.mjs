@@ -1447,7 +1447,7 @@ const trackedTauriGeneratedFiles = readTrackedFilesUnderPath('packages/sdkwork-a
 const packageDirs = fs.readdirSync(packagesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory());
 const packageNames = new Set(packageDirs.map((entry) => `${internalPrefix}${entry.name.replace(/^sdkwork-autocut-/, '')}`));
 
-for (const scriptName of ['dev', 'build', 'typecheck', 'test', 'tauri:before-dev', 'tauri:dev', 'tauri:build']) {
+for (const scriptName of ['dev', 'build', 'typecheck', 'test', 'install:desktop', 'dev:desktop', 'build:desktop']) {
   assertRule(Boolean(rootPackage.scripts?.[scriptName]), `root package.json defines script ${scriptName}`);
 }
 assertRule(rootPackage.scripts?.test?.includes('node scripts/check-autocut-feature-workflows.mjs'), 'root test runs the AutoCut feature workflow governance check');
@@ -1580,14 +1580,14 @@ assertRule(rootPackage.version === '0.1.8', 'AutoCut desktop application version
 assertRule(desktopPackage.scripts?.dev?.includes('--host 127.0.0.1'), 'desktop dev binds to loopback for desktop-local development');
 assertRule(desktopPackage.scripts?.dev?.includes('--port 3000'), 'desktop dev uses the standard AutoCut web port 3000');
 assertRule(desktopPackage.scripts?.dev?.includes('--strictPort'), 'desktop dev uses strictPort for deterministic desktop-local startup');
-assertRule(desktopPackage.scripts?.['dev:tauri-web']?.includes('--host 127.0.0.1'), 'desktop dev:tauri-web binds to loopback for Tauri development');
-assertRule(desktopPackage.scripts?.['dev:tauri-web']?.includes('--port 1420'), 'desktop dev:tauri-web uses the Tauri devUrl port 1420');
-assertRule(desktopPackage.scripts?.['dev:tauri-web']?.includes('--strictPort'), 'desktop dev:tauri-web uses strictPort for deterministic Tauri startup');
+assertRule(desktopPackage.scripts?.['dev:browser']?.includes('--host 127.0.0.1'), 'desktop dev:browser binds to loopback for Tauri development');
+assertRule(desktopPackage.scripts?.['dev:browser']?.includes('--port 1420'), 'desktop dev:browser uses the Tauri devUrl port 1420');
+assertRule(desktopPackage.scripts?.['dev:browser']?.includes('--strictPort'), 'desktop dev:browser uses strictPort for deterministic Tauri startup');
 assertRule(desktopPackage.scripts?.dev?.startsWith('node ../../scripts/run-autocut-vite.mjs '), 'desktop dev uses the stable AutoCut Vite runner instead of relying on node_modules/.bin');
 assertRule(desktopPackage.scripts?.build === 'node ../../scripts/run-autocut-vite.mjs build', 'desktop build uses the stable AutoCut Vite runner instead of relying on node_modules/.bin');
 assertRule(desktopPackage.scripts?.preview === 'node ../../scripts/run-autocut-vite.mjs preview', 'desktop preview uses the stable AutoCut Vite runner instead of relying on node_modules/.bin');
-assertRule(desktopPackage.scripts?.['dev:tauri-web']?.startsWith('node ../../scripts/run-autocut-vite.mjs '), 'desktop dev:tauri-web uses the stable AutoCut Vite runner instead of relying on node_modules/.bin');
-assertRule(desktopPackage.scripts?.['tauri:before-dev'] === 'pnpm dev:tauri-web', 'desktop tauri:before-dev delegates to the deterministic Tauri web dev script');
+assertRule(desktopPackage.scripts?.['dev:browser']?.startsWith('node ../../scripts/run-autocut-vite.mjs '), 'desktop dev:browser uses the stable AutoCut Vite runner instead of relying on node_modules/.bin');
+assertRule(desktopPackage.scripts?.['install:desktop'] === 'pnpm dev:browser', 'desktop install:desktop delegates to the deterministic Tauri web dev script');
 assertRule(rootPackage.scripts?.dev?.includes('--filter @sdkwork/autocut-desktop'), 'root dev delegates to the desktop package');
 assertRule(rootPackage.scripts?.build?.includes('--filter @sdkwork/autocut-desktop'), 'root build delegates to the desktop package');
 assertRule(rootPackage.scripts?.typecheck === 'node scripts/check-autocut-workspace-typecheck.mjs', 'root typecheck runs the stable workspace TypeScript API runner');
@@ -1802,8 +1802,8 @@ assertRule(frontendStandardSource.includes('outputRootDir'), 'frontend module st
 assertRule(frontendStandardSource.includes('{outputRootDir}/tasks/{task_uuid}/'), 'frontend module standard documents configured task output directory layout');
 assertRule(frontendStandardSource.includes('dev-default'), 'frontend module standard documents dev-scoped native LLM secret names');
 assertRule(frontendStandardSource.includes('release-default'), 'frontend module standard documents release-scoped native LLM secret names');
-assertRule(readmeSource.includes('pnpm prepare:ffmpeg-sidecar'), 'README documents the FFmpeg sidecar preparation command');
-assertRule(readmeSource.includes('pnpm prepare:speech-sidecar'), 'README documents the Whisper speech sidecar preparation command');
+assertRule(readmeSource.includes('pnpm build:sidecar:ffmpeg'), 'README documents the FFmpeg sidecar preparation command');
+assertRule(readmeSource.includes('pnpm build:sidecar:speech'), 'README documents the Whisper speech sidecar preparation command');
 assertRule(readmeSource.includes('pnpm release:smoke-preflight'), 'README documents the FFmpeg release smoke preflight command');
 assertRule(readmeSource.includes('pnpm release:native-smoke'), 'README documents the native release smoke evidence command');
 assertRule(readmeSource.includes('--run-real-llm-secret-smoke'), 'README documents the real Windows LLM secret store smoke command');
@@ -2362,7 +2362,7 @@ assertRule(
     smartSlicePerformanceBenchmarkTestSource.includes('caller-provided transcripts to the generic real-media runner') &&
     smartSlicePerformanceBenchmarkTestSource.includes('maxTotalElapsedMs') &&
     smartSlicePerformanceBenchmarkTestSource.includes('performance-benchmark-failed.json') &&
-    rootPackage.scripts?.['benchmark:smart-slice-performance'] === 'node scripts/check-autocut-smart-slice-performance-benchmark.mjs' &&
+    rootPackage.scripts?.['perf:benchmark:smart-slice-performance'] === 'node scripts/check-autocut-smart-slice-performance-benchmark.mjs' &&
     rootPackage.scripts?.test?.includes('node scripts/check-autocut-smart-slice-performance-benchmark.test.mjs'),
   'Smart Slice has a repeatable large-file performance benchmark report with input size, output bytes, timing thresholds, evidence readiness, and test coverage',
 );
@@ -2381,7 +2381,7 @@ assertRule(
     genericRealMediaSliceTestSource.includes('generic real media Smart Slice contract') &&
     genericRealMediaSliceTestSource.includes('same-source transcript') &&
     genericRealMediaSliceTestSource.includes('large-media transcript continuity fallback merges dangling connector fragments') &&
-    rootPackage.scripts?.['baseline:generic-real-media-slice'] === 'node scripts/check-autocut-generic-real-media-slice.mjs' &&
+    rootPackage.scripts?.['perf:baseline:generic-real-media-slice'] === 'node scripts/check-autocut-generic-real-media-slice.mjs' &&
     rootPackage.scripts?.test?.includes('node scripts/check-autocut-generic-real-media-slice.test.mjs'),
   'Smart Slice generic real-media runner uses same-source transcript evidence, engine-first semantic planning, bounded large-file rendering, editable SRT sidecars, and execution evidence',
 );
@@ -2398,7 +2398,7 @@ assertRule(
     largeMediaBaselineTestSource.includes('large-media baseline must block instead of silently reusing the wenan5 transcript fixture') &&
     largeMediaBaselineTestSource.includes('not the wenan5 fixture') &&
     largeMediaBaselineTestSource.includes('renderClipLimit') &&
-    rootPackage.scripts?.['baseline:large-media'] === 'node scripts/check-autocut-large-media-baseline.mjs' &&
+    rootPackage.scripts?.['perf:baseline:large-media'] === 'node scripts/check-autocut-large-media-baseline.mjs' &&
     rootPackage.scripts?.test?.includes('node scripts/check-autocut-large-media-baseline.test.mjs'),
   'Smart Slice large-media baseline preflights real input media, requires same-source transcript evidence, blocks fixture reuse, and gates benchmark execution',
 );
@@ -2425,7 +2425,7 @@ assertRule(
     largeMediaSttBaselineTestSource.includes('audio should have been reused') &&
     largeMediaSttBaselineTestSource.includes('interrupted large-media STT resumes from extracted same-source audio') &&
     largeMediaSttBaselineTestSource.includes('large-media STT baseline transcribes audio chunks concurrently') &&
-    rootPackage.scripts?.['baseline:large-media-stt'] === 'node scripts/write-autocut-large-media-stt-baseline.mjs' &&
+    rootPackage.scripts?.['perf:baseline:large-media-stt'] === 'node scripts/write-autocut-large-media-stt-baseline.mjs' &&
     rootPackage.scripts?.test?.includes('node scripts/write-autocut-large-media-stt-baseline.test.mjs'),
   'Smart Slice large-media STT baseline extracts mono 16k audio, resumes same-source large-file artifacts, parallelizes long-audio Whisper chunks, writes canonical STT evidence, and persists blocked reports',
 );
@@ -2444,7 +2444,7 @@ assertRule(
     speechGpuRuntimeTestSource.includes('GPU speech preparation must fail honestly') &&
     speechGpuRuntimeTestSource.includes('prepareSpeechSidecar') &&
     speechGpuRuntimeTestSource.includes('runSttBaseline') &&
-    rootPackage.scripts?.['prepare:speech-gpu-runtime'] === 'node scripts/prepare-autocut-speech-gpu-runtime.mjs' &&
+    rootPackage.scripts?.['build:sidecar:speech-gpu-runtime'] === 'node scripts/prepare-autocut-speech-gpu-runtime.mjs' &&
     rootPackage.scripts?.test?.includes('node scripts/prepare-autocut-speech-gpu-runtime.test.mjs'),
   'Smart Slice speech GPU runtime preparation verifies real CUDA/Vulkan whisper.cpp companions, packages only verified GPU runtimes, supports local build and benchmark handoff, and records honest blockers when GPU STT cannot run',
 );
@@ -2753,15 +2753,15 @@ for (const cspSource of forbiddenCspRemoteSources) {
 assertRule(tauriConfig.build?.devUrl === 'http://127.0.0.1:1420', 'Tauri devUrl uses loopback 127.0.0.1:1420');
 assertRule(tauriConfig.bundle?.active === true, 'Tauri bundling is active');
 assertRule(
-  rootPackage.scripts?.['prepare:ffmpeg-sidecar'] === 'node scripts/prepare-autocut-ffmpeg-sidecar.mjs',
+  rootPackage.scripts?.['build:sidecar:ffmpeg'] === 'node scripts/prepare-autocut-ffmpeg-sidecar.mjs',
   'root package exposes the standardized FFmpeg sidecar preparation command',
 );
 assertRule(
-  rootPackage.scripts?.['prepare:speech-sidecar'] === 'node scripts/prepare-autocut-speech-sidecar.mjs',
+  rootPackage.scripts?.['build:sidecar:speech'] === 'node scripts/prepare-autocut-speech-sidecar.mjs',
   'root package exposes the standardized Whisper CLI speech sidecar preparation command',
 );
 assertRule(
-  rootPackage.scripts?.['prepare:release-sidecars'] === 'node scripts/prepare-autocut-release-sidecars.mjs',
+  rootPackage.scripts?.['build:sidecar:release'] === 'node scripts/prepare-autocut-release-sidecars.mjs',
   'root package exposes the standardized CI release sidecar preparation command',
 );
 assertRule(
@@ -3195,7 +3195,7 @@ assertRule(
     previewReleaseReadinessSource.includes('speechBundledReady') &&
     commercialReleaseReadinessSource.includes('SPEECH_SIDECAR_NOT_BUNDLED') &&
     commercialReleaseReadinessSource.includes('release:smoke-preflight --require-bundled') &&
-    commercialReleaseReadinessSource.includes('Run prepare:speech-sidecar'),
+    commercialReleaseReadinessSource.includes('Run build:sidecar:speech'),
   'preview and commercial release readiness gates fail closed when the approved local Whisper sidecar is missing or unverifiable',
 );
 assertRule(
@@ -3214,9 +3214,9 @@ assertRule(
     sdkworkWorkflowConfigSource.includes('"macos-arm64-desktop-dmg"') &&
     sdkworkWorkflowConfigSource.includes('"distribution": "debian"') &&
     sdkworkWorkflowConfigSource.includes('"architecture": "arm64"') &&
-    sdkworkWorkflowConfigSource.includes('pnpm tauri:build --target x86_64-unknown-linux-gnu') &&
-    sdkworkWorkflowConfigSource.includes('pnpm tauri:build --target $rustTarget') &&
-    !sdkworkWorkflowConfigSource.includes('pnpm tauri:build -- --target') &&
+    sdkworkWorkflowConfigSource.includes('pnpm build:desktop --target x86_64-unknown-linux-gnu') &&
+    sdkworkWorkflowConfigSource.includes('pnpm build:desktop --target $rustTarget') &&
+    !sdkworkWorkflowConfigSource.includes('pnpm build:desktop -- --target') &&
     !sdkworkWorkflowConfigSource.includes('tauri-apps/tauri-action') &&
     sdkworkWorkflowConfigSource.includes('release:package-sbom -- --package-id $env:SDKWORK_PACKAGE_ID') &&
     sdkworkWorkflowConfigSource.includes('release:installer-signature -- --platform $platform') &&
@@ -4743,18 +4743,18 @@ for (const packageDirent of packageDirs) {
     assertRule(manifest.scripts?.build === 'node ../../scripts/run-autocut-vite.mjs build', `${manifest.name} build script uses the stable AutoCut Vite runner`);
     assertRule(manifest.scripts?.dev?.startsWith('node ../../scripts/run-autocut-vite.mjs '), `${manifest.name} dev script uses the stable AutoCut Vite runner`);
     assertRule(
-      manifest.scripts?.['tauri:dev']?.startsWith('node ../../scripts/ensure-autocut-tauri-rust-toolchain.mjs && '),
-      `${manifest.name} tauri:dev verifies the pinned Rust toolchain before launching Tauri`,
+      manifest.scripts?.['dev:desktop']?.startsWith('node ../../scripts/ensure-autocut-tauri-rust-toolchain.mjs && '),
+      `${manifest.name} dev:desktop verifies the pinned Rust toolchain before launching Tauri`,
     );
     assertRule(
-      manifest.scripts?.['tauri:build']?.startsWith('node ../../scripts/ensure-autocut-tauri-rust-toolchain.mjs && '),
-      `${manifest.name} tauri:build verifies the pinned Rust toolchain before packaging Tauri`,
+      manifest.scripts?.['build:desktop']?.startsWith('node ../../scripts/ensure-autocut-tauri-rust-toolchain.mjs && '),
+      `${manifest.name} build:desktop verifies the pinned Rust toolchain before packaging Tauri`,
     );
     assertRule(
-      manifest.scripts?.['tauri:build']?.includes('node ../../scripts/prepare-autocut-speech-sidecar.mjs --check --require-bundled && '),
-      `${manifest.name} tauri:build requires an integrity-verified bundled Whisper CLI sidecar before packaging Tauri`,
+      manifest.scripts?.['build:desktop']?.includes('node ../../scripts/prepare-autocut-speech-sidecar.mjs --check --require-bundled && '),
+      `${manifest.name} build:desktop requires an integrity-verified bundled Whisper CLI sidecar before packaging Tauri`,
     );
-    assertRule(manifest.scripts?.['tauri:build']?.endsWith('pnpm exec tauri build'), `${manifest.name} tauri:build runs the package-local Tauri CLI`);
+    assertRule(manifest.scripts?.['build:desktop']?.endsWith('pnpm exec tauri build'), `${manifest.name} build:desktop runs the package-local Tauri CLI`);
     assertRule(fs.existsSync(path.join(packagePath, 'index.html')), `${manifest.name} owns index.html`);
     assertRule(fs.existsSync(path.join(packagePath, 'vite.config.ts')), `${manifest.name} owns vite.config.ts`);
     assertRule(fs.existsSync(path.join(packagePath, 'src-tauri', 'tauri.conf.json')), `${manifest.name} owns src-tauri/tauri.conf.json`);

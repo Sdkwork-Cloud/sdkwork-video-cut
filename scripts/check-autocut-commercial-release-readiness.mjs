@@ -228,7 +228,7 @@ function createCommercialReleaseBlockers(evidence) {
     blockers.push({
       code: 'FFMPEG_SIDECAR_NOT_BUNDLED',
       message: 'Approved FFmpeg sidecar is not bundled with verified integrity.',
-      remediation: 'Run prepare:ffmpeg-sidecar with an approved binary, then release:smoke-preflight --require-bundled.',
+      remediation: 'Run build:sidecar:ffmpeg with an approved binary, then release:smoke-preflight --require-bundled.',
     });
   }
 
@@ -241,7 +241,7 @@ function createCommercialReleaseBlockers(evidence) {
     blockers.push({
       code: 'SPEECH_SIDECAR_NOT_BUNDLED',
       message: 'Approved local Whisper speech-to-text sidecar is not bundled with verified integrity.',
-      remediation: 'Run prepare:speech-sidecar with an approved whisper-cli binary for the target platform, then regenerate release:evidence.',
+      remediation: 'Run build:sidecar:speech with an approved whisper-cli binary for the target platform, then regenerate release:evidence.',
     });
   }
 
@@ -311,7 +311,7 @@ function createCommercialReleaseBlockers(evidence) {
     blockers.push({
       code: 'INSTALLER_ARTIFACTS_NOT_READY',
       message: 'Commercial release installers are missing, empty, missing SHA-256 digests, or do not match the platform package policy.',
-      remediation: 'Run pnpm tauri:build for the target platform and regenerate release:evidence after installers are produced.',
+      remediation: 'Run pnpm build:desktop for the target platform and regenerate release:evidence after installers are produced.',
     });
   }
 
