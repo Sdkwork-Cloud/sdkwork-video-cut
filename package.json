@@ -96,7 +96,8 @@
   },
   "dependencies": {
     "@sdkwork/autocut-desktop": "workspace:*",
-    "@sdkwork/drive-app-sdk": "workspace:*"
+    "@sdkwork/drive-app-sdk": "workspace:*",
+    "@sdkwork/app-topology": "workspace:*"
   },
   "devDependencies": {
     "@sdkwork/app-topology": "workspace:*",
