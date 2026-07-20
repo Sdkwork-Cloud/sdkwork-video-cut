@@ -1,0 +1,13 @@
+[package]
+name = "sdkwork-api-video-cut-assembly"
+edition = "2021"
+version = "0.1.0"
+description = "Generated API assembly for sdkwork-video-cut application HTTP plane."
+
+[lib]
+name = "sdkwork_api_video_cut_assembly"
+path = "src/lib.rs"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }

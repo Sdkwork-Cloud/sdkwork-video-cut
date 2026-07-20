@@ -1,0 +1,9 @@
+{
+  "kind": "sdkwork.api.assembly",
+  "schemaVersion": 1,
+  "applicationCode": "video-cut",
+  "apiMode": "none",
+  "packageName": "sdkwork-api-video-cut-assembly",
+  "crateDir": "crates/sdkwork-api-video-cut-assembly",
+  "routeCrates": []
+}
