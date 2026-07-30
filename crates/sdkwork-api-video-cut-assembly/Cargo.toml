@@ -11,3 +11,4 @@ path = "src/lib.rs"
 [dependencies]
 axum = "0.8"
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }
+sdkwork-web-bootstrap = { path = "../../../sdkwork-web-framework/crates/sdkwork-web-bootstrap" }

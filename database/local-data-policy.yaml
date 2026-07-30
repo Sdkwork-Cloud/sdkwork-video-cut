@@ -1,0 +1,24 @@
+schema_version: 1
+kind: sdkwork.database.client-local-policy
+mode: local-only
+scope: environment-profile-origin-account
+authoritative_source: local-device
+sync_contract: null
+security:
+  encryption_at_rest: required-when-sensitive
+  key_store: os-secure-storage
+  backup: excluded-unless-declared
+  export: disabled-unless-declared
+  lock_state: close-or-rekey-per-platform-policy
+retention:
+  policy: device-local-until-user-deletion
+  max_age_or_event: user-delete-or-uninstall
+lifecycle:
+  logout: purge-account-scoped-data
+  account_switch: isolate-and-purge-active-state
+  uninstall: platform-default-with-documented-backup-policy
+recovery:
+  migration_interruption: atomic-retry-or-restore
+  disk_full: fail-without-partial-commit
+  corruption: integrity-check-then-rebuild-or-restore
+  projection_rebuild: not-applicable-local-only

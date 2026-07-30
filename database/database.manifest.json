@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "kind": "sdkwork.database.module",
   "moduleId": "videocut",
   "serviceCode": "VIDEO_CUT",
@@ -36,10 +36,18 @@
     "contract": "contract/schema.yaml",
     "migrations": "migrations",
     "seeds": "seeds",
-    "driftPolicy": "drift/policy.yaml"
+    "driftPolicy": "drift/policy.yaml",
+    "localDataPolicy": "local-data-policy.yaml"
   },
   "spi": {
     "provider": "default",
     "hooks": []
+  },
+  "databaseRole": "client-local",
+  "clientLocal": {
+    "mode": "local-only",
+    "scope": "environment-profile-origin-account",
+    "authoritativeSource": "local-device",
+    "syncContract": null
   }
 }

@@ -1,5 +1,6 @@
 schema_version: 1
 kind: sdkwork.database.schema
+database_role: client-local
 module_id: videocut
 contract_version: 1.0.0
 owner_team: video-cut-platform
