@@ -2,7 +2,8 @@
   "schemaVersion": 5,
   "kind": "sdkwork.app.topology",
   "appId": "sdkwork-video-cut",
-  "archetype": "client-only",
+  "applicationCode": "video_cut",
+  "archetype": "application-http-gateway",
   "profileRoot": "etc/topology",
   "profilePattern": "{deploymentProfile}.{environment}.env",
   "vocabulary": {
@@ -25,35 +26,72 @@
     "deploymentProfile": "SDKWORK_VIDEO_CUT_DEPLOYMENT_PROFILE",
     "environment": "SDKWORK_VIDEO_CUT_ENVIRONMENT",
     "profileId": "SDKWORK_VIDEO_CUT_PROFILE_ID",
-    "clientDeploymentProfile": "VITE_SDKWORK_VIDEO_CUT_DEPLOYMENT_PROFILE"
+    "clientDeploymentProfile": "VITE_SDKWORK_VIDEO_CUT_DEPLOYMENT_PROFILE",
+    "standaloneGatewayBind": "SDKWORK_VIDEO_CUT_APPLICATION_PUBLIC_INGRESS_BIND"
   },
   "surfaces": {
+    "application.public-ingress": {
+      "connectivityPlane": "application",
+      "protocols": ["http"],
+      "bindEnv": "SDKWORK_VIDEO_CUT_APPLICATION_PUBLIC_INGRESS_BIND",
+      "httpUrlEnv": "SDKWORK_VIDEO_CUT_APPLICATION_PUBLIC_HTTP_URL"
+    },
+    "platform.api-gateway": {
+      "connectivityPlane": "platform",
+      "protocols": ["http"],
+      "httpUrlEnv": "SDKWORK_VIDEO_CUT_PLATFORM_API_GATEWAY_HTTP_URL"
+    },
     "desktop.client": {
       "connectivityPlane": "application",
-      "protocols": ["native"]
+      "protocols": ["native"],
+      "optional": true
+    }
+  },
+  "components": {
+    "standaloneGateway": {
+      "crate": "sdkwork-api-video-cut-standalone-gateway",
+      "binary": "sdkwork-api-video-cut-standalone-gateway"
     }
   },
   "orchestration": {
     "profiles": {
       "standalone.development": {
-        "processes": [{
-          "id": "desktop-client",
-          "package": "@sdkwork/autocut-desktop",
-          "script": "dev:desktop",
-          "required": true,
-          "role": "client"
-        }],
-        "healthSurfaces": []
+        "processes": [
+          {
+            "id": "standalone-gateway",
+            "role": "api-standalone-gateway",
+            "command": "cargo",
+            "args": [
+              "run",
+              "--manifest-path",
+              "crates/sdkwork-api-video-cut-standalone-gateway/Cargo.toml"
+            ],
+            "bindEnv": "SDKWORK_VIDEO_CUT_APPLICATION_PUBLIC_INGRESS_BIND",
+            "required": true
+          },
+          {
+            "id": "desktop-client",
+            "package": "@sdkwork/autocut-desktop",
+            "script": "dev:desktop",
+            "runtimeTargets": ["desktop"],
+            "clientArchitectures": ["tauri"],
+            "required": true,
+            "role": "client"
+          }
+        ],
+        "healthSurfaces": ["application.public-ingress"]
       },
       "cloud.development": {
         "processes": [{
           "id": "desktop-client",
           "package": "@sdkwork/autocut-desktop",
           "script": "dev:desktop",
+          "runtimeTargets": ["desktop"],
+          "clientArchitectures": ["tauri"],
           "required": true,
           "role": "client"
         }],
-        "healthSurfaces": []
+        "healthSurfaces": ["application.public-ingress", "platform.api-gateway"]
       },
       "standalone.production": { "processes": [], "healthSurfaces": [] },
       "cloud.production": { "processes": [], "healthSurfaces": [] }
