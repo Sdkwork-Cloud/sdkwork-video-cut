@@ -15,12 +15,6 @@
     "moduleDetection": "force",
     "allowJs": false,
     "jsx": "react-jsx",
-    "baseUrl": ".",
-    "paths": {
-      "@sdkwork/autocut-*": [
-        "./packages/sdkwork-autocut-*/src/index.ts"
-      ]
-    },
     "allowImportingTsExtensions": true,
     "strict": true,
     "exactOptionalPropertyTypes": true,
